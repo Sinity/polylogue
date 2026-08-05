@@ -410,6 +410,30 @@ def _classify_list(
             reason="Beads interaction-history stream",
         )
 
+    if provider is Provider.CODEX:
+        from polylogue.sources.parsers.codex import is_supported_session_stream
+
+        if is_supported_session_stream(payload):
+            subagent = is_subagent_path(source_path)
+            kind = ArtifactKind.AGENT_TRANSCRIPT if subagent else ArtifactKind.SESSION_RECORD_STREAM
+            return ArtifactClassification(
+                provider=provider,
+                kind=kind,
+                parse_as_session=True,
+                schema_eligible=True,
+                default_priority=90 if subagent else 120,
+                reason="parser-supported Codex session record stream",
+            )
+        if dict_items and any(looks_like_record_entry(item) for item in dict_items):
+            return ArtifactClassification(
+                provider=provider,
+                kind=ArtifactKind.UNKNOWN,
+                parse_as_session=False,
+                schema_eligible=False,
+                default_priority=0,
+                reason="Codex record stream contains unsupported session records",
+            )
+
     if dict_items and looks_like_record_stream(dict_items):
         subagent = is_subagent_path(source_path)
         kind = ArtifactKind.AGENT_TRANSCRIPT if subagent else ArtifactKind.SESSION_RECORD_STREAM

@@ -2272,6 +2272,69 @@ def looks_like(payload: Sequence[object]) -> bool:
     return False
 
 
+def is_supported_session_stream(payload: Sequence[object]) -> bool:
+    """Return whether every record forms a materializable Codex session stream.
+
+    This is stricter than :func:`looks_like`, which only needs one record to
+    identify the parser. Artifact classification uses this full-stream
+    contract before it lets a Codex JSONL payload reach schema inference.
+    """
+    has_session_header = False
+    has_message = False
+    has_envelope_record = False
+    has_direct_record = False
+    supported_envelope_types = {
+        "session_meta",
+        "response_item",
+        "event_msg",
+        "compacted",
+        "turn_context",
+        "world_state",
+        "reasoning",
+    }
+
+    for index, item in enumerate(payload, start=1):
+        if not _is_plausibly_codex_record(item):
+            return False
+        record = _dict_record(item)
+        if record is None or _validate_record(record, index=index, context="session stream") is None:
+            return False
+        record_type = _record_type(record)
+        if record_type in supported_envelope_types:
+            has_envelope_record = True
+            if not _is_envelope(record):
+                return False
+            session_meta = _session_meta_record(record)
+            if session_meta is not None:
+                has_session_header = has_session_header or _record_id(session_meta) is not None
+            if _message_record(record) is not None:
+                has_message = True
+            continue
+        if _is_state(record):
+            continue
+        if _is_direct_message(record):
+            has_direct_record = True
+            has_message = True
+            continue
+        session_meta = _session_meta_record(record)
+        if session_meta is not None:
+            has_session_header = has_session_header or _record_id(session_meta) is not None
+            continue
+        return False
+
+    if not has_message:
+        return False
+    if has_direct_record and has_envelope_record:
+        # The parser supports these wire formats independently, but their
+        # records cannot be combined into one trustworthy session stream.
+        return False
+    # The legacy direct-message format has no session header. Its parser uses
+    # the acquisition fallback id, so a complete stream of direct records is
+    # still materializable. Header-bearing streams must prove their header;
+    # this keeps bare or truncated envelope prefixes ineligible.
+    return has_session_header or (has_direct_record and not has_envelope_record)
+
+
 def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession:
     """Parse Codex JSONL session file using typed CodexRecord model.
 
