@@ -305,6 +305,23 @@ def test_source_v27_sidecar_proves_the_real_hook_event_writer_against_fresh_sche
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (0,)
 
 
+def test_source_v29_sidecar_proves_failure_lifecycle_consumers_against_fresh_schema(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    sidecar = durable_migration_sidecar_for_slot(ArchiveTier.SOURCE, 29)
+    assert sidecar is not None
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+
+    results = _runtime_consumer_results(sidecar.train, tmp_path)
+
+    assert [(result.consumer_id, result.passed) for result in results] == [
+        ("raw-failure-lifecycle", True),
+        ("historical-disposition-actuator", True),
+    ]
+    assert results[0].detail == "read raw failure lifecycle state=healthy"
+    assert results[1].detail == "validated one raw failure disposition without mutation"
+
+
 def test_applied_train_release_requires_the_source_hook_event_writer_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

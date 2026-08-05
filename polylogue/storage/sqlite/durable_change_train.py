@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from importlib import resources
@@ -382,6 +383,18 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_hook_match_stage(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":read_raw_failure_lifecycle"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_raw_failure_lifecycle(cast(Callable[..., object], value), archive_root)
+                elif reference.endswith(":apply_raw_failure_dispositions"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_raw_failure_disposition_apply(cast(Callable[..., object], value), archive_root)
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -580,6 +593,79 @@ def _probe_hook_match_stage(match_stage: Callable[..., object], target_version: 
     return "staged one orphan with one unambiguous hook match"
 
 
+def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path) -> str:
+    """Exercise the source-tier failure lifecycle reader against live bytes."""
+    snapshot = reader(archive_root / "source.db", sample_limit=1)
+    if not getattr(snapshot, "available", False):
+        raise DurableChangeTrainError("raw failure lifecycle probe could not read source.db")
+    return f"read raw failure lifecycle state={getattr(snapshot, 'state', 'unknown')}"
+
+
+def _probe_raw_failure_disposition_apply(actuator: Callable[..., object], archive_root: Path) -> str:
+    """Exercise the disposition actuator's read-only validation route."""
+    del archive_root
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-disposition-") as directory:
+        root = Path(directory)
+        source_path = root / "source.db"
+        with sqlite3.connect(source_path) as connection:
+            initialize_archive_tier(connection, ArchiveTier.SOURCE)
+            connection.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                    acquired_at_ms, parse_error
+                ) VALUES (?, ?, ?, 0, ?, 0, ?, ?)
+                """,
+                (
+                    "durable-change-train-disposition-raw",
+                    "claude-code-session",
+                    "/durable-change-train/disposition-probe.jsonl",
+                    b"\0" * 32,
+                    1_780_000_000_000,
+                    "durable change train probe failure",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index,
+                    artifact_kind, support_status, classification_reason,
+                    first_observed_at_ms, last_observed_at_ms
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "durable-change-train-disposition-artifact",
+                    "durable-change-train-disposition-raw",
+                    "claude-code-session",
+                    "/durable-change-train/disposition-probe.jsonl",
+                    "coordinator_session_stream",
+                    "supported_parseable",
+                    "durable change train probe",
+                    1_780_000_000_000,
+                    1_780_000_000_000,
+                ),
+            )
+            connection.commit()
+        manifest_path = root / "dispositions.jsonl"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "raw_id": "durable-change-train-disposition-raw",
+                    "disposition_kind": "terminal_corrupt_input",
+                    "detail": "durable change train read-only probe",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        report = actuator(root, manifest_path=manifest_path, dry_run=True)
+    if getattr(report, "applied", True) or getattr(report, "candidate_count", 0) != 1:
+        raise DurableChangeTrainError("raw failure disposition probe did not remain read-only")
+    return "validated one raw failure disposition without mutation"
+
+
 def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
     """Open an existing durable tier without allowing SQLite to create it."""
     try:
@@ -614,6 +700,26 @@ def _verify_persisted_live_tier_continuity(conn: sqlite3.Connection, train: Dura
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier continuity proof failed; refusing startup initialization/release"
         ) from exc
+
+
+def _verify_released_train_live_tier(conn: sqlite3.Connection, train: DurableChangeTrain) -> None:
+    """Verify a released train remains represented after later trains advance it."""
+    if train.apply_evidence is None:
+        raise DurableChangeTrainError(f"{train.state.value} train lacks post-apply continuity evidence")
+    actual = capture_durable_database_evidence(conn, train.tier)
+    if actual.user_version < train.target_version:
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier continuity proof failed: live version regressed below released train "
+            "target; refusing startup initialization"
+        )
+    if actual.user_version == train.target_version:
+        _verify_persisted_live_tier_continuity(conn, train)
+        return
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()
+    if integrity != ("ok",):
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier integrity check failed after later train advancement"
+        )
 
 
 def _prove_and_release_persisted_train(
@@ -874,7 +980,7 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
             train = _persist_train_transition(manifest_path, recovered, expected_revision=train.revision)
         if train.state is DurableChangeTrainState.RELEASED:
             with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
-                _verify_persisted_live_tier_continuity(live, train)
+                _verify_released_train_live_tier(live, train)
             reconciled.append(manifest_path)
             continue
         if train.state not in {
