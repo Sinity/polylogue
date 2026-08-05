@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from pathlib import Path
-from typing import Any, cast
+from typing import TypedDict, cast
 
 import pytest
 
@@ -17,6 +17,59 @@ from polylogue.maintenance.schema_inference_gate import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+
+class _RawGroundTruthProvenance(TypedDict):
+    source_path: str
+    matched_external_relative_path: str | None
+
+
+class _OriginGroundTruthReceipt(TypedDict):
+    external_files: int
+    unverified_source_blob_hashes: int
+    provenance: list[_RawGroundTruthProvenance]
+    unmatched_external_files: list[object]
+    cross_origin_mismatches: list[object]
+    count_discrepancy: bool
+    byte_discrepancy: bool
+
+
+class _GroundTruthInputs(TypedDict):
+    origins: dict[str, _OriginGroundTruthReceipt]
+
+
+class _BlobVerifier(TypedDict):
+    identity: str
+
+
+class _BlobSnapshot(TypedDict):
+    digest: str
+
+
+class _BlobFailure(TypedDict):
+    reason: str
+
+
+class _FullBlobHashVerification(TypedDict):
+    passed: bool
+    verifier: _BlobVerifier
+    before_snapshot: _BlobSnapshot
+    after_snapshot: _BlobSnapshot
+    failures: list[_BlobFailure]
+
+
+class _GateQueryResult(TypedDict):
+    passed: bool
+    invalid_receipt_count: int
+    resolved_by_rule: dict[str, int]
+
+
+class _GateReceipt(TypedDict):
+    verdict: str
+    ground_truth_inputs: _GroundTruthInputs
+    full_blob_hash_verification: _FullBlobHashVerification
+    query_results: dict[str, _GateQueryResult]
+    pass_fail_reasons: list[str]
 
 
 def _seed_archive(root: Path) -> Path:
@@ -82,14 +135,14 @@ def _run(
     *,
     ground_truth: Path | None = None,
     ground_truth_roots: dict[str, tuple[Path, ...]] | None = None,
-) -> dict[str, Any]:
+) -> _GateReceipt:
     external_root = ground_truth or root.parent / f"{root.name}-codex-ground-truth"
     result = run_schema_inference_gate(
         root,
         receipt_path=tmp_path / RECEIPT_FILENAME,
         ground_truth_roots=ground_truth_roots or {"codex-session": (external_root,)},
     )
-    return cast(dict[str, Any], result.payload)
+    return cast(_GateReceipt, result.payload)
 
 
 def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliation(tmp_path: Path) -> None:
@@ -250,16 +303,22 @@ def test_stale_acquisition_path_is_preserved_while_content_matches_external_file
 def test_receipt_rerun_keeps_deterministic_external_provenance(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     ground_truth = _seed_archive(root)
-    first = run_schema_inference_gate(
-        root,
-        receipt_path=tmp_path / "first" / RECEIPT_FILENAME,
-        ground_truth_roots={"codex-session": (ground_truth,)},
-    ).payload
-    second = run_schema_inference_gate(
-        root,
-        receipt_path=tmp_path / "second" / RECEIPT_FILENAME,
-        ground_truth_roots={"codex-session": (ground_truth,)},
-    ).payload
+    first = cast(
+        _GateReceipt,
+        run_schema_inference_gate(
+            root,
+            receipt_path=tmp_path / "first" / RECEIPT_FILENAME,
+            ground_truth_roots={"codex-session": (ground_truth,)},
+        ).payload,
+    )
+    second = cast(
+        _GateReceipt,
+        run_schema_inference_gate(
+            root,
+            receipt_path=tmp_path / "second" / RECEIPT_FILENAME,
+            ground_truth_roots={"codex-session": (ground_truth,)},
+        ).payload,
+    )
 
     first_origin = first["ground_truth_inputs"]["origins"]["codex-session"]
     second_origin = second["ground_truth_inputs"]["origins"]["codex-session"]
