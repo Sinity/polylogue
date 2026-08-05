@@ -16,6 +16,7 @@ from polylogue.daemon.status import (
     RawFailureSample,
     _raw_failure_info,
 )
+from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -436,6 +437,135 @@ class TestRawFailureInfoProducesTypedSamples:
 
         assert info["parse_failures"] == 1
         assert info["terminal_rejections"] == 1
+
+    def test_raw_failure_lifecycle_rejects_mismatched_or_malformed_artifacts(self, tmp_path: Path) -> None:
+        """Status cannot bless evidence with the wrong support or raw identity."""
+        index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-malformed",
+            origin="codex-session",
+            native_id="malformed",
+            source_path="/data/malformed.jsonl",
+            parse_error="parser failed",
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-target",
+            origin="codex-session",
+            native_id="target",
+            source_path="/data/target.jsonl",
+            parse_error="parser failed",
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-other",
+            origin="codex-session",
+            native_id="other",
+            source_path="/data/other.jsonl",
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            # The evidence kind is terminal_corrupt_input, but its support
+            # status belongs to terminal_unsupported_shape.
+            upsert_raw_artifact(
+                conn,
+                "raw-malformed",
+                ArchiveSourceArtifact(
+                    artifact_id="malformed-evidence",
+                    origin="codex-session",
+                    source_path="/data/malformed.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                ),
+            )
+            # A source-identity match is insufficient when the durable raw_id
+            # points at a different retained payload.
+            upsert_raw_artifact(
+                conn,
+                "raw-other",
+                ArchiveSourceArtifact(
+                    artifact_id="mismatched-evidence",
+                    origin="codex-session",
+                    source_path="/data/target.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.DECODE_FAILED,
+                ),
+            )
+            conn.commit()
+
+        snapshot = read_raw_failure_lifecycle(tmp_path / "source.db")
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
+            info = _raw_failure_info()
+
+        assert snapshot.terminal == 0
+        assert snapshot.unexplained == 2
+        assert info["terminal_rejections"] == snapshot.terminal
+        assert info["unexplained_failures"] == snapshot.unexplained
+
+    def test_daemon_status_lifecycle_counts_match_the_shared_projection(self, tmp_path: Path) -> None:
+        """The health/status source is the same lifecycle projection as preflight."""
+        index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-terminal",
+            origin="codex-session",
+            native_id="terminal",
+            source_path="/data/terminal.jsonl",
+            parse_error="bad input",
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-deferred",
+            origin="codex-session",
+            native_id="deferred",
+            source_path="/data/deferred.jsonl",
+            parse_error="hot capture",
+            acquired_at_ms=1_770_000_000_001,
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            upsert_raw_artifact(
+                conn,
+                "raw-terminal",
+                ArchiveSourceArtifact(
+                    artifact_id="terminal-evidence",
+                    origin="codex-session",
+                    source_path="/data/terminal.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.DECODE_FAILED,
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-deferred",
+                ArchiveSourceArtifact(
+                    artifact_id="deferred-evidence",
+                    origin="codex-session",
+                    source_path="/data/deferred.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_hot_jsonl_capture",
+                    classification_reason="deferred_hot_jsonl_capture",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                ),
+            )
+            conn.commit()
+
+        snapshot = read_raw_failure_lifecycle(tmp_path / "source.db")
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
+            info = _raw_failure_info()
+
+        assert info["deferred_failures"] == snapshot.deferred == 1
+        assert info["terminal_rejections"] == snapshot.terminal == 1
+        assert info["unexplained_failures"] == snapshot.unexplained == 0
 
     def test_raw_failure_info_streams_lifecycle_counts_beyond_sample_cap(self, tmp_path: Path) -> None:
         """Lifecycle counts cover every failed raw without bulk-fetching rows."""

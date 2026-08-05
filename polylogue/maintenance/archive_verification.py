@@ -2557,5 +2557,6 @@ __all__ = [
     "ArchiveVerificationReport",
     "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
+    "read_raw_failure_lifecycle",
     "verify_archive",
 ]

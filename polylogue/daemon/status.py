@@ -22,10 +22,6 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
-from polylogue.core.raw_failure_evidence import (
-    RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
-    RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
-)
 from polylogue.core.stats import percentile
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
@@ -65,6 +61,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
 )
 from polylogue.daemon.slo import IngestSloStatus, slo_status_info
 from polylogue.logging import get_logger
+from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
@@ -994,24 +991,35 @@ def _archive_raw_failure_info(
 ) -> dict[str, object] | None:
     if not archive_db.exists():
         return None
+    lifecycle_snapshot = read_raw_failure_lifecycle(archive_db, sample_limit=50)
+    if not lifecycle_snapshot.available:
+        return {
+            "parse_failures": 0,
+            "validation_failures": 0,
+            "quarantined": 0,
+            "detection_warnings": 0,
+            "maintenance_failures": maintenance_count,
+            "deferred_failures": 0,
+            "terminal_rejections": 0,
+            "unexplained_failures": 1,
+            "raw_failure_lifecycle_available": False,
+            "raw_failure_lifecycle_reason": lifecycle_snapshot.reason,
+            "samples": maintenance_samples,
+        }
     try:
         conn = open_readonly_connection(archive_db)
         try:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone():
                 return None
-            parse_fail = int(
-                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL").fetchone()[0] or 0
-            )
-            validation_fail = int(
-                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE validation_status = 'failed'").fetchone()[0] or 0
-            )
+            parse_fail = lifecycle_snapshot.parse_failures
+            validation_fail = lifecycle_snapshot.validation_failures
             quarantined = int(
                 conn.execute(
                     """
                     SELECT COUNT(*)
                     FROM raw_sessions
                     WHERE parsed_at_ms IS NULL
-                      AND (parse_error IS NOT NULL OR validation_status = 'failed')
+                      AND ((parse_error IS NOT NULL AND TRIM(parse_error) != '') OR validation_status = 'failed')
                     """
                 ).fetchone()[0]
                 or 0
@@ -1027,51 +1035,18 @@ def _archive_raw_failure_info(
                 ).fetchone()[0]
                 or 0
             )
-            deferred_kinds = tuple(sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS))
-            terminal_kinds = tuple(sorted(RAW_FAILURE_TERMINAL_EVIDENCE_KINDS))
-            known_kinds = deferred_kinds + terminal_kinds
-            deferred_placeholders = ", ".join("?" for _ in deferred_kinds)
-            terminal_placeholders = ", ".join("?" for _ in terminal_kinds)
-            known_placeholders = ", ".join("?" for _ in known_kinds)
-            lifecycle_totals = conn.execute(
-                f"""
-                WITH raw_failures AS (
-                    SELECT (
-                        SELECT a.artifact_kind
-                        FROM raw_artifacts AS a
-                        WHERE a.raw_id = r.raw_id
-                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
-                        LIMIT 1
-                    ) AS artifact_kind
-                    FROM raw_sessions AS r
-                    WHERE r.parse_error IS NOT NULL OR r.validation_status = 'failed'
-                )
-                SELECT
-                    COALESCE(SUM(artifact_kind IN ({deferred_placeholders})), 0),
-                    COALESCE(SUM(artifact_kind IN ({terminal_placeholders})), 0),
-                    COALESCE(SUM(artifact_kind IS NULL OR artifact_kind NOT IN ({known_placeholders})), 0)
-                FROM raw_failures
-                """,
-                (*deferred_kinds, *terminal_kinds, *known_kinds),
-            ).fetchone()
-            assert lifecycle_totals is not None
-            deferred_failures = int(lifecycle_totals[0] or 0)
-            terminal_rejections = int(lifecycle_totals[1] or 0)
-            unexplained_failures = int(lifecycle_totals[2] or 0)
+            lifecycle_by_raw_id = {
+                str(sample["raw_id"]): str(sample["lifecycle"])
+                for sample in lifecycle_snapshot.samples
+                if sample.get("raw_id") is not None and sample.get("lifecycle") is not None
+            }
             samples: list[RawFailureSample] = []
             for row in conn.execute(
                 """
-                SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error,
-                       (
-                           SELECT a.artifact_kind
-                           FROM raw_artifacts AS a
-                           WHERE a.raw_id = r.raw_id
-                           ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
-                           LIMIT 1
-                       ) AS artifact_kind
+                SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error
                 FROM raw_sessions AS r
-                WHERE parse_error IS NOT NULL OR validation_status = 'failed'
-                ORDER BY acquired_at_ms DESC
+                WHERE (parse_error IS NOT NULL AND TRIM(parse_error) != '') OR validation_status = 'failed'
+                ORDER BY acquired_at_ms DESC, raw_id DESC
                 LIMIT 50
                 """
             ):
@@ -1079,8 +1054,6 @@ def _archive_raw_failure_info(
                 val_status = str(row[3] or "") if row[3] else ""
                 val_err = str(row[4] or "") if row[4] else ""
                 origin = str(row[1]) if row[1] else None
-                artifact_kind = str(row[5]) if row[5] is not None else None
-                lifecycle = _raw_failure_lifecycle(artifact_kind)
                 if "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
                     kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"] = "decode_error"
                 elif val_status == "failed":
@@ -1094,7 +1067,10 @@ def _archive_raw_failure_info(
                         failure_kind=kind,
                         provider_hint=origin,
                         redacted_error=parse_err or val_err,
-                        lifecycle=lifecycle,
+                        lifecycle=cast(
+                            Literal["deferred", "terminal", "unexplained"],
+                            lifecycle_by_raw_id.get(str(row[0]), "unexplained"),
+                        ),
                     )
                 )
         finally:
@@ -1109,22 +1085,14 @@ def _archive_raw_failure_info(
             "quarantined": quarantined,
             "detection_warnings": detection_warnings_count,
             "maintenance_failures": maintenance_count,
-            "deferred_failures": deferred_failures,
-            "terminal_rejections": terminal_rejections,
-            "unexplained_failures": unexplained_failures,
+            "deferred_failures": lifecycle_snapshot.deferred,
+            "terminal_rejections": lifecycle_snapshot.terminal,
+            "unexplained_failures": lifecycle_snapshot.unexplained,
+            "raw_failure_lifecycle_available": True,
             "samples": combined,
         }
     except sqlite3.Error:
         return None
-
-
-def _raw_failure_lifecycle(artifact_kind: str | None) -> Literal["deferred", "terminal", "unexplained"]:
-    """Classify only closed source-tier evidence, never a diagnostic string."""
-    if artifact_kind in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS:
-        return "deferred"
-    if artifact_kind in RAW_FAILURE_TERMINAL_EVIDENCE_KINDS:
-        return "terminal"
-    return "unexplained"
 
 
 def raw_failure_info_for_root(root: Path) -> dict[str, object]:

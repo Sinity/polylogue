@@ -16,8 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from polylogue.core.raw_failure_evidence import (
-    RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
-    RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
+    RawFailureEvidenceKind,
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -60,15 +59,28 @@ class RawFailureLifecycleSnapshot:
         }
 
 
-def _lifecycle(artifact_kind: object, *, validation_failed: bool) -> RawFailureLifecycle:
+def _lifecycle(
+    artifact_kind: object,
+    support_status: object,
+    *,
+    validation_failed: bool,
+) -> RawFailureLifecycle:
+    """Classify an artifact only when its closed evidence is self-consistent."""
     if validation_failed:
         return "unexplained"
-    kind = str(artifact_kind) if artifact_kind is not None else None
-    if kind in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS:
-        return "deferred"
-    if kind in RAW_FAILURE_TERMINAL_EVIDENCE_KINDS:
-        return "terminal"
-    return "unexplained"
+    if artifact_kind is None or support_status is None:
+        return "unexplained"
+    kind = str(artifact_kind)
+    support = str(support_status)
+    try:
+        evidence_kind = RawFailureEvidenceKind(kind)
+    except ValueError:
+        return "unexplained"
+    if evidence_kind.lifecycle not in {"deferred", "terminal"}:
+        return "unexplained"
+    if evidence_kind.support_status.value != support:
+        return "unexplained"
+    return "deferred" if evidence_kind.lifecycle == "deferred" else "terminal"
 
 
 def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> RawFailureLifecycleSnapshot:
@@ -106,21 +118,34 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                        SELECT a.artifact_kind
                        FROM raw_artifacts AS a
                        WHERE a.raw_id = r.raw_id
+                         AND a.origin = r.origin
+                         AND a.source_path = r.source_path
+                         AND a.source_index = r.source_index
                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
                        LIMIT 1
                    ) AS artifact_kind
+                   ,(
+                       SELECT a.support_status
+                       FROM raw_artifacts AS a
+                       WHERE a.raw_id = r.raw_id
+                         AND a.origin = r.origin
+                         AND a.source_path = r.source_path
+                         AND a.source_index = r.source_index
+                       ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
+                       LIMIT 1
+                   ) AS support_status
             FROM raw_sessions AS r
             WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
                OR r.validation_status = 'failed'
-            ORDER BY r.acquired_at_ms, r.raw_id
+            ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
             """
         else:
             failure_query = """
-            SELECT r.raw_id, r.origin, r.validation_status, NULL AS artifact_kind
+            SELECT r.raw_id, r.origin, r.validation_status, NULL AS artifact_kind, NULL AS support_status
             FROM raw_sessions AS r
             WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
                OR r.validation_status = 'failed'
-            ORDER BY r.acquired_at_ms, r.raw_id
+            ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
             """
         failed_rows = conn.execute(failure_query).fetchall()
     except sqlite3.Error as exc:
@@ -136,8 +161,9 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
     for row in failed_rows:
         origin = str(row[1] or "unknown")
         artifact_kind = str(row[3]) if row[3] is not None else None
+        support_status = str(row[4]) if row[4] is not None else None
         validation_failed = str(row[2] or "") == "failed"
-        lifecycle = _lifecycle(artifact_kind, validation_failed=validation_failed)
+        lifecycle = _lifecycle(artifact_kind, support_status, validation_failed=validation_failed)
         counts[lifecycle] += 1
         by_origin[origin] += 1
         by_artifact_kind[artifact_kind or "<none>"] += 1
@@ -147,6 +173,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                     "raw_id": str(row[0]),
                     "origin": origin,
                     "artifact_kind": artifact_kind,
+                    "support_status": support_status,
                     "lifecycle": lifecycle,
                 }
             )
