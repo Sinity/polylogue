@@ -6,6 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from polylogue.archive.message.roles import Role
@@ -26,6 +27,7 @@ from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
+from polylogue.storage.sqlite.queries.attachment_records import search_attachment_identity_evidence_hits
 
 _PAYLOAD = {
     "uuid": "closure-session-1",
@@ -240,6 +242,57 @@ def test_closure_repairs_idless_attachment_by_authoritative_message_position(
             "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
         ).fetchone()
     assert ref == (f"{session_id}:second",)
+
+
+@pytest.mark.asyncio
+async def test_closure_relink_restores_explicit_ids_for_production_reads_and_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attachment = ParsedAttachment(
+        provider_attachment_id="closure-provider-id",
+        provider_file_id="closure-file-id",
+        provider_drive_id="closure-drive-id",
+        message_position=0,
+        name="explicit.txt",
+        mime_type="text/plain",
+        size_bytes=8,
+        source_url="https://example.test/explicit.txt",
+        inline_bytes=b"explicit",
+    )
+    root, session_id, attachment_id, parser = _mapping_fixture(
+        tmp_path,
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="explicit attachment", position=0)],
+        attachment=attachment,
+    )
+
+    _apply_mapping_fixture(monkeypatch, root, parser)
+
+    async with aiosqlite.connect(root / "index.db") as conn:
+        conn.row_factory = aiosqlite.Row
+        native_rows = await (
+            await conn.execute(
+                """
+                SELECT ani.id_kind, ani.native_id
+                FROM attachment_native_ids ani
+                JOIN attachment_refs ar ON ar.ref_id = ani.ref_id
+                WHERE ar.attachment_id = ?
+                ORDER BY ani.id_kind
+                """,
+                (attachment_id,),
+            )
+        ).fetchall()
+        assert [(row["id_kind"], row["native_id"]) for row in native_rows] == [
+            ("attachment", "closure-provider-id"),
+            ("drive", "closure-drive-id"),
+            ("file", "closure-file-id"),
+            ("url", "https://example.test/explicit.txt"),
+        ]
+
+        for native_id in ("closure-provider-id", "closure-file-id", "closure-drive-id"):
+            hits = await search_attachment_identity_evidence_hits(conn, query=native_id, limit=10)
+            assert len(hits) == 1
+            assert hits[0].session_id == session_id
+            assert hits[0].match_surface == "attachment"
 
 
 def test_production_append_attaches_idless_message_at_max_position_plus_one(tmp_path: Path) -> None:

@@ -3383,12 +3383,14 @@ def _write_attachments(
     refresh_attachment_ids: set[str] | None = None,
     preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
 ) -> None:
+    attachments = tuple(attachments)
     by_native_message_id, by_message_position = _attachment_message_id_maps(
         session_id,
         messages,
         position_offset=position_offset,
         duplicate_native_ids=duplicate_native_ids,
     )
+    attachment_positions = _attachment_reference_positions(attachments)
     touched_attachment_ids: set[str] = set()
     for attachment in attachments:
         attachment_id = _attachment_id(session_id, attachment)
@@ -3427,16 +3429,33 @@ def _write_attachments(
                 acquisition_status,
             ),
         )
-        ref_position = _attachment_position(attachment)
+        ref_position = attachment_positions[id(attachment)]
         ref_id = f"{message_id}:attachment:{ref_position}"
         # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
         # explicitly so identifiers from an older projection cannot survive.
+        existing_ref = conn.execute(
+            "SELECT attachment_id FROM attachment_refs WHERE message_id = ? AND position = ?",
+            (message_id, ref_position),
+        ).fetchone()
+        if existing_ref is not None and existing_ref[0] != attachment_id:
+            raise ValueError(
+                "distinct attachments resolved to one reference identity: "
+                f"message_id={message_id!r}, position={ref_position}, "
+                f"existing_attachment_id={existing_ref[0]!r}, incoming_attachment_id={attachment_id!r}"
+            )
         conn.execute("DELETE FROM attachment_native_ids WHERE ref_id = ?", (ref_id,))
         conn.execute(
             """
-            INSERT OR REPLACE INTO attachment_refs (
+            INSERT INTO attachment_refs (
                 attachment_id, session_id, message_id, position, upload_origin, source_url, caption
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id, position) DO UPDATE SET
+                attachment_id = excluded.attachment_id,
+                session_id = excluded.session_id,
+                upload_origin = excluded.upload_origin,
+                source_url = excluded.source_url,
+                caption = excluded.caption
+            WHERE attachment_refs.attachment_id = excluded.attachment_id
             """,
             (
                 attachment_id,
@@ -6837,6 +6856,44 @@ def _attachment_position(attachment: ParsedAttachment) -> int:
     return int.from_bytes(digest.digest()[:4], "big")
 
 
+def _attachment_reference_positions(attachments: Iterable[ParsedAttachment]) -> dict[int, int]:
+    """Return stable per-object reference positions without silent collisions.
+
+    The historical four-byte position remains the primary identity so ordinary
+    archives retain their existing reference ids. When distinct attachment
+    identities share that truncated value, the canonical attachment-id order
+    keeps the first identity at the historical position and assigns the rest a
+    deterministic full-identity-derived position with collision probing. The
+    result is independent of parser/list order and is shared by write and
+    closure relink routes.
+    """
+    attachments_by_identity: dict[str, list[ParsedAttachment]] = {}
+    for attachment in attachments:
+        attachments_by_identity.setdefault(_attachment_id("", attachment), []).append(attachment)
+
+    groups: dict[int, list[tuple[str, list[ParsedAttachment]]]] = defaultdict(list)
+    for attachment_id, equivalent_attachments in attachments_by_identity.items():
+        groups[_attachment_position(equivalent_attachments[0])].append((attachment_id, equivalent_attachments))
+
+    occupied = set(groups)
+    assigned: dict[int, int] = {}
+    for base_position, identity_group in sorted(groups.items()):
+        for collision_index, (attachment_id, equivalent_attachments) in enumerate(sorted(identity_group)):
+            if collision_index == 0:
+                position = base_position
+            else:
+                position = int.from_bytes(
+                    hashlib.sha256(f"attachment-reference:{attachment_id}".encode()).digest()[:8],
+                    "big",
+                ) & ((1 << 63) - 1)
+                while position in occupied:
+                    position = (position + 1) & ((1 << 63) - 1)
+            occupied.add(position)
+            for attachment in equivalent_attachments:
+                assigned[id(attachment)] = position
+    return assigned
+
+
 def _acquire_attachment_blob(
     conn: sqlite3.Connection,
     attachment: ParsedAttachment,
@@ -6862,22 +6919,26 @@ def _attachment_caption(attachment: ParsedAttachment) -> str | None:
     return attachment.caption
 
 
-def _write_attachment_native_ids(conn: sqlite3.Connection, ref_id: str, attachment: ParsedAttachment) -> None:
+def _attachment_native_id_values(attachment: ParsedAttachment) -> tuple[tuple[str, str], ...]:
+    """Return the typed native identities carried by one parsed attachment."""
     native_values = (
         ("attachment", attachment.provider_attachment_id),
         ("file", attachment.provider_file_id),
         ("drive", attachment.provider_drive_id),
         ("url", _attachment_source_url(attachment)),
     )
-    for id_kind, native_id in native_values:
-        if native_id:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
-                VALUES (?, ?, ?)
-                """,
-                (ref_id, id_kind, _sqlite_text(native_id)),
-            )
+    return tuple((id_kind, native_id) for id_kind, native_id in native_values if native_id)
+
+
+def _write_attachment_native_ids(conn: sqlite3.Connection, ref_id: str, attachment: ParsedAttachment) -> None:
+    for id_kind, native_id in _attachment_native_id_values(attachment):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
+            VALUES (?, ?, ?)
+            """,
+            (ref_id, id_kind, _sqlite_text(native_id)),
+        )
 
 
 def _hash_bytes(*parts: str) -> bytes:

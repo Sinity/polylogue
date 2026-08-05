@@ -179,11 +179,12 @@ async def test_orphaned_attachment_is_reachable_via_production_read_path_after_r
     """Anti-vacuity: after relink, the production ``get_attachments`` read
     path -- the one every session/message attachment surface (MCP, CLI
     ``read --view``, transcript view) goes through -- can see it. Reverting
-    the ``INSERT OR REPLACE INTO attachment_refs`` write in
-    ``relink_orphaned_attachments`` makes this assertion fail: the row would
+    the attachment-ref insert in ``relink_orphaned_attachments`` makes this
+    assertion fail: the row would
     still be present in ``attachments`` (visible via a direct SELECT) but
     ``get_attachments`` INNER JOINs ``attachment_refs``, so a still-ref-less
-    row can never be returned.
+    row can never be returned. Reverting the attachment-ref insert or the
+    typed native-id restoration makes this production read assertion fail.
     """
     import aiosqlite
 

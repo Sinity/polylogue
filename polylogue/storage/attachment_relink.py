@@ -46,7 +46,8 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _attachment_caption,
     _attachment_id,
     _attachment_message_id_maps,
-    _attachment_position,
+    _attachment_native_id_values,
+    _attachment_reference_positions,
     _attachment_source_url,
     _duplicate_message_native_ids,
     _message_content_hash,
@@ -80,6 +81,7 @@ class RelinkableAttachment:
     source_url: str | None
     caption: str | None
     raw_id: str
+    native_ids: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,6 +337,7 @@ def _match_session_payload(
     # Attachments are session-level (``ParsedSession.attachments``), each
     # linked to its owning message via ``message_provider_id`` -- mirroring
     # exactly how ``_write_attachments`` consumes them (write.py:_attachment_message_id_maps).
+    attachment_positions = _attachment_reference_positions(payload.parsed_session.attachments)
     for attachment in payload.parsed_session.attachments:
         attachment_id = _attachment_id(session_id, attachment)
         if attachment_id not in pending:
@@ -354,11 +357,12 @@ def _match_session_payload(
             attachment_id=attachment_id,
             session_id=session_id,
             message_id=message_id,
-            position=_attachment_position(attachment),
+            position=attachment_positions[id(attachment)],
             upload_origin=attachment.upload_origin,
             source_url=_attachment_source_url(attachment),
             caption=_attachment_caption(attachment),
             raw_id=raw_id,
+            native_ids=_attachment_native_id_values(attachment),
         )
         pending.discard(attachment_id)
 
@@ -412,7 +416,7 @@ def relink_orphaned_attachments(
             try:
                 index_conn.execute(
                     """
-                    INSERT OR REPLACE INTO attachment_refs (
+                    INSERT INTO attachment_refs (
                         attachment_id, session_id, message_id, position, upload_origin, source_url, caption
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -426,6 +430,14 @@ def relink_orphaned_attachments(
                         item.caption,
                     ),
                 )
+                for id_kind, native_id in item.native_ids:
+                    index_conn.execute(
+                        """
+                        INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
+                        VALUES (?, ?, ?)
+                        """,
+                        (f"{item.message_id}:attachment:{item.position}", id_kind, native_id),
+                    )
                 index_conn.execute(
                     """
                     UPDATE attachments

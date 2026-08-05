@@ -282,6 +282,7 @@ def _plan_digest(plan: BlobReferenceClosurePlan) -> str:
                 "source_url": attachment.source_url,
                 "caption": attachment.caption,
                 "raw_id": attachment.raw_id,
+                "native_ids": attachment.native_ids,
             }
         )
     payload = {
@@ -443,6 +444,18 @@ def reconcile_blob_reference_closure(
                     """,
                     (attachment_candidate.attachment_id,),
                 )
+                for id_kind, native_id in attachment_candidate.native_ids:
+                    index_conn.execute(
+                        """
+                        INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
+                        VALUES (?, ?, ?)
+                        """,
+                        (
+                            f"{attachment_candidate.message_id}:attachment:{attachment_candidate.position}",
+                            id_kind,
+                            native_id,
+                        ),
+                    )
                 exact = index_conn.execute(
                     "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?",
                     (attachment_candidate.attachment_id,),

@@ -4711,6 +4711,62 @@ def test_reingest_restores_attachment_ref_for_reinjected_message(tmp_path: Path)
         conn.close()
 
 
+def test_full_replace_preserves_distinct_attachments_with_colliding_positions(tmp_path: Path) -> None:
+    """A truncated positional hash must not let one attachment replace another.
+
+    These are the certification witness ids: both produce the historical
+    four-byte ``_attachment_position`` value ``0xf5f6e7cd``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        attachments = [
+            ParsedAttachment(
+                provider_attachment_id="cert-collision-50449",
+                message_provider_id="m1",
+                name="first.txt",
+                mime_type="text/plain",
+                size_bytes=5,
+            ),
+            ParsedAttachment(
+                provider_attachment_id="cert-collision-111329",
+                message_provider_id="m1",
+                name="second.txt",
+                mime_type="text/plain",
+                size_bytes=6,
+            ),
+        ]
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="attachment-position-collision",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="two files")],
+            attachments=attachments,
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+
+        def rows() -> list[tuple[str, int]]:
+            return [
+                (str(row["attachment_id"]), int(row["position"]))
+                for row in conn.execute(
+                    "SELECT attachment_id, position FROM attachment_refs WHERE session_id = ? ORDER BY attachment_id",
+                    (session_id,),
+                ).fetchall()
+            ]
+
+        first_rows = rows()
+        assert len(first_rows) == 2
+        assert len({attachment_id for attachment_id, _position in first_rows}) == 2
+        assert len({position for _attachment_id, position in first_rows}) == 2
+
+        write_parsed_session_to_archive(
+            conn,
+            session.model_copy(update={"attachments": list(reversed(attachments))}),
+            force_replace=True,
+        )
+        assert rows() == first_rows
+    finally:
+        conn.close()
+
+
 def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_path: Path) -> None:
     """PR #3413 review (P2 write.py:2334): when a still-present message drops
     a tool-use block that field-path union restores, the message's
