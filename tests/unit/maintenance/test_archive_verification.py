@@ -6,8 +6,10 @@ incoherence it claims to detect -- not merely that *some* check fails.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
+from shutil import copytree
 from typing import Any
 
 import pytest
@@ -18,6 +20,7 @@ from polylogue.maintenance.archive_verification import (
     ARCHIVE_VERIFICATION_CHECKS,
     ARCHIVE_VERIFICATION_WAIVERS,
     REINDEX_ACCEPTANCE_CHECKS,
+    REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
     ArchiveVerificationCheck,
     ArchiveVerificationCheckClass,
     ArchiveVerificationReport,
@@ -26,6 +29,7 @@ from polylogue.maintenance.archive_verification import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.pathology_zoo import build_pathology_zoo, make_pathology_zoo_member_red
 from tests.infra.workload_artifacts import SeededArchiveArtifact
 
 
@@ -1150,6 +1154,14 @@ def test_every_registered_check_has_a_class_tag() -> None:
         assert isinstance(spec.check_class, ArchiveVerificationCheckClass), spec.name
 
 
+def test_pathology_zoo_contract_is_production_owned_and_registered() -> None:
+    """The archive verifier, rather than tests, owns the zoo's enforcement boundary."""
+    from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST
+
+    assert len(PATHOLOGY_ZOO_MANIFEST) == 17
+    assert "pathology-zoo-invariants" in ARCHIVE_VERIFICATION_CHECK_NAMES
+
+
 def test_check_class_is_stamped_onto_every_report_check(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
     by_name = {spec.name: spec for spec in ARCHIVE_VERIFICATION_CHECKS}
@@ -1281,6 +1293,7 @@ RED_TWIN_TESTS: dict[str, str] = {
     "lineage-sanity": "test_dangling_resolved_dst_trips_lineage_sanity",
     "enum-superset-check": "test_missing_enum_value_trips_enum_superset_check",
     "blob-refs-liveness": "test_blob_ref_with_no_referent_trips_blob_refs_liveness",
+    "pathology-zoo-invariants": "test_pathology_zoo_invariants_red_twin",
     "embeddings-refs-liveness": "test_orphaned_embedding_ref_trips_embeddings_refs_liveness",
     "session-lineage-acyclic": "test_parent_session_id_cycle_trips_session_lineage_acyclic",
     "message-count-projection": "test_drifted_message_count_trips_message_count_projection",
@@ -1354,6 +1367,50 @@ def test_corpus_revision_fidelity_red_twin(tmp_path: Path) -> None:
         )
     report = verify_archive(tmp_path, checks=("corpus-revision-fidelity",))
     assert _check(report, "corpus-revision-fidelity").status is OutcomeStatus.ERROR
+
+
+def test_pathology_zoo_invariants_red_twin(tmp_path: Path) -> None:
+    """Every production manifest member makes its registered verifier red when mutated."""
+    from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST
+
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+    green = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
+    assert _check(green, "pathology-zoo-invariants").status is OutcomeStatus.OK
+
+    for member in PATHOLOGY_ZOO_MANIFEST:
+        mutated_root = tmp_path / member.member_id
+        copytree(zoo.archive_root, mutated_root)
+        make_pathology_zoo_member_red(mutated_root, member.member_id)
+
+        red = verify_archive(mutated_root, checks=("pathology-zoo-invariants",))
+        check = _check(red, "pathology-zoo-invariants")
+        assert check.status is OutcomeStatus.ERROR, member.invariant.condition
+        assert member.member_id in check.evidence["failed_member_ids"]
+
+
+def test_pathology_zoo_candidate_check_uses_candidate_index_and_durable_source(tmp_path: Path) -> None:
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(zoo.archive_root / "index.db", candidate)
+
+    green = verify_archive(
+        zoo.archive_root,
+        checks=("pathology-zoo-invariants",),
+        index_path_override=candidate,
+    )
+    assert _check(green, "pathology-zoo-invariants").status is OutcomeStatus.OK
+
+    with _connect(candidate) as conn:
+        conn.execute("UPDATE sessions SET message_count = 47 WHERE session_id = ?", ("codex-session:zoo-whale",))
+
+    red = verify_archive(
+        zoo.archive_root,
+        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        index_path_override=candidate,
+    )
+    check = _check(red, "pathology-zoo-invariants")
+    assert check.status is OutcomeStatus.ERROR
+    assert "whale-component" in check.evidence["failed_member_ids"]
 
 
 def test_every_non_complexity_check_has_a_red_twin_test() -> None:

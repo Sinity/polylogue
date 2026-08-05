@@ -243,6 +243,7 @@ class RebuildIndexRequest:
     raw_ids: tuple[str, ...] = ()
     max_blob_mb: float | None = None
     promote: bool = True
+    candidate_acceptance_checks: tuple[str, ...] | None = None
     operation_id: str | None = None
     raw_batch_size: int = 500
     pass_byte_budget_mb: float | None = None
@@ -652,8 +653,8 @@ async def _rebuild_index_from_source_owned(
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
-        CORPUS_FIDELITY_CHECKS,
         REINDEX_ACCEPTANCE_CHECKS,
+        REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
         verify_archive,
     )
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
@@ -1038,22 +1039,6 @@ async def _rebuild_index_from_source_owned(
             # not a parallel one, so every receipt shape (deferred, paused,
             # replayed) carries the identical key for this phase.
             terminal_timings_s: dict[str, float] = {"selection_s": selection_elapsed_s}
-            terminal_started_at = time.perf_counter()
-            insight_result = repair_session_insights(
-                config,
-                dry_run=False,
-                archive_root_override=generation_root,
-                owned_inactive_generation=(generation.generation_id, generation.owner_id),
-            )
-            terminal_timings_s["terminal.session_insights"] = time.perf_counter() - terminal_started_at
-            logger.info(
-                "rebuild_terminal_stage_complete",
-                generation_id=generation.generation_id,
-                stage="session_insights",
-                elapsed_s=round(terminal_timings_s["terminal.session_insights"], 3),
-            )
-            if not insight_result.success:
-                raise RuntimeError(f"session insight materialization failed: {insight_result.detail}")
             if source_revision_snapshot(root) != generation.source_snapshot:
                 if transaction is not None:
                     transaction = generation_store.checkpoint_transaction(
@@ -1092,7 +1077,11 @@ async def _rebuild_index_from_source_owned(
                 # source tier at the archive root before promotion.
                 verify_archive(
                     root,
-                    checks=CORPUS_FIDELITY_CHECKS,
+                    checks=(
+                        request.candidate_acceptance_checks
+                        if request.candidate_acceptance_checks is not None
+                        else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
+                    ),
                     index_path_override=Path(generation.index_path),
                 ),
             )
@@ -1113,6 +1102,26 @@ async def _rebuild_index_from_source_owned(
                 raise RuntimeError(
                     f"reindex acceptance gate failed for generation {generation.generation_id}: {failing}"
                 )
+            # Derived insight materialization assumes a coherent lineage graph.
+            # Reject a structurally invalid inactive candidate before invoking
+            # it, so the acceptance receipt names the actual bad invariant
+            # instead of reporting an incidental derived-model failure.
+            terminal_started_at = time.perf_counter()
+            insight_result = repair_session_insights(
+                config,
+                dry_run=False,
+                archive_root_override=generation_root,
+                owned_inactive_generation=(generation.generation_id, generation.owner_id),
+            )
+            terminal_timings_s["terminal.session_insights"] = time.perf_counter() - terminal_started_at
+            logger.info(
+                "rebuild_terminal_stage_complete",
+                generation_id=generation.generation_id,
+                stage="session_insights",
+                elapsed_s=round(terminal_timings_s["terminal.session_insights"], 3),
+            )
+            if not insight_result.success:
+                raise RuntimeError(f"session insight materialization failed: {insight_result.detail}")
             terminal_started_at = time.perf_counter()
             readiness = archive_readiness_status(generation_root)
             terminal_timings_s["terminal.readiness"] = time.perf_counter() - terminal_started_at

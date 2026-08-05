@@ -8,8 +8,10 @@ green, while the real blocks read model must report the changed row.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -34,6 +36,7 @@ from polylogue.maintenance.reindex_canary import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
 
 
 def _seed_index(
@@ -312,6 +315,164 @@ def test_selector_refuses_unknown_or_non_replayable_explicit_sessions(tmp_path: 
         select_canary_sessions(index, pathology_session_ids=("codex-session:alpha",))
 
 
+def test_run_reindex_canary_automatically_includes_production_pathology_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real canary runner supplements operator IDs from the production manifest."""
+    from polylogue.maintenance.pathology_zoo import pathology_zoo_session_ids
+
+    current = tmp_path / "current.db"
+    pathology_session_ids = pathology_zoo_session_ids()
+    native_ids = tuple(session_id.split(":", 1)[1] for session_id in pathology_session_ids)
+    origins = tuple(session_id.split(":", 1)[0] for session_id in pathology_session_ids)
+    _seed_index(current, sessions=native_ids, origins=origins)
+    captured: dict[str, tuple[str, ...]] = {}
+
+    class Receipt:
+        def to_dict(self) -> dict[str, object]:
+            return {"status": "replayed"}
+
+    def fake_rebuild(request: object) -> Receipt:
+        captured["raw_ids"] = tuple(request.raw_ids)  # type: ignore[attr-defined]
+        captured["acceptance_checks"] = tuple(request.candidate_acceptance_checks)  # type: ignore[attr-defined]
+        return Receipt()
+
+    def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+        captured["session_ids"] = session_ids
+        return _empty_comparison(current_index, candidate_index, session_ids)
+
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_canary_candidate", lambda *args, **kwargs: current
+    )
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
+
+    result = run_reindex_canary(tmp_path, input_index=current, sessions_per_origin=1, no_promote=True)
+
+    assert result.selection.pathology_session_ids == pathology_session_ids
+    assert set(pathology_session_ids) <= set(captured["session_ids"])
+    assert len(captured["raw_ids"]) == len(pathology_session_ids)
+    assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
+
+
+def test_run_reindex_canary_rejects_input_index_outside_archive_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    external_index = tmp_path / "external" / "index.db"
+    external_index.parent.mkdir()
+    external_index.touch()
+    monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: tmp_path / "configured-live")
+    selector_called = False
+
+    def unexpected_selector(*args: object, **kwargs: object) -> None:
+        nonlocal selector_called
+        selector_called = True
+        raise AssertionError("an outside-root input must be rejected before selection")
+
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.select_canary_sessions", unexpected_selector)
+
+    with pytest.raises(CanarySelectionError, match="inside or bound to the selected archive root"):
+        run_reindex_canary(root, input_index=external_index, no_promote=True)
+    assert not selector_called
+
+
+def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_validator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    external_index_root = tmp_path / "external-index-root"
+    external_index_root.mkdir()
+    external_index = external_index_root / "index.db"
+    shutil.move(root / "index.db", external_index)
+    (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
+
+    result = run_reindex_canary(root, input_index=external_index, sessions_per_origin=1, no_promote=True)
+
+    receipt = result.rebuild_receipt
+    generation = receipt["generation"]
+    assert isinstance(generation, dict)
+    generation_id = generation["generation_id"]
+    owner_id = generation["owner_id"]
+    source_snapshot = generation["source_snapshot"]
+    candidate_path = Path(str(generation["index_path"]))
+    expected_candidate_path = external_index_root / ".index-generations" / str(generation_id) / "index.db"
+    assert result.selection.index_path == external_index
+    assert result.comparison.current_index.resolve() == external_index.resolve()
+    assert result.comparison.candidate_index == candidate_path
+    assert candidate_path == expected_candidate_path.resolve()
+    assert candidate_path.is_file()
+    assert generation["archive_root"] == str(root.resolve())
+    assert generation["state"] == "inactive"
+    assert isinstance(owner_id, str) and owner_id
+    assert isinstance(source_snapshot, str) and source_snapshot
+    assert json.loads((candidate_path.parent / "generation.json").read_text(encoding="utf-8")) == generation
+
+    transaction = receipt["transaction"]
+    operation = receipt["operation"]
+    assert transaction is None
+    assert isinstance(operation, dict)
+    operation_owner = operation["owner"]
+    operation_generation = operation["generation"]
+    operation_delta = operation["delta"]
+    assert isinstance(operation_owner, dict)
+    assert isinstance(operation_generation, dict)
+    assert isinstance(operation_delta, dict)
+    assert operation_owner["generation_owner_id"] == owner_id
+    assert operation_generation == {"generation_id": generation_id, "state": "inactive"}
+    assert operation_delta["transaction_source_snapshot"] == source_snapshot
+    assert operation_delta["source_snapshot_matches"] is True
+
+
+def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current = tmp_path / "current.db"
+    _seed_index(current)
+    selection = CanarySelection(
+        index_path=current,
+        sessions_per_origin=1,
+        selected_session_ids=("codex-session:alpha",),
+        selected_raw_ids=("raw-alpha",),
+        sampled_session_ids=("codex-session:alpha",),
+        pathology_session_ids=(),
+        sample_session_ids=(),
+        origin_counts=(("codex-session", 1),),
+    )
+    captured: dict[str, tuple[str, ...]] = {}
+
+    class Receipt:
+        def to_dict(self) -> dict[str, object]:
+            return {"status": "replayed"}
+
+    def fake_rebuild(request: object) -> Receipt:
+        captured["raw_ids"] = tuple(request.raw_ids)  # type: ignore[attr-defined]
+        captured["acceptance_checks"] = tuple(request.candidate_acceptance_checks)  # type: ignore[attr-defined]
+        return Receipt()
+
+    def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+        captured["session_ids"] = session_ids
+        return _empty_comparison(current_index, candidate_index, session_ids)
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
+    )
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_canary_candidate", lambda *args, **kwargs: current
+    )
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
+
+    result = run_reindex_canary(tmp_path, input_index=current, no_promote=True)
+
+    assert result.selection.pathology_session_ids == ()
+    assert captured["raw_ids"] == ("raw-alpha",)
+    assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
+
+
 def test_run_reindex_canary_compares_its_own_inactive_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -406,6 +567,45 @@ def test_run_reindex_canary_refuses_the_configured_live_archive_root(
     with pytest.raises(CanarySelectionError, match="refuses the configured live archive root"):
         run_reindex_canary(tmp_path, no_promote=True)
     assert not rebuild_called
+
+
+def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrupt inactive lineage candidate is rejected without touching active data."""
+    from tests.infra.pathology_zoo import build_pathology_zoo
+
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+    active_index = zoo.archive_root / "index.db"
+    active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
+    from polylogue.maintenance import rebuild_index
+
+    real_repopulate = rebuild_index._repopulate_bulk_build_derived_state
+
+    def corrupt_candidate_after_replay(candidate_index: Path) -> dict[str, float]:
+        timings = real_repopulate(candidate_index)
+        with sqlite3.connect(candidate_index) as connection:
+            connection.execute(
+                "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+                ("codex-session:zoo-cycle-b", "codex-session:zoo-cycle-a"),
+            )
+            connection.execute(
+                "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+                ("codex-session:zoo-cycle-a", "codex-session:zoo-cycle-b"),
+            )
+            connection.commit()
+        return timings
+
+    def unexpected_insight_repair(*args: object, **kwargs: object) -> object:
+        raise AssertionError("invalid lineage candidate reached session insight materialization")
+
+    monkeypatch.setattr(rebuild_index, "_repopulate_bulk_build_derived_state", corrupt_candidate_after_replay)
+    monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", unexpected_insight_repair)
+
+    with pytest.raises(RuntimeError, match="session-lineage-acyclic"):
+        run_reindex_canary(zoo.archive_root, sessions_per_origin=1, no_promote=True)
+
+    assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
 
 
 def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:

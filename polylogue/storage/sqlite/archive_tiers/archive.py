@@ -1667,8 +1667,13 @@ class ArchiveStore:
                 from polylogue.storage.index_generation import IndexGenerationStore
 
                 generation_id, owner_id = owned_inactive_generation
-                configured_root = configured_archive_root()
-                generation = IndexGenerationStore.for_archive_root(configured_root).load(generation_id)
+                # An inactive generation is opened from its generation root,
+                # while the configured root may intentionally point at a
+                # different live archive. Resolve the owning archive from the
+                # candidate path instead of routing this safety check through
+                # global configuration.
+                generation_archive_root = archive_root.parent.parent
+                generation = IndexGenerationStore.for_archive_root(generation_archive_root).load(generation_id)
                 if (
                     generation.owner_id != owner_id
                     or generation.state != "inactive"
