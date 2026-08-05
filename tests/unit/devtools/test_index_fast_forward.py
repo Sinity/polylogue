@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -10,17 +9,17 @@ import pytest
 
 import devtools.index_fast_forward as forward
 from polylogue.core.enums import Provider
+from polylogue.core.outcomes import OutcomeStatus
+from polylogue.maintenance.archive_verification import (
+    REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+    ArchiveVerificationCheck,
+    ArchiveVerificationReport,
+)
 from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-
-@dataclass(frozen=True)
-class _Report:
-    blocking: bool = False
-    checks: tuple[object, ...] = ()
 
 
 def _archive(tmp_path: Path, *, extra_native_ids: tuple[str, ...] = ()) -> Path:
@@ -97,7 +96,16 @@ def _patch_v37(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _no_corpus_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(forward, "verify_archive", lambda *args, **kwargs: _Report())
+    monkeypatch.setattr(
+        forward,
+        "verify_archive",
+        lambda *args, **kwargs: ArchiveVerificationReport(
+            checks=[
+                ArchiveVerificationCheck(name=name, status=OutcomeStatus.OK)
+                for name in REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
+            ]
+        ),
+    )
 
 
 def _write_raw_backed_session(root: Path, native_id: str) -> None:
@@ -188,8 +196,32 @@ def test_activation_refuses_source_metadata_mutation_after_candidate_gate(
         with sqlite3.connect(root / "source.db") as conn:
             conn.execute("UPDATE raw_sessions SET source_path = 'mutated-after-proof'")
 
-    monkeypatch.setattr(forward, "_require_candidate_corpus_fidelity", mutate_source)
+    monkeypatch.setattr(forward, "_require_candidate_strict_acceptance", mutate_source)
     with pytest.raises(forward.IndexFastForwardError, match="immediately before promotion"):
+        forward.activate_forward(receipt_path=receipt_path)
+
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+
+
+def test_activation_refuses_waived_embedding_orphan_at_strict_candidate_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_v37: None
+) -> None:
+    root = _archive(tmp_path)
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    receipt_path = tmp_path / "transition.json"
+    forward.prepare_forward(archive_root=root, receipt_path=receipt_path)
+
+    with sqlite3.connect(root / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            VALUES ('codex-session:source-backed-session:no-such-message', 'codex-session:source-backed-session', 'codex-session', ?)
+            """,
+            (b"o" * 32,),
+        )
+        conn.commit()
+
+    with pytest.raises(forward.IndexFastForwardError, match=r"embeddings-refs-liveness.*waived by polylogue-feu0"):
         forward.activate_forward(receipt_path=receipt_path)
 
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"

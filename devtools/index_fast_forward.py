@@ -25,7 +25,12 @@ from typing import cast
 
 from devtools.clone_support import reflink_clone
 from polylogue.config import Config
-from polylogue.maintenance.archive_verification import CORPUS_FIDELITY_CHECKS, verify_archive
+from polylogue.maintenance.archive_verification import (
+    REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+    passes_strict_acceptance,
+    strict_acceptance_failures,
+    verify_archive,
+)
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
@@ -475,13 +480,15 @@ def _require_complete_proof(proof: dict[str, object]) -> None:
         raise IndexFastForwardError("source replay proof hashes disagree between clone and canonical replay")
 
 
-def _require_candidate_corpus_fidelity(archive_root: Path, candidate_index: Path) -> None:
-    report = verify_archive(archive_root, checks=CORPUS_FIDELITY_CHECKS, index_path_override=candidate_index)
-    if report.blocking:
-        failing = "; ".join(
-            f"{check.name}: {check.summary}" for check in report.checks if check.status.value == "error"
-        )
-        raise IndexFastForwardError(f"candidate corpus fidelity gate failed: {failing}")
+def _require_candidate_strict_acceptance(archive_root: Path, candidate_index: Path) -> None:
+    report = verify_archive(
+        archive_root,
+        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        index_path_override=candidate_index,
+    )
+    if not passes_strict_acceptance(report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS):
+        failing = "; ".join(strict_acceptance_failures(report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS))
+        raise IndexFastForwardError(f"candidate strict acceptance gate failed: {failing}")
 
 
 def prepare_forward(
@@ -592,7 +599,7 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
         origins = tuple(sorted({str(origin) for entry in manifest for origin in cast(list[str], entry["origins"])}))
         if _fingerprints(origins) != receipt.get("fingerprints"):
             raise IndexFastForwardError("parser/materializer fingerprints changed since preparation")
-        _require_candidate_corpus_fidelity(archive_root, clone)
+        _require_candidate_strict_acceptance(archive_root, clone)
         if source_revision_snapshot(archive_root) != receipt["source_snapshot"]:
             raise IndexFastForwardError("source evidence changed immediately before promotion")
         if _proven_clone_identity(clone) != receipt.get("clone_identity"):

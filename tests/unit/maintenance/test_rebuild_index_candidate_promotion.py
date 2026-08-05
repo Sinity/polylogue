@@ -87,3 +87,60 @@ def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_activ
     assert corruption_calls > 0
     assert store.active_pointer.resolve(strict=True) == active_before
     assert _active_snapshot(root) == snapshot_before
+
+
+def test_waived_embedding_orphan_blocks_full_rebuild_candidate_promotion(
+    tmp_path: Path,
+) -> None:
+    """The full rebuild route must not treat the feu0 waiver as acceptance."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    _seed_raw(root, "active-session", "active generation remains exact")
+
+    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    assert initial.status == "replayed"
+
+    store = IndexGenerationStore.for_archive_root(root)
+    active_before = store.active_pointer.resolve(strict=True)
+    with sqlite3.connect(root / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            VALUES ('codex-session:active-session:no-such-message', 'codex-session:active-session', 'codex-session', ?)
+            """,
+            (b"o" * 32,),
+        )
+        conn.commit()
+    _seed_raw(root, "candidate-session", "candidate must never become active")
+
+    with pytest.raises(RuntimeError, match=r"embeddings-refs-liveness.*waived by polylogue-feu0"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+
+    assert store.active_pointer.resolve(strict=True) == active_before
+
+
+def test_cross_tier_user_reference_blocks_full_rebuild_candidate_promotion(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    _seed_raw(root, "active-session", "active generation remains exact")
+    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    assert initial.status == "replayed"
+
+    store = IndexGenerationStore.for_archive_root(root)
+    active_before = store.active_pointer.resolve(strict=True)
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO assertions(assertion_id, target_ref, kind, body_text, created_at_ms, updated_at_ms)
+            VALUES ('dangling-candidate-assertion', 'session:codex-session:no-such-session', 'note', 'orphaned', 1, 1)
+            """
+        )
+        conn.commit()
+    _seed_raw(root, "candidate-session", "candidate must never become active")
+
+    with pytest.raises(RuntimeError, match=r"user-tier-refs \[error\]"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+
+    assert store.active_pointer.resolve(strict=True) == active_before
