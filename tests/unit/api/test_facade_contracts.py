@@ -1877,7 +1877,7 @@ async def test_get_actions_batch_pairs_session_wide_and_exposes_result_state(tmp
                     ParsedMessage(
                         provider_message_id="m-result-1",
                         role=Role.ASSISTANT,
-                        blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeat", text="unknown")],
+                        blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeat", text=None)],
                     ),
                     ParsedMessage(
                         provider_message_id="m-result-2",
@@ -1929,7 +1929,7 @@ async def test_get_actions_batch_pairs_session_wide_and_exposes_result_state(tmp
 
     by_command = {action.command: action for action in actions}
     assert [(action.command, action.output_text, action.result_state) for action in actions] == [
-        ("first", "unknown", "outcome_unknown"),
+        ("first", None, "outcome_unknown"),
         ("absent", None, "no_result"),
         ("second", "failed", "outcome_error"),
         ("success", "ok", "outcome_success"),
