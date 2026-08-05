@@ -139,10 +139,14 @@ def test_fingerprinted_source_read_error_is_unsafe(
 
     original_read_text = Path.read_text
 
-    def read_text(path: Path, *args: object, **kwargs: object) -> str:
+    def read_text(
+        path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
         if path == source:
             raise OSError("synthetic source read failure")
-        return original_read_text(path, *args, **kwargs)
+        return original_read_text(path, encoding=encoding, errors=errors)
 
     monkeypatch.setattr(Path, "read_text", read_text)
     report = audit_blind_spots(
