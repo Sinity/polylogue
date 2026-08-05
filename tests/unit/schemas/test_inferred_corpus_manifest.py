@@ -8,6 +8,10 @@ from typing import cast
 import pytest
 
 from polylogue.core.json import JSONValue
+from polylogue.schemas.operator.receipt import (
+    SchemaInferenceUnsupportedDecision,
+    build_schema_inference_receipt,
+)
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
@@ -86,6 +90,73 @@ def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path
     write_inferred_corpus_manifest(manifest, path)
 
     assert read_inferred_corpus_manifest(path) == manifest
+
+
+def test_campaign_mode_rejects_catalog_only_manifest(tmp_path: Path) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
+    path = tmp_path / "catalog-only.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    with pytest.raises(ValueError, match="catalog-only"):
+        read_inferred_corpus_manifest(path, campaign_mode=True)
+    with pytest.raises(ValueError, match="handoff"):
+        compile_inferred_corpus_manifest(registry=_registry(), campaign_mode=True)
+
+
+def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decisions() -> None:
+    registry = _registry()
+    provider = registry.list_providers()[0]
+    receipt = build_schema_inference_receipt(
+        registry,
+        provider=provider,
+        gate_receipt_digest="a" * 64,
+    )
+    compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=(provider,),
+        package_receipt=receipt.to_payload(),
+        campaign_mode=True,
+    )
+
+    tampered_gate = replace(receipt, gate_receipt_digest="b" * 64)
+    with pytest.raises(ValueError, match="different gate receipt digests"):
+        tampered_gate.merged_with(receipt)
+
+    tampered_package = replace(
+        receipt,
+        packages=(replace(receipt.packages[0], package_hash="b" * 64), *receipt.packages[1:]),
+    )
+    with pytest.raises(ValueError, match="package/version/element hashes"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=(provider,),
+            package_receipt=tampered_package.to_payload(),
+            campaign_mode=True,
+        )
+
+    package = receipt.packages[0]
+    if receipt.unsupported_decisions:
+        first = receipt.unsupported_decisions[0]
+        changed = replace(first, decision="unsupported" if first.decision == "nonrepresentable" else "nonrepresentable")
+        unsupported = (changed, *receipt.unsupported_decisions[1:])
+    else:
+        changed = SchemaInferenceUnsupportedDecision(
+            provider=provider,
+            package_version=package.package_version,
+            element_kind="tampered-element",
+            decision="nonrepresentable",
+            reason="tampered decision",
+            details=("tampered_construct",),
+        )
+        unsupported = (changed,)
+    tampered_unsupported = replace(receipt, unsupported_decisions=tuple(sorted(unsupported)))
+    with pytest.raises(ValueError, match="unsupported/nonrepresentable decisions"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=(provider,),
+            package_receipt=tampered_unsupported.to_payload(),
+            campaign_mode=True,
+        )
 
 
 @pytest.mark.parametrize("field", ["manifest_id", "payload_sha256"])

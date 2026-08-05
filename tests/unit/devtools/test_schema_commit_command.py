@@ -43,7 +43,10 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
     monkeypatch.setattr(schema_commit, "get_config", fake_get_config)
     monkeypatch.setattr(schema_commit, "commit_provider_schema", fake_commit)
 
-    assert schema_commit.main(["--provider", "chatgpt"]) == 0
+    assert (
+        schema_commit.main(["--provider", "chatgpt", "--schema-inference-gate-receipt", str(tmp_path / "gate.json")])
+        == 0
+    )
 
     assert len(captured) == 1
     request = captured[0]
@@ -52,6 +55,7 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
     assert request.db_path == tmp_path / "archive.db"
     assert request.full_corpus is True
     assert request.dry_run is False
+    assert request.schema_inference_gate_receipt_path == tmp_path / "gate.json"
 
 
 def test_schema_commit_honors_output_dir_and_dry_run_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -73,7 +77,16 @@ def test_schema_commit_honors_output_dir_and_dry_run_overrides(monkeypatch: pyte
     custom_output = tmp_path / "custom-providers"
     assert (
         schema_commit.main(
-            ["--provider", "chatgpt", "--output-dir", str(custom_output), "--dry-run", "--no-full-corpus"]
+            [
+                "--provider",
+                "chatgpt",
+                "--output-dir",
+                str(custom_output),
+                "--dry-run",
+                "--no-full-corpus",
+                "--schema-inference-gate-receipt",
+                str(tmp_path / "gate.json"),
+            ]
         )
         == 0
     )
@@ -102,7 +115,12 @@ def test_schema_commit_json_output_reports_success(
         ),
     )
 
-    assert schema_commit.main(["--provider", "chatgpt", "--json"]) == 0
+    assert (
+        schema_commit.main(
+            ["--provider", "chatgpt", "--json", "--schema-inference-gate-receipt", str(tmp_path / "gate.json")]
+        )
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["provider"] == "chatgpt"
@@ -128,7 +146,18 @@ def test_schema_commit_exits_nonzero_on_generation_failure(
         ),
     )
 
-    assert schema_commit.main(["--provider", "broken-provider", "--json"]) == 1
+    assert (
+        schema_commit.main(
+            [
+                "--provider",
+                "broken-provider",
+                "--json",
+                "--schema-inference-gate-receipt",
+                str(tmp_path / "gate.json"),
+            ]
+        )
+        == 1
+    )
     payload = json.loads(capsys.readouterr().out)
     assert payload["success"] is False
     assert payload["error"] == "No samples"
@@ -154,4 +183,7 @@ def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPat
         ),
     )
 
-    assert schema_commit.main(["--provider", "chatgpt"]) == 1
+    assert (
+        schema_commit.main(["--provider", "chatgpt", "--schema-inference-gate-receipt", str(tmp_path / "gate.json")])
+        == 1
+    )

@@ -19,7 +19,13 @@ from pathlib import Path
 from typing import Literal, TypeAlias, cast
 
 from polylogue.core.json import JSONDocument
+from polylogue.core.sources import origin_from_provider
 from polylogue.scenarios import CorpusSpec
+from polylogue.schemas.operator.receipt import (
+    SchemaInferenceReceipt,
+    SchemaReceiptRegistry,
+    package_hashes_for_registry,
+)
 from polylogue.schemas.operator.registry import RuntimeSchemaRegistryLike
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -398,6 +404,12 @@ class InferredCorpusManifest:
         return manifest
 
 
+def _require_inference_handoff(manifest: InferredCorpusManifest) -> SchemaInferenceReceipt:
+    if manifest.receipt_state == "catalog_only" or manifest.package_receipt is None:
+        raise ValueError("campaign mode requires a persisted schema-inference handoff, not catalog-only data")
+    return SchemaInferenceReceipt.from_payload(manifest.package_receipt)
+
+
 @dataclass(frozen=True)
 class InferredCorpusConvergenceHandoff:
     """Exact executable manifest subset admitted to the convergence loop."""
@@ -552,7 +564,7 @@ def write_inferred_corpus_manifest(manifest: InferredCorpusManifest, path: Path)
     )
 
 
-def read_inferred_corpus_manifest(path: Path) -> InferredCorpusManifest:
+def read_inferred_corpus_manifest(path: Path, *, campaign_mode: bool = False) -> InferredCorpusManifest:
     """Read and validate a persisted manifest before exposing executable rows."""
 
     try:
@@ -565,7 +577,10 @@ def read_inferred_corpus_manifest(path: Path) -> InferredCorpusManifest:
         raise ValueError(f"unable to read inferred corpus manifest {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("inferred corpus manifest root must be a JSON object")
-    return InferredCorpusManifest.from_payload(payload)
+    manifest = InferredCorpusManifest.from_payload(payload)
+    if campaign_mode:
+        _require_inference_handoff(manifest)
+    return manifest
 
 
 def _is_number(value: object) -> bool:
@@ -992,10 +1007,16 @@ def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
 
 def build_inferred_corpus_convergence_handoff(
     manifest: InferredCorpusManifest | Path,
+    *,
+    campaign_mode: bool = False,
 ) -> InferredCorpusConvergenceHandoff:
     """Bind every supported row from memory or persisted disk to convergence."""
 
-    persisted_manifest = read_inferred_corpus_manifest(manifest) if isinstance(manifest, Path) else manifest
+    persisted_manifest = (
+        read_inferred_corpus_manifest(manifest, campaign_mode=campaign_mode) if isinstance(manifest, Path) else manifest
+    )
+    if campaign_mode:
+        _require_inference_handoff(persisted_manifest)
     selections = tuple(_selection_for_entry(entry) for entry in persisted_manifest.entries if entry.spec is not None)
     handoff = InferredCorpusConvergenceHandoff(
         manifest_id=persisted_manifest.manifest_id,
@@ -1053,9 +1074,11 @@ def _stable_seed(key: CorpusManifestKey) -> int:
 
 def _catalog_entries(
     registry: RuntimeSchemaRegistryLike,
+    providers: Sequence[str] | None = None,
 ) -> tuple[tuple[str, SchemaPackageCatalog, SchemaVersionPackage, SchemaElementManifest], ...]:
     result: list[tuple[str, SchemaPackageCatalog, SchemaVersionPackage, SchemaElementManifest]] = []
-    for provider in sorted(set(registry.list_providers())):
+    provider_names = providers if providers is not None else registry.list_providers()
+    for provider in sorted(set(provider_names)):
         catalog = registry.load_package_catalog(provider)
         if catalog is None:
             raise RuntimeError(f"registry provider {provider!r} has no persisted package catalog")
@@ -1149,12 +1172,14 @@ def _compile_entry(
 def assert_inferred_corpus_manifest_complete(
     manifest: InferredCorpusManifest,
     registry: RuntimeSchemaRegistryLike,
+    *,
+    providers: Sequence[str] | None = None,
 ) -> None:
     """Fail loudly when a manifest omits any currently persisted catalog entry."""
 
     expected = {
         CorpusManifestKey(provider, package.version, element.element_kind)
-        for provider, _catalog, package, element in _catalog_entries(registry)
+        for provider, _catalog, package, element in _catalog_entries(registry, providers)
     }
     actual = {
         CorpusManifestKey(entry.key.provider, entry.key.package_version, entry.key.element_kind)
@@ -1173,10 +1198,14 @@ def compile_inferred_corpus_manifest(
     registry: RuntimeSchemaRegistryLike,
     package_receipt: PackageReceipt | None = None,
     wire_formats: Mapping[str, WireFormat] | None = None,
+    providers: Sequence[str] | None = None,
+    campaign_mode: bool = False,
 ) -> InferredCorpusManifest:
     """Compile every persisted package/version/element into a typed manifest."""
 
     formats = PROVIDER_WIRE_FORMATS if wire_formats is None else wire_formats
+    if campaign_mode and package_receipt is None:
+        raise ValueError("campaign mode requires a persisted schema-inference handoff")
     entries = tuple(
         _compile_entry(
             provider=provider,
@@ -1185,13 +1214,70 @@ def compile_inferred_corpus_manifest(
             registry=registry,
             wire_formats=formats,
         )
-        for provider, catalog, package, element in _catalog_entries(registry)
+        for provider, catalog, package, element in _catalog_entries(registry, providers)
     )
     manifest = InferredCorpusManifest(
         entries=tuple(sorted(entries, key=lambda entry: entry.key)), package_receipt=package_receipt
     )
-    assert_inferred_corpus_manifest_complete(manifest, registry)
+    assert_inferred_corpus_manifest_complete(manifest, registry, providers=providers)
+    if campaign_mode:
+        _validate_inference_handoff(manifest, registry, providers=providers)
     return manifest
+
+
+def _validate_inference_handoff(
+    manifest: InferredCorpusManifest,
+    registry: RuntimeSchemaRegistryLike,
+    *,
+    providers: Sequence[str] | None,
+) -> None:
+    receipt = _require_inference_handoff(manifest)
+    expected_packages = package_hashes_for_registry(cast(SchemaReceiptRegistry, registry), providers)
+    if receipt.packages != expected_packages:
+        raise ValueError("schema-inference handoff package/version/element hashes do not match the registry")
+
+    expected_coverage = {
+        (provider, origin_from_provider(provider).value)
+        for provider, _catalog, _package, _element in _catalog_entries(registry, providers)
+    }
+    actual_coverage = {(item.provider, item.origin) for item in receipt.coverage_decisions}
+    if actual_coverage != expected_coverage:
+        raise ValueError(
+            "schema-inference handoff does not contain complete origin/provider coverage: "
+            f"missing={sorted(expected_coverage - actual_coverage)!r}, "
+            f"unexpected={sorted(actual_coverage - expected_coverage)!r}"
+        )
+    if any(item.decision != "committed" for item in receipt.coverage_decisions):
+        raise ValueError("schema-inference handoff contains a non-committed coverage decision")
+
+    expected_unsupported = {
+        (
+            entry.key.provider,
+            entry.key.package_version,
+            entry.key.element_kind,
+            "nonrepresentable" if entry.unsupported.reason == "unsupported_json_schema_construct" else "unsupported",
+            entry.unsupported.reason,
+            entry.unsupported.details,
+        )
+        for entry in manifest.entries
+        if entry.unsupported is not None
+    }
+    actual_unsupported = {
+        (
+            item.provider,
+            item.package_version,
+            item.element_kind,
+            item.decision,
+            item.reason,
+            item.details,
+        )
+        for item in receipt.unsupported_decisions
+    }
+    if actual_unsupported != expected_unsupported:
+        raise ValueError(
+            "schema-inference handoff unsupported/nonrepresentable decisions changed: "
+            f"expected={sorted(expected_unsupported)!r}, actual={sorted(actual_unsupported)!r}"
+        )
 
 
 __all__ = [

@@ -30,15 +30,26 @@ supersedes the other.
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from polylogue.core.json import JSONDocument
+from polylogue.maintenance.schema_inference_gate import RECEIPT_SCHEMA, schema_inference_gate_receipt_digest
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.generation.workflow import generate_all_schemas
 from polylogue.schemas.operator.inference import privacy_config_from_payload
 from polylogue.schemas.operator.models import SchemaCommitRequest, SchemaCommitResult, SchemaVersionCommitReport
+from polylogue.schemas.operator.receipt import (
+    SCHEMA_INFERENCE_HANDOFF_FILENAME,
+    SchemaInferenceReceipt,
+    build_schema_inference_receipt,
+    load_schema_inference_receipt,
+    write_schema_inference_receipt,
+)
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.type_narrowing import added_paths, narrowed_paths
@@ -52,8 +63,25 @@ def _element_schemas_by_kind(
     }
 
 
+def _accepted_gate_receipt_digest(path: Path | None) -> str:
+    if path is None:
+        raise ValueError("schema commit requires an accepted schema-inference gate receipt path")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"unable to read schema-inference gate receipt {path}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("schema-inference gate receipt must be a JSON object")
+    if payload.get("schema") != RECEIPT_SCHEMA:
+        raise ValueError(f"schema-inference gate receipt must use schema {RECEIPT_SCHEMA!r}")
+    if payload.get("verdict") != "PASS":
+        raise ValueError("schema-inference gate receipt must have verdict PASS")
+    return schema_inference_gate_receipt_digest(cast(Mapping[str, object], payload))
+
+
 def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommitResult:
     provider_token = str(canonical_schema_provider(request.provider))
+    gate_receipt_digest = _accepted_gate_receipt_digest(request.schema_inference_gate_receipt_path)
 
     registry_before = SchemaRegistry(storage_root=output_dir)
     catalog_before = registry_before.load_package_catalog(provider_token)
@@ -124,11 +152,30 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
                     )
                 )
 
+    handoff: SchemaInferenceReceipt | None = None
+    handoff_path: Path | None = None
+    if generation.success:
+        registry_after = SchemaRegistry(storage_root=output_dir)
+        provider_handoff = build_schema_inference_receipt(
+            registry_after,
+            provider=provider_token,
+            gate_receipt_digest=gate_receipt_digest,
+        )
+        handoff = provider_handoff
+        existing_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
+        if existing_path.exists():
+            handoff = load_schema_inference_receipt(existing_path).merged_with(provider_handoff)
+        write_schema_inference_receipt(handoff, existing_path)
+        if not request.dry_run:
+            handoff_path = existing_path
+
     return SchemaCommitResult(
         provider=request.provider,
         generation=generation,
         versions=tuple(version_reports),
         dry_run=request.dry_run,
+        handoff=handoff,
+        handoff_path=handoff_path,
     )
 
 
@@ -151,12 +198,16 @@ def commit_provider_schema(request: SchemaCommitRequest) -> SchemaCommitResult:
         committed_provider_dir = request.output_dir / provider_token
         if committed_provider_dir.exists():
             shutil.copytree(committed_provider_dir, staging_root / provider_token)
+        handoff_path = request.output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
+        if handoff_path.exists():
+            shutil.copy2(handoff_path, staging_root / SCHEMA_INFERENCE_HANDOFF_FILENAME)
         result = _commit_into(request, staging_root)
         return SchemaCommitResult(
             provider=result.provider,
             generation=result.generation,
             versions=result.versions,
             dry_run=True,
+            handoff=result.handoff,
         )
 
 

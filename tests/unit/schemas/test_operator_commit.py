@@ -26,13 +26,37 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
+import pytest
+
+from polylogue.maintenance.schema_inference_gate import schema_inference_gate_receipt_digest
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
+from polylogue.schemas.operator.receipt import SCHEMA_INFERENCE_HANDOFF_FILENAME, load_schema_inference_receipt
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
+from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.tooling_models import ClusterManifest
+from tests.infra.inferred_corpus import compile_inferred_corpus_manifest
 
 _PROVIDER = "commit-fixture-k45pq"
+
+
+def _gate_receipt(output_dir: Path) -> Path:
+    path = output_dir.parent / "schema-inference-gate-receipt.json"
+    payload = {"schema": "polylogue.schema-inference-gate.v1", "gate_version": "test", "verdict": "PASS"}
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    assert schema_inference_gate_receipt_digest(payload)
+    return path
+
+
+def _request(output_dir: Path, *, dry_run: bool = False) -> SchemaCommitRequest:
+    return SchemaCommitRequest(
+        provider=_PROVIDER,
+        output_dir=output_dir,
+        full_corpus=True,
+        schema_inference_gate_receipt_path=_gate_receipt(output_dir),
+        dry_run=dry_run,
+    )
 
 
 def _bundle(
@@ -97,9 +121,7 @@ class TestCommitProviderSchemaWritesRealFiles:
         bundle = _bundle(version="v1", schema=schema, sample_count=5)
 
         with patch("polylogue.schemas.generation.workflow._build_provider_bundle", return_value=bundle):
-            commit_result = commit_provider_schema(
-                SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True)
-            )
+            commit_result = commit_provider_schema(_request(output_dir))
 
         assert commit_result.success
         assert not commit_result.dry_run
@@ -115,6 +137,36 @@ class TestCommitProviderSchemaWritesRealFiles:
         assert version_report.sample_count == 5
         assert not version_report.narrowed_paths
         assert "session_document.id" in version_report.added_paths
+        assert commit_result.handoff is not None
+        assert commit_result.handoff_path == output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
+        assert load_schema_inference_receipt(commit_result.handoff_path) == commit_result.handoff
+        assert commit_result.handoff.packages[0].element_hashes[0].element_kind == "session_document"
+
+    def test_commit_to_registry_to_campaign_manifest_is_a_real_route(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "providers"
+        bundle = _bundle(
+            version="v1",
+            schema={"type": "object", "properties": {"id": {"type": "string"}}},
+            sample_count=5,
+        )
+        with patch("polylogue.schemas.generation.workflow._build_provider_bundle", return_value=bundle):
+            result = commit_provider_schema(_request(output_dir))
+
+        assert result.handoff is not None
+        registry = SchemaRegistry(storage_root=output_dir)
+        manifest = compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=(_PROVIDER,),
+            package_receipt=result.handoff.to_payload(),
+            campaign_mode=True,
+        )
+        assert manifest.receipt_state == "package_receipt_attached"
+        assert len(manifest.entries) == 1
+
+    def test_commit_requires_an_accepted_gate_receipt(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "providers"
+        with pytest.raises(ValueError, match="accepted schema-inference gate receipt"):
+            commit_provider_schema(SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True))
 
     def test_regeneration_with_new_field_reports_changed_and_added(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "providers"
@@ -123,7 +175,7 @@ class TestCommitProviderSchemaWritesRealFiles:
             "polylogue.schemas.generation.workflow._build_provider_bundle",
             return_value=_bundle(version="v1", schema=first_schema, sample_count=5),
         ):
-            commit_provider_schema(SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True))
+            commit_provider_schema(_request(output_dir))
 
         second_schema = {
             "type": "object",
@@ -133,9 +185,7 @@ class TestCommitProviderSchemaWritesRealFiles:
             "polylogue.schemas.generation.workflow._build_provider_bundle",
             return_value=_bundle(version="v1", schema=second_schema, sample_count=9),
         ):
-            commit_result = commit_provider_schema(
-                SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True)
-            )
+            commit_result = commit_provider_schema(_request(output_dir))
 
         assert commit_result.success
         version_report = commit_result.versions[0]
@@ -156,10 +206,8 @@ class TestCommitProviderSchemaWritesRealFiles:
             "polylogue.schemas.generation.workflow._build_provider_bundle",
             return_value=_bundle(version="v1", schema=schema, sample_count=5),
         ):
-            commit_provider_schema(SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True))
-            commit_result = commit_provider_schema(
-                SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True)
-            )
+            commit_provider_schema(_request(output_dir))
+            commit_result = commit_provider_schema(_request(output_dir))
 
         assert commit_result.versions[0].status == "unchanged"
 
@@ -177,16 +225,14 @@ class TestCommitProviderSchemaWritesRealFiles:
             "polylogue.schemas.generation.workflow._build_provider_bundle",
             return_value=_bundle(version="v1", schema=wide_schema, sample_count=100),
         ):
-            commit_provider_schema(SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True))
+            commit_provider_schema(_request(output_dir))
 
         thin_schema = {"type": "object", "properties": {"timestamp": {"type": "string"}}}
         with patch(
             "polylogue.schemas.generation.workflow._build_provider_bundle",
             return_value=_bundle(version="v1", schema=thin_schema, sample_count=3),
         ):
-            commit_result = commit_provider_schema(
-                SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True)
-            )
+            commit_result = commit_provider_schema(_request(output_dir))
 
         assert not commit_result.narrowed
         assert not commit_result.versions[0].narrowed_paths
@@ -200,7 +246,7 @@ class TestCommitProviderSchemaWritesRealFiles:
             "polylogue.schemas.generation.workflow._build_provider_bundle",
             return_value=_bundle(version="v1", schema=schema, sample_count=5),
         ):
-            commit_provider_schema(SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True))
+            commit_provider_schema(_request(output_dir))
 
         catalog_before_bytes = (output_dir / _PROVIDER / "catalog.json").read_bytes()
 
@@ -212,9 +258,7 @@ class TestCommitProviderSchemaWritesRealFiles:
             "polylogue.schemas.generation.workflow._build_provider_bundle",
             return_value=_bundle(version="v1", schema=second_schema, sample_count=9),
         ):
-            commit_result = commit_provider_schema(
-                SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True, dry_run=True)
-            )
+            commit_result = commit_provider_schema(_request(output_dir, dry_run=True))
 
         assert commit_result.dry_run
         assert commit_result.versions[0].status == "changed"
@@ -230,7 +274,12 @@ class TestCommitProviderSchemaWritesRealFiles:
         # mocking needed to exercise the failure path for real.
         output_dir = tmp_path / "providers"
         commit_result = commit_provider_schema(
-            SchemaCommitRequest(provider="not-a-real-provider-k45pq", output_dir=output_dir, full_corpus=True)
+            SchemaCommitRequest(
+                provider="not-a-real-provider-k45pq",
+                output_dir=output_dir,
+                full_corpus=True,
+                schema_inference_gate_receipt_path=_gate_receipt(output_dir),
+            )
         )
 
         assert not commit_result.success

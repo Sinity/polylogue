@@ -14,6 +14,7 @@ from polylogue.maintenance.schema_inference_gate import (
     RECEIPT_FILENAME,
     SchemaInferenceGateError,
     run_schema_inference_gate,
+    schema_inference_gate_receipt_digest,
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -462,3 +463,13 @@ def test_untyped_fidelity_residual_fails_even_when_aggregate_looks_green(
     payload = _run(root, tmp_path, ground_truth=ground_truth)
     assert payload["verdict"] == "FAIL"
     assert any("untyped corpus residual" in reason for reason in payload["pass_fail_reasons"])
+
+
+def test_gate_receipt_digest_is_canonical_and_content_bound() -> None:
+    first = {"verdict": "PASS", "schema": "polylogue.schema-inference-gate.v1", "nested": {"b": 2, "a": 1}}
+    reordered = {"nested": {"a": 1, "b": 2}, "schema": first["schema"], "verdict": first["verdict"]}
+
+    assert schema_inference_gate_receipt_digest(first) == schema_inference_gate_receipt_digest(reordered)
+    altered = dict(first)
+    altered["verdict"] = "FAIL"
+    assert schema_inference_gate_receipt_digest(first) != schema_inference_gate_receipt_digest(altered)

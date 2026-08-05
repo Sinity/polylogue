@@ -9,6 +9,7 @@ from typing import TypeAlias, TypeGuard
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec
 from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult
+from polylogue.schemas.operator.receipt import SchemaInferenceReceipt
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.tooling_registry import ClusterManifest, SchemaDiff
 from polylogue.schemas.validation.models import ArtifactCoverageReport
@@ -364,6 +365,7 @@ class SchemaCommitRequest:
     privacy_config: JSONDocument | None = None
     full_corpus: bool = True
     dry_run: bool = False
+    schema_inference_gate_receipt_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -394,6 +396,8 @@ class SchemaCommitResult:
     generation: GenerationResult
     versions: tuple[SchemaVersionCommitReport, ...]
     dry_run: bool
+    handoff: SchemaInferenceReceipt | None = None
+    handoff_path: Path | None = None
 
     @property
     def success(self) -> bool:
@@ -412,4 +416,6 @@ class SchemaCommitResult:
             "dry_run": self.dry_run,
             "sample_count": self.generation.sample_count,
             "versions": [report.to_dict() for report in self.versions],
+            "handoff": self.handoff.to_payload() if self.handoff is not None else None,
+            "handoff_path": str(self.handoff_path) if self.handoff_path is not None else None,
         }

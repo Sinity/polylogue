@@ -57,6 +57,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--privacy-config", type=Path, default=None, help="Path to TOML privacy config overrides.")
     parser.add_argument(
+        "--schema-inference-gate-receipt",
+        type=Path,
+        required=True,
+        help="Accepted PASS receipt from devtools verify schema-inference-gate.",
+    )
+    parser.add_argument(
         "--dry-run",
         "--check",
         dest="dry_run",
@@ -90,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
             privacy_config=privacy_config,
             full_corpus=bool(args.full_corpus),
             dry_run=bool(args.dry_run),
+            schema_inference_gate_receipt_path=args.schema_inference_gate_receipt,
         )
     )
 
@@ -107,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
         mode = "DRY RUN (no files written)" if result.dry_run else f"committed to {output_dir}"
         print(f"schema-commit: {result.provider} -- {mode}")
         print(f"  sample_count={result.generation.sample_count}")
+        if result.handoff is not None:
+            print(f"  handoff_digest={result.handoff.receipt_digest}")
+            if result.handoff_path is not None:
+                print(f"  handoff_path={result.handoff_path}")
         for version_report in result.versions:
             flags = []
             if version_report.narrowed_paths:

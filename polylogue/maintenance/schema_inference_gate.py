@@ -1014,6 +1014,13 @@ def _as_dict(value: object) -> dict[str, object]:
     return cast(dict[str, object], value) if isinstance(value, dict) else {}
 
 
+def schema_inference_gate_receipt_digest(payload: Mapping[str, object]) -> str:
+    """Return the content digest used when a PASS gate is handed off."""
+
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _int_or_zero(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
@@ -1146,5 +1153,6 @@ __all__ = [
     "RECEIPT_SCHEMA",
     "SchemaInferenceGateError",
     "SchemaInferenceGateResult",
+    "schema_inference_gate_receipt_digest",
     "run_schema_inference_gate",
 ]
