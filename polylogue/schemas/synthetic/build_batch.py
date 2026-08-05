@@ -604,8 +604,10 @@ def _pin_session_native_id(provider: str, data: JSONValue, native_id: str) -> JS
         for record in data:
             if not isinstance(record, dict) or record.get("type") != "session_meta":
                 continue
-            payload = record.get("payload")
-            if not isinstance(payload, dict):
+            payload_value = record.get("payload")
+            if isinstance(payload_value, dict):
+                payload: dict[str, JSONValue] = payload_value
+            else:
                 payload = {}
                 record["payload"] = payload
             payload["id"] = native_id
