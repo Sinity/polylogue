@@ -99,6 +99,14 @@ def claude_code_malformed_jsonl_bytes() -> bytes:
     return good_a + b"\n" + bad + b"\n" + good_b + b"\n"
 
 
+def delayed_claude_code_session_jsonl_bytes() -> bytes:
+    """Thirty-two workflow rows precede the recoverable Claude session."""
+    prefix = b"".join(
+        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(32)
+    )
+    return prefix + claude_code_malformed_jsonl_bytes()
+
+
 def codex_malformed_jsonl_bytes() -> bytes:
     """Valid codex JSONL with one record that is not valid JSON.
 
@@ -222,6 +230,43 @@ def test_malformed_jsonl_tolerated_in_validation_off_mode(tmp_path: Path) -> Non
 
     assert result.error is None
     assert result.sessions, "valid surrounding records should still parse"
+
+
+def test_validation_off_fast_path_repairs_session_shaped_workflow_journal(tmp_path: Path) -> None:
+    """Decoded session evidence must outrank a workflow-journal path.
+
+    This drives the validation-off worker route with a journal path containing
+    one recoverable Claude Code session record and one malformed line. It must
+    enter the stream parser, which repairs the usable record, rather than
+    reporting a successful sidecar admission from the path alone.
+    """
+    payload = delayed_claude_code_session_jsonl_bytes()
+    record = _make_raw_record(
+        payload,
+        "claude-code",
+        "/tmp/.claude/projects/project/subagents/workflows/wf-run-1/journal.jsonl",
+    ).model_copy(update={"source_name": "claude-code"})
+
+    result = ingest_record(record, str(tmp_path / "archive"), "off")
+
+    assert result.error is None
+    assert len(result.sessions) == 1
+    assert result.sessions[0].parsed_session.messages[0].text == "hello"
+
+
+def test_validation_advisory_stream_repairs_session_shaped_workflow_journal(tmp_path: Path) -> None:
+    """The normal worker stream plan must classify decoded journal records first."""
+    record = _make_raw_record(
+        delayed_claude_code_session_jsonl_bytes(),
+        "claude-code",
+        "/tmp/.claude/projects/project/subagents/workflows/wf-run-1/journal.jsonl",
+    ).model_copy(update={"source_name": "claude-code"})
+
+    result = ingest_record(record, str(tmp_path / "archive"), "advisory")
+
+    assert result.error is None
+    assert len(result.sessions) == 1
+    assert result.sessions[0].parsed_session.messages[0].text == "hello"
 
 
 # ---------------------------------------------------------------------------

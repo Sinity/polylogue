@@ -12,6 +12,9 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
+from polylogue.archive import zip_admission as zip_admission_module
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
@@ -93,6 +96,44 @@ class TestDiscoverSidecarsFromZip:
             zf.writestr("conversations-000.json", "[]")
 
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path])
+        assert sidecar_data["chatgpt_asset_index"].is_empty is True
+
+    def test_duplicate_sidecar_name_does_not_replace_first_admitted_member(self, tmp_path: Path) -> None:
+        zip_path = tmp_path / "duplicate-sidecar.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("library_files.json", json.dumps([{"file_id": "file-first", "file_name": "first.md"}]))
+            zf.writestr("library_files.json", json.dumps([{"file_id": "file-second", "file_name": "second.md"}]))
+
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path])
+        index = sidecar_data["chatgpt_asset_index"]
+
+        assert index.resolve_dat("file-first") is not None
+        assert index.resolve_dat("file-second") is None
+
+    @pytest.mark.parametrize("limit_name", ["MAX_UNCOMPRESSED_SIZE", "MAX_COMPRESSION_RATIO"])
+    def test_rejects_json_sidecar_before_open_for_size_and_ratio_limits(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        limit_name: str,
+    ) -> None:
+        zip_path = tmp_path / f"rejected-{limit_name}.zip"
+        sidecar_bytes = b'{"file_id":"file-abc","file_name":"notes.md"}' + (b" " * 2048)
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("library_files.json", sidecar_bytes)
+
+        monkeypatch.setattr(zip_admission_module, limit_name, 1)
+        opened: list[object] = []
+
+        def fail_if_open(_archive: zipfile.ZipFile, member: object, *args: object, **kwargs: object) -> object:
+            opened.append(member)
+            raise AssertionError("rejected JSON sidecar must not be opened")
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", fail_if_open)
+
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path])
+
+        assert opened == []
         assert sidecar_data["chatgpt_asset_index"].is_empty is True
 
 
@@ -265,6 +306,72 @@ class TestAcquireDatBlobsFromZip:
 
         store = BlobStore(tmp_path / "blobs")
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+        assert "chatgpt_dat_blobs" not in sidecar_data
+
+    def test_many_dat_members_obey_aggregate_limit_before_second_read(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        zip_path = tmp_path / "aggregate-dat.zip"
+        first_bytes = b"first attachment"
+        second_bytes = b"second attachment"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("file-first.dat", first_bytes)
+            zf.writestr("file-second.dat", second_bytes)
+
+        monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(first_bytes))
+        original_open = zipfile.ZipFile.open
+        opened: list[str] = []
+
+        def track_open(
+            archive: zipfile.ZipFile,
+            member: str | zipfile.ZipInfo,
+        ) -> object:
+            info = member if isinstance(member, zipfile.ZipInfo) else archive.getinfo(member)
+            opened.append(info.filename)
+            return original_open(archive, member)
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", track_open)
+        store = BlobStore(tmp_path / "blobs")
+
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+
+        assert opened == ["file-first.dat"]
+        dat_blobs = sidecar_data.get("chatgpt_dat_blobs")
+        assert dat_blobs is not None
+        assert set(dat_blobs) == {"file-first"}
+
+    def test_json_and_dat_members_share_aggregate_limit_before_dat_read(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        zip_path = tmp_path / "aggregate-cross-type.zip"
+        json_bytes = b"[]"
+        dat_bytes = b"attachment"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("library_files.json", json_bytes)
+            zf.writestr("file-xyz.dat", dat_bytes)
+
+        monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(json_bytes))
+        original_open = zipfile.ZipFile.open
+        opened: list[str] = []
+
+        def track_open(
+            archive: zipfile.ZipFile,
+            member: str | zipfile.ZipInfo,
+        ) -> object:
+            info = member if isinstance(member, zipfile.ZipInfo) else archive.getinfo(member)
+            opened.append(info.filename)
+            return original_open(archive, member)
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", track_open)
+        store = BlobStore(tmp_path / "blobs")
+
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+
+        assert opened == ["library_files.json"]
         assert "chatgpt_dat_blobs" not in sidecar_data
 
 

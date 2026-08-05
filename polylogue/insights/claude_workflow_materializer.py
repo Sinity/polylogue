@@ -17,7 +17,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from polylogue.archive.artifact_taxonomy import classify_artifact
+from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.json import JSONDecodeError
+from polylogue.core.json import loads as json_loads
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.claude_workflow_evidence import (
     ClaudeWorkflowCoordinatorInvocation,
@@ -184,15 +188,15 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
     if not source_db.exists() or not index_db.exists():
         raise FileNotFoundError("Claude Workflow materialization requires source.db and index.db")
 
+    blob_store = BlobStore(archive_root / "blob")
     with sqlite3.connect(source_db) as source_conn:
         source_conn.row_factory = sqlite3.Row
         source_conn.execute("PRAGMA foreign_keys = ON")
-        _ensure_current_artifact_inventory(source_conn)
+        _ensure_current_artifact_inventory(source_conn, blob_store=blob_store)
         source_conn.commit()
         raw_artifacts = _load_current_artifacts(source_conn)
         retained_revisions = _count_retained_revisions(source_conn)
 
-    blob_store = BlobStore(archive_root / "blob")
     parsed: list[ClaudeOrchestrationArtifact] = []
     artifact_evidence: dict[str, ObjectRef] = {}
     for raw in raw_artifacts:
@@ -254,7 +258,26 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
     )
 
 
-def _ensure_current_artifact_inventory(conn: sqlite3.Connection) -> None:
+def _raw_payload_has_session_evidence(blob_store: BlobStore, row: sqlite3.Row) -> bool:
+    """Keep session-shaped JSON payloads out of path-only artifact inventory."""
+    path = Path(str(row["source_path"]))
+    blob_hash = bytes(row["blob_hash"]).hex()
+    if path.suffix.lower() == ".jsonl":
+        try:
+            return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=Provider.CLAUDE_CODE) is not None
+        except (OSError, ValueError):
+            return False
+    if path.suffix.lower() != ".json":
+        return False
+    try:
+        with blob_store.open(blob_hash) as handle:
+            document = json_loads(handle.read())
+    except (OSError, JSONDecodeError, ValueError):
+        return False
+    return classify_artifact(document, provider=Provider.CLAUDE_CODE).parse_as_session
+
+
+def _ensure_current_artifact_inventory(conn: sqlite3.Connection, *, blob_store: BlobStore) -> None:
     """Refresh current pointers for OriginSpec-declared Claude artifacts.
 
     Canonical configured acquisition already writes these rows.  The same
@@ -282,6 +305,12 @@ def _ensure_current_artifact_inventory(conn: sqlite3.Connection) -> None:
     for row in rows:
         rule = artifact_rule_for_path(Provider.CLAUDE_CODE, str(row["source_path"]))
         if rule is None:
+            continue
+        if _raw_payload_has_session_evidence(blob_store, row):
+            conn.execute(
+                "DELETE FROM raw_artifacts WHERE origin = ? AND source_path = ? AND source_index = ?",
+                (row["origin"], row["source_path"], row["source_index"]),
+            )
             continue
         existing = conn.execute(
             """

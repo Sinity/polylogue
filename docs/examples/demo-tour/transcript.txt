@@ -38,7 +38,7 @@ source material:
   blob_sha256: 9fd0dbdb080058070935924534a903cc63a8dcba571f6b2734f92a96576b59d7
 
 completion-claim experiment:
-  sample manifest: 7f18b42c31df24aca4838a456c5ce69930cc610d44c4f5b9cd80541db3bf4141
+  sample manifest: ffbb3c4609d488d25510923848188422bb098ef700fd862e44e4315e14b473f6
   denominator: 2
 unsupported by structural evidence: 0 (0.0%)
 neutral prior outcome: 0 (0.0%)

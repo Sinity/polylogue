@@ -8,10 +8,12 @@ from typing import Any, Literal, cast
 from unittest.mock import Mock, patch
 
 import pytest
+from click.testing import CliRunner
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
+from polylogue.daemon.cli import status_command as daemon_status_command
 from polylogue.daemon.fts_status import FTSReadiness
 from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, HealthTier
 from polylogue.daemon.status import (
@@ -140,6 +142,21 @@ def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
         in lines
     )
     assert "Failing files: 1 shown, 2 omitted" in lines
+
+
+@pytest.mark.parametrize(("payload_ok", "expected_exit"), [(False, 1), (True, 0)])
+def test_daemon_status_command_exit_matches_json_health_claim(payload_ok: bool, expected_exit: int) -> None:
+    """``polylogued status`` exposes JSON and shell status consistently."""
+    with (
+        patch("polylogue.daemon.cli.configure_logging"),
+        patch(
+            "polylogue.daemon.cli._live_daemon_status_payload",
+            return_value={"ok": payload_ok, "raw_failure_lifecycle_state": "healthy" if payload_ok else "blocked"},
+        ),
+    ):
+        result = CliRunner().invoke(daemon_status_command, ["--format", "json"])
+
+    assert result.exit_code == expected_exit
 
 
 def test_status_snapshot_stale_healthy_authority_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1923,6 +1940,45 @@ def test_daemon_status_payload_marks_unproven_raw_frontier_non_green(
     frontier = cast(dict[str, object], payload["raw_frontier_integrity"])
     assert frontier["overall_status"] == overall_status
     assert payload["ok"] is False
+
+
+@pytest.mark.parametrize(
+    ("available", "lifecycle_state", "expected_ok"),
+    [
+        (False, "unavailable", False),
+        (True, "blocked", False),
+        (True, "degraded", False),
+        (True, "healthy", True),
+    ],
+)
+def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
+    available: bool,
+    lifecycle_state: Literal["healthy", "degraded", "blocked", "unavailable"],
+    expected_ok: bool,
+) -> None:
+    """Root status JSON never promotes missing or non-clean source evidence."""
+    status = status_module.DaemonStatus(
+        daemon_liveness=True,
+        raw_failure_lifecycle_available=available,
+        raw_failure_lifecycle_state=lifecycle_state,
+        raw_failure_lifecycle_reason="source evidence test state",
+        raw_frontier_integrity=status_module.RawFrontierIntegrity(overall_status="healthy"),
+        raw_parse_failures=1 if lifecycle_state == "degraded" else 0,
+        raw_unexplained_failures=1 if lifecycle_state == "blocked" else 0,
+    )
+    with (
+        patch("polylogue.daemon.status.build_daemon_status", return_value=status),
+        patch("polylogue.daemon.status._archive_debt_status_summary", return_value={}),
+        patch("polylogue.daemon.events.get_last_ingestion_batch", return_value=None),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    assert payload["ok"] is expected_ok
+    lines = format_daemon_status_lines(payload)
+    if expected_ok:
+        assert not any("Raw failures: unavailable" in line for line in lines)
+    else:
+        assert any("Raw failures:" in line for line in lines)
 
 
 def test_daemon_and_direct_claim_guard_share_mixed_frontier_summary(tmp_path: Path) -> None:

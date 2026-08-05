@@ -34,6 +34,7 @@ import asyncio
 import sqlite3
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -47,7 +48,11 @@ from polylogue.daemon.bulk_rebuild import (
 )
 from polylogue.daemon.parse_prefetch import DaemonParseStage
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+from polylogue.storage.index_generation import (
+    IndexGenerationStore,
+    rebuild_source_evidence_snapshot,
+    source_revision_snapshot,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -103,6 +108,38 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def test_daemon_bulk_rebuild_refuses_unexplained_failures_before_generation_or_page_selection(
+    tmp_path: Path,
+) -> None:
+    """The real daemon route fails before creating state or selecting raws."""
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parse_error
+            ) VALUES ('raw-failed', 'codex-session', 'failed', '/x', ?, 10, 100, 'parser failed')
+            """,
+            (b"f" * 32,),
+        )
+        conn.commit()
+
+    parse_stage = Mock()
+    with pytest.raises(RuntimeError, match="raw failure lifecycle preflight"):
+        asyncio.run(
+            run_daemon_bulk_rebuild_pass(
+                config=_config(tmp_path),
+                parse_stage=parse_stage,  # preflight must make this unreachable
+                batch_size=1,
+                max_payload_bytes=10_000,
+            )
+        )
+
+    assert not (tmp_path / ".index-generations").exists()
+    parse_stage.warm_raw_ids.assert_not_called()
 
 
 def _table_rows(conn: sqlite3.Connection, table: str) -> tuple[tuple[Any, ...], ...]:
@@ -196,6 +233,52 @@ def test_resolve_or_start_creates_resumes_and_retires_transaction(
     assert restarted.generation_id != first.generation_id
     assert restarted.last_raw_id is None
     assert restarted.processed_raw_count == 0
+
+
+def test_daemon_bulk_pass_uses_rebuild_evidence_snapshot_before_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon seed must match the shared engine's immutable evidence hash.
+
+    Anti-vacuity: this seeds a nonempty real ``source.db``, resolves through
+    ``resolve_or_start_daemon_bulk_rebuild_transaction``, and invokes the real
+    ``run_daemon_bulk_rebuild_pass``. That driver calls the shared
+    ``rebuild_index_from_source_sync`` engine, whose pre-replay validation
+    marks an incompatible transaction stale. The full-row hash is deliberately
+    different for this corpus, so removing the daemon seed correction makes
+    this test fail before the first raw is replayed.
+    """
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    _seed_corpus(tmp_path, count=2)
+    evidence_snapshot = rebuild_source_evidence_snapshot(tmp_path)
+    full_row_snapshot = source_revision_snapshot(tmp_path)
+    assert full_row_snapshot != evidence_snapshot
+
+    transaction = resolve_or_start_daemon_bulk_rebuild_transaction(tmp_path)
+    assert transaction.source_snapshot == evidence_snapshot
+    assert transaction.source_snapshot != full_row_snapshot
+
+    stage = DaemonParseStage(max_workers=2, max_inflight_bytes=10_000_000)
+    try:
+        receipt = asyncio.run(
+            run_daemon_bulk_rebuild_pass(
+                config=_config(tmp_path),
+                parse_stage=stage,
+                batch_size=1,
+                max_payload_bytes=10_000_000,
+            )
+        )
+    finally:
+        stage.shutdown()
+
+    assert receipt is not None
+    assert receipt.transaction is not None
+    assert receipt.transaction["status"] != "stale"
+    processed_raw_count = receipt.transaction["processed_raw_count"]
+    assert isinstance(processed_raw_count, int)
+    assert processed_raw_count == 1
+    persisted = IndexGenerationStore.for_archive_root(tmp_path).load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
+    assert persisted.status != "stale"
 
 
 def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(

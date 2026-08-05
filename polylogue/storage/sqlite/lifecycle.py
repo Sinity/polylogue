@@ -873,6 +873,21 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
     ),
     IndexDeltaDeclaration(
         version=65,
+        # polylogue-cuxz.5: `actions.result_state` is a CASE projection over
+        # existing action_pairs columns. Replacing this derived view exposes
+        # no-result separately from an existing result with unknown outcome;
+        # it neither changes parser semantics nor materialized values.
+        classes=(DerivedDeltaClass.VIEW_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v65-actions-result-state",
+                kind=FastForwardOperationKind.REPLACE_VIEW,
+                objects=(("view", "actions"),),
+            ),
+        ),
+    ),
+    IndexDeltaDeclaration(
+        version=66,
         # Native and positional message identities now use disjoint tagged
         # namespaces. Existing generated ids are still valid read values, but
         # every newly written message and dependent reference must be produced

@@ -6,7 +6,11 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
+from polylogue.archive import zip_admission as zip_admission_module
 from polylogue.core.enums import Provider
+from polylogue.sources import import_preflight as import_preflight_module
 from polylogue.sources.import_preflight import ImportPreflightStatus, preflight_import_source
 
 
@@ -107,3 +111,25 @@ def test_preflight_rejects_zip_without_parseable_members(tmp_path: Path) -> None
     assert result.status is ImportPreflightStatus.UNSUPPORTED
     assert result.admissible is False
     assert result.error_code == "unsupported_import_source"
+
+
+def test_preflight_rejects_oversized_json_before_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "oversized-preflight.zip"
+    with zipfile.ZipFile(source, "w") as zf:
+        zf.writestr("conversations.json", b"{}")
+
+    monkeypatch.setattr(zip_admission_module, "MAX_UNCOMPRESSED_SIZE", 1)
+    monkeypatch.setattr(import_preflight_module, "MAX_UNCOMPRESSED_SIZE", 1)
+    opened: list[object] = []
+
+    def fail_if_open(_archive: zipfile.ZipFile, member: object, *args: object, **kwargs: object) -> object:
+        opened.append(member)
+        raise AssertionError("preflight must admit JSON before opening it")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", fail_if_open)
+
+    result = preflight_import_source(source)
+
+    assert opened == []
+    assert result.status is ImportPreflightStatus.MALFORMED
+    assert result.malformed_count == 1

@@ -511,14 +511,92 @@ def test_actions_view_never_cross_pairs_empty_string_tool_id(tmp_path: Path) -> 
     )
 
     actions = conn.execute(
-        "SELECT tool_command, output_text FROM actions WHERE session_id = ? ORDER BY tool_command",
+        "SELECT tool_command, output_text, result_state FROM actions WHERE session_id = ? ORDER BY tool_command",
         (session_id,),
     ).fetchall()
     # Both uses still surface (unpaired) -- none cross-paired with the
     # unrelated empty-string tool_result.
     assert [dict(row) for row in actions] == [
-        {"tool_command": "unlinked-1", "output_text": None},
-        {"tool_command": "unlinked-2", "output_text": None},
+        {"tool_command": "unlinked-1", "output_text": None, "result_state": "no_result"},
+        {"tool_command": "unlinked-2", "output_text": None, "result_state": "no_result"},
+    ]
+
+
+def test_actions_view_distinguishes_result_presence_and_outcome(tmp_path: Path) -> None:
+    """The view reports absence, unknown outcome, and reported outcomes distinctly."""
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+    conn.execute(
+        """
+        INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("result-state-session", "codex-session", "Result states", _HASH, 1_767_225_600_000, 1_767_225_601_000),
+    )
+    session_id = conn.execute(
+        "SELECT session_id FROM sessions WHERE native_id = ?", ("result-state-session",)
+    ).fetchone()["session_id"]
+    conn.execute(
+        """
+        INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash, occurred_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (session_id, "message", 0, "assistant", "message", _HASH, 1_767_225_600_000),
+    )
+    message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[
+        "message_id"
+    ]
+    for position, tool_id, command in (
+        (0, "unknown", "unknown-outcome"),
+        (1, "success", "successful"),
+        (2, "error", "failed"),
+        (3, "absent", "no-result"),
+    ):
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, tool_input)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, position, "tool_use", "shell", tool_id, f'{{"command": "{command}"}}'),
+        )
+    conn.execute(
+        """
+        INSERT INTO blocks (message_id, session_id, position, block_type, text, tool_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (message_id, session_id, 4, "tool_result", "provider omitted outcome", "unknown"),
+    )
+    conn.execute(
+        """
+        INSERT INTO blocks (
+            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (message_id, session_id, 5, "tool_result", "success", "success", 0, 0),
+    )
+    conn.execute(
+        """
+        INSERT INTO blocks (
+            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (message_id, session_id, 6, "tool_result", "error", "error", 1, 2),
+    )
+
+    rows = conn.execute(
+        "SELECT tool_command, tool_result_block_id, result_state FROM actions WHERE session_id = ? ORDER BY tool_command",
+        (session_id,),
+    ).fetchall()
+
+    assert [dict(row) for row in rows] == [
+        {"tool_command": "failed", "tool_result_block_id": f"{message_id}:6", "result_state": "outcome_error"},
+        {"tool_command": "no-result", "tool_result_block_id": None, "result_state": "no_result"},
+        {"tool_command": "successful", "tool_result_block_id": f"{message_id}:5", "result_state": "outcome_success"},
+        {
+            "tool_command": "unknown-outcome",
+            "tool_result_block_id": f"{message_id}:4",
+            "result_state": "outcome_unknown",
+        },
     ]
 
 

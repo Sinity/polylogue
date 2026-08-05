@@ -50,7 +50,7 @@ def _build_payload_envelope(
     raw_content: Path | bytes,
     record: RawSessionRecord,
     *,
-    sqlite_immutable: bool = False,
+    sqlite_immutable: bool = True,
 ) -> RawPayloadEnvelope:
     return build_raw_payload_envelope(
         raw_content,

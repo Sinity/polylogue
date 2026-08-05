@@ -14,21 +14,25 @@ from typing import Any
 
 import pytest
 
+from polylogue.core.enums import ArtifactSupportStatus, Origin
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ARCHIVE_VERIFICATION_CHECK_NAMES,
     ARCHIVE_VERIFICATION_CHECKS,
     ARCHIVE_VERIFICATION_WAIVERS,
     REINDEX_ACCEPTANCE_CHECKS,
+    REINDEX_CANARY_ACCEPTANCE_CHECKS,
     REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
     ArchiveVerificationCheck,
     ArchiveVerificationCheckClass,
     ArchiveVerificationReport,
     ArchiveVerificationWaiver,
+    passes_strict_acceptance,
     verify_archive,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.pathology_zoo import build_pathology_zoo, make_pathology_zoo_member_red
 from tests.infra.workload_artifacts import SeededArchiveArtifact
@@ -118,6 +122,92 @@ def test_coherent_archive_is_all_ok(tmp_path: Path) -> None:
     assert {check.name for check in report.checks} == set(ARCHIVE_VERIFICATION_CHECK_NAMES)
     for check in report.checks:
         assert check.status is OutcomeStatus.OK, f"{check.name}: {check.summary}"
+
+
+def test_raw_failure_lifecycle_accepts_only_typed_deferred_or_terminal_evidence(tmp_path: Path) -> None:
+    """A real source-tier failure without its closed outcome blocks reindex."""
+    _seed_coherent_archive(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parse_error = 'parser failed' WHERE raw_id = 'raw-1'")
+        upsert_raw_artifact(
+            conn,
+            "raw-1",
+            ArchiveSourceArtifact(
+                artifact_id="failure-evidence",
+                origin=Origin.CODEX_SESSION,
+                source_path="/x",
+                source_index=0,
+                artifact_kind="terminal_corrupt_input",
+                classification_reason="terminal_corrupt_input",
+                support_status=ArtifactSupportStatus.DECODE_FAILED,
+                first_observed_at_ms=100,
+                last_observed_at_ms=100,
+            ),
+        )
+        conn.commit()
+
+    typed = verify_archive(tmp_path, checks=("raw-failure-lifecycle",))
+    typed_check = _check(typed, "raw-failure-lifecycle")
+    assert typed_check.status is OutcomeStatus.WARNING
+    assert not typed.blocking
+    assert typed_check.evidence["terminal"] == 1
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM raw_artifacts WHERE raw_id = 'raw-1'")
+        conn.commit()
+
+    untyped = verify_archive(tmp_path, checks=("raw-failure-lifecycle",))
+    untyped_check = _check(untyped, "raw-failure-lifecycle")
+    assert untyped_check.status is OutcomeStatus.ERROR
+    assert untyped.blocking
+    assert untyped_check.evidence["unexplained"] == 1
+
+
+def test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures(tmp_path: Path) -> None:
+    """Validation failures cannot be hidden by a parse-outcome artifact label."""
+    _seed_coherent_archive(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET validation_status = 'failed' WHERE raw_id = 'raw-1'")
+        upsert_raw_artifact(
+            conn,
+            "raw-1",
+            ArchiveSourceArtifact(
+                artifact_id="validation-evidence",
+                origin=Origin.CODEX_SESSION,
+                source_path="/x",
+                source_index=0,
+                artifact_kind="terminal_unsupported_shape",
+                classification_reason="terminal_unsupported_shape",
+                support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                first_observed_at_ms=100,
+                last_observed_at_ms=100,
+            ),
+        )
+        conn.commit()
+
+    report = verify_archive(tmp_path, checks=("raw-failure-lifecycle",))
+    check = _check(report, "raw-failure-lifecycle")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["validation_failures"] == 1
+    assert check.evidence["unexplained"] == 1
+
+
+def test_cross_tier_reindex_profile_includes_raw_failure_lifecycle(tmp_path: Path) -> None:
+    """Candidate acceptance cannot bypass the source failure lifecycle gate."""
+    _seed_coherent_archive(tmp_path)
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(tmp_path / "index.db", candidate)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parse_error = 'parser failed' WHERE raw_id = 'raw-1'")
+        conn.commit()
+
+    report = verify_archive(
+        tmp_path,
+        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        index_path_override=candidate,
+    )
+
+    assert _check(report, "raw-failure-lifecycle").status is OutcomeStatus.ERROR
 
 
 def test_missing_tier_trips_tier_schema_check(tmp_path: Path) -> None:
@@ -1352,12 +1442,58 @@ def test_real_waiver_table_also_waives_embeddings_refs_liveness(tmp_path: Path) 
     assert not report.blocking  # waived by the real table too -- consistent with the mechanism test above
 
 
+def test_strict_acceptance_rejects_warning_skip_and_waived_error() -> None:
+    report = ArchiveVerificationReport(
+        checks=[
+            ArchiveVerificationCheck(name="warning", status=OutcomeStatus.WARNING),
+            ArchiveVerificationCheck(name="skip", status=OutcomeStatus.SKIP),
+            ArchiveVerificationCheck(
+                name="waived-error",
+                status=OutcomeStatus.ERROR,
+                waived_bead_id="polylogue-feu0",
+            ),
+        ]
+    )
+
+    assert not report.blocking
+    assert not passes_strict_acceptance(report)
+
+
+def test_strict_acceptance_requires_every_named_check() -> None:
+    report = ArchiveVerificationReport(checks=[ArchiveVerificationCheck(name="present", status=OutcomeStatus.OK)])
+
+    assert not passes_strict_acceptance(report, required_checks=("present", "missing"))
+
+
 def test_reindex_acceptance_checks_are_all_registered_and_ground_truth_eligible() -> None:
     """Every name in :data:`REINDEX_ACCEPTANCE_CHECKS` must be a real
     registry check, and running it against an index-only root (mirroring a
     real generation directory, which has no source.db/user.db/embeddings.db)
     must never report ``error`` from a missing-tier false positive."""
     assert set(REINDEX_ACCEPTANCE_CHECKS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
+
+
+def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_stays_partial() -> None:
+    expected = {
+        "source-index-coverage",
+        "fts-parity",
+        "lineage-sanity",
+        "session-lineage-acyclic",
+        "blob-refs-liveness",
+        "embeddings-refs-liveness",
+        "user-tier-refs",
+        "session-fingerprint-stamps",
+        "message-count-projection",
+        "excluded-cursor-vocabulary-honesty",
+        "stalled-append-cursor-freshness",
+        "corpus-absences",
+        "corpus-attachment-fidelity",
+        "corpus-revision-fidelity",
+        "pathology-zoo-invariants",
+    }
+
+    assert expected <= set(REINDEX_ACCEPTANCE_CHECKS) | set(REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
+    assert REINDEX_CANARY_ACCEPTANCE_CHECKS == ("pathology-zoo-invariants",)
 
 
 def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path: Path) -> None:
@@ -1409,6 +1545,7 @@ RED_TWIN_TESTS: dict[str, str] = {
     "enum-superset-check": "test_missing_enum_value_trips_enum_superset_check",
     "blob-refs-liveness": "test_blob_ref_with_no_referent_trips_blob_refs_liveness",
     "blob-reference-closure": "test_blob_reference_closure_rejects_acquired_attachment_without_ref",
+    "raw-failure-lifecycle": "test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures",
     "pathology-zoo-invariants": "test_pathology_zoo_invariants_red_twin",
     "embeddings-refs-liveness": "test_orphaned_embedding_ref_trips_embeddings_refs_liveness",
     "session-lineage-acyclic": "test_parent_session_id_cycle_trips_session_lineage_acyclic",

@@ -232,7 +232,7 @@ def test_recover_promotion_without_active_pointer_marks_inactive(tmp_path: Path)
     assert recovered.state == "inactive"
 
 
-def test_recover_promotion_after_pointer_swap_marks_active(tmp_path: Path) -> None:
+def test_recover_promotion_after_pointer_swap_does_not_mark_active(tmp_path: Path) -> None:
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
@@ -242,7 +242,12 @@ def test_recover_promotion_after_pointer_swap_marks_active(tmp_path: Path) -> No
 
     recovered = store.recover_promotion(generation.generation_id)
 
-    assert recovered.state == "active"
+    assert recovered.state == "promoting"
+    assert store.load(generation.generation_id).state == "promoting"
+
+    completed = store.complete_promotion_recovery(generation.generation_id)
+
+    assert completed.state == "active"
 
 
 def test_archive_store_init_failure_releases_writer_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

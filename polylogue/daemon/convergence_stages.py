@@ -938,8 +938,16 @@ def make_raw_parse_recovery_stage(db_path: Path) -> ConvergenceStage:
     def execute(path: Path) -> StageExecuteReturn:
         from polylogue.config import Config
         from polylogue.product.raw_authority import repair_materialization
+        from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
 
         archive_root = db_path.parent
+        if reason := raw_frontier_source_selection_block_reason(archive_root):
+            logger.warning(
+                "raw_parse_recovery: source-selection gate blocked for %s: %s",
+                path,
+                reason,
+            )
+            return False
         config = Config(archive_root=archive_root, render_root=archive_root, sources=[])
         try:
             repair_materialization(

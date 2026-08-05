@@ -34,7 +34,7 @@ Usage: polylogue [OPTIONS] [COMMAND] [ARGS]...
 
   Verbs (actions on matched sessions):
       polylogue find id:abc then read          # exact ref: one selected session
-      polylogue find id:abc then select --json # expose selected-session identity
+      polylogue find id:abc then select --format json # expose selected-session identity
       polylogue find id:abc then read --view messages
       polylogue find id:abc then read --to browser
       polylogue find id:abc then analyze --facets
@@ -252,7 +252,6 @@ Options:
   --include-deferred              With --facets, compute deferred detail
                                   families: repos, roles, material origins,
                                   message types, actions, flags.
-  --json                          Shortcut for --format json.
   -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                   Output format (ndjson = one JSON document
                                   per row, streaming-friendly)
@@ -327,7 +326,6 @@ Projection:
 Delivery and format:
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
-  --json                          Shortcut for --format json.
   -f, --format [csv|html|json|markdown|ndjson|obsidian|org|plaintext|text|yaml]
                                   Output format (where applicable).
   --out PATH                      File path for --to file.
@@ -390,7 +388,6 @@ Options:
   -n, --limit INTEGER RANGE  Max candidate sessions.  [default: 20; x>=1]
   --print [id|title|origin]  Field to print for selected or candidate
                              sessions.  [default: id]
-  --json                     Shortcut for --format json.
   -f, --format [json]
   --help                     Show this message and exit.
 ```
@@ -418,7 +415,6 @@ Options:
   --dry-run        Preview what would be deleted without deleting
   --yes            Confirm the deletion (required for actual deletion)
   --all            Delete all matched sessions (required when multiple match)
-  --json           Shortcut for --format json.
   --format [json]  Output format. JSON emits a MutationResultPayload.
   --help           Show this message and exit.
 ```
@@ -460,7 +456,6 @@ Options:
   --note TEXT       Add or update a note annotation
   --all             Apply to all matched sessions (default: singleton only)
   --first           Apply to the first matched session only
-  --json            Shortcut for --format json.
   --format [json]   Output format. JSON emits a MutationResultPayload.
   --help            Show this message and exit.
 ```
@@ -534,7 +529,6 @@ Options:
                                   Repeatable.
   --limit INTEGER                 Maximum continuation candidates to return.
                                   [default: 10]
-  --json                          Shortcut for --format json.
   -f, --format [json]             Emit the successor ContextImage as JSON
                                   instead of a resume command.
   --help                          Show this message and exit.
