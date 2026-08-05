@@ -398,6 +398,92 @@ def test_full_source_transaction_creation_cleans_candidate_after_post_create_val
     assert not list((root / ".index-rebuild-transactions").glob("*.json"))
 
 
+def test_full_source_snapshot_mismatch_after_transaction_creation_cleans_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh transaction cannot be retained when its source snapshot drifts."""
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    original_create = rebuild_index_module._create_rebuild_transaction_after_receipt_validation
+
+    def create_then_drift(*args: Any, **kwargs: Any) -> IndexRebuildTransaction:
+        transaction = original_create(*args, **kwargs)
+        with sqlite3.connect(root / "source.db") as conn:
+            conn.execute("UPDATE raw_sessions SET source_path = source_path || '.drifted'")
+        write_valid_rebuild_receipt(root, receipt_path)
+        return transaction
+
+    monkeypatch.setattr(rebuild_index_module, "_create_rebuild_transaction_after_receipt_validation", create_then_drift)
+
+    with pytest.raises(RuntimeError, match="source evidence changed since this rebuild was planned"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
+
+    assert _generation_ids(root) == set()
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+
+
+def test_full_source_snapshot_mismatch_after_replay_cleans_transaction_and_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source drift detected after replay uses the fresh-transaction cleanup path."""
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+
+    def planner_boundary_then_drift(*, processed_before: int | None, processed_after: int) -> bool:
+        with sqlite3.connect(root / "source.db") as conn:
+            conn.execute("UPDATE raw_sessions SET source_path = source_path || '.drifted'")
+        write_valid_rebuild_receipt(root, receipt_path)
+        return False
+
+    monkeypatch.setattr(
+        rebuild_index_module,
+        "_should_refresh_generation_planner_statistics",
+        planner_boundary_then_drift,
+    )
+
+    with pytest.raises(RuntimeError, match="source evidence changed during this bounded rebuild pass"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
+
+    assert _generation_ids(root) == set()
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+
+
+def test_full_source_provenance_cleanup_reports_failed_discards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cleanup actuator failure is diagnostic while the mismatch stays primary."""
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    original_create = rebuild_index_module._create_rebuild_transaction_after_receipt_validation
+
+    def create_then_drift(*args: Any, **kwargs: Any) -> IndexRebuildTransaction:
+        transaction = original_create(*args, **kwargs)
+        with sqlite3.connect(root / "source.db") as conn:
+            conn.execute("UPDATE raw_sessions SET source_path = source_path || '.drifted'")
+        write_valid_rebuild_receipt(root, receipt_path)
+        return transaction
+
+    monkeypatch.setattr(rebuild_index_module, "_create_rebuild_transaction_after_receipt_validation", create_then_drift)
+    monkeypatch.setattr(IndexGenerationStore, "discard_if_inactive", lambda *args, **kwargs: False)
+    monkeypatch.setattr(IndexGenerationStore, "discard_transaction", lambda *args, **kwargs: False)
+
+    with pytest.raises(RuntimeError, match="source evidence changed since this rebuild was planned") as raised:
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
+
+    notes = "\n".join(raised.value.__notes__ or ())
+    assert "rebuild transaction cleanup also failed" in notes
+    assert "was not discarded" in notes
+
+
 def test_sharded_graph_drift_blocks_derived_stages_and_cleans_resumable_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

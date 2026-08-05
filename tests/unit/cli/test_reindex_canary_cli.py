@@ -869,6 +869,9 @@ def test_cli_consumption_obeys_rebuild_lease(tmp_path: Path, monkeypatch: pytest
     assert "rebuild lease" in consumed.output or "already held" in consumed.output
 
 
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+
+
 def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> CanaryRunResult:
     selection = CanarySelection(
         index_path=index_path,
@@ -964,6 +967,8 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
 def test_reindex_canary_cli_requires_no_promote(tmp_path: Path) -> None:
     index_path = tmp_path / "index.db"
     index_path.touch()
+    receipt_path = tmp_path / "schema-inference-gate-receipt.json"
+    receipt_path.touch()
     result = CliRunner().invoke(
         cli,
         [
@@ -977,6 +982,8 @@ def test_reindex_canary_cli_requires_no_promote(tmp_path: Path) -> None:
             str(index_path),
             "--report",
             str(tmp_path / "canary.json"),
+            "--schema-inference-receipt",
+            str(receipt_path),
         ],
     )
 
@@ -992,6 +999,8 @@ def test_reindex_canary_cli_rejects_input_outside_archive_root_before_rebuild(
     external_index = tmp_path / "external" / "index.db"
     external_index.parent.mkdir()
     external_index.touch()
+    receipt_path = tmp_path / "schema-inference-gate-receipt.json"
+    receipt_path.touch()
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
     rebuild_called = False
 
@@ -1015,6 +1024,8 @@ def test_reindex_canary_cli_rejects_input_outside_archive_root_before_rebuild(
             str(external_index),
             "--report",
             str(tmp_path / "canary.json"),
+            "--schema-inference-receipt",
+            str(receipt_path),
             "--no-promote",
         ],
     )
@@ -1034,6 +1045,7 @@ def test_reindex_canary_cli_runs_real_no_promote_route(
         connection.execute("UPDATE blocks SET text = 'mutated active projection'")
     index_path = archive_root / "index.db"
     report_path = tmp_path / "reports" / "canary.json"
+    receipt_path = write_valid_rebuild_receipt(archive_root, tmp_path / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live-root"))
 
     result = CliRunner().invoke(
@@ -1051,6 +1063,8 @@ def test_reindex_canary_cli_runs_real_no_promote_route(
             "1000",
             "--report",
             str(report_path),
+            "--schema-inference-receipt",
+            str(receipt_path),
             "--no-promote",
             "--output-format",
             "json",
@@ -1072,6 +1086,8 @@ def test_reindex_canary_cli_refuses_to_write_unclassified_report(
 ) -> None:
     index_path = tmp_path / "index.db"
     index_path.touch()
+    receipt_path = tmp_path / "schema-inference-gate-receipt.json"
+    receipt_path.touch()
     run_result = _run_result(index_path, differences=(object(),))
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", lambda *args, **kwargs: run_result)
     monkeypatch.setattr(
@@ -1092,6 +1108,8 @@ def test_reindex_canary_cli_refuses_to_write_unclassified_report(
             str(index_path),
             "--report",
             str(tmp_path / "canary.json"),
+            "--schema-inference-receipt",
+            str(receipt_path),
             "--no-promote",
         ],
     )
@@ -1644,6 +1662,7 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
     result = run_reindex_canary(
         tmp_path,
         input_index=current_index,
+        schema_inference_receipt_path=tmp_path / "schema-inference-gate-receipt.json",
         sessions_per_origin=2,
         no_promote=True,
     )

@@ -286,12 +286,18 @@ def run_reindex_canary(
     archive_root: Path,
     *,
     input_index: Path | None = None,
+    schema_inference_receipt_path: Path,
     sessions_per_origin: int = 100,
     pathology_session_ids: Iterable[str] = (),
     sample_session_ids: Iterable[str] = (),
     no_promote: bool,
 ) -> CanaryRunResult:
-    """Replay a selected canary through the existing inactive rebuild route."""
+    """Replay a selected canary through the existing inactive rebuild route.
+
+    The schema-inference receipt is explicit because this partial rebuild must
+    consume the same identity-bound source evidence as a full rebuild. The
+    canary never falls back to ambient process configuration.
+    """
 
     if not no_promote:
         raise CanarySelectionError("reindex canary requires --no-promote")
@@ -333,6 +339,7 @@ def run_reindex_canary(
             raw_ids=selection.selected_raw_ids,
             promote=False,
             candidate_acceptance_checks=REINDEX_CANARY_ACCEPTANCE_CHECKS,
+            schema_inference_receipt_path=schema_inference_receipt_path,
         )
     )
     receipt_payload = receipt.to_dict()

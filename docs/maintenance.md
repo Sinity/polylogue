@@ -343,6 +343,7 @@ Read-only with respect to the active index. Before a full reindex, this command 
 polylogue ops maintenance reindex-canary \
   --archive-root /realm/tmp/polylogue-canary-archive \
   --input /realm/tmp/polylogue-canary-archive/index.db \
+  --schema-inference-receipt /realm/tmp/schema-inference-gate-receipt.json \
   --sample 100 \
   --report /realm/tmp/polylogue-reindex-canary.json \
   --no-promote \

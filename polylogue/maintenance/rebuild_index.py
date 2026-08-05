@@ -126,7 +126,9 @@ def _discard_generation_after_provenance_failure(
     errors: list[BaseException] = []
     try:
         provenance.validate_cleanup()
-        generation_store.discard_if_inactive(generation)
+        discarded = generation_store.discard_if_inactive(generation)
+        if not discarded:
+            errors.append(RuntimeError(f"candidate {generation.generation_id} was not discarded"))
     except BaseException as exc:
         errors.append(exc)
     return errors
@@ -149,7 +151,11 @@ def _discard_transaction_after_provenance_failure(
     if generation is not None:
         errors.extend(_discard_generation_after_provenance_failure(generation_store, generation, provenance))
     try:
-        generation_store.discard_transaction(transaction.operation_id)
+        discarded = generation_store.discard_transaction(transaction.operation_id)
+        if not discarded:
+            errors.append(
+                RuntimeError(f"transaction {transaction.operation_id} was not discarded because its record was missing")
+            )
     except BaseException as exc:
         errors.append(exc)
     return errors
@@ -1121,6 +1127,20 @@ async def _rebuild_index_from_source_owned(
                     f"rebuild operation {transaction.operation_id} is {transaction.status}; start a new operation"
                 )
             if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
+                if transaction_created_here:
+                    mismatch = RebuildProvenanceError(
+                        "rebuild schema-inference preflight gate failed: "
+                        "source evidence changed since this rebuild was planned"
+                    )
+                    _cleanup_transaction_after_provenance_failure(
+                        generation_store,
+                        transaction,
+                        root,
+                        request.schema_inference_receipt_path,
+                        consumed_evidence,
+                        mismatch,
+                    )
+                    raise mismatch
                 try:
                     _checkpoint_rebuild_transaction_after_receipt_validation(
                         generation_store,
@@ -1451,6 +1471,12 @@ async def _rebuild_index_from_source_owned(
                 _refresh_generation_planner_statistics(Path(generation.index_path))
             if transaction is not None and selected_raw_ids:
                 if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
+                    if transaction_created_here:
+                        raise RebuildProvenanceError(
+                            "rebuild schema-inference preflight gate failed: "
+                            "source evidence changed during this bounded rebuild pass"
+                        )
+                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                     transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                         generation_store,
                         transaction,
@@ -1560,6 +1586,11 @@ async def _rebuild_index_from_source_owned(
                 source_snapshot=generation.source_snapshot,
             )
             if rebuild_source_evidence_snapshot(root) != generation.source_snapshot:
+                if transaction is not None and transaction_created_here:
+                    raise RebuildProvenanceError(
+                        "rebuild schema-inference preflight gate failed: "
+                        "source evidence changed before terminal readiness"
+                    )
                 if transaction is not None:
                     _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                     transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
@@ -1705,7 +1736,7 @@ async def _rebuild_index_from_source_owned(
                     )
         except Exception as exc:
             fresh_provenance_failure = isinstance(exc, RebuildProvenanceError) and (
-                transaction_created_here or sharded_replay
+                transaction_created_here or transaction is None or sharded_replay
             )
             if fresh_provenance_failure:
                 if transaction is not None:
