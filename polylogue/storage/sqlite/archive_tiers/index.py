@@ -436,7 +436,11 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-xselt: v64 adds parser/lowering semantic stamps consumed by the
 # reindex acceptance gate. They remain nullable only so pre-bootstrap index
 # generations can be opened long enough to undergo the semantic replay.
-INDEX_SCHEMA_VERSION = 64
+# polylogue-cuxz.5: v65 adds the actions view-only ``result_state`` projection.
+# It is computed entirely from existing action_pairs outcome columns, so a
+# fast-forward only replaces the derived view. No raw session is reparsed and
+# no persisted source/blob value changes.
+INDEX_SCHEMA_VERSION = 65
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1025,7 +1029,12 @@ CREATE VIEW IF NOT EXISTS actions AS
 SELECT
     ap.session_id, ap.message_id, ap.tool_use_block_id, ap.tool_name, ap.semantic_type,
     ap.tool_command, ap.tool_path, tu.tool_input AS tool_input, tr.text AS output_text,
-    ap.is_error, ap.exit_code, ap.tool_result_block_id
+    ap.is_error, ap.exit_code, ap.tool_result_block_id,
+    CASE
+        WHEN ap.tool_result_block_id IS NULL THEN 'no_result'
+        WHEN ap.is_error IS NULL AND ap.exit_code IS NULL THEN 'outcome_unknown'
+        ELSE 'outcome_reported'
+    END AS result_state
 FROM action_pairs ap
 JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
 LEFT JOIN blocks tr ON tr.block_id = ap.tool_result_block_id;

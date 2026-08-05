@@ -63,7 +63,7 @@ from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import ActionResultState, Origin, Provider
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.refs import delegation_edge_object_id
@@ -464,26 +464,31 @@ class ArchiveActionQueryRow:
     output_text: str | None
     is_error: int | None
     exit_code: int | None
+    result_state: ActionResultState
     followup_class: str | None
     followup_message_ref: str | None
 
 
 def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
+    tool_result_block_id = str(row["tool_result_block_id"]) if row["tool_result_block_id"] is not None else None
+    is_error = int(row["is_error"]) if row["is_error"] is not None else None
+    exit_code = int(row["exit_code"]) if row["exit_code"] is not None else None
     return ArchiveActionQueryRow(
         session_id=str(row["session_id"]),
         message_id=str(row["message_id"]),
         origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
         tool_use_block_id=str(row["tool_use_block_id"]),
-        tool_result_block_id=str(row["tool_result_block_id"]) if row["tool_result_block_id"] is not None else None,
+        tool_result_block_id=tool_result_block_id,
         tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
         semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
         tool_command=str(row["tool_command"]) if row["tool_command"] is not None else None,
         tool_path=str(row["tool_path"]) if row["tool_path"] is not None else None,
         occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
         output_text=str(row["output_text"]) if row["output_text"] is not None else None,
-        is_error=int(row["is_error"]) if row["is_error"] is not None else None,
-        exit_code=int(row["exit_code"]) if row["exit_code"] is not None else None,
+        is_error=is_error,
+        exit_code=exit_code,
+        result_state=ActionResultState(str(row["result_state"])),
         followup_class=str(row["followup_class"]) if row["followup_class"] is not None else None,
         followup_message_ref=str(row["followup_message_ref"]) if row["followup_message_ref"] is not None else None,
     )
@@ -1318,6 +1323,7 @@ _ARCHIVE_ACTION_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("output_text", "a.output_text"),
     ("is_error", "a.is_error"),
     ("exit_code", "a.exit_code"),
+    ("result_state", "a.result_state"),
     ("followup_class", "a.followup_class"),
     ("followup_message_ref", "a.followup_message_ref"),
 )
@@ -7723,15 +7729,22 @@ class ArchiveStore:
                 r.search_text AS output_text,
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code,
+                CASE
+                    WHEN r.block_id IS NULL THEN 'no_result'
+                    WHEN r.tool_result_is_error IS NULL AND r.tool_result_exit_code IS NULL THEN 'outcome_unknown'
+                    ELSE 'outcome_reported'
+                END AS result_state,
                 NULL AS followup_class,
                 NULL AS followup_message_ref
             FROM blocks u INDEXED BY idx_blocks_session_position
             JOIN sessions s ON s.session_id = u.session_id
             JOIN messages m ON m.message_id = u.message_id
             LEFT JOIN blocks r INDEXED BY idx_blocks_tool_id
-              ON r.tool_id = u.tool_id
+             ON r.tool_id = u.tool_id
              AND r.session_id = u.session_id
              AND r.block_type = 'tool_result'
+             AND r.tool_id IS NOT NULL
+             AND r.tool_id != ''
             WHERE u.session_id IN ({placeholders})
               AND u.block_type = 'tool_use'
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction},

@@ -54,6 +54,7 @@ export type ActionQueryRowPayload = {
   readonly occurred_at_ms?: number | null;
   readonly origin: string;
   readonly output_text?: string | null;
+  readonly result_state: ActionResultState;
   readonly semantic_type?: string | null;
   readonly session_id: string;
   readonly title?: string | null;
@@ -64,6 +65,8 @@ export type ActionQueryRowPayload = {
   readonly tool_use_block_id: string;
   readonly unit?: "action";
 };
+
+export type ActionResultState = "no_result" | "outcome_unknown" | "outcome_reported";
 
 export type ActionSafetyPayload = {
   readonly confirmation_command?: string | null;

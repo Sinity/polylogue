@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from polylogue.core.enums import ActionResultState
 from polylogue.surfaces.payloads import (
     ActionQueryRowPayload,
     ContextSnapshotQueryRowPayload,
@@ -49,6 +50,7 @@ def test_project_query_unit_rows_to_otel_preserves_polylogue_refs() -> None:
                 tool_command="pytest tests/unit/telemetry",
                 tool_path="/realm/project/polylogue/secrets.txt",
                 output_text="sensitive terminal output",
+                result_state=ActionResultState.OUTCOME_REPORTED,
             ),
             ObservedEventQueryRowPayload(
                 event_ref="observed-event:codex-session:root:permission",
@@ -136,6 +138,7 @@ def test_absolute_tool_paths_and_embedded_command_paths_are_redacted() -> None:
             tool_command="cat /home/alice/secret.txt",
             tool_path="/tmp/secret.txt",
             output_text=None,
+            result_state=ActionResultState.NO_RESULT,
         ),
         ActionQueryRowPayload(
             session_id="codex-session:root",
@@ -148,6 +151,7 @@ def test_absolute_tool_paths_and_embedded_command_paths_are_redacted() -> None:
             tool_command="pytest /workspace/polylogue/tests",
             tool_path="/workspace/polylogue/file.py",
             output_text=None,
+            result_state=ActionResultState.NO_RESULT,
         ),
         ActionQueryRowPayload(
             session_id="codex-session:root",
@@ -159,6 +163,7 @@ def test_absolute_tool_paths_and_embedded_command_paths_are_redacted() -> None:
             semantic_type="file_read",
             tool_path="/mnt/data/export.json",
             output_text=None,
+            result_state=ActionResultState.NO_RESULT,
         ),
     )
 
