@@ -172,6 +172,10 @@ _SUPPORTED_SYNTHETIC_ANNOTATIONS = frozenset(
         "x-polylogue-values",
     }
 )
+_SUPPORTED_FORMAT_VALUES = frozenset(
+    {"uuid4", "uuid", "hex-id", "iso8601", "unix-epoch", "unix-epoch-str", "url", "email", "mime-type", "base64"}
+)
+_SUPPORTED_SEMANTIC_ROLE_VALUES = frozenset({"message_role", "message_body", "message_timestamp", "session_title"})
 
 
 @dataclass(frozen=True, order=True)
@@ -301,10 +305,119 @@ class InferredCorpusConvergenceHandoff:
     specs: tuple[CorpusSpec, ...]
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _valid_pair(value: object, *, integral: bool = False, nonnegative: bool = False) -> bool:
+    if not isinstance(value, list) or len(value) < 2:
+        return False
+    first, second = value[:2]
+    if not _is_number(first) or not _is_number(second):
+        return False
+    if integral and (not isinstance(first, int) or not isinstance(second, int)):
+        return False
+    if nonnegative and (first < 0 or second < 0):
+        return False
+    return first <= second
+
+
+def _valid_observed_distribution(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    for distribution in value.values():
+        if not isinstance(distribution, Mapping):
+            continue
+        histogram = distribution.get("histogram")
+        log_base = distribution.get("log_base")
+        if (
+            isinstance(histogram, list)
+            and histogram
+            and _is_number(log_base)
+            and log_base > 1
+            and all(
+                isinstance(bucket, list)
+                and len(bucket) == 2
+                and isinstance(bucket[0], int)
+                and isinstance(bucket[1], int)
+                and bucket[1] > 0
+                for bucket in histogram
+            )
+        ):
+            return True
+    return False
+
+
+def _valid_relation_records(value: object, required: tuple[str, ...]) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(
+            isinstance(record, Mapping)
+            and all(isinstance(record.get(field), str) and record[field].strip() for field in required)
+            for record in value
+        )
+    )
+
+
+def _synthetic_annotation_is_enforced(key: str, value: object) -> bool:
+    """Return whether the production generator or solver enforces this payload."""
+
+    if key not in _SUPPORTED_SYNTHETIC_ANNOTATIONS:
+        return False
+    if key == "x-polylogue-format":
+        return isinstance(value, str) and value in _SUPPORTED_FORMAT_VALUES
+    if key == "x-polylogue-semantic-role":
+        return isinstance(value, str) and value in _SUPPORTED_SEMANTIC_ROLE_VALUES
+    if key == "x-polylogue-frequency":
+        return _is_number(value) and 0 <= value <= 1
+    if key == "x-polylogue-multiline":
+        return isinstance(value, bool)
+    if key == "x-polylogue-values":
+        return isinstance(value, list) and bool(value) and all(not isinstance(item, (list, Mapping)) for item in value)
+    if key == "x-polylogue-range":
+        return _valid_pair(value)
+    if key == "x-polylogue-array-lengths":
+        return _valid_pair(value, integral=True, nonnegative=True)
+    if key == "x-polylogue-observed-distribution":
+        return _valid_observed_distribution(value)
+    if key == "x-polylogue-foreign-keys":
+        return _valid_relation_records(value, ("source", "target"))
+    if key == "x-polylogue-time-deltas":
+        return _valid_relation_records(value, ("field_a", "field_b")) and all(
+            _is_number(record.get(field))
+            for record in value
+            if isinstance(record, Mapping)
+            for field in ("min_delta", "max_delta", "avg_delta")
+        )
+    if key == "x-polylogue-mutually-exclusive":
+        return _valid_relation_records(value, ("parent",)) and all(
+            isinstance(record.get("fields"), list)
+            and len(record["fields"]) >= 2
+            and all(isinstance(field, str) and field for field in record["fields"])
+            for record in value
+            if isinstance(record, Mapping)
+        )
+    if key == "x-polylogue-string-lengths":
+        return _valid_relation_records(value, ("path",)) and all(
+            _valid_pair([record.get("min"), record.get("max")], integral=True, nonnegative=True)
+            and _is_number(record.get("avg"))
+            and _is_number(record.get("stddev"))
+            for record in value
+            if isinstance(record, Mapping)
+        )
+    raise AssertionError(f"missing annotation validator for {key}")
+
+
 def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
     """Census every schema-scope keyword without treating property names as keywords."""
 
     found: dict[str, ConstructSupportState] = {}
+
+    def record_support(key: str, state: ConstructSupportState) -> None:
+        if found.get(key) == "unsupported":
+            return
+        found[key] = state
 
     def visit(node: object) -> None:
         if not isinstance(node, Mapping):
@@ -313,14 +426,14 @@ def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
             if not isinstance(key, str):
                 continue
             if key.startswith("x-"):
-                found[key] = "supported" if key in _SUPPORTED_SYNTHETIC_ANNOTATIONS else "unsupported"
+                record_support(key, "supported" if _synthetic_annotation_is_enforced(key, value) else "unsupported")
                 continue
             if key in _SUPPORTED_SCHEMA_CONSTRUCTS:
-                found[key] = "supported"
+                record_support(key, "supported")
             elif key in _STANDARD_SCHEMA_KEYWORDS:
-                found[key] = "unsupported"
+                record_support(key, "unsupported")
             else:
-                found[key] = "unsupported"
+                record_support(key, "unsupported")
 
             if key in _SCHEMA_MAPPING_KEYWORDS and isinstance(value, Mapping):
                 if key in {"$defs", "dependentSchemas", "dependencies", "patternProperties", "properties"}:
