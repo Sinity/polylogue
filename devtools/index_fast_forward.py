@@ -26,8 +26,8 @@ from typing import cast
 from devtools.clone_support import reflink_clone
 from polylogue.config import Config
 from polylogue.maintenance.archive_verification import (
+    REINDEX_ACCEPTANCE_CHECKS,
     REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
-    passes_strict_acceptance,
     strict_acceptance_failures,
     verify_archive,
 )
@@ -481,13 +481,21 @@ def _require_complete_proof(proof: dict[str, object]) -> None:
 
 
 def _require_candidate_strict_acceptance(archive_root: Path, candidate_index: Path) -> None:
-    report = verify_archive(
+    index_only_report = verify_archive(
+        candidate_index.parent,
+        checks=REINDEX_ACCEPTANCE_CHECKS,
+    )
+    cross_tier_report = verify_archive(
         archive_root,
         checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
         index_path_override=candidate_index,
     )
-    if not passes_strict_acceptance(report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS):
-        failing = "; ".join(strict_acceptance_failures(report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS))
+    failures = (
+        *strict_acceptance_failures(index_only_report, required_checks=REINDEX_ACCEPTANCE_CHECKS),
+        *strict_acceptance_failures(cross_tier_report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS),
+    )
+    if failures:
+        failing = "; ".join(failures)
         raise IndexFastForwardError(f"candidate strict acceptance gate failed: {failing}")
 
 
