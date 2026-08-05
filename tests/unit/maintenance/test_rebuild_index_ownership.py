@@ -71,6 +71,33 @@ def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_c
     assert not (root / ".index-generations").exists()
 
 
+def test_rebuild_preflight_exposes_unreconciled_source_ref_types(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, size_bytes, acquired_at_ms)
+            VALUES (?, ?, ?, 10, 100)
+            """,
+            (
+                (b"r" * 32, "raw-gone", "raw_payload"),
+                (b"a" * 32, "attachment-gone", "attachment"),
+                (b"h" * 32, "hook-gone", "hook_payload"),
+            ),
+        )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+
+    message = str(exc_info.value)
+    assert "reindex source preflight gate failed: blob-refs-liveness" in message
+    assert "raw_payload orphans=1" in message
+    assert "attachment orphans=1" in message
+    assert "hook_payload orphans=1" in message
+    assert not (root / ".index-generations").exists()
+
+
 def test_rebuild_releases_ownership_lock_after_completion(tmp_path: Path) -> None:
     """The ownership lock must not be left held after a rebuild returns, so a
     second rebuild (or any other maintenance/campaign writer) can acquire it.
