@@ -50,9 +50,10 @@ from polylogue.core.refs import (
     delegation_subtree_object_id,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.block_anchor import format_block_anchor
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.frozen_clock import FrozenClock
@@ -267,6 +268,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "join_typed_annotations",
         "neighbor_candidate_payloads",
         "resolve_ref",
+        "regenerate_private_fable_packet",
         "export_otel",
         "session_correlation_payload",
         # Pathology and portfolio read methods added in recent PRs.
@@ -1951,6 +1953,78 @@ def test_session_not_found_is_typed_polylogue_error() -> None:
     assert SessionNotFoundError.http_status_code == 404
 
 
+async def test_regenerate_private_fable_packet_is_an_archive_backed_facade_route(tmp_path: Path) -> None:
+    """The public facade reaches cold regeneration and preserves fail-closed status."""
+    archive = _archive(tmp_path)
+    try:
+        packet = await archive.regenerate_private_fable_packet(seed="facade-test", requested_size=1)
+        assert packet.status == "not_supported"
+        assert "empty_deterministic_sample" in packet.not_supported_reasons
+    finally:
+        await archive.close()
+
+
+async def test_regenerate_private_fable_packet_reads_real_delegations_and_labels(tmp_path: Path) -> None:
+    """The facade adapter composes canonical delegation rows with durable labels.
+
+    Anti-vacuity: this seeds the same delegation writer used by the archive
+    route, persists the built-in schema and one active evidence-backed label,
+    then asserts a complete packet. Removing either the delegation query,
+    durable schema read, or assertion query changes the result to
+    ``not_supported`` or an empty population.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="fable-facade-parent-v1", with_dispatch=True)
+            )
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="fable-facade-child-v1",
+                    title="Fable facade child fixture",
+                    messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
+                    parent_session_provider_id="fable-facade-parent-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+
+        initialize_archive_database(archive.config.archive_root / "user.db", ArchiveTier.USER)
+        instruction_block_id = f"{parent_session_id}:dispatch:0"
+        with sqlite3.connect(archive.config.archive_root / "user.db") as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="fable-facade-label-v1",
+                target_ref=f"delegation:{instruction_block_id}",
+                kind=AssertionKind.ANNOTATION,
+                scope_ref="annotation-batch:fable-facade-batch-v1",
+                value={
+                    "_schema": "delegation.discourse@v1",
+                    "directive_mode": "imperative",
+                    "applicable": True,
+                    "confidence": 0.95,
+                },
+                evidence_refs=(f"block:{instruction_block_id}",),
+                status=AssertionStatus.ACTIVE,
+                author_kind="user",
+                now_ms=1,
+            )
+
+        packet = await archive.regenerate_private_fable_packet(seed="facade-test", requested_size=1)
+        assert packet.status == "complete"
+        assert packet.population_count == 1
+        assert packet.action_observed_count == 1
+        assert packet.annotation_schema_id == "delegation.discourse@v1"
+        assert packet.selected_refs == (f"delegation:{instruction_block_id}",)
+        assert packet.annotation_batches == ("fable-facade-batch-v1",)
+        assert {(item.field, item.value, item.count) for item in packet.distributions} == {
+            ("directive_mode", "imperative", 1)
+        }
+    finally:
+        await archive.close()
+
+
 @pytest.mark.parametrize(
     "method_name",
     sorted(MUTATION_BY_ID_RAISES_METHODS),
@@ -2809,6 +2883,18 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         assert evidence_block_payload.resolved is True
         assert evidence_block_payload.payload_kind == "block"
         assert evidence_block_payload.evidence_refs == (f"{session_id}::{message_id}::0",)
+
+        with ArchiveStore.open_existing(archive.config.archive_root) as archive_db:
+            content_hash = archive_db._conn.execute(
+                "SELECT content_hash FROM blocks WHERE message_id = ? AND position = 0", (message_id,)
+            ).fetchone()[0]
+        anchor_ref = format_block_anchor(session_id, message_id, bytes(content_hash).hex())
+        anchor_payload = await archive.resolve_ref(anchor_ref)
+        assert anchor_payload.resolved is True
+        assert anchor_payload.payload_kind == "block-anchor"
+        assert anchor_payload.payload is not None
+        assert anchor_payload.payload["state"] == "ok"
+        assert anchor_payload.payload["anchor"] == anchor_ref
 
         runtime_payload = await archive.resolve_ref(f"context-snapshot:{session_id}:session_start")
         assert runtime_payload.resolved is True
