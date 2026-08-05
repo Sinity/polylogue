@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from concurrent.futures import as_completed
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,8 +19,15 @@ from polylogue.pipeline.services.process_pool import (
     process_pool_executor,
     resolve_archive_ingest_dispatch,
 )
+from polylogue.sources.decoder_zip import (
+    ZipBombError,
+    ZipEntryValidator,
+    open_bounded_zip_entry,
+    zip_entry_session_artifact,
+)
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import (
+    has_decoded_session_evidence,
     iter_antigravity_language_server_sessions,
     iter_source_sessions_with_raw,
     parse_one_source_path,
@@ -412,9 +420,22 @@ def _admit_non_session_origin_artifacts(
         )
         if walk is None:
             continue
+        provider = Provider.from_string(source.name)
         for candidate, _mtime in walk.paths_to_process:
+            if candidate.suffix.lower() == ".zip":
+                admitted += _admit_non_session_zip_artifacts(
+                    archive,
+                    candidate,
+                    provider=provider,
+                    acquired_at_ms=acquired_at_ms,
+                )
+                continue
             classification = classify_artifact_path(candidate, provider=source.name)
-            if classification is None or classification.parse_as_session:
+            if (
+                classification is None
+                or classification.parse_as_session
+                or has_decoded_session_evidence(candidate, provider=provider)
+            ):
                 continue
             try:
                 # polylogue-1fijp arm 4: route through the raw-admission
@@ -433,6 +454,51 @@ def _admit_non_session_origin_artifacts(
                 admitted += 1
             except Exception:
                 logger.error("Failed to admit configured Claude fact artifact %s", candidate, exc_info=True)
+    return admitted
+
+
+def _admit_non_session_zip_artifacts(
+    archive: ArchiveStore,
+    zip_path: Path,
+    *,
+    provider: Provider,
+    acquired_at_ms: int,
+) -> int:
+    """Retain ZIP member artifacts only after decoded JSONL evidence is absent."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    admitted = 0
+    publisher = ArchiveBlobPublisher(archive.source_db_path, archive.archive_root / "blob")
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            validator = ZipEntryValidator(provider, cursor_state=None, zip_path=zip_path)
+            for info in validator.filter_entries(zf.infolist()):
+                classification = classify_artifact_path(info.filename, provider=provider)
+                if (
+                    classification is None
+                    or classification.parse_as_session
+                    or zip_entry_session_artifact(zf, info, provider=provider) is not None
+                ):
+                    continue
+                with open_bounded_zip_entry(zf, info) as payload:
+                    blob_hash, blob_size = publisher.write_from_fileobj(payload)
+                receipt_id = publisher.receipt_id(blob_hash)
+                publisher.flush()
+                archive.admit_raw_artifact_blob_ref(
+                    provider=provider,
+                    blob_hash_hex=blob_hash,
+                    blob_size=blob_size,
+                    source_path=f"{zip_path}:{info.filename}",
+                    source_index=0,
+                    acquired_at_ms=acquired_at_ms,
+                    classification=classification,
+                    blob_publication_receipt_id=receipt_id,
+                )
+                admitted += 1
+    except (OSError, ZipBombError, zipfile.BadZipFile):
+        logger.error("Failed to admit configured ZIP artifacts from %s", zip_path, exc_info=True)
+    finally:
+        publisher.discard_pending()
     return admitted
 
 

@@ -17,11 +17,11 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.decoder_zip import (
-    MAX_AGGREGATE_UNCOMPRESSED_SIZE,
-    MAX_COMPRESSION_RATIO,
     MAX_UNCOMPRESSED_SIZE,
     ZipBombError,
+    ZipEntryValidator,
     open_bounded_zip_entry,
+    zip_entry_session_artifact,
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.sources.dispatch import (
@@ -44,8 +44,6 @@ from polylogue.surfaces.payloads import (
     ImportProducedRowsPayload,
     ImportSkippedRowPayload,
 )
-
-_SUPPORTED_ENTRY_SUFFIXES = (".json", ".jsonl", ".jsonl.txt", ".ndjson")
 
 
 def explain_import_path(
@@ -548,26 +546,50 @@ def _explain_zip(
         ),
         _evidence("zip.container", matched=True, reason="ZIP container"),
     ]
-    aggregate_total = 0
     try:
         with zipfile.ZipFile(path) as archive:
-            for info in archive.infolist():
-                skip_reason, aggregate_total = _zip_entry_skip_reason(
-                    info,
-                    aggregate_total=aggregate_total,
-                    zip_path=path,
-                    provider_hint=provider_hint,
+            validator = ZipEntryValidator(provider_hint, cursor_state=None, zip_path=path)
+
+            def record_rejection(info: zipfile.ZipInfo, reason: str) -> None:
+                skipped.append(
+                    ImportSkippedRowPayload(
+                        reason=reason,
+                        source_path=f"{path}:{info.filename}",
+                    )
                 )
-                if skip_reason is not None:
+
+            for info in validator.filter_entries(archive.infolist(), on_rejected=record_rejection):
+                path_classification = classify_artifact_path(info.filename, provider=provider_hint)
+                decoded_session_artifact: ArtifactClassification | None = None
+                if path_classification is not None and not path_classification.parse_as_session:
+                    try:
+                        decoded_session_artifact = zip_entry_session_artifact(
+                            archive,
+                            info,
+                            provider=provider_hint,
+                        )
+                    except ZipBombError as exc:
+                        skipped.append(
+                            ImportSkippedRowPayload(
+                                reason=f"zip entry rejected: {exc}",
+                                source_path=f"{path}:{info.filename}",
+                            )
+                        )
+                        continue
+                if (
+                    path_classification is not None
+                    and not path_classification.parse_as_session
+                    and decoded_session_artifact is None
+                ):
                     skipped.append(
                         ImportSkippedRowPayload(
-                            reason=skip_reason,
+                            reason=path_classification.reason or "not a session artifact",
                             source_path=f"{path}:{info.filename}",
                         )
                     )
                     continue
                 try:
-                    with open_bounded_zip_entry(archive, info.filename) as handle:
+                    with open_bounded_zip_entry(archive, info) as handle:
                         entry = _explain_bytes(
                             handle.read(MAX_UNCOMPRESSED_SIZE + 1),
                             stream_name=info.filename,
@@ -615,51 +637,6 @@ def _explain_zip(
         skipped=tuple(skipped),
         caveats=("ZIP explanation summarizes supported entries; raw bytes are omitted.",),
     )
-
-
-def _zip_entry_skip_reason(
-    info: zipfile.ZipInfo,
-    *,
-    aggregate_total: int,
-    zip_path: Path,
-    provider_hint: Provider,
-) -> tuple[str | None, int]:
-    """Return a skip reason (if any) plus the aggregate-total that should
-    carry forward to the next entry.
-
-    Mirrors ``ZipEntryValidator.filter_entries`` in ``decoder_zip.py`` (which
-    ``process_zip`` always constructs with ``session_only=True``): an entry
-    that fails the extension/ratio/per-entry-size checks, or that classifies
-    as a non-session artifact (sidecar/metadata), never contributes to the
-    running aggregate total -- the real decode path only accumulates entries
-    that clear every earlier check AND are actually parsed as a session. The
-    aggregate check itself -- evaluated last, from central-directory metadata
-    alone -- is what decides whether *this* entry's size gets added to the
-    total that subsequent entries are checked against.
-    """
-    if info.is_dir() or not info.filename.lower().endswith(_SUPPORTED_ENTRY_SUFFIXES):
-        return "unsupported ZIP entry", aggregate_total
-    if info.compress_size > 0 and (info.file_size / info.compress_size) > MAX_COMPRESSION_RATIO:
-        return f"zip entry compression ratio {info.file_size / info.compress_size:.1f} exceeds limit", aggregate_total
-    if info.file_size > MAX_UNCOMPRESSED_SIZE:
-        return f"zip entry file size {info.file_size} exceeds limit", aggregate_total
-    # Classify on the bare intra-archive relative path (matches
-    # ``ZipEntryValidator.filter_entries``'s identical fix, polylogue-dc1k):
-    # every ``OriginArtifactRule.path_pattern`` is anchored ``(?:^|/)``, so a
-    # ``{zip_path}:{name}`` prefix put a ``:`` immediately before the pattern
-    # instead of ``/``/start-of-string and no rule could ever match.
-    del zip_path
-    path_classification = classify_artifact_path(info.filename, provider=provider_hint)
-    if path_classification is not None and not path_classification.parse_as_session:
-        return path_classification.reason or "not a session artifact", aggregate_total
-    projected_total = aggregate_total + info.file_size
-    if projected_total > MAX_AGGREGATE_UNCOMPRESSED_SIZE:
-        return (
-            f"aggregate uncompressed size {projected_total} exceeds archive-wide limit "
-            f"{MAX_AGGREGATE_UNCOMPRESSED_SIZE}",
-            aggregate_total,
-        )
-    return None, projected_total
 
 
 def _explain_bytes(

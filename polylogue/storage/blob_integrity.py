@@ -23,6 +23,13 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
 
+from polylogue.archive.zip_admission import (
+    MAX_UNCOMPRESSED_SIZE,
+    ZIP_JSON_SUFFIXES,
+    ZipAdmission,
+    ZipBombError,
+    open_bounded_zip_entry,
+)
 from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
@@ -1117,12 +1124,23 @@ def _current_raw_payload_bytes(
             if source_bytes_cache is not None and source_path in source_bytes_cache:
                 member_bytes = source_bytes_cache[source_path]
             else:
-                with zipfile.ZipFile(zip_path) as archive, archive.open(member) as handle:
-                    member_bytes = handle.read()
+                with zipfile.ZipFile(zip_path) as archive:
+                    matching = [info for info in archive.infolist() if info.filename == member]
+                    if len(matching) != 1:
+                        return None, "ambiguous_container_member"
+                    admitted = list(
+                        ZipAdmission(zip_path=zip_path).filter_entries(matching, allowed_suffixes=ZIP_JSON_SUFFIXES)
+                    )
+                    if len(admitted) != 1:
+                        return None, "container_member_rejected"
+                    with open_bounded_zip_entry(archive, admitted[0]) as handle:
+                        member_bytes = handle.read(MAX_UNCOMPRESSED_SIZE + 1)
                 if source_bytes_cache is not None:
                     source_bytes_cache[source_path] = member_bytes
         except KeyError:
             return None, "source_missing"
+        except ZipBombError:
+            return None, "container_member_rejected"
         if source_index is None:
             return None, "source_index_missing"
         try:

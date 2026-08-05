@@ -23,6 +23,7 @@ from polylogue.archive.ingest_flags import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
+from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.archive.revision_authority import (
     HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
@@ -57,6 +58,7 @@ from polylogue.pipeline.ingest_outcomes import (
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     _detect_provider_from_raw_bytes,
@@ -306,6 +308,21 @@ def _single_route_stage_payload(*, append_file_count: int, full_file_count: int)
 
 def _iso_to_epoch_ms(value: str) -> int:
     return int(datetime.fromisoformat(value).timestamp() * 1000)
+
+
+def _blob_jsonl_has_session_evidence(
+    blob_store: BlobStore,
+    blob_hash: str,
+    *,
+    provider: Provider,
+    source_path: str,
+) -> bool:
+    if Path(source_path).suffix.lower() != ".jsonl":
+        return False
+    try:
+        return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=provider) is not None
+    except (OSError, ValueError):
+        return False
 
 
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
@@ -2150,7 +2167,21 @@ class LiveBatchProcessor:
                         provider,
                         record.source_path,
                     )
-                    if artifact_classification is not None:
+                    session_evidence = (
+                        _blob_jsonl_has_session_evidence(
+                            blob_store,
+                            blob_hash,
+                            provider=provider,
+                            source_path=record.source_path,
+                        )
+                        if payload is None
+                        else _parse_payload_as_session_artifact(
+                            Path(record.source_path),
+                            provider=provider,
+                            payload=payload,
+                        )
+                    )
+                    if artifact_classification is not None and not session_evidence:
                         explicit_raw_id = record.raw_id if record.blob_hash is not None else None
                         if payload is None:
                             source_raw_id = archive.admit_raw_artifact_blob_ref(
@@ -2443,7 +2474,12 @@ class LiveBatchProcessor:
                             )
                             plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
                             if plan.accepted_raw_ids:
-                                parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
+                                parsed_by_raw_id = self._parse_raw_revision_chain(
+                                    archive,
+                                    plan,
+                                    current_raw_id=source_raw_id,
+                                    current_session=session,
+                                )
                                 session_id, applied_raw_ids = archive.apply_raw_revision_replay(
                                     plan,
                                     parsed_by_raw_id,
@@ -2625,10 +2661,21 @@ class LiveBatchProcessor:
                     )
         return result
 
-    def _parse_raw_revision_chain(self, archive: Any, plan: Any) -> dict[str, Any]:
+    def _parse_raw_revision_chain(
+        self,
+        archive: Any,
+        plan: Any,
+        *,
+        current_raw_id: str | None = None,
+        current_session: ParsedSession | None = None,
+    ) -> dict[str, Any]:
         parsed_by_raw_id: dict[str, Any] = {}
         for raw_id in plan.accepted_raw_ids:
-            sessions = self._parse_retained_raw_sessions(archive, raw_id)
+            sessions = (
+                [current_session]
+                if raw_id == current_raw_id and current_session is not None
+                else self._parse_retained_raw_sessions(archive, raw_id)
+            )
             if len(sessions) != 1:
                 raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
             parsed_by_raw_id[raw_id] = sessions[0]
@@ -2827,7 +2874,6 @@ class LiveBatchProcessor:
             fallback_provider,
             cursor_state=None,
             zip_path=path,
-            session_only=False,
         )
         try:
             with zipfile.ZipFile(path) as zf:
@@ -2850,43 +2896,46 @@ class LiveBatchProcessor:
                 for info in entries:
                     if info.file_size == 0:
                         continue
-                    for raw_data in iter_zip_entry_raw_data(
-                        zf,
-                        ZipEntryReadContext(
-                            source=source,
-                            zip_path=path,
-                            entry=info,
-                            file_mtime=file_mtime,
-                            provider_hint=zip_provider_hint,
-                            blob_store=blob_store,
-                        ),
-                    ):
-                        if raw_data.blob_hash is None:
-                            continue
-                        member_provider = raw_data.provider_hint or fallback_provider
-                        member_size = raw_data.blob_size or 0
-                        total_bytes += member_size
-                        records.append(
-                            (
-                                raw_data.blob_hash,
-                                RawSessionRecord(
-                                    raw_id=raw_data.blob_hash,
-                                    payload_provider=member_provider,
-                                    capture_mode=(
-                                        fallback_provider
-                                        if fallback_provider is not Provider.UNKNOWN
-                                        else member_provider
+                    try:
+                        for raw_data in iter_zip_entry_raw_data(
+                            zf,
+                            ZipEntryReadContext(
+                                source=source,
+                                zip_path=path,
+                                entry=info,
+                                file_mtime=file_mtime,
+                                provider_hint=zip_provider_hint,
+                                blob_store=blob_store,
+                            ),
+                        ):
+                            if raw_data.blob_hash is None:
+                                continue
+                            member_provider = raw_data.provider_hint or fallback_provider
+                            member_size = raw_data.blob_size or 0
+                            total_bytes += member_size
+                            records.append(
+                                (
+                                    raw_data.blob_hash,
+                                    RawSessionRecord(
+                                        raw_id=raw_data.blob_hash,
+                                        payload_provider=member_provider,
+                                        capture_mode=(
+                                            fallback_provider
+                                            if fallback_provider is not Provider.UNKNOWN
+                                            else member_provider
+                                        ),
+                                        source_name=member_provider.value,
+                                        source_path=raw_data.source_path,
+                                        source_index=raw_data.source_index or 0,
+                                        blob_size=member_size,
+                                        blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
+                                        acquired_at=acquired_at,
+                                        file_mtime=raw_data.file_mtime,
                                     ),
-                                    source_name=member_provider.value,
-                                    source_path=raw_data.source_path,
-                                    source_index=raw_data.source_index or 0,
-                                    blob_size=member_size,
-                                    blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
-                                    acquired_at=acquired_at,
-                                    file_mtime=raw_data.file_mtime,
-                                ),
+                                )
                             )
-                        )
+                    except ZipBombError as exc:
+                        logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
         except (zipfile.BadZipFile, OSError) as exc:
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
@@ -2912,9 +2961,9 @@ class LiveBatchProcessor:
             if not name_lower.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
                 continue
             try:
-                with zf.open(info.filename) as handle:
+                with open_bounded_zip_entry(zf, info) as handle:
                     prefix = handle.read(_DETECTION_PREFIX_SIZE)
-            except (zipfile.BadZipFile, OSError):
+            except (zipfile.BadZipFile, OSError, ZipBombError):
                 continue
             if not prefix:
                 continue

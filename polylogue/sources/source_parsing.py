@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 
-from polylogue.archive.artifact_taxonomy import classify_artifact_path
+from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.core.json import JSONDecodeError
+from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
@@ -29,6 +31,20 @@ from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapsh
 logger = get_logger(__name__)
 _cursor.logger = logger
 _decoders.logger = logger
+
+
+def has_decoded_session_evidence(path: Path, *, provider: Provider) -> bool:
+    """Return whether decoded JSON content outranks a non-session path rule."""
+    if path.suffix.lower() == ".jsonl":
+        return jsonl_session_artifact(path, provider=provider) is not None
+
+    if path.suffix.lower() != ".json":
+        return False
+    try:
+        document = json_loads(path.read_bytes())
+    except (JSONDecodeError, OSError):
+        return False
+    return classify_artifact(document, provider=provider).parse_as_session
 
 
 def iter_antigravity_language_server_sessions(
@@ -186,7 +202,11 @@ def parse_one_source_path(
     path = Path(path_str)
     provider_hint = Provider.from_string(source_name)
     path_classification = classify_artifact_path(path, provider=source_name)
-    if path_classification is not None and not path_classification.parse_as_session:
+    if (
+        path_classification is not None
+        and not path_classification.parse_as_session
+        and not has_decoded_session_evidence(path, provider=provider_hint)
+    ):
         return
     should_group = provider_hint in _GROUP_PROVIDERS
 
@@ -378,7 +398,7 @@ def iter_source_sessions_with_raw(
                 str(path),
                 f"File not found (may have been deleted): {exc}",
             )
-        except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+        except (JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             failed_count += 1
             logger.warning("Failed to parse %s: %s", path, exc)
             _record_cursor_failure(cursor_state, str(path), str(exc))
@@ -400,5 +420,6 @@ __all__ = [
     "iter_antigravity_language_server_sessions",
     "iter_source_sessions",
     "iter_source_sessions_with_raw",
+    "has_decoded_session_evidence",
     "parse_one_source_path",
 ]

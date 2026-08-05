@@ -7,13 +7,13 @@ import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from io import BytesIO
 from pathlib import Path
 from typing import Protocol
 
 import ijson
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
@@ -577,12 +577,12 @@ def _jsonl_provider_and_session_artifact(
 ) -> tuple[Provider, bool]:
     records = _jsonl_sample_from_path(path)
     provider = (detect_provider(records) if records else None) or fallback_provider
+    if jsonl_session_artifact(path, provider=provider) is not None:
+        return provider, True
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
         return provider, path_classification.parse_as_session
-    if not records:
-        return provider, False
-    return provider, classify_artifact(records, provider=provider, source_path=path).parse_as_session
+    return provider, False
 
 
 def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
@@ -591,14 +591,14 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
         or hermes_verification.looks_like_verification_evidence_db_path(path)
     ):
         return True
+    if path.suffix.lower() == ".jsonl":
+        if jsonl_session_artifact(path, provider=provider) is not None:
+            return True
+        path_classification = classify_artifact_path(path, provider=provider)
+        return path_classification.parse_as_session if path_classification is not None else False
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session
-    if path.suffix.lower() == ".jsonl":
-        records = _jsonl_sample_from_path(path)
-        if not records:
-            return False
-        return classify_artifact(records, provider=provider, source_path=path).parse_as_session
     if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
         browser_capture, _browser_provider = _browser_capture_prefix_probe(path)
         if browser_capture:
@@ -638,24 +638,14 @@ def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payloa
         return hermes_state.looks_like_state_db_path(
             path
         ) or hermes_verification.looks_like_verification_evidence_db_path(path)
+    if path.suffix.lower() == ".jsonl":
+        if jsonl_session_artifact(payload, provider=provider) is not None:
+            return True
+        path_classification = classify_artifact_path(path, provider=provider)
+        return path_classification.parse_as_session if path_classification is not None else False
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session
-    if path.suffix.lower() == ".jsonl":
-        records: list[JSONValue] = []
-        for line in BytesIO(payload):
-            if len(records) >= 32:
-                break
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                records.append(json_loads(raw))
-            except JSONDecodeError:
-                continue
-        if not records:
-            return False
-        return classify_artifact(records, provider=provider, source_path=path).parse_as_session
     try:
         document = json_loads(payload)
     except JSONDecodeError:
