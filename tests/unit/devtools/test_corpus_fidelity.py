@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools import corpus_fidelity
+from devtools import click_dispatch, corpus_fidelity
 from tests.infra.workload_artifacts import SeededArchiveArtifact, clone_seeded_archive
 
 
@@ -28,6 +28,32 @@ def test_command_runs_registered_gate_against_real_seeded_archive(
     assert "clear" in output
 
 
+def test_registered_click_route_emits_verdict_and_preserves_archive(
+    corpus_fidelity_archive: SeededArchiveArtifact,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_TASK_HISTORY_DISABLE", "1")
+    paths = (corpus_fidelity_archive.root / "source.db", corpus_fidelity_archive.root / "index.db")
+    before = tuple(hashlib.sha256(path.read_bytes()).digest() for path in paths)
+
+    exit_code = click_dispatch.main(
+        [
+            "verify",
+            "corpus-fidelity",
+            "--archive-root",
+            str(corpus_fidelity_archive.root),
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verdict"] == "PASS"
+    assert payload["blocking"] is False
+    assert tuple(hashlib.sha256(path.read_bytes()).digest() for path in paths) == before
+
+
 def _clone(artifact: SeededArchiveArtifact, destination: Path) -> Path:
     return clone_seeded_archive(artifact, destination).root
 
@@ -44,6 +70,7 @@ def test_command_blocks_real_seeded_archive_fidelity_violations(
     corpus_fidelity_archive: SeededArchiveArtifact,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
     violation: str,
     expected_check: str,
 ) -> None:
@@ -99,8 +126,10 @@ def test_command_blocks_real_seeded_archive_fidelity_violations(
                 ),
             )
 
-    exit_code = corpus_fidelity.main(["--archive-root", str(root), "--json"])
+    monkeypatch.setenv("POLYLOGUE_TASK_HISTORY_DISABLE", "1")
+    exit_code = click_dispatch.main(["verify", "corpus-fidelity", "--archive-root", str(root), "--json"])
     assert exit_code == 1
     payload = json.loads(capsys.readouterr().out)
+    assert payload["verdict"] == "FAIL"
     assert payload["blocking"] is True
     assert {check["name"]: check["status"] for check in payload["checks"]}[expected_check] == "error"
