@@ -291,6 +291,11 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         # (test_resolve_ref_renders_finding_claim_with_controls above).
         "record_comparative_judgment",
         "list_comparative_judgments",
+        # Durable settings are covered end-to-end in
+        # tests/unit/api/test_settings_surface.py.
+        "get_setting",
+        "list_settings",
+        "set_setting",
     }
 )
 
