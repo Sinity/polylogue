@@ -716,6 +716,30 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     blob_hash, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(b"before-beads")
     with sqlite3.connect(db_path) as conn:
         conn.executescript(old_ddl)
+        for table_name in (
+            "raw_capture_observations",
+            "verified_blob_receipts",
+            "raw_live_source_reconciliation_receipts",
+            "raw_membership_writeback_receipts",
+            "raw_append_chain_backfill_receipts",
+            "raw_authority_parser_census",
+            "raw_authority_plans",
+            "raw_authority_censuses",
+            "raw_authority_census_plans",
+            "raw_authority_census_post_plans",
+            "raw_authority_blockers",
+            "sinex_publication_obligations",
+            "sinex_publication_payloads",
+            "sinex_publication_receipts",
+            "sinex_publication_segments",
+            "excised_content",
+            "raw_byte_duplicate_supersession_receipts",
+            "raw_authority_verdicts",
+            "raw_quarantine_group_dedup_receipts",
+            "raw_unknown_export_reclassification_receipts",
+            "raw_non_session_duplicate_exclusion_receipts",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.execute("PRAGMA user_version = 7")
         conn.execute(
             """
@@ -1044,22 +1068,12 @@ def test_migrate_archive_tier_neutralizes_foreign_key_cascade_during_rebuild(
     afterwards, regardless of which value it started at.
 
     Anti-vacuity: this test fails without that enforcement (verified by
-    temporarily reverting it) -- the scratch child row below gets
-    cascade-deleted the instant ``raw_sessions`` is dropped mid-migration.
+    temporarily reverting it) -- the pre-existing ``raw_artifacts`` child
+    row gets cascade-deleted the instant ``raw_sessions`` is dropped
+    mid-migration.
     """
     db_path = workspace_env["archive_root"] / "source.db"
     _create_source_v20_with_stale_origin_check(db_path, archive_root=workspace_env["archive_root"])
-
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE scratch_raw_sessions_child (
-                raw_id TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute("INSERT INTO scratch_raw_sessions_child (raw_id) VALUES ('raw-preexisting')")
-        conn.commit()
 
     manifest = _verified_backup_manifest(tmp_path / "backup-v20-fk-cascade")
 
@@ -1073,11 +1087,12 @@ def test_migrate_archive_tier_neutralizes_foreign_key_cascade_during_rebuild(
         # in test_source_tier_v20_widens_origin_check_for_claude_design_session.
         assert result.to_version == SOURCE_SCHEMA_VERSION
 
-        # The scratch child row survived the raw_sessions rebuild instead of
-        # being cascade-deleted when the original raw_sessions was dropped.
+        # The canonical raw_artifacts child row survived the raw_sessions
+        # rebuild instead of being cascade-deleted when the original table
+        # was dropped.
         assert conn.execute(
-            "SELECT raw_id FROM scratch_raw_sessions_child WHERE raw_id = 'raw-preexisting'"
-        ).fetchone() == ("raw-preexisting",)
+            "SELECT artifact_id FROM raw_artifacts WHERE artifact_id = 'artifact-preexisting'"
+        ).fetchone() == ("artifact-preexisting",)
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         # The runner restores the caller's foreign_keys setting afterwards.
         assert bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]) is True
@@ -1249,9 +1264,18 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
         ).fetchone()
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gc_generations'").fetchone()
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='blob_publication_reservations'"
         ).fetchone()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO raw_hook_events (
+                    hook_event_id, origin, source_path, event_type, payload_json, observed_at_ms
+                ) VALUES ('invalid-origin', 'invalid-origin', '/fixture.json', 'PreToolUse', '{}', 1)
+                """
+            )
     finally:
         conn.close()
 
@@ -1356,6 +1380,8 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
     db_path.unlink(missing_ok=True)
     conn = sqlite3.connect(db_path)
     try:
+        conn.executescript(SOURCE_DDL)
+        conn.execute("DROP TABLE raw_sessions")
         conn.executescript(
             """
             CREATE TABLE raw_sessions (
@@ -1391,6 +1417,19 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
             PRAGMA user_version = 13;
             """
         )
+        for table_name in (
+            "raw_capture_observations",
+            "verified_blob_receipts",
+            "raw_live_source_reconciliation_receipts",
+            "raw_membership_writeback_receipts",
+            "raw_append_chain_backfill_receipts",
+            "raw_byte_duplicate_supersession_receipts",
+            "raw_authority_verdicts",
+            "raw_quarantine_group_dedup_receipts",
+            "raw_unknown_export_reclassification_receipts",
+            "raw_non_session_duplicate_exclusion_receipts",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash" not in indexes_before
@@ -1451,6 +1490,8 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
     db_path.unlink(missing_ok=True)
     conn = sqlite3.connect(db_path)
     try:
+        conn.executescript(SOURCE_DDL)
+        conn.execute("DROP TABLE raw_sessions")
         conn.executescript(
             """
             CREATE TABLE raw_sessions (
@@ -1487,6 +1528,19 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
             PRAGMA user_version = 14;
             """
         )
+        for table_name in (
+            "raw_capture_observations",
+            "verified_blob_receipts",
+            "raw_live_source_reconciliation_receipts",
+            "raw_membership_writeback_receipts",
+            "raw_append_chain_backfill_receipts",
+            "raw_byte_duplicate_supersession_receipts",
+            "raw_authority_verdicts",
+            "raw_quarantine_group_dedup_receipts",
+            "raw_unknown_export_reclassification_receipts",
+            "raw_non_session_duplicate_exclusion_receipts",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash_raw_id" not in indexes_before

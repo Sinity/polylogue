@@ -1289,15 +1289,21 @@ def _append_proof_refs(existing: tuple[str, ...], *refs: str | None) -> tuple[st
 
 
 def _normalize_schema_sql(sql: str | None) -> str:
-    """Normalize layout without rewriting literals or quoted identifiers."""
+    """Normalize SQLite's representational DDL differences without weakening parity.
+
+    SQLite stores identifiers quoted after ``ALTER TABLE ... RENAME`` even
+    when the fresh canonical DDL leaves them bare.  Normalize only identifier
+    quoting and layout.  String literals, object names, and PRAGMA-derived
+    columns remain part of the inventory, so a missing constraint or changed
+    table shape still fails parity.
+    """
     if sql is None:
         return ""
-    protected: list[str] = []
     unquoted: list[str] = []
     index = 0
     while index < len(sql):
         character = sql[index]
-        if character in {"'", '"', "`", "["}:
+        if character == "'":
             closing = "]" if character == "[" else character
             start = index
             index += 1
@@ -1310,9 +1316,24 @@ def _normalize_schema_sql(sql: str | None) -> str:
                     continue
                 index += 1
                 break
-            token = f"\x00quoted-{len(protected)}\x00"
-            protected.append(sql[start:index])
-            unquoted.append(token)
+            unquoted.append(sql[start:index])
+            continue
+        if character in {'"', "`", "["}:
+            closing = "]" if character == "[" else character
+            index += 1
+            identifier: list[str] = []
+            while index < len(sql):
+                if sql[index] != closing:
+                    identifier.append(sql[index])
+                    index += 1
+                    continue
+                if index + 1 < len(sql) and sql[index + 1] == closing and closing != "]":
+                    identifier.append(closing)
+                    index += 2
+                    continue
+                index += 1
+                break
+            unquoted.append("".join(identifier))
             continue
         if sql.startswith("--", index):
             newline = sql.find("\n", index + 2)
@@ -1330,8 +1351,11 @@ def _normalize_schema_sql(sql: str | None) -> str:
     collapsed = re.sub(r"\s*,\s*", ",", collapsed)
     collapsed = re.sub(r"\s*\(\s*", "(", collapsed)
     collapsed = re.sub(r"\s*\)", ")", collapsed)
-    for item_index, segment in enumerate(protected):
-        collapsed = collapsed.replace(f"\x00quoted-{item_index}\x00", segment)
+    collapsed = re.sub(
+        r"CHECK\(\((?P<column>[A-Za-z_][A-Za-z0-9_]*) IN\s*\((?P<values>[^()]*)\) OR (?P=column) IS NULL\)\)",
+        r"CHECK(\g<column> IN(\g<values>))",
+        collapsed,
+    )
     return collapsed
 
 

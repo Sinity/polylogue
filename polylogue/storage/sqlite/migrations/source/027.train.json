@@ -12,7 +12,7 @@
     "slot": 27,
     "path": "027_raw_non_session_duplicate_exclusion_receipts.sql",
     "owner_ref": "polylogue/storage/sqlite/migrations/source/027_raw_non_session_duplicate_exclusion_receipts.sql",
-    "sql_sha256": "2600e4370a6f353e531b1764669b5df8447562801b46794444741efa507e45d4",
+    "sql_sha256": "f044fefd0fbd7cdf431b33344478bade05dd963e4930a6b0666f473f127f27b8",
     "requires_backup": true
   },
   "riders": [
@@ -20,6 +20,7 @@
       "rider_id": "rider:raw-non-session-duplicate-exclusion",
       "owner_ref": "polylogue-r9xsj",
       "schema_objects": [
+        "table:gc_generations",
         "table:raw_non_session_duplicate_exclusion_receipts",
         "index:idx_raw_non_session_duplicate_exclusion_receipts_twin"
       ],
@@ -46,7 +47,14 @@
     }
   ],
   "ordering_constraints": [],
-  "drop_constraints": [],
+  "drop_constraints": [
+    {
+      "object_ref": "table:pending_blob_refs",
+      "after_rider_ids": [],
+      "copy_forward_proof_ref": "proof:polylogue-v7e0:lease-table-drop",
+      "consent_ref": "polylogue-v7e0"
+    }
+  ],
   "row_change_allowances": [],
   "backup_plan_ref": "backup-profile:source-tier",
   "state": "declared",
@@ -64,5 +72,5 @@
   "released_at_ms": null,
   "release_evidence_ref": null,
   "proof_refs": [],
-  "manifest_sha256": "1643f8a42e29249214a68f9cacbf49fc7bee1cb47f590c9f417c69a16dcf4c34"
+  "manifest_sha256": "9d8fe93c194afdb76bcdc4049991c5ab2325db87f7d734fe75d30d5965aa4ef9"
 }
