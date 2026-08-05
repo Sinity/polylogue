@@ -289,6 +289,47 @@ def test_apply_deletes_only_join_proven_orphans_and_persists_receipt(
     assert receipt_rows[-1]["deleted_count"] == 4
 
 
+def test_locked_plan_rejects_referent_that_appears_after_staging(tmp_path: Path) -> None:
+    archive_root = _source_archive(tmp_path)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        candidate = next(item for item in classify_blob_ref_liveness(conn).candidates if item.ref_type == "raw_payload")
+        conn.execute(
+            """
+            CREATE TEMP TABLE locked_candidates (
+                blob_hash BLOB NOT NULL, ref_type TEXT NOT NULL, ref_id TEXT NOT NULL,
+                source_path TEXT, size_bytes INTEGER NOT NULL, acquired_at_ms INTEGER NOT NULL,
+                referent_table TEXT NOT NULL, referent_column TEXT NOT NULL,
+                PRIMARY KEY (blob_hash, ref_type, ref_id)
+            ) STRICT
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO locked_candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                bytes.fromhex(candidate.blob_hash),
+                candidate.ref_type,
+                candidate.ref_id,
+                candidate.source_path,
+                candidate.size_bytes,
+                candidate.acquired_at_ms,
+                candidate.referent_table,
+                candidate.referent_column,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, 'codex-session', '/appeared.jsonl', 0, ?, 1, 1)
+            """,
+            (candidate.ref_id, bytes.fromhex(candidate.blob_hash)),
+        )
+        with pytest.raises(BlobRefLivenessReconciliationError, match="referents became live"):
+            liveness_reconciliation._validate_locked_candidate_plan(conn, "locked_candidates", 1)
+
+
 def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -15,6 +15,7 @@ from pathlib import Path
 from polylogue.config import Config
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.paths import render_root
+from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
     BlobRefLivenessClassification,
@@ -344,6 +345,28 @@ def _validate_locked_candidate_plan(conn: sqlite3.Connection, candidate_table: s
         raise BlobRefLivenessReconciliationError(
             f"prepared candidate presence mismatch: planned={expected_count} present={present_count}"
         )
+    referent_branches = [
+        f"""
+        SELECT c.blob_hash, c.ref_type, c.ref_id
+        FROM {candidate_table} AS c
+        JOIN {table} AS r ON r.{column} = c.ref_id
+        WHERE c.ref_type = ?
+        """
+        for ref_type, (table, column) in {
+            ref_type: (table, column) for ref_type, table, column in BLOB_REF_LIVENESS_JOIN
+        }.items()
+    ]
+    if referent_branches:
+        live_referent_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM ({' UNION ALL '.join(referent_branches)})",
+                tuple(ref_type for ref_type, _table, _column in BLOB_REF_LIVENESS_JOIN),
+            ).fetchone()[0]
+        )
+        if live_referent_count:
+            raise BlobRefLivenessReconciliationError(
+                f"prepared candidate referents became live under lock: {live_referent_count}"
+            )
     conn.execute("DROP TABLE IF EXISTS temp.blob_ref_liveness_locked_hooks")
     if _table_exists(conn, "raw_hook_events"):
         conn.execute(
