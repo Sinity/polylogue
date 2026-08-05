@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary, convergence_debt_summary_info
 from polylogue.insights.schema_drift import schema_drift_status
 from polylogue.logging import get_logger
 from polylogue.readiness.capability import (
@@ -907,6 +908,7 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
 # cannot substantiate.
 _WORKLOAD_THROUGHPUT_WINDOW_MS = 5 * 60 * 1000
 _WORKLOAD_HEARTBEAT_STALE_MS = 90 * 1000
+_CONVERGENCE_DEBT_STATUSES = frozenset(("failed", "deferred"))
 
 
 def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
@@ -922,80 +924,104 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     try:
         conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
     except sqlite3.Error as exc:
-        return {"available": False, "reason": str(exc)}
+        return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
     try:
-        if not _table_exists(conn, "ingest_attempts"):
-            return {"available": False, "reason": "missing_ingest_attempts"}
+        try:
+            if not _table_exists(conn, "ingest_attempts"):
+                return {"available": False, "reason": "missing_ingest_attempts"}
+        except Exception as exc:
+            return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
 
-        running_rows = conn.execute(
-            """
-            SELECT phase, origin, started_at_ms, heartbeat_at_ms,
-                   parsed_raw_count, materialized_count
-            FROM ingest_attempts
-            WHERE status = 'running'
-            ORDER BY started_at_ms DESC
-            """
-        ).fetchall()
-        running: list[dict[str, Any]] = []
-        actively_ingesting = False
-        for row in running_rows:
-            heartbeat = _safe_int(row[3], 0)
-            heartbeat_age_ms = now_ms - heartbeat if heartbeat else None
-            fresh = heartbeat_age_ms is not None and heartbeat_age_ms <= _WORKLOAD_HEARTBEAT_STALE_MS
-            actively_ingesting = actively_ingesting or fresh
-            running.append(
-                {
-                    "phase": row[0],
-                    "origin": row[1],
-                    "age_ms": now_ms - _safe_int(row[2], now_ms),
-                    "heartbeat_age_ms": heartbeat_age_ms,
-                    "heartbeat_fresh": fresh,
-                }
-            )
+        try:
+            if not _table_exists(conn, "convergence_debt"):
+                return {"available": False, "reason": "missing_convergence_debt"}
+        except Exception as exc:
+            return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
 
-        window_start = now_ms - _WORKLOAD_THROUGHPUT_WINDOW_MS
-        tput = conn.execute(
-            """
-            SELECT COUNT(*),
-                   COALESCE(SUM(parsed_raw_count), 0),
-                   COALESCE(SUM(materialized_count), 0),
-                   COALESCE(SUM(finished_at_ms - started_at_ms), 0)
-            FROM ingest_attempts
-            WHERE status = 'completed' AND finished_at_ms >= ?
-            """,
-            (window_start,),
-        ).fetchone()
-        window_batches = _safe_int(tput[0], 0) if tput else 0
-        window_files = _safe_int(tput[1], 0) if tput else 0
-        window_materialized = _safe_int(tput[2], 0) if tput else 0
-        window_busy_ms = _safe_int(tput[3], 0) if tput else 0
-        files_per_s = (window_files / (window_busy_ms / 1000.0)) if window_busy_ms > 0 else 0.0
+        try:
+            running_rows = conn.execute(
+                """
+                SELECT phase, origin, started_at_ms, heartbeat_at_ms,
+                       parsed_raw_count, materialized_count
+                FROM ingest_attempts
+                WHERE status = 'running'
+                ORDER BY started_at_ms DESC
+                """
+            ).fetchall()
+            running: list[dict[str, Any]] = []
+            actively_ingesting = False
+            for row in running_rows:
+                heartbeat = _safe_int(row[3], 0)
+                heartbeat_age_ms = now_ms - heartbeat if heartbeat else None
+                fresh = heartbeat_age_ms is not None and heartbeat_age_ms <= _WORKLOAD_HEARTBEAT_STALE_MS
+                actively_ingesting = actively_ingesting or fresh
+                running.append(
+                    {
+                        "phase": row[0],
+                        "origin": row[1],
+                        "age_ms": now_ms - _safe_int(row[2], now_ms),
+                        "heartbeat_age_ms": heartbeat_age_ms,
+                        "heartbeat_fresh": fresh,
+                    }
+                )
 
-        lifetime = {
-            status: _safe_int(count, 0)
-            for status, count in conn.execute("SELECT status, COUNT(*) FROM ingest_attempts GROUP BY status").fetchall()
-        }
+            window_start = now_ms - _WORKLOAD_THROUGHPUT_WINDOW_MS
+            tput = conn.execute(
+                """
+                SELECT COUNT(*),
+                       COALESCE(SUM(parsed_raw_count), 0),
+                       COALESCE(SUM(materialized_count), 0),
+                       COALESCE(SUM(finished_at_ms - started_at_ms), 0)
+                FROM ingest_attempts
+                WHERE status = 'completed' AND finished_at_ms >= ?
+                """,
+                (window_start,),
+            ).fetchone()
+            window_batches = _safe_int(tput[0], 0) if tput else 0
+            window_files = _safe_int(tput[1], 0) if tput else 0
+            window_materialized = _safe_int(tput[2], 0) if tput else 0
+            window_busy_ms = _safe_int(tput[3], 0) if tput else 0
+            files_per_s = (window_files / (window_busy_ms / 1000.0)) if window_busy_ms > 0 else 0.0
 
-        cursor: dict[str, int] = {}
-        if _table_exists(conn, "ingest_cursor"):
-            cursor = {
-                "tracked": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor"),
-                "excluded": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1"),
-                "retry_pending": _fast_count(
-                    conn,
-                    "SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0 AND excluded = 0",
-                ),
-            }
-
-        debt: dict[str, int] = {}
-        if _table_exists(conn, "convergence_debt"):
-            debt = {
+            lifetime = {
                 status: _safe_int(count, 0)
                 for status, count in conn.execute(
-                    "SELECT status, COUNT(*) FROM convergence_debt GROUP BY status"
+                    "SELECT status, COUNT(*) FROM ingest_attempts GROUP BY status"
                 ).fetchall()
             }
-        debt_total = sum(debt.values())
+
+            cursor: dict[str, int] = {}
+            if _table_exists(conn, "ingest_cursor"):
+                cursor = {
+                    "tracked": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor"),
+                    "excluded": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1"),
+                    "retry_pending": _fast_count(
+                        conn,
+                        "SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0 AND excluded = 0",
+                    ),
+                }
+        except Exception as exc:
+            return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
+
+        try:
+            debt_rows = conn.execute("SELECT status, COUNT(*) FROM convergence_debt GROUP BY status").fetchall()
+            unknown_statuses = sorted(
+                {repr(status) for status, _count in debt_rows if status not in _CONVERGENCE_DEBT_STATUSES}
+            )
+            if unknown_statuses:
+                return {
+                    "available": False,
+                    "reason": "convergence debt status unavailable: "
+                    f"unknown status value(s): {', '.join(unknown_statuses)}",
+                }
+            debt = {status: _safe_int(count, 0) for status, count in debt_rows}
+            debt_total = sum(debt.values())
+        except Exception as exc:
+            # A present but malformed ledger is unknown, not an empty workload.
+            # Keep this explicit so both direct status renderers can preserve
+            # the ledger failure and block claims instead of falling into the
+            # generic archive-query fallback.
+            return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
     finally:
         conn.close()
 
@@ -1649,6 +1675,10 @@ def _show_direct_json(
     )
     archive_tiers = _archive_tier_status(active_root)
     ingest_workload = _ops_workload_status(active_root, now_ms=int(time.time() * 1000))
+    convergence = convergence_debt_summary_info(
+        active_root / "index.db",
+        ops_db=active_root / "ops.db",
+    )
     schema_drift = schema_drift_status(active_root, now_ms=int(time.time() * 1000))
     payload: dict[str, Any] = {
         "ok": _direct_status_ok(component_readiness),
@@ -1663,6 +1693,7 @@ def _show_direct_json(
         "archive_tiers": archive_tiers,
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
         "ingest_workload": ingest_workload,
+        "convergence": convergence.model_dump(mode="json"),
         "schema_drift": schema_drift,
         "raw_replay_backlog": _raw_replay_backlog_status(active_root),
         "archive_readiness": archive_readiness,
@@ -1678,6 +1709,7 @@ def _show_direct_json(
             raw_frontier_integrity=raw_frontier_integrity,
             component_readiness=component_readiness,
             ingest_workload=ingest_workload,
+            convergence=convergence,
         ),
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
@@ -1830,6 +1862,7 @@ def _direct_claim_guard(
     raw_frontier_integrity: dict[str, Any],
     component_readiness: dict[str, Any],
     ingest_workload: dict[str, Any],
+    convergence: ConvergenceDebtSummary,
 ) -> dict[str, Any]:
     """Derive the claim-guard block for the no-daemon direct SQLite fallback."""
     missing_tiers = [tier for tier, info in archive_tiers.items() if not info.get("exists")]
@@ -1872,6 +1905,23 @@ def _direct_claim_guard(
         search_summary=search_summary,
         active_writer=active_writer,
         active_writer_summary=active_writer_summary,
+        convergence_debt_available=convergence.available,
+        convergence_debt_pending=convergence.failed_count > 0 or convergence.deferred_count > 0,
+        convergence_debt_summary=(
+            convergence.error
+            or (
+                "convergence debt pending: "
+                + ", ".join(
+                    part
+                    for part in (
+                        f"{convergence.failed_count} failed" if convergence.failed_count else "",
+                        f"{convergence.deferred_count} deferred" if convergence.deferred_count else "",
+                    )
+                    if part
+                )
+            )
+            or "no pending convergence debt"
+        ),
     ).to_dict()
 
 
@@ -2024,6 +2074,28 @@ def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
     if debt_total:
         detail = ", ".join(f"{status}={count}" for status, count in (debt.get("by_status") or {}).items())
         env.ui.console.print(f"    convergence debt: [yellow]{debt_total}[/yellow] ({detail})")
+
+
+def _render_convergence_debt(env: AppEnv, summary: ConvergenceDebtSummary) -> None:
+    """Render the authoritative convergence-debt ledger state."""
+    if not summary.available:
+        env.ui.console.print("  Convergence debt: [yellow]unavailable[/yellow]")
+        if summary.error:
+            env.ui.console.print(f"    [yellow]{summary.error}[/yellow]")
+        return
+
+    pending_parts = [
+        f"{summary.failed_count} failed" if summary.failed_count else "",
+        f"{summary.deferred_count} deferred" if summary.deferred_count else "",
+    ]
+    pending_parts = [part for part in pending_parts if part]
+    if not pending_parts:
+        env.ui.console.print("  Convergence debt: [green]none (ledger healthy)[/green]")
+        return
+
+    if summary.retry_due_count:
+        pending_parts.append(f"{summary.retry_due_count} retry due")
+    env.ui.console.print(f"  Convergence debt: [yellow]{', '.join(pending_parts)}[/yellow]")
 
 
 def _render_schema_drift_status(env: AppEnv, drift: dict[str, Any]) -> None:
@@ -2218,6 +2290,8 @@ def _show_direct_status(
         if active_db.name == "index.db":
             active_root = active_db.parent
             _render_ingest_workload(env, workload)
+            convergence = convergence_debt_summary_info(active_db, ops_db=active_root / "ops.db")
+            _render_convergence_debt(env, convergence)
             _render_schema_drift_status(env, schema_drift_status(active_root, now_ms=now_ms))
             tiers = _archive_tier_status(active_root)
             present = ", ".join(tier for tier, info in tiers.items() if info["exists"])

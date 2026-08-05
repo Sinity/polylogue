@@ -2006,6 +2006,21 @@ def _attach_collection_state(
         }
 
 
+def _convergence_debt_from_snapshot(snapshot: ComponentSnapshot) -> ConvergenceDebtSummary:
+    """Adapt a registry snapshot without treating unavailable debt as empty."""
+    if snapshot.state != "fresh" or snapshot.value is None or snapshot.error is not None:
+        return ConvergenceDebtSummary(
+            available=False,
+            error=snapshot.error or f"convergence debt status {snapshot.state}",
+        )
+    if not isinstance(snapshot.value, ConvergenceDebtSummary):
+        return ConvergenceDebtSummary(
+            available=False,
+            error="convergence debt snapshot returned an unexpected value",
+        )
+    return snapshot.value
+
+
 def _daemon_component_readiness(
     *,
     component_state: ComponentState,
@@ -2669,7 +2684,7 @@ def build_daemon_status(
     )
     live_cursor = _v("live_cursor", LiveCursorSummary())
     live_ingest_attempts = _v("live_ingest_attempts", LiveIngestAttemptSummary())
-    convergence = _v("convergence", ConvergenceDebtSummary())
+    convergence = _convergence_debt_from_snapshot(snapshots["convergence"])
     cursor_lag = _v("cursor_lag", CursorLagSummary())
     catchup = catchup_status_info(
         active_db,

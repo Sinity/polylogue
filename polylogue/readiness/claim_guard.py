@@ -79,8 +79,8 @@ def derive_claim_guard(
     search_ready: bool,
     search_summary: str,
     active_writer: bool,
+    convergence_debt_available: bool,
     active_writer_summary: str = "",
-    convergence_debt_available: bool = True,
     convergence_debt_pending: bool = False,
     convergence_debt_summary: str = "no pending convergence debt",
 ) -> ClaimGuard:
