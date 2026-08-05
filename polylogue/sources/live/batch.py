@@ -18,6 +18,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
+from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -306,6 +307,27 @@ def _single_route_stage_payload(*, append_file_count: int, full_file_count: int)
 
 def _iso_to_epoch_ms(value: str) -> int:
     return int(datetime.fromisoformat(value).timestamp() * 1000)
+
+
+def _blob_jsonl_has_session_evidence(
+    blob_store: BlobStore,
+    blob_hash: str,
+    *,
+    provider: Provider,
+    source_path: str,
+) -> bool:
+    if Path(source_path).suffix.lower() != ".jsonl":
+        return False
+    records = []
+    try:
+        with blob_store.open(blob_hash) as handle:
+            for record in _iter_json_stream(handle, Path(source_path).name):
+                records.append(record)
+                if len(records) >= 64:
+                    break
+    except OSError:
+        return False
+    return bool(records) and classify_artifact(records, provider=provider).parse_as_session
 
 
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
@@ -2150,14 +2172,21 @@ class LiveBatchProcessor:
                         provider,
                         record.source_path,
                     )
-                    if artifact_classification is not None and (
-                        payload is None
-                        or not _parse_payload_as_session_artifact(
+                    session_evidence = (
+                        _blob_jsonl_has_session_evidence(
+                            blob_store,
+                            blob_hash,
+                            provider=provider,
+                            source_path=record.source_path,
+                        )
+                        if payload is None
+                        else _parse_payload_as_session_artifact(
                             Path(record.source_path),
                             provider=provider,
                             payload=payload,
                         )
-                    ):
+                    )
+                    if artifact_classification is not None and not session_evidence:
                         explicit_raw_id = record.raw_id if record.blob_hash is not None else None
                         if payload is None:
                             source_raw_id = archive.admit_raw_artifact_blob_ref(

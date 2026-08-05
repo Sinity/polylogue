@@ -3988,6 +3988,41 @@ def test_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
 
+def test_large_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(tmp_path: Path) -> None:
+    from polylogue.sources.live.batch_support import _STREAMING_FULL_INGEST_BYTES
+
+    root = tmp_path / "sessions"
+    source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
+        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+        b'{"type":"summary","summary":"' + b"x" * _STREAMING_FULL_INGEST_BYTES + b'"}\n'
+    )
+    assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+
+    first = asyncio.run(processor.ingest_files([source], emit_event=False))
+    second = asyncio.run(processor.ingest_files([source], emit_event=False))
+
+    assert first.ingested_session_count == 1
+    assert first.failed_file_count == 0
+    assert second.failed_file_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
 def test_full_batch_malformed_workflow_journal_remains_typed_evidence(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"

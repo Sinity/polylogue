@@ -591,14 +591,15 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
         or hermes_verification.looks_like_verification_evidence_db_path(path)
     ):
         return True
+    if path.suffix.lower() == ".jsonl":
+        records = _jsonl_sample_from_path(path)
+        if records and classify_artifact(records, provider=provider).parse_as_session:
+            return True
+        path_classification = classify_artifact_path(path, provider=provider)
+        return path_classification.parse_as_session if path_classification is not None else False
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session
-    if path.suffix.lower() == ".jsonl":
-        records = _jsonl_sample_from_path(path)
-        if not records:
-            return False
-        return classify_artifact(records, provider=provider, source_path=path).parse_as_session
     if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
         browser_capture, _browser_provider = _browser_capture_prefix_probe(path)
         if browser_capture:
