@@ -222,9 +222,7 @@ def test_sql_fast_forwardable_index_db_reopen_is_idempotent(tmp_path: Path, monk
 
 
 def test_v64_to_v65_fast_forward_replaces_actions_view_and_exposes_result_state(tmp_path: Path) -> None:
-    """The real v64→v65 executor path upgrades action queries in place."""
-    from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import apply_index_fast_forward
-    from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
+    """The production archive-open path upgrades v64 action queries in place."""
 
     path = tmp_path / "index.db"
     conn = sqlite3.connect(path)
@@ -290,12 +288,11 @@ def test_v64_to_v65_fast_forward_replaces_actions_view_and_exposes_result_state(
     finally:
         conn.close()
 
+    initialize_archive_database(path, ArchiveTier.INDEX)
+
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     try:
-        plan = index_fast_forward_plan(64, 65)
-        assert plan is not None
-        apply_index_fast_forward(conn, plan)
         rows = conn.execute(
             "SELECT tool_command, tool_result_block_id, result_state FROM actions ORDER BY tool_command"
         ).fetchall()
