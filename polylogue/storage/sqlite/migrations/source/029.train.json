@@ -12,7 +12,7 @@
     "slot": 29,
     "path": "029_raw_failure_disposition_receipts.sql",
     "owner_ref": "polylogue/storage/sqlite/migrations/source/029_raw_failure_disposition_receipts.sql",
-    "sql_sha256": "56c02cf667e89f32ce97593428b219c05db74daf1d5aef94a7ad7d44aca7b133",
+    "sql_sha256": "9b68e792faf1ce53db93c1e7be9e9087d6abbb5d4340ed4bed15be102f94ed0d",
     "requires_backup": true
   },
   "riders": [
@@ -64,5 +64,5 @@
   "released_at_ms": null,
   "release_evidence_ref": null,
   "proof_refs": [],
-  "manifest_sha256": "691ef7bd5982568263a0a4fa5f51545f01afafdec0f80da65430b3d3c5433c40"
+  "manifest_sha256": "984492f16315f887312d93e9b80ad1281caecbfaabfaf09240c9e7584d68f0d3"
 }

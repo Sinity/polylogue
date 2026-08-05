@@ -116,9 +116,19 @@ def test_apply_reclassifies_only_manifested_failed_raw_and_writes_receipt(
     assert lifecycle.unexplained == 0
     with sqlite3.connect(root / "source.db") as conn:
         receipt = conn.execute(
-            "SELECT raw_id, disposition_kind, tool_version, detail FROM raw_failure_disposition_receipts"
+            "SELECT raw_id, previous_artifact_kind, previous_support_status, "
+            "previous_classification_reason, disposition_kind, tool_version, detail "
+            "FROM raw_failure_disposition_receipts"
         ).fetchone()
-    assert receipt == (raw_id, "terminal_corrupt_input", TOOL_VERSION, "empty retained byte stream")
+    assert receipt == (
+        raw_id,
+        "coordinator_session_stream",
+        "supported_parseable",
+        "legacy-path-classification",
+        "terminal_corrupt_input",
+        TOOL_VERSION,
+        "empty retained byte stream",
+    )
 
 
 def test_apply_refuses_duplicate_or_nonterminal_manifest_entries(tmp_path: Path) -> None:

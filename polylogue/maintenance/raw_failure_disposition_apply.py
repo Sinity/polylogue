@@ -114,7 +114,8 @@ def _validate_candidate(conn: sqlite3.Connection, candidate: RawFailureDispositi
     row = conn.execute(
         """
         SELECT r.raw_id, r.origin, r.source_path, r.source_index, r.blob_hash, r.blob_size,
-               r.parse_error, r.validation_status, a.artifact_id
+               r.parse_error, r.validation_status, a.artifact_id, a.artifact_kind,
+               a.support_status, a.classification_reason
         FROM raw_sessions AS r
         JOIN raw_artifacts AS a
           ON a.raw_id = r.raw_id
@@ -176,9 +177,10 @@ def _apply_candidate(
         """
         INSERT INTO raw_failure_disposition_receipts (
             raw_id, artifact_id, origin, source_path, source_index, blob_hash, blob_size,
-            previous_parse_error, previous_validation_status, disposition_kind, manifest_sha256,
-            disposed_at_ms, tool_version, backup_manifest_path, detail
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            previous_parse_error, previous_validation_status, previous_artifact_kind,
+            previous_support_status, previous_classification_reason, disposition_kind,
+            manifest_sha256, disposed_at_ms, tool_version, backup_manifest_path, detail
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             row["raw_id"],
@@ -190,6 +192,9 @@ def _apply_candidate(
             row["blob_size"],
             row["parse_error"],
             row["validation_status"],
+            row["artifact_kind"],
+            row["support_status"],
+            row["classification_reason"],
             candidate.disposition_kind.value,
             manifest_sha256,
             disposed_at_ms,

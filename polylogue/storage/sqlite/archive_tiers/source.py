@@ -281,6 +281,9 @@ CREATE TABLE IF NOT EXISTS raw_failure_disposition_receipts (
     blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
     previous_parse_error       TEXT NOT NULL,
     previous_validation_status TEXT,
+    previous_artifact_kind     TEXT NOT NULL,
+    previous_support_status    TEXT NOT NULL,
+    previous_classification_reason TEXT NOT NULL,
     disposition_kind           TEXT NOT NULL CHECK(disposition_kind IN (
         'terminal_corrupt_input',
         'terminal_unsupported_shape'
