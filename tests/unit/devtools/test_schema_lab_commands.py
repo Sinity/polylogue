@@ -29,7 +29,7 @@ from polylogue.schemas.operator.models import (
     SchemaPromoteResult,
 )
 from polylogue.storage.index_generation import RebuildLease
-from tests.unit.maintenance.test_schema_inference_gate import _seed_archive
+from tests.infra.schema_inference import seed_schema_inference_archive as _seed_archive
 
 
 @dataclass(frozen=True)

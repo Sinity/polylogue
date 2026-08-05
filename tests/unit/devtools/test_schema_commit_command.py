@@ -49,7 +49,14 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
 
     monkeypatch.setattr(schema_commit, "get_config", fake_get_config)
     monkeypatch.setattr(schema_commit, "commit_provider_schema", fake_commit)
-    monkeypatch.setattr(schema_commit, "authorize_schema_generation", _allow_schema_generation)
+    authorization_calls: list[tuple[object, ...]] = []
+
+    @contextmanager
+    def allow_schema_generation(*args: object, **_kwargs: object) -> Iterator[dict[str, object]]:
+        authorization_calls.append(args)
+        yield {}
+
+    monkeypatch.setattr(schema_commit, "authorize_schema_generation", allow_schema_generation)
 
     assert (
         schema_commit.main(["--provider", "chatgpt", "--schema-inference-receipt", str(tmp_path / "receipt.json")]) == 0
@@ -62,6 +69,7 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
     assert request.db_path == tmp_path / "archive.db"
     assert request.full_corpus is True
     assert request.dry_run is False
+    assert authorization_calls == [(tmp_path, tmp_path / "receipt.json")]
 
 
 def test_schema_commit_refuses_persistence_without_authoritative_receipt(

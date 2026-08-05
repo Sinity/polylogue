@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -14,10 +15,12 @@ from polylogue.maintenance.schema_inference_gate import (
     RECEIPT_FILENAME,
     SchemaInferenceGateError,
     run_schema_inference_gate,
+    validate_schema_inference_gate_receipt,
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import RebuildLease
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.schema_inference import seed_schema_inference_archive
 
 
 class _RawGroundTruthProvenance(TypedDict):
@@ -73,61 +76,7 @@ class _GateReceipt(TypedDict):
     pass_fail_reasons: list[str]
 
 
-def _seed_archive(root: Path) -> Path:
-    """Create one source raw whose actual external file and blob agree."""
-
-    initialize_active_archive_root(root)
-    ground_truth = root.parent / f"{root.name}-codex-ground-truth"
-    ground_truth.mkdir()
-    payload = b"actual external codex raw"
-    source_file = ground_truth / "session.jsonl"
-    source_file.write_bytes(payload)
-    blob_hash, blob_size = BlobStore(root / "blob").write_from_bytes(payload)
-    with sqlite3.connect(root / "source.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, blob_size,
-                acquired_at_ms, logical_source_key, revision_authority
-            ) VALUES ('raw-1', 'codex-session', 'session', ?, ?, ?, 100,
-                      'codex:session', 'byte_proven')
-            """,
-            (str(source_file), bytes.fromhex(blob_hash), blob_size),
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_session_memberships(
-                raw_id, logical_source_key, provider_session_id, source_revision,
-                normalized_content_hash, message_count, decision, decided_at_ms
-            ) VALUES ('raw-1', 'codex:session', 'session', 'rev-1', ?, 1, 'applied', 100)
-            """,
-            (b"m" * 32,),
-        )
-    with sqlite3.connect(root / "index.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO sessions(native_id, origin, raw_id, content_hash, message_count)
-            VALUES ('session', 'codex-session', 'raw-1', ?, 1)
-            """,
-            (b"s" * 32,),
-        )
-        conn.execute(
-            """
-            INSERT INTO messages(session_id, position, role, material_origin, content_hash)
-            VALUES ('codex-session:session', 0, 'user', 'human_authored', ?)
-            """,
-            (b"n" * 32,),
-        )
-        conn.execute(
-            """
-            INSERT INTO blocks(message_id, session_id, position, block_type, text)
-            VALUES ('codex-session:session:0.0', 'codex-session:session', 0, 'text', 'hello')
-            """
-        )
-        conn.execute("ANALYZE blocks")
-        conn.execute("ANALYZE messages")
-        conn.execute("ANALYZE action_pairs")
-    return ground_truth
+_seed_archive = seed_schema_inference_archive
 
 
 def _run(
@@ -142,7 +91,7 @@ def _run(
     result = run_schema_inference_gate(
         root,
         receipt_path=tmp_path / f"schema-gate-receipt-{receipt_count}" / RECEIPT_FILENAME,
-        ground_truth_roots=ground_truth_roots or {"codex-session": (external_root,)},
+        ground_truth_roots=({"codex-session": (external_root,)} if ground_truth_roots is None else ground_truth_roots),
     )
     return cast(_GateReceipt, result.payload)
 
@@ -213,6 +162,25 @@ def test_gate_receipt_path_is_immutable(tmp_path: Path) -> None:
 
     with pytest.raises(SchemaInferenceGateError, match="immutable"):
         run_schema_inference_gate(root, receipt_path=receipt, ground_truth_roots={"codex-session": (ground_truth,)})
+
+
+def test_authoritative_receipt_expires_from_its_signed_generation_time(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt = tmp_path / RECEIPT_FILENAME
+    payload = run_schema_inference_gate(
+        root,
+        receipt_path=receipt,
+        ground_truth_roots={"codex-session": (ground_truth,)},
+    ).payload
+    generated_at = datetime.fromisoformat(str(payload["generated_at"])).astimezone(UTC)
+
+    with pytest.raises(SchemaInferenceGateError, match="stale or from the future"):
+        validate_schema_inference_gate_receipt(
+            receipt,
+            archive_root=root,
+            now=generated_at + timedelta(hours=24, seconds=1),
+        )
 
 
 def test_gate_refuses_concurrent_writer_lease(tmp_path: Path) -> None:

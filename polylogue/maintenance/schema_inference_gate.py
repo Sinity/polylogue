@@ -1167,6 +1167,13 @@ def _archive_config(root: Path) -> Any:
     return Config(archive_root=root, render_root=root / "render", sources=[])
 
 
+def resolve_schema_inference_archive_root(config: object, *, fallback_db_path: Path) -> Path:
+    """Resolve the archive root consistently across privileged schema routes."""
+
+    configured_root = getattr(config, "archive_root", None)
+    return Path(configured_root) if configured_root is not None else fallback_db_path.parent
+
+
 @contextmanager
 def schema_inference_quiescence(archive_root: Path) -> Iterator[None]:
     """Hold the archive-wide offline lease for the complete evidence window."""
@@ -1256,7 +1263,7 @@ def validate_schema_inference_gate_receipt(
 
 @contextmanager
 def authorize_schema_generation(archive_root: Path, receipt_path: Path) -> Iterator[dict[str, object]]:
-    """Hold quiescence while authorizing one schema-generation scan."""
+    """Hold quiescence for one fresh schema operation or compatible short sequence."""
 
     with schema_inference_quiescence(archive_root):
         yield validate_schema_inference_gate_receipt(receipt_path, archive_root=archive_root)

@@ -19,7 +19,10 @@ from polylogue.cli.shared.schema_command_support import build_schema_privacy_con
 from polylogue.cli.shared.schema_rendering import render_schema_generate_result
 from polylogue.config import get_config
 from polylogue.core.json import JSONDocument
-from polylogue.maintenance.schema_inference_gate import authorize_schema_generation
+from polylogue.maintenance.schema_inference_gate import (
+    authorize_schema_generation,
+    resolve_schema_inference_archive_root,
+)
 from polylogue.schemas.operator.models import SchemaInferRequest
 from polylogue.schemas.operator.workflow import infer_schema
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -116,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             privacy=args.privacy,
             privacy_config_path=args.privacy_config,
         )
-        archive_root = getattr(config, "archive_root", None) or config.db_path.parent
+        archive_root = resolve_schema_inference_archive_root(config, fallback_db_path=config.db_path)
         with authorize_schema_generation(archive_root, args.schema_inference_receipt):
             result = infer_schema(
                 SchemaInferRequest(
