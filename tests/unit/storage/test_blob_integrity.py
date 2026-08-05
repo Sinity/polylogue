@@ -11,9 +11,11 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive import zip_admission
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage import blob_integrity
 from polylogue.storage.blob_gc import run_blob_gc_report
 from polylogue.storage.blob_integrity import (
     classify_blob_reference_debt,
@@ -996,6 +998,51 @@ def test_replace_raw_backed_blob_reference_debt_from_source_updates_raw_refs(tmp
     assert all(store.exists(blob_hash) for _raw_id, blob_hash, _size in stored)
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+
+
+def test_blob_recovery_rejects_duplicate_container_member_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    zip_source = tmp_path / "duplicate.zip"
+    with zipfile.ZipFile(zip_source, "w") as archive:
+        archive.writestr("conversations.json", b'{"first": true}')
+        archive.writestr("conversations.json", b'{"second": true}')
+
+    def fail_open(*args: object, **kwargs: object) -> object:
+        raise AssertionError("rejected duplicate member must not be opened")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", fail_open)
+    payload, reason = blob_integrity._current_raw_payload_bytes(
+        f"{zip_source}:conversations.json",
+        0,
+    )
+
+    assert payload is None
+    assert reason == "ambiguous_container_member"
+
+
+def test_blob_recovery_rejects_oversized_container_member_before_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    zip_source = tmp_path / "oversized.zip"
+    with zipfile.ZipFile(zip_source, "w") as archive:
+        archive.writestr("conversations.json", b"{}")
+
+    monkeypatch.setattr(zip_admission, "MAX_UNCOMPRESSED_SIZE", 1)
+    monkeypatch.setattr(blob_integrity, "MAX_UNCOMPRESSED_SIZE", 1)
+
+    def fail_open(*args: object, **kwargs: object) -> object:
+        raise AssertionError("rejected oversized member must not be opened")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", fail_open)
+    payload, reason = blob_integrity._current_raw_payload_bytes(
+        f"{zip_source}:conversations.json",
+        0,
+    )
+
+    assert payload is None
+    assert reason == "container_member_rejected"
 
 
 def test_source_replacement_publication_survives_gc_before_reference_commit(tmp_path: Path) -> None:

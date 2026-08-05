@@ -186,7 +186,7 @@ def test_select_returns_fzf_choice_in_json_in_a_real_pty(
     _install_first_row_fzf(picker_dir, trace_path)
 
     result = run_in_pty(
-        ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select", "--json"],
+        ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select", "--format", "json"],
         cols=200,
         env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir),
     )

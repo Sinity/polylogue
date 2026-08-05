@@ -233,7 +233,7 @@ async def test_persists_compaction_session_event_summary(async_backend: SQLiteBa
     assert row is not None
     assert row["event_type"] == "compaction"
     assert row["summary"] == "Older turns compacted"
-    assert row["source_message_id"] == f"{session_id}:msg-1"
+    assert row["source_message_id"] == f"{session_id}:n:msg-1"
 
 
 async def test_agent_reasoning_event_filtered_but_sibling_orphan_type_kept(
@@ -338,7 +338,7 @@ async def test_projects_agent_policy_event_into_typed_columns(async_backend: SQL
     assert row["approval_policy"] == "on-request"
     assert row["sandbox_policy"] == "workspace-write"
     assert row["network_policy"] == "restricted"
-    assert row["source_message_id"] == f"{session_id}:msg-1"
+    assert row["source_message_id"] == f"{session_id}:n:msg-1"
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +441,7 @@ async def test_whitespace_only_native_message_id_falls_back_and_writes_blocks(as
         )
 
     assert message_row["native_id"] is None
-    assert message_row["message_id"] == f"{session_id}:0.0"
+    assert message_row["message_id"] == f"{session_id}:p:0.0"
     assert block_count == 1
 
 
@@ -480,7 +480,7 @@ async def test_surrogate_native_message_id_round_trips_consistently(async_backen
         )
 
     assert message_row["native_id"] == "�tail"
-    assert message_row["message_id"] == f"{session_id}:�tail"
+    assert message_row["message_id"] == f"{session_id}:n:�tail"
     assert block_count == 1
 
 

@@ -79,7 +79,10 @@ def derive_claim_guard(
     search_ready: bool,
     search_summary: str,
     active_writer: bool,
+    convergence_debt_available: bool,
     active_writer_summary: str = "",
+    convergence_debt_pending: bool = False,
+    convergence_debt_summary: str = "no pending convergence debt",
 ) -> ClaimGuard:
     """Derive the claim-guard block from already-computed readiness signals.
 
@@ -123,6 +126,20 @@ def derive_claim_guard(
             value=False,
             reason=raw_materialization_summary,
             signal="raw_materialization_readiness (debt zero or fully classified)",
+        )
+    elif not convergence_debt_available:
+        converged = ClaimGuardEntry(
+            claim="converged",
+            value=False,
+            reason=convergence_debt_summary or "convergence debt unavailable; convergence state is unknown",
+            signal="convergence_debt_summary.available (unknown debt blocks convergence)",
+        )
+    elif convergence_debt_pending:
+        converged = ClaimGuardEntry(
+            claim="converged",
+            value=False,
+            reason=convergence_debt_summary,
+            signal="convergence_debt_summary (pending failed or deferred debt)",
         )
     elif not raw_frontier_integrity_ready:
         # polylogue-yla8.7: raw materialization can look fully converged while

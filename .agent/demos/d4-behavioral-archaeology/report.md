@@ -98,7 +98,7 @@ polylogue demo seed --root /path/to/demo-archive --force
 export POLYLOGUE_ARCHIVE_ROOT=/path/to/demo-archive
 export POLYLOGUE_FORCE_PLAIN=1
 
-polylogue find 'sessions where seq(action:shell -> action:shell)' then select --json
+polylogue find 'sessions where seq(action:shell -> action:shell)' then select --format json
 polylogue 'actions where exit_code:>=0 | group by tool | count'
 polylogue 'actions where is_error:true | group by tool | count'
 polylogue find 'near:"flaky async test"'

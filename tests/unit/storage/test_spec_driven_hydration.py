@@ -51,6 +51,7 @@ async def test_real_archive_write_read_hydrates_spec_fields(tmp_path: Path) -> N
                 provider_message_id="native-message",
                 role=Role.ASSISTANT,
                 text="finished",
+                timestamp="2026-03-01T10:05:00+00:00",
                 position=0,
                 stop_reason="end_turn",
                 is_active_path=True,
@@ -75,3 +76,5 @@ async def test_real_archive_write_read_hydrates_spec_fields(tmp_path: Path) -> N
     assert hydrated.is_active_path is True
     assert hydrated.is_active_leaf is True
     assert hydrated.text == "finished"
+    assert hydrated.timestamp is not None
+    assert hydrated.timestamp.isoformat() == "2026-03-01T10:05:00+00:00"

@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory, classify_tool
-from polylogue.core.enums import Origin
+from polylogue.core.enums import ActionResultState, Origin
 from polylogue.core.json import JSONDocument, json_document
 
 #: Structural pass/fail verdict for a tool_result, or "unknown" when the
@@ -121,20 +121,22 @@ def build_tool_calls_from_content_blocks(
     *,
     origin: Origin | str | None,
     content_blocks: Sequence[Mapping[str, object]],
+    result_block_by_use_block_id: Mapping[int, Mapping[str, object] | None] | None = None,
 ) -> tuple[ToolCall, ...]:
-    """Normalize canonical ToolCall viewports from content blocks."""
-    tool_result_outputs: dict[str, str] = {}
-    tool_result_outcomes: dict[str, ToolResultOutcome] = {}
+    """Normalize canonical ToolCall viewports from content blocks.
+
+    Results are paired to uses by per-tool FIFO rank. Callers that have a
+    session-wide view may provide ``result_block_by_use_block_id`` to apply the
+    same rank semantics across message boundaries.
+    """
+    tool_result_blocks: dict[str, list[Mapping[str, object]]] = {}
     tool_use_blocks: list[Mapping[str, object]] = []
     for block in content_blocks:
         block_type = str(block.get("type"))
         if block_type == "tool_result":
             tool_id = block.get("tool_id")
-            text = block.get("text")
-            if isinstance(tool_id, str) and tool_id and isinstance(text, str) and text:
-                tool_result_outputs.setdefault(tool_id, text)
             if isinstance(tool_id, str) and tool_id:
-                tool_result_outcomes.setdefault(tool_id, tool_result_block_outcome(block))
+                tool_result_blocks.setdefault(tool_id, []).append(block)
             continue
         if block_type != "tool_use":
             continue
@@ -147,11 +149,22 @@ def build_tool_calls_from_content_blocks(
         origin if isinstance(origin, Origin) else Origin.from_string(origin) if origin is not None else None
     )
     calls: list[ToolCall] = []
+    use_ranks: dict[str, int] = {}
     for block in tool_use_blocks:
+        tool_id = block.get("tool_id")
+        outcome_tool_id = tool_id if isinstance(tool_id, str) and tool_id else None
+        if result_block_by_use_block_id is not None and id(block) in result_block_by_use_block_id:
+            result_block = result_block_by_use_block_id[id(block)]
+        elif outcome_tool_id is not None:
+            rank = use_ranks.get(outcome_tool_id, 0)
+            use_ranks[outcome_tool_id] = rank + 1
+            results = tool_result_blocks.get(outcome_tool_id, ())
+            result_block = results[rank] if rank < len(results) else None
+        else:
+            result_block = None
         name = block.get("tool_name")
         if not isinstance(name, str) or not name:
             continue
-        tool_id = block.get("tool_id")
         normalized_input = _normalized_mapping(block.get("tool_input"))
         semantic_category = _tool_category_from_semantic(block.get("semantic_type"))
         classified_category = classify_tool(name, normalized_input)
@@ -173,16 +186,26 @@ def build_tool_calls_from_content_blocks(
             "semantic_type": block.get("semantic_type"),
             "text": block.get("text"),
         }
-        outcome_tool_id = tool_id if isinstance(tool_id, str) and tool_id else None
-        outcome = tool_result_outcomes.get(outcome_tool_id, "unknown") if outcome_tool_id else "unknown"
+        outcome = tool_result_block_outcome(result_block) if result_block is not None else "unknown"
+        result_state = (
+            ActionResultState.NO_RESULT
+            if result_block is None
+            else ActionResultState.OUTCOME_UNKNOWN
+            if outcome == "unknown"
+            else ActionResultState.OUTCOME_SUCCESS
+            if outcome == "ok"
+            else ActionResultState.OUTCOME_ERROR
+        )
         success = {"ok": True, "failed": False, "unknown": None}[outcome]
+        output = result_block.get("text") if result_block is not None else None
         calls.append(
             ToolCall(
                 name=name,
                 id=outcome_tool_id,
                 input=normalized_input,
-                output=tool_result_outputs.get(tool_id) if isinstance(tool_id, str) else None,
+                output=output if isinstance(output, str) and output else None,
                 success=success,
+                result_state=result_state,
                 category=category,
                 origin=normalized_origin,
                 raw=raw,

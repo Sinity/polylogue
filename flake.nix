@@ -378,16 +378,43 @@
             touch "$legacy_stamp"
           fi
 
-          # Install repo git hooks — skip if already set correctly.
-          # Prefer the Beads composite hook path when present; those hooks
-          # chain the ordinary Polylogue .githooks checks and the Beads hooks.
-          desired_hooks_path=".githooks"
-          if [ -d .beads-hooks ]; then
-            desired_hooks_path=".beads-hooks"
+          # Install repo git hooks through the shared Git common directory.
+          # The helper pins an absolute common-directory path in every
+          # worktree's config, so a historical shell hook cannot restore its
+          # relative path as the effective route for that worktree.
+          git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null || true)
+          if [ -n "$git_common_dir" ]; then
+            case "$git_common_dir" in
+              /*) ;;
+              *) git_common_dir="$PWD/$git_common_dir" ;;
+            esac
+            git_common_dir=$(cd "$git_common_dir" && pwd -P)
+            git_common_root=$(cd "$git_common_dir/.." && pwd -P)
+            if [ -x "$git_common_root/scripts/configure-git-hooks" ]; then
+              "$git_common_root/scripts/configure-git-hooks"
+            else
+              # Transitional fallback for a common checkout that predates
+              # the helper. Keep the same worktree-config invariant.
+              desired_hooks_path="$git_common_root/.githooks"
+              if [ -d "$git_common_root/.beads-hooks" ]; then
+                desired_hooks_path="$git_common_root/.beads-hooks"
+              fi
+              git -C "$git_common_root" config --local extensions.worktreeConfig true
+              git -C "$git_common_root" config --local core.hooksPath "$desired_hooks_path"
+              while IFS= read -r worktree_path; do
+                [ -n "$worktree_path" ] || continue
+                [ -d "$worktree_path" ] || continue
+                git -C "$worktree_path" config --worktree core.hooksPath "$desired_hooks_path"
+              done < <(git -C "$git_common_root" worktree list --porcelain | sed -n 's/^worktree //p')
+            fi
+          else
+            git_common_root="$PWD"
           fi
-          current_hooks_path=$(git config --local core.hooksPath 2>/dev/null || true)
-          if [ "$current_hooks_path" != "$desired_hooks_path" ]; then
-            git config --local core.hooksPath "$desired_hooks_path" 2>/dev/null || true
+          if [ -x "$git_common_root/scripts/bd" ]; then
+            case ":$PATH:" in
+              *":$git_common_root/scripts:"*) ;;
+              *) export PATH="$git_common_root/scripts:$PATH" ;;
+            esac
           fi
 
           # Clean stale __pycache__ dirs under source trees — skip if stamp

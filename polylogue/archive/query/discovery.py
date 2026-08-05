@@ -196,6 +196,7 @@ ACTION_COLUMNS = (
     "output_text",
     "is_error",
     "exit_code",
+    "result_state",
     "followup_class",
     "followup_message_ref",
 )

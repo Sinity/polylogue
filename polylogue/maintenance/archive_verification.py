@@ -49,8 +49,12 @@ from polylogue.maintenance.corpus_fidelity import (
     audit_attachment_fidelity,
     audit_revision_fidelity,
 )
+from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
+from polylogue.storage.blob_integrity import scan_attachment_acquisition_debt, scan_blob_integrity
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
+from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -192,9 +196,17 @@ def archive_verification_check_json(check: OutcomeCheck) -> JSONDocument:
     return payload
 
 
-def _error_check(name: str, summary: str, *, exc: Exception | None = None) -> ArchiveVerificationCheck:
-    evidence: dict[str, Any] = {"error": str(exc)} if exc is not None else {}
-    return ArchiveVerificationCheck(name=name, status=OutcomeStatus.ERROR, summary=summary, count=1, evidence=evidence)
+def _error_check(
+    name: str,
+    summary: str,
+    *,
+    exc: Exception | None = None,
+    evidence: dict[str, Any] | None = None,
+) -> ArchiveVerificationCheck:
+    payload = dict(evidence or {})
+    if exc is not None:
+        payload["error"] = str(exc)
+    return ArchiveVerificationCheck(name=name, status=OutcomeStatus.ERROR, summary=summary, count=1, evidence=payload)
 
 
 def _skip_check(name: str, summary: str) -> ArchiveVerificationCheck:
@@ -233,6 +245,48 @@ class ArchiveVerificationReport(OutcomeReport):
                 "checks": [archive_verification_check_json(check) for check in self.checks],
             }
         )
+
+
+def strict_acceptance_failures(
+    report: ArchiveVerificationReport,
+    *,
+    required_checks: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Return every result that prevents a strict acceptance decision.
+
+    Strict acceptance is deliberately separate from :attr:`blocking`, which
+    is the ordinary monitoring gate and therefore honors reviewed waivers.
+    Acceptance proves a candidate is complete enough to activate: every
+    required check must be present and ``ok``. Warnings, skips, and errors all
+    fail this predicate, including errors carrying a waiver.
+    """
+    required = (
+        tuple(dict.fromkeys(required_checks))
+        if required_checks is not None
+        else tuple(check.name for check in report.checks)
+    )
+    by_name = {check.name: check for check in report.checks}
+    failures: list[str] = []
+    for name in required:
+        check = by_name.get(name)
+        if check is None:
+            failures.append(f"{name}: required check result is missing")
+            continue
+        if check.status is OutcomeStatus.OK:
+            continue
+        waiver = getattr(check, "waived_bead_id", None)
+        waiver_detail = f", waived by {waiver}" if waiver is not None else ""
+        failures.append(f"{check.name} [{check.status.value}{waiver_detail}]: {check.summary}")
+    return tuple(failures)
+
+
+def passes_strict_acceptance(
+    report: ArchiveVerificationReport,
+    *,
+    required_checks: Sequence[str] | None = None,
+) -> bool:
+    """Return whether a report is complete and wholly ``ok`` for activation."""
+    return not strict_acceptance_failures(report, required_checks=required_checks)
 
 
 ArchiveVerificationCheckFn = Callable[[Path, int], ArchiveVerificationCheck]
@@ -383,6 +437,12 @@ def _check_pointer_coherence(archive_root: Path, _sample_limit: int) -> ArchiveV
 
 
 def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_source_index_coverage_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_source_index_coverage_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
     """Every logical source's head is indexed OR carries a typed refusal.
 
     Universe (polylogue-in24n, invariant I1): ``raw_sessions`` logical heads --
@@ -401,7 +461,6 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
     (index sessions whose raw_id doesn't exist in source.db at all).
     """
     source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
-    index_path = _resolve_index_path(archive_root)
     if not source_path.exists() or not index_path.exists():
         return _skip_check("source-index-coverage", "source.db or index.db not present")
 
@@ -601,6 +660,12 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
     )
 
 
+def _check_source_index_coverage_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_source_index_coverage_at_index_path(archive_root, index_path, sample_limit)
+
+
 # ---------------------------------------------------------------------------
 # Check 4: FTS parity (archive-wide)
 # ---------------------------------------------------------------------------
@@ -619,44 +684,53 @@ def _check_fts_parity(archive_root: Path, sample_limit: int) -> ArchiveVerificat
     evidence: dict[str, Any] = {}
     problems: list[str] = []
     try:
-        if table_exists(conn, "blocks") and table_exists(conn, "messages_fts_docsize"):
-            row = conn.execute(
+        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+
+        messages = fts_invariant_snapshot_sync(conn).messages
+        expected, indexed = messages.source_rows, messages.indexed_rows
+        gap = expected - indexed
+        worst_sessions: list[dict[str, Any]] = []
+        if gap and table_exists(conn, "blocks") and table_exists(conn, "messages_fts_docsize"):
+            rows = conn.execute(
                 """
-                SELECT
-                    COUNT(*) FILTER (WHERE b.search_text != ''),
-                    COUNT(d.id) FILTER (WHERE b.search_text != '')
+                SELECT b.session_id,
+                       COUNT(*) FILTER (WHERE b.search_text != '') AS expected,
+                       COUNT(d.id) FILTER (WHERE b.search_text != '') AS indexed
                 FROM blocks AS b
                 LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-                """
-            ).fetchone()
-            expected, indexed = int(row[0] or 0), int(row[1] or 0)
-            gap = expected - indexed
-            worst_sessions: list[dict[str, Any]] = []
-            if gap:
-                rows = conn.execute(
-                    """
-                    SELECT b.session_id,
-                           COUNT(*) FILTER (WHERE b.search_text != '') AS expected,
-                           COUNT(d.id) FILTER (WHERE b.search_text != '') AS indexed
-                    FROM blocks AS b
-                    LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-                    GROUP BY b.session_id
-                    HAVING expected != indexed
-                    ORDER BY (expected - indexed) DESC
-                    LIMIT ?
-                    """,
-                    (sample_limit,),
-                ).fetchall()
-                worst_sessions = [{"session_id": str(r[0]), "expected": int(r[1]), "indexed": int(r[2])} for r in rows]
-                problems.append(f"messages_fts gap={gap}")
-            evidence["messages_fts"] = {
-                "expected": expected,
-                "indexed": indexed,
-                "gap": gap,
-                "worst_sessions": worst_sessions,
-            }
-        else:
-            evidence["messages_fts"] = None
+                GROUP BY b.session_id
+                HAVING expected != indexed
+                ORDER BY (expected - indexed) DESC
+                LIMIT ?
+                """,
+                (sample_limit,),
+            ).fetchall()
+            worst_sessions = [{"session_id": str(r[0]), "expected": int(r[1]), "indexed": int(r[2])} for r in rows]
+        if messages.source_exists and not messages.exists:
+            problems.append("messages_fts missing")
+        if gap:
+            problems.append(f"messages_fts gap={gap}")
+        elif messages.missing_rows:
+            problems.append(f"messages_fts missing_rows={messages.missing_rows}")
+        if messages.excess_rows:
+            problems.append(f"messages_fts excess_rows={messages.excess_rows}")
+        if messages.duplicate_rows:
+            problems.append(f"messages_fts duplicate_rows={messages.duplicate_rows}")
+        if messages.identity_mismatch_rows:
+            problems.append(f"messages_fts identity_mismatch_rows={messages.identity_mismatch_rows}")
+        if messages.exists and not messages.triggers_present:
+            problems.append("messages_fts triggers missing")
+        evidence["messages_fts"] = {
+            "expected": expected,
+            "indexed": indexed,
+            "gap": gap,
+            "missing_rows": messages.missing_rows,
+            "excess_rows": messages.excess_rows,
+            "duplicate_rows": messages.duplicate_rows,
+            "identity_mismatch_rows": messages.identity_mismatch_rows,
+            "triggers_present": messages.triggers_present,
+            "worst_sessions": worst_sessions,
+        }
 
         if table_exists(conn, "blocks") and table_exists(conn, "blocks_command_trigram_docsize"):
             # blocks_command_trigram is an external-content FTS5 table
@@ -989,12 +1063,357 @@ def _check_blob_refs_liveness(archive_root: Path, sample_limit: int) -> ArchiveV
     )
 
 
+def _check_blob_reference_closure_for_index(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Require acquired rows to retain their exact canonical references."""
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("blob-reference-closure", "source.db or index.db not present")
+    try:
+        source_conn = _open_ro(source_path)
+    except sqlite3.Error as exc:
+        return _error_check("blob-reference-closure", f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        index_conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        source_conn.close()
+        return _error_check("blob-reference-closure", f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        from polylogue.maintenance.blob_reference_closure import (
+            closure_counts,
+            raw_reference_closure_predicate,
+        )
+
+        counts = closure_counts(source_conn, index_conn)
+        raw_sample = [
+            str(row[0])
+            for row in source_conn.execute(
+                f"""
+                SELECT r.raw_id FROM raw_sessions r
+                WHERE {raw_reference_closure_predicate()}
+                ORDER BY r.raw_id LIMIT ?
+                """,
+                (sample_limit,),
+            )
+        ]
+        attachment_sample = [
+            str(row[0])
+            for row in index_conn.execute(
+                """
+                SELECT a.attachment_id FROM attachments a
+                WHERE a.acquisition_status = 'acquired'
+                  AND NOT EXISTS (SELECT 1 FROM attachment_refs r WHERE r.attachment_id = a.attachment_id)
+                ORDER BY a.attachment_id LIMIT ?
+                """,
+                (sample_limit,),
+            )
+        ]
+    except sqlite3.Error as exc:
+        return _error_check("blob-reference-closure", f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        index_conn.close()
+        source_conn.close()
+
+    total = sum(counts.values())
+    return ArchiveVerificationCheck(
+        name="blob-reference-closure",
+        status=OutcomeStatus.ERROR if total else OutcomeStatus.OK,
+        summary=(
+            f"{counts['raw_missing_exact_count']:,} raw session(s) and "
+            f"{counts['acquired_attachment_missing_ref_count']:,} acquired attachment(s) lack canonical refs"
+            if total
+            else "every raw session and acquired attachment has canonical reference closure"
+        ),
+        count=total,
+        details=[f"raw:{raw_id}" for raw_id in raw_sample]
+        + [f"attachment:{attachment_id}" for attachment_id in attachment_sample],
+        evidence={
+            **counts,
+            "raw_sample": raw_sample,
+            "attachment_sample": attachment_sample,
+        },
+    )
+
+
+def _check_blob_reference_closure(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_blob_reference_closure_for_index(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_blob_reference_closure_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_blob_reference_closure_for_index(archive_root, index_path, sample_limit)
+
+
+# ---------------------------------------------------------------------------
+# Check: raw failure lifecycle
+# ---------------------------------------------------------------------------
+
+
+def _check_raw_failure_lifecycle(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Require typed evidence for every retained raw parse/validation failure."""
+    snapshot = read_raw_failure_lifecycle(_tier_path(archive_root, ArchiveTier.SOURCE), sample_limit=sample_limit)
+    evidence = snapshot.to_dict()
+    if not snapshot.available:
+        return _error_check(
+            "raw-failure-lifecycle",
+            str(snapshot.reason or "raw failure lifecycle is unavailable"),
+            evidence=evidence,
+        )
+    if snapshot.unexplained:
+        return ArchiveVerificationCheck(
+            name="raw-failure-lifecycle",
+            status=OutcomeStatus.ERROR,
+            summary=(
+                f"{snapshot.unexplained:,} raw failure(s) lack typed deferred/terminal evidence; "
+                "reindex is unsafe until each is classified"
+            ),
+            count=snapshot.unexplained,
+            details=[
+                f"{sample.get('origin', 'unknown')}:{sample.get('artifact_kind') or '<none>'}"
+                for sample in snapshot.samples
+                if sample.get("lifecycle") == "unexplained"
+            ],
+            evidence=evidence,
+        )
+    known = snapshot.deferred + snapshot.terminal
+    status = OutcomeStatus.WARNING if known else OutcomeStatus.OK
+    summary = (
+        f"{known:,} raw failure(s) classified ({snapshot.deferred:,} deferred, {snapshot.terminal:,} terminal)"
+        if known
+        else "no raw parse or validation failures"
+    )
+    return ArchiveVerificationCheck(
+        name="raw-failure-lifecycle",
+        status=status,
+        summary=summary,
+        count=known,
+        evidence=evidence,
+    )
+
+
+def _check_raw_failure_lifecycle_at_candidate(
+    archive_root: Path, _index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Run the source-only lifecycle gate for an inactive index candidate."""
+    return _check_raw_failure_lifecycle(archive_root, sample_limit)
+
+
+def _check_blob_refs_liveness_at_candidate(
+    archive_root: Path, _index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Run the source-only blob check while a candidate index is selected."""
+    return _check_blob_refs_liveness(archive_root, sample_limit)
+
+
+def _check_blob_integrity(
+    archive_root: Path, sample_limit: int, index_path: Path | None = None
+) -> ArchiveVerificationCheck:
+    """Require a complete physical scan of the durable blob namespace.
+
+    The ordinary blob-health surface is intentionally bounded. Archive
+    verification is the explicit point-in-time integrity receipt, so it uses
+    the scanner's full traversal while retaining only bounded finding samples.
+    Orphans are errors here as well as missing or corrupted referenced blobs:
+    a clean/nonblocking archive must describe the physical namespace exactly.
+    """
+    scan_path = index_path or _resolve_index_path(archive_root)
+    if not scan_path.exists():
+        source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+        if source_path.exists():
+            scan_path = source_path
+        elif (archive_root / "blob").exists():
+            return _error_check(
+                "blob-integrity",
+                "cannot verify the physical blob namespace without index.db or source.db reference evidence",
+            )
+        else:
+            return _skip_check("blob-integrity", "no archive database or blob namespace present")
+    try:
+        report = scan_blob_integrity(
+            scan_path,
+            store=BlobStore(archive_root / "blob"),
+            full=True,
+            sample_size=sample_limit,
+            configured_root=archive_root,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        return _error_check("blob-integrity", f"could not scan the physical blob namespace: {exc}", exc=exc)
+
+    finding_counts = {finding.kind: finding.count for finding in report.findings}
+    details = [f"{finding.kind}:{finding.count}" for finding in report.findings]
+    return ArchiveVerificationCheck(
+        name="blob-integrity",
+        status=OutcomeStatus.ERROR if report.findings else OutcomeStatus.OK,
+        summary=(
+            "; ".join(f"{kind}={count:,}" for kind, count in finding_counts.items())
+            if finding_counts
+            else f"full physical blob scan verified {report.scanned_blobs:,} blob(s) and {report.scanned_references:,} reference(s)"
+        ),
+        count=sum(finding_counts.values()),
+        details=details,
+        evidence={"scan": report.to_dict(), "finding_counts": finding_counts},
+    )
+
+
+def _check_blob_integrity_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Run the durable full blob scan against the candidate reference set."""
+    return _check_blob_integrity(archive_root, sample_limit, index_path)
+
+
+def _check_attachment_acquisition_debt(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_attachment_acquisition_debt_at_index_path(
+        archive_root, _resolve_index_path(archive_root), sample_limit
+    )
+
+
+def _check_attachment_acquisition_debt_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Acquired attachment bytes must exist and remain reachable by a ref."""
+    if not index_path.exists():
+        return _skip_check("attachment-acquisition-debt", "index.db not present")
+    try:
+        report = scan_attachment_acquisition_debt(
+            index_path,
+            store=BlobStore(archive_root / "blob"),
+            sample_size=sample_limit,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        return _error_check(
+            "attachment-acquisition-debt", f"could not scan attachment acquisition debt: {exc}", exc=exc
+        )
+
+    missing = report.acquired_missing_blob_count
+    unreachable = report.acquired_unreachable_count
+    debt_count = missing + unreachable
+    details = [
+        *(f"acquired-missing-blob:{attachment_id}" for attachment_id in report.acquired_missing_blob_sample),
+        *(f"acquired-unreachable:{attachment_id}" for attachment_id in report.acquired_unreachable_sample),
+    ]
+    return ArchiveVerificationCheck(
+        name="attachment-acquisition-debt",
+        status=OutcomeStatus.ERROR if debt_count else OutcomeStatus.OK,
+        summary=(
+            f"acquired attachment debt: missing_blob={missing:,}, unreachable={unreachable:,}"
+            if debt_count
+            else f"all {report.acquired_count:,} acquired attachment(s) have bytes and a live attachment reference"
+        ),
+        count=debt_count,
+        details=details,
+        evidence={"scan": report.to_dict(), "missing_blob_count": missing, "unreachable_count": unreachable},
+    )
+
+
+def _check_attachment_acquisition_debt_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_attachment_acquisition_debt_at_index_path(archive_root, index_path, sample_limit)
+
+
+def _check_pathology_zoo_invariants(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
+    """Run each production-owned pathology-zoo invariant when its corpus is present."""
+    from polylogue.maintenance.pathology_zoo import (
+        PATHOLOGY_ZOO_MANIFEST,
+        PathologyZooMember,
+        pathology_zoo_is_present,
+    )
+
+    if not pathology_zoo_is_present(archive_root):
+        return ArchiveVerificationCheck(
+            name="pathology-zoo-invariants",
+            status=OutcomeStatus.OK,
+            summary="no pathology-zoo corpus detected; zoo-specific invariants are not applicable",
+            evidence={"active": False, "checked_member_ids": [], "failed_member_ids": []},
+        )
+
+    failed: list[PathologyZooMember] = []
+    for member in PATHOLOGY_ZOO_MANIFEST:
+        try:
+            satisfied = member.invariant.is_satisfied(archive_root)
+        except sqlite3.Error:
+            satisfied = False
+        if not satisfied:
+            failed.append(member)
+    return ArchiveVerificationCheck(
+        name="pathology-zoo-invariants",
+        status=OutcomeStatus.ERROR if failed else OutcomeStatus.OK,
+        summary=(
+            f"{len(failed)} pathology-zoo invariant(s) failed"
+            if failed
+            else f"all {len(PATHOLOGY_ZOO_MANIFEST)} pathology-zoo invariants hold"
+        ),
+        count=len(failed),
+        details=[f"{member.member_id}: {member.invariant.condition}" for member in failed],
+        evidence={
+            "active": True,
+            "checked_member_ids": [member.member_id for member in PATHOLOGY_ZOO_MANIFEST],
+            "failed_member_ids": [member.member_id for member in failed],
+        },
+    )
+
+
+def _check_pathology_zoo_invariants_at_index_path(
+    archive_root: Path, index_path: Path, _sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Run pathology-zoo invariants against an inactive index and live durable tiers."""
+    from polylogue.maintenance.pathology_zoo import (
+        PATHOLOGY_ZOO_MANIFEST,
+        PathologyZooMember,
+        pathology_zoo_is_present,
+    )
+
+    if not pathology_zoo_is_present(archive_root, index_path_override=index_path):
+        return ArchiveVerificationCheck(
+            name="pathology-zoo-invariants",
+            status=OutcomeStatus.OK,
+            summary="no pathology-zoo corpus detected; zoo-specific invariants are not applicable",
+            evidence={"active": False, "checked_member_ids": [], "failed_member_ids": []},
+        )
+
+    failed: list[PathologyZooMember] = []
+    for member in PATHOLOGY_ZOO_MANIFEST:
+        try:
+            satisfied = member.invariant.is_satisfied(archive_root, index_path_override=index_path)
+        except sqlite3.Error:
+            satisfied = False
+        if not satisfied:
+            failed.append(member)
+    return ArchiveVerificationCheck(
+        name="pathology-zoo-invariants",
+        status=OutcomeStatus.ERROR if failed else OutcomeStatus.OK,
+        summary=(
+            f"{len(failed)} pathology-zoo invariant(s) failed"
+            if failed
+            else f"all {len(PATHOLOGY_ZOO_MANIFEST)} pathology-zoo invariants hold"
+        ),
+        count=len(failed),
+        details=[f"{member.member_id}: {member.invariant.condition}" for member in failed],
+        evidence={
+            "active": True,
+            "checked_member_ids": [member.member_id for member in PATHOLOGY_ZOO_MANIFEST],
+            "failed_member_ids": [member.member_id for member in failed],
+            "index_path": str(index_path),
+            "durable_archive_root": str(archive_root),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Check: embeddings refs resolve in the index tier (I4, polylogue-t0m73)
 # ---------------------------------------------------------------------------
 
 
 def _check_embeddings_refs_liveness(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_embeddings_refs_liveness_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_embeddings_refs_liveness_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
     """Every ``message_embedding_refs`` row resolves to a live index message.
 
     embeddings.db is a rebuildable derived tier keyed off index.db's message
@@ -1005,7 +1424,6 @@ def _check_embeddings_refs_liveness(archive_root: Path, sample_limit: int) -> Ar
     longer exists in the index.
     """
     embeddings_path = _tier_path(archive_root, ArchiveTier.EMBEDDINGS)
-    index_path = _resolve_index_path(archive_root)
     if not embeddings_path.exists():
         return _skip_check("embeddings-refs-liveness", "embeddings.db not present")
     if not index_path.exists():
@@ -1066,6 +1484,12 @@ def _check_embeddings_refs_liveness(archive_root: Path, sample_limit: int) -> Ar
         details=[f"orphan:{message_id}" for message_id in orphan_sample],
         evidence={"ref_count": int(total or 0), "orphan_count": orphans, "orphan_sample": orphan_sample},
     )
+
+
+def _check_embeddings_refs_liveness_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_embeddings_refs_liveness_at_index_path(archive_root, index_path, sample_limit)
 
 
 # ---------------------------------------------------------------------------
@@ -1206,6 +1630,165 @@ def _check_message_count_projection(archive_root: Path, sample_limit: int) -> Ar
         count=drift_count,
         details=[f"session:{session_id}" for session_id in drift_sample],
         evidence={"drifted_session_count": drift_count, "drifted_session_sample": drift_sample},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: parser/lowering semantic stamp coverage (polylogue-xselt)
+# ---------------------------------------------------------------------------
+
+
+def _check_session_fingerprint_stamps(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Require every candidate session to carry current, unmixed semantic stamps.
+
+    ``sessions`` is the ground-truth candidate universe. The check compares
+    each row to the current source-derived stamp rather than accepting a
+    merely well-formed historical value, so a parser/lowering semantic change
+    cannot promote a stale reindex candidate.
+    """
+    index_path = _resolve_index_path(archive_root)
+    if not index_path.exists():
+        return _skip_check("session-fingerprint-stamps", "index.db not present")
+    try:
+        conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("session-fingerprint-stamps", f"could not open index.db: {exc}", exc=exc)
+
+    try:
+        required_columns = {"parser_fingerprint", "lowering_fingerprint"}
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)")}
+        missing_columns = sorted(required_columns - columns)
+        if missing_columns:
+            return _error_check(
+                "session-fingerprint-stamps",
+                f"sessions is missing fingerprint column(s): {', '.join(missing_columns)}",
+            )
+
+        total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        invalid_sql = "{column} IS NULL OR length({column}) != 64 OR {column} GLOB '*[^0-9a-f]*'"
+        invalid_parser_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM sessions WHERE {invalid_sql.format(column='parser_fingerprint')}"
+            ).fetchone()[0]
+        )
+        invalid_lowering_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM sessions WHERE {invalid_sql.format(column='lowering_fingerprint')}"
+            ).fetchone()[0]
+        )
+        parser_rows = [
+            (str(row[0]), str(row[1]), int(row[2]))
+            for row in conn.execute(
+                """
+                SELECT origin, parser_fingerprint, COUNT(*)
+                FROM sessions
+                WHERE parser_fingerprint IS NOT NULL
+                  AND length(parser_fingerprint) = 64
+                  AND parser_fingerprint NOT GLOB '*[^0-9a-f]*'
+                GROUP BY origin, parser_fingerprint
+                ORDER BY origin, parser_fingerprint
+                """
+            )
+        ]
+        lowering_rows = [
+            (str(row[0]), int(row[1]))
+            for row in conn.execute(
+                """
+                SELECT lowering_fingerprint, COUNT(*)
+                FROM sessions
+                WHERE lowering_fingerprint IS NOT NULL
+                  AND length(lowering_fingerprint) = 64
+                  AND lowering_fingerprint NOT GLOB '*[^0-9a-f]*'
+                GROUP BY lowering_fingerprint
+                ORDER BY lowering_fingerprint
+                """
+            )
+        ]
+        session_stamp_rows = [
+            (str(row[0]), row[1], row[2])
+            for row in conn.execute("SELECT origin, parser_fingerprint, lowering_fingerprint FROM sessions")
+        ]
+        invalid_sample = [
+            str(row[0])
+            for row in conn.execute(
+                f"""
+                SELECT session_id FROM sessions
+                WHERE {invalid_sql.format(column="parser_fingerprint")}
+                   OR {invalid_sql.format(column="lowering_fingerprint")}
+                ORDER BY session_id
+                LIMIT ?
+                """,
+                (sample_limit,),
+            )
+        ]
+    except sqlite3.Error as exc:
+        return _error_check("session-fingerprint-stamps", f"could not read index.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    expected_parser_by_origin: dict[str, str] = {}
+    parser_values_by_origin: dict[str, dict[str, int]] = {}
+    for origin, fingerprint, count in parser_rows:
+        parser_values_by_origin.setdefault(origin, {})[fingerprint] = count
+    parser_stale_by_origin: dict[str, int] = {}
+    parser_mixed_by_origin: dict[str, int] = {}
+    for origin, values in parser_values_by_origin.items():
+        try:
+            expected = parser_fingerprint_for_origin(origin)
+        except ValueError:
+            parser_stale_by_origin[origin] = sum(values.values())
+            continue
+        expected_parser_by_origin[origin] = expected
+        stale_count = sum(count for fingerprint, count in values.items() if fingerprint != expected)
+        if stale_count:
+            parser_stale_by_origin[origin] = stale_count
+        if len(values) != 1:
+            parser_mixed_by_origin[origin] = len(values)
+
+    expected_lowering = lowering_fingerprint()
+    lowering_stale_count = sum(count for fingerprint, count in lowering_rows if fingerprint != expected_lowering)
+    lowering_distinct_count = len(lowering_rows)
+    fully_current_count = sum(
+        expected_parser_by_origin.get(origin) is not None
+        and parser_fingerprint == expected_parser_by_origin[origin]
+        and lowering_stamp == expected_lowering
+        for origin, parser_fingerprint, lowering_stamp in session_stamp_rows
+    )
+    problems: list[str] = []
+    if invalid_parser_count:
+        problems.append(f"missing/invalid parser stamps={invalid_parser_count:,}")
+    if invalid_lowering_count:
+        problems.append(f"missing/invalid lowering stamps={invalid_lowering_count:,}")
+    if parser_stale_by_origin:
+        problems.append(f"stale parser stamps={parser_stale_by_origin}")
+    if lowering_stale_count:
+        problems.append(f"stale lowering stamps={lowering_stale_count:,}")
+    if parser_mixed_by_origin:
+        problems.append(f"mixed parser stamps={parser_mixed_by_origin}")
+    if total and lowering_distinct_count != 1:
+        problems.append(f"mixed lowering stamps={lowering_distinct_count}")
+
+    return ArchiveVerificationCheck(
+        name="session-fingerprint-stamps",
+        status=OutcomeStatus.ERROR if problems else OutcomeStatus.OK,
+        summary=("; ".join(problems) if problems else f"{total:,} session(s) carry current semantic stamps"),
+        count=len(problems),
+        details=[f"invalid:{session_id}" for session_id in invalid_sample],
+        evidence={
+            "session_count": total,
+            "fully_current_session_count": fully_current_count,
+            "invalid_parser_stamp_count": invalid_parser_count,
+            "invalid_lowering_stamp_count": invalid_lowering_count,
+            "expected_parser_by_origin": expected_parser_by_origin,
+            "parser_values_by_origin": parser_values_by_origin,
+            "parser_stale_by_origin": parser_stale_by_origin,
+            "parser_mixed_by_origin": parser_mixed_by_origin,
+            "expected_lowering_fingerprint": expected_lowering,
+            "lowering_values": dict(lowering_rows),
+            "lowering_stale_count": lowering_stale_count,
+            "lowering_distinct_count": lowering_distinct_count,
+            "invalid_sample": invalid_sample,
+        },
     )
 
 
@@ -1865,6 +2448,12 @@ def _check_convergence_freshness(archive_root: Path, _sample_limit: int) -> Arch
 
 
 def _check_user_tier_refs(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_user_tier_refs_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_user_tier_refs_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
     """``assertions.target_ref`` of kind ``session``/``message`` must resolve
     to a live row in ``index.db`` (I10, polylogue-t0m73).
 
@@ -1877,7 +2466,6 @@ def _check_user_tier_refs(archive_root: Path, sample_limit: int) -> ArchiveVerif
     normal target-scoped query.
     """
     user_path = _tier_path(archive_root, ArchiveTier.USER)
-    index_path = _resolve_index_path(archive_root)
     if not user_path.exists() or not index_path.exists():
         return _skip_check("user-tier-refs", "user.db or index.db not present")
 
@@ -1951,6 +2539,12 @@ def _check_user_tier_refs(archive_root: Path, sample_limit: int) -> ArchiveVerif
     )
 
 
+def _check_user_tier_refs_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_user_tier_refs_at_index_path(archive_root, index_path, sample_limit)
+
+
 # ---------------------------------------------------------------------------
 # Registry + entrypoint
 # ---------------------------------------------------------------------------
@@ -1974,6 +2568,7 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "untyped gaps and index-orphans (raw_id ground truth, not the census ledger, polylogue-in24n) block.",
         _check_source_index_coverage,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_source_index_coverage_at_candidate,
     ),
     ArchiveVerificationCheckSpec(
         "fts-parity",
@@ -1999,6 +2594,42 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "not membership in blob_refs itself (polylogue-t0m73 I3).",
         _check_blob_refs_liveness,
         ArchiveVerificationCheckClass.LIVENESS,
+        _check_blob_refs_liveness_at_candidate,
+    ),
+    ArchiveVerificationCheckSpec(
+        "blob-integrity",
+        "A full physical scan finds no missing, corrupted, orphaned, or invalid blob-namespace entries.",
+        _check_blob_integrity,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_blob_integrity_at_candidate,
+    ),
+    ArchiveVerificationCheckSpec(
+        "attachment-acquisition-debt",
+        "Every acquired attachment has physical bytes and remains reachable from an attachment reference.",
+        _check_attachment_acquisition_debt,
+        ArchiveVerificationCheckClass.LIVENESS,
+        _check_attachment_acquisition_debt_at_candidate,
+    ),
+    ArchiveVerificationCheckSpec(
+        "raw-failure-lifecycle",
+        "Every retained raw parse or validation failure has typed deferred or terminal lifecycle evidence.",
+        _check_raw_failure_lifecycle,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_raw_failure_lifecycle_at_candidate,
+    ),
+    ArchiveVerificationCheckSpec(
+        "blob-reference-closure",
+        "Every raw session has exactly one matching raw_payload ref and every acquired attachment is reachable by attachment_refs.",
+        _check_blob_reference_closure,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_blob_reference_closure_at_index_path,
+    ),
+    ArchiveVerificationCheckSpec(
+        "pathology-zoo-invariants",
+        "Every present pathology-zoo member satisfies its production-owned invariant.",
+        _check_pathology_zoo_invariants,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_pathology_zoo_invariants_at_index_path,
     ),
     ArchiveVerificationCheckSpec(
         "embeddings-refs-liveness",
@@ -2006,6 +2637,7 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "polylogue-t0m73 I4).",
         _check_embeddings_refs_liveness,
         ArchiveVerificationCheckClass.LIVENESS,
+        _check_embeddings_refs_liveness_at_candidate,
     ),
     ArchiveVerificationCheckSpec(
         "session-lineage-acyclic",
@@ -2018,6 +2650,12 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "sessions.message_count matches COUNT(messages) per session (polylogue-t0m73 I8).",
         _check_message_count_projection,
         ArchiveVerificationCheckClass.CONSERVATION,
+    ),
+    ArchiveVerificationCheckSpec(
+        "session-fingerprint-stamps",
+        "Every indexed session carries current, unmixed parser and lowering semantic stamps (polylogue-xselt).",
+        _check_session_fingerprint_stamps,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "planner-stats",
@@ -2043,12 +2681,16 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "assertions.target_ref of kind session/message resolves to a live index.db row (polylogue-t0m73 I10).",
         _check_user_tier_refs,
         ArchiveVerificationCheckClass.LIVENESS,
+        _check_user_tier_refs_at_candidate,
     ),
     ArchiveVerificationCheckSpec(
         "excluded-cursor-vocabulary-honesty",
         "No excluded ingest_cursor row carries a live next_retry_at (would misreport as retry-due, polylogue-ix5r).",
         _check_excluded_cursor_vocabulary_honesty,
         ArchiveVerificationCheckClass.LIVENESS,
+        lambda archive_root, _index_path, sample_limit: _check_excluded_cursor_vocabulary_honesty(
+            archive_root, sample_limit
+        ),
     ),
     ArchiveVerificationCheckSpec(
         "stalled-append-cursor-freshness",
@@ -2056,6 +2698,9 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "the stall-escalation threshold (polylogue-2qrx).",
         _check_stalled_append_cursor_freshness,
         ArchiveVerificationCheckClass.LIVENESS,
+        lambda archive_root, _index_path, sample_limit: _check_stalled_append_cursor_freshness(
+            archive_root, sample_limit
+        ),
     ),
     ArchiveVerificationCheckSpec(
         "raw-quarantine-group-dedup",
@@ -2098,28 +2743,57 @@ CORPUS_FIDELITY_CHECKS: tuple[str, ...] = (
     "corpus-revision-fidelity",
 )
 
-#: The subset of ground-truth checks a blue-green reindex candidate generation
-#: is expected to satisfy before promotion (polylogue-t0m73's "reindex
-#: acceptance gate"). Restricted to checks whose universe is satisfiable from
-#: ``index.db`` alone -- a candidate generation directory holds only the new
-#: ``index.db``, not the durable ``source.db``/``user.db``/``embeddings.db``
-#: tiers (those live once at the archive root, not per-generation), so
-#: cross-tier checks (``source-index-coverage``, ``blob-refs-liveness``,
-#: ``embeddings-refs-liveness``, ``tier-schema``) would either report a false
-#: ERROR (missing tiers they're not skip-tolerant of, e.g. tier-schema) or
-#: only ever SKIP (uninformative). Intended use: ``verify_archive(generation_
-#: root, checks=REINDEX_ACCEPTANCE_CHECKS)`` right before promotion, exactly
-#: how :mod:`polylogue.maintenance.rebuild_index` already ran the ``fts-
-#: parity`` singleton -- this constant widens that gate to the rest of the
-#: ground-truth-eligible registry.
+#: Index-only checks run against the inactive generation before promotion.
+#: Cross-tier checks live in :data:`REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS`
+#: because a generation directory contains only ``index.db``.
 REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
     "fts-parity",
     "lineage-sanity",
     "enum-superset-check",
     "session-lineage-acyclic",
     "message-count-projection",
-    "planner-stats",
+    "session-fingerprint-stamps",
 )
+
+#: Full rebuild candidate checks that need durable archive tiers as well as
+#: the inactive generation's index. This is the strict promotion profile:
+#: source/index coverage, blob refs, embeddings refs, user refs, both cursor
+#: checks, and the existing corpus/pathology checks. Every entry has a
+#: candidate runner so ``index_path_override`` cannot silently inspect the
+#: active generation.
+REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS: tuple[str, ...] = (
+    "blob-reference-closure",
+    "raw-failure-lifecycle",
+    "source-index-coverage",
+    "blob-refs-liveness",
+    "blob-integrity",
+    "attachment-acquisition-debt",
+    "raw-failure-lifecycle",
+    "embeddings-refs-liveness",
+    "user-tier-refs",
+    "excluded-cursor-vocabulary-honesty",
+    "stalled-append-cursor-freshness",
+    "corpus-absences",
+    "corpus-attachment-fidelity",
+    "corpus-revision-fidelity",
+    "pathology-zoo-invariants",
+)
+
+# These checks run before an inactive generation is created. They are kept
+# separate from the candidate profile because an empty archive has no index
+# attachment tier yet, so that check may legitimately return SKIP here.
+REINDEX_SOURCE_PREFLIGHT_CHECKS: tuple[str, ...] = (
+    "blob-refs-liveness",
+    "blob-integrity",
+    "attachment-acquisition-debt",
+    "raw-failure-lifecycle",
+)
+
+#: A partial reindex-canary candidate is intentionally not a complete source
+#: replay, so full corpus-fidelity checks would reject every useful canary.
+#: Its candidate-specific gate still runs the pathology-zoo contract against
+#: the candidate index and the durable source tiers.
+REINDEX_CANARY_ACCEPTANCE_CHECKS: tuple[str, ...] = ("pathology-zoo-invariants",)
 
 
 def _select_check_specs(checks: Sequence[str] | None) -> tuple[ArchiveVerificationCheckSpec, ...]:
@@ -2199,12 +2873,18 @@ __all__ = [
     "ARCHIVE_VERIFICATION_CHECK_NAMES",
     "ARCHIVE_VERIFICATION_WAIVERS",
     "CORPUS_FIDELITY_CHECKS",
+    "REINDEX_CANARY_ACCEPTANCE_CHECKS",
+    "REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS",
     "REINDEX_ACCEPTANCE_CHECKS",
+    "REINDEX_SOURCE_PREFLIGHT_CHECKS",
     "ArchiveVerificationCheck",
     "ArchiveVerificationCheckClass",
     "ArchiveVerificationCheckSpec",
     "ArchiveVerificationReport",
     "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
+    "read_raw_failure_lifecycle",
+    "passes_strict_acceptance",
+    "strict_acceptance_failures",
     "verify_archive",
 ]

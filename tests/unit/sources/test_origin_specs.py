@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +20,8 @@ from polylogue.sources.origin_specs import (
     OriginSpecRegistry,
     artifact_suffixes_for_provider,
     check_dropped_value_vocabularies,
+    lowering_fingerprint,
+    parser_fingerprint_for_origin,
     schema_observed_leaf_values,
     undeclared_schema_values,
     validate_assembly_spec_parity,
@@ -60,6 +65,71 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
     assert ORIGIN_SPEC_REGISTRY.diagnostics() == ()
+
+
+def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp_path: Path) -> None:
+    """Parser helper behavior is part of the persisted normalized-output contract.
+
+    Mutation proof: changing the helper from stripping to case-folding changes
+    the parser fingerprint, so a candidate stamped before that semantic change
+    cannot satisfy the current-fingerprint comparison.
+    """
+    spec = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION)
+    parser_source = tmp_path / "parser.py"
+    helper_source = tmp_path / "support.py"
+    parser_source.write_text(
+        "from .support import normalize\n\ndef parse(payload):\n    return {'title': normalize(payload['title'])}\n",
+        encoding="utf-8",
+    )
+    helper_source.write_text("def normalize(value):\n    return value.strip()\n", encoding="utf-8")
+    synthetic = replace(spec, parser_paths=(str(parser_source),))
+
+    before = synthetic.parser_fingerprint()
+    helper_source.write_text("def normalize(value):\n    return value.casefold()\n", encoding="utf-8")
+    after = synthetic.parser_fingerprint()
+
+    assert before != after
+
+
+def test_parser_fingerprint_changes_when_a_declared_assembly_helper_changes(tmp_path: Path) -> None:
+    """Assembly enrichment is part of the origin's normalized output contract."""
+    spec = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.AISTUDIO_DRIVE)
+    parser_source = tmp_path / "parser.py"
+    assembly_source = tmp_path / "assembly.py"
+    helper_source = tmp_path / "support.py"
+    parser_source.write_text("def parse(payload):\n    return payload\n", encoding="utf-8")
+    assembly_source.write_text(
+        "from .support import enrich\n\n"
+        "class AssemblySpec:\n"
+        "    def enrich_session(self, session):\n"
+        "        return enrich(session)\n",
+        encoding="utf-8",
+    )
+    helper_source.write_text("def enrich(value):\n    return value.strip()\n", encoding="utf-8")
+    synthetic = replace(
+        spec,
+        parser_paths=(str(parser_source),),
+        assembly_spec_path=f"{assembly_source}:AssemblySpec",
+    )
+
+    before = synthetic.parser_fingerprint()
+    helper_source.write_text("def enrich(value):\n    return value.strip().casefold()\n", encoding="utf-8")
+    after = synthetic.parser_fingerprint()
+
+    assert before != after
+
+
+def test_production_fingerprints_are_stable_across_a_fresh_interpreter() -> None:
+    current_parser = parser_fingerprint_for_origin(Origin.CODEX_SESSION)
+    command = (
+        "from polylogue.core.enums import Origin; "
+        "from polylogue.sources.origin_specs import parser_fingerprint_for_origin; "
+        "print(parser_fingerprint_for_origin(Origin.CODEX_SESSION))"
+    )
+    restarted = subprocess.check_output([sys.executable, "-c", command], text=True, cwd=Path.cwd()).strip()
+
+    assert restarted == current_parser
+    assert len(lowering_fingerprint()) == 64
 
 
 def test_origin_specs_are_parity_checked_against_current_dispatch_order() -> None:

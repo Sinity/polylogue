@@ -299,6 +299,12 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "raw_validation_failures": 0,
         "raw_quarantined": 0,
         "raw_maintenance_failures": 0,
+        "raw_deferred_failures": 0,
+        "raw_terminal_rejections": 0,
+        "raw_unexplained_failures": 0,
+        "raw_failure_lifecycle_available": False,
+        "raw_failure_lifecycle_state": "unavailable",
+        "raw_failure_lifecycle_reason": frontier_reason,
         "raw_detection_warnings": 0,
         "raw_failure_samples": [],
         "status_snapshot": {

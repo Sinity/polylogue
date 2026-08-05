@@ -716,6 +716,30 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     blob_hash, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(b"before-beads")
     with sqlite3.connect(db_path) as conn:
         conn.executescript(old_ddl)
+        for table_name in (
+            "raw_capture_observations",
+            "verified_blob_receipts",
+            "raw_live_source_reconciliation_receipts",
+            "raw_membership_writeback_receipts",
+            "raw_append_chain_backfill_receipts",
+            "raw_authority_parser_census",
+            "raw_authority_plans",
+            "raw_authority_censuses",
+            "raw_authority_census_plans",
+            "raw_authority_census_post_plans",
+            "raw_authority_blockers",
+            "sinex_publication_obligations",
+            "sinex_publication_payloads",
+            "sinex_publication_receipts",
+            "sinex_publication_segments",
+            "excised_content",
+            "raw_byte_duplicate_supersession_receipts",
+            "raw_authority_verdicts",
+            "raw_quarantine_group_dedup_receipts",
+            "raw_unknown_export_reclassification_receipts",
+            "raw_non_session_duplicate_exclusion_receipts",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.execute("PRAGMA user_version = 7")
         conn.execute(
             """
@@ -1044,22 +1068,12 @@ def test_migrate_archive_tier_neutralizes_foreign_key_cascade_during_rebuild(
     afterwards, regardless of which value it started at.
 
     Anti-vacuity: this test fails without that enforcement (verified by
-    temporarily reverting it) -- the scratch child row below gets
-    cascade-deleted the instant ``raw_sessions`` is dropped mid-migration.
+    temporarily reverting it) -- the pre-existing ``raw_artifacts`` child
+    row gets cascade-deleted the instant ``raw_sessions`` is dropped
+    mid-migration.
     """
     db_path = workspace_env["archive_root"] / "source.db"
     _create_source_v20_with_stale_origin_check(db_path, archive_root=workspace_env["archive_root"])
-
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE scratch_raw_sessions_child (
-                raw_id TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute("INSERT INTO scratch_raw_sessions_child (raw_id) VALUES ('raw-preexisting')")
-        conn.commit()
 
     manifest = _verified_backup_manifest(tmp_path / "backup-v20-fk-cascade")
 
@@ -1073,11 +1087,12 @@ def test_migrate_archive_tier_neutralizes_foreign_key_cascade_during_rebuild(
         # in test_source_tier_v20_widens_origin_check_for_claude_design_session.
         assert result.to_version == SOURCE_SCHEMA_VERSION
 
-        # The scratch child row survived the raw_sessions rebuild instead of
-        # being cascade-deleted when the original raw_sessions was dropped.
+        # The canonical raw_artifacts child row survived the raw_sessions
+        # rebuild instead of being cascade-deleted when the original table
+        # was dropped.
         assert conn.execute(
-            "SELECT raw_id FROM scratch_raw_sessions_child WHERE raw_id = 'raw-preexisting'"
-        ).fetchone() == ("raw-preexisting",)
+            "SELECT artifact_id FROM raw_artifacts WHERE artifact_id = 'artifact-preexisting'"
+        ).fetchone() == ("artifact-preexisting",)
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         # The runner restores the caller's foreign_keys setting afterwards.
         assert bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]) is True
@@ -1109,6 +1124,111 @@ def test_source_tier_fresh_bootstrap_accepts_claude_design_session(
         assert conn.execute("SELECT origin FROM raw_sessions WHERE raw_id = 'fresh-design'").fetchone() == (
             "claude-design-session",
         )
+
+
+def test_source_tier_v24_repairs_raw_hook_event_origin_check(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The current train repairs v22's missing hook-event Origin CHECK.
+
+    A v24 archive has already passed migration 022, so changing that historic
+    migration alone cannot help it. This fixture preserves a valid existing
+    hook row and a raw_artifacts foreign-key child, then requires v27's
+    copy-forward to retain both while rejecting an invalid origin.
+    """
+    db_path = workspace_env["archive_root"] / "source.db"
+    db_path.unlink(missing_ok=True)
+    blob_hash_hex, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(
+        b"v24-hook-origin-repair"
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SOURCE_DDL)
+        for table_name in (
+            "raw_quarantine_group_dedup_receipts",
+            "raw_unknown_export_reclassification_receipts",
+            "raw_non_session_duplicate_exclusion_receipts",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        conn.executescript(
+            """
+            ALTER TABLE raw_hook_events RENAME TO raw_hook_events_v24;
+
+            CREATE TABLE raw_hook_events (
+                hook_event_id     TEXT PRIMARY KEY,
+                origin            TEXT NOT NULL,
+                native_id         TEXT,
+                session_native_id TEXT,
+                source_path       TEXT NOT NULL,
+                event_type        TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                observed_at_ms    INTEGER NOT NULL,
+                blob_hash         BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)
+            ) STRICT;
+
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, session_native_id, source_path, event_type,
+                payload_json, observed_at_ms, blob_hash
+            )
+            SELECT
+                hook_event_id, origin, native_id, session_native_id, source_path, event_type,
+                payload_json, observed_at_ms, blob_hash
+            FROM raw_hook_events_v24;
+
+            DROP TABLE raw_hook_events_v24;
+
+            CREATE INDEX idx_raw_hook_events_session
+            ON raw_hook_events(origin, session_native_id, observed_at_ms);
+            """
+        )
+        conn.execute("PRAGMA user_version = 24")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-v24', 'codex-session', '/legacy.jsonl', ?, ?, 1)
+            """,
+            (bytes.fromhex(blob_hash_hex), blob_size),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, artifact_kind, support_status,
+                classification_reason, first_observed_at_ms, last_observed_at_ms
+            ) VALUES ('artifact-v24', 'raw-v24', 'codex-session', '/legacy.jsonl', 'session',
+                      'supported_parseable', 'ok', 1, 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, session_native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES ('hook-v24', 'codex-session', 'session-v24', '/legacy.jsonl', 'PreToolUse', '{}', 1)
+            """
+        )
+        conn.commit()
+
+    manifest = _verified_backup_manifest(tmp_path / "backup-v24-hook-origin")
+    with sqlite3.connect(db_path) as conn:
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+
+        assert result.from_version == 24
+        assert result.to_version == SOURCE_SCHEMA_VERSION
+        assert result.applied_versions == tuple(range(25, SOURCE_SCHEMA_VERSION + 1))
+        assert conn.execute(
+            "SELECT origin, session_native_id, payload_json FROM raw_hook_events WHERE hook_event_id = 'hook-v24'"
+        ).fetchone() == ("codex-session", "session-v24", "{}")
+        assert conn.execute("SELECT artifact_id FROM raw_artifacts WHERE artifact_id = 'artifact-v24'").fetchone() == (
+            "artifact-v24",
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO raw_hook_events (
+                    hook_event_id, origin, source_path, event_type, payload_json, observed_at_ms
+                ) VALUES ('invalid-v24-origin', 'invalid-origin', '/legacy.jsonl', 'PreToolUse', '{}', 2)
+                """
+            )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def _create_source_v2_with_pending_blob_refs(path: Path) -> None:
@@ -1249,9 +1369,18 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
         ).fetchone()
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gc_generations'").fetchone()
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='blob_publication_reservations'"
         ).fetchone()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO raw_hook_events (
+                    hook_event_id, origin, source_path, event_type, payload_json, observed_at_ms
+                ) VALUES ('invalid-origin', 'invalid-origin', '/fixture.json', 'PreToolUse', '{}', 1)
+                """
+            )
     finally:
         conn.close()
 
@@ -1356,6 +1485,8 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
     db_path.unlink(missing_ok=True)
     conn = sqlite3.connect(db_path)
     try:
+        conn.executescript(SOURCE_DDL)
+        conn.execute("DROP TABLE raw_sessions")
         conn.executescript(
             """
             CREATE TABLE raw_sessions (
@@ -1391,6 +1522,19 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
             PRAGMA user_version = 13;
             """
         )
+        for table_name in (
+            "raw_capture_observations",
+            "verified_blob_receipts",
+            "raw_live_source_reconciliation_receipts",
+            "raw_membership_writeback_receipts",
+            "raw_append_chain_backfill_receipts",
+            "raw_byte_duplicate_supersession_receipts",
+            "raw_authority_verdicts",
+            "raw_quarantine_group_dedup_receipts",
+            "raw_unknown_export_reclassification_receipts",
+            "raw_non_session_duplicate_exclusion_receipts",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash" not in indexes_before
@@ -1451,6 +1595,8 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
     db_path.unlink(missing_ok=True)
     conn = sqlite3.connect(db_path)
     try:
+        conn.executescript(SOURCE_DDL)
+        conn.execute("DROP TABLE raw_sessions")
         conn.executescript(
             """
             CREATE TABLE raw_sessions (
@@ -1487,6 +1633,19 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
             PRAGMA user_version = 14;
             """
         )
+        for table_name in (
+            "raw_capture_observations",
+            "verified_blob_receipts",
+            "raw_live_source_reconciliation_receipts",
+            "raw_membership_writeback_receipts",
+            "raw_append_chain_backfill_receipts",
+            "raw_byte_duplicate_supersession_receipts",
+            "raw_authority_verdicts",
+            "raw_quarantine_group_dedup_receipts",
+            "raw_unknown_export_reclassification_receipts",
+            "raw_non_session_duplicate_exclusion_receipts",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash_raw_id" not in indexes_before
@@ -1973,20 +2132,14 @@ def test_initialize_database_refuses_old_durable_tier_without_manifest(tmp_path:
         initialize_archive_database(db_path, ArchiveTier.USER)
 
 
-def test_initialize_database_can_apply_explicit_user_migration(
-    workspace_env: dict[str, Path],
-    tmp_path: Path,
-) -> None:
-    db_path = workspace_env["archive_root"] / "user.db"
+def test_initialize_database_does_not_apply_explicit_user_migration(tmp_path: Path) -> None:
+    db_path = tmp_path / "user.db"
     _create_user_v3(db_path)
-    manifest = _verified_backup_manifest(tmp_path / "backup", profile="user_overlays")
-
-    initialize_archive_database(db_path, ArchiveTier.USER, migration_backup_manifest=manifest)
-
+    with pytest.raises(RuntimeError, match="explicit durable-tier migration"):
+        initialize_archive_database(db_path, ArchiveTier.USER)
     conn = sqlite3.connect(db_path)
     try:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
-        assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
     finally:
         conn.close()
 

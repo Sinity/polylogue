@@ -21,11 +21,17 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
+from polylogue.archive.message.roles import Role
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.core.enums import Provider
+from polylogue.daemon.events import emit_catch_up_cycle, query_daemon_events
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
     _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
     _SMALL_FULL_PARSE_PROGRESS_MAX_FILES,
     _STREAMING_FULL_INGEST_BYTES,
+    CursorAuthorityBlockedError,
     LiveBatchProcessor,
     _full_ingest_worker_count,
     _full_parse_progress_groups,
@@ -38,9 +44,12 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -98,6 +107,238 @@ class _FailingSecondPathConverger:
                 {"fake": 0.001},
             )
         return ({path: SimpleNamespace(converged=True) for path in paths}, {"fake": 0.001})
+
+
+def _sqlite_snapshot(path: Path) -> tuple[tuple[str, tuple[tuple[object, ...], ...]], ...]:
+    with sqlite3.connect(path) as conn:
+        tables = tuple(
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        )
+        return tuple((table, tuple(conn.execute(f'SELECT * FROM "{table}"').fetchall())) for table in tables)
+
+
+def _seed_live_cursor_authority_case(
+    root: Path,
+    *,
+    force_full_fallback: bool = False,
+    exact_frontier: bool = False,
+) -> tuple[LiveBatchProcessor, LiveWatcher, CursorStore, Path]:
+    source_root = root / "sessions"
+    source_root.mkdir(parents=True)
+    source_path = source_root / "session.jsonl"
+    prefix = (
+        json.dumps(_codex_session_meta("session-1")).encode()
+        + b"\n"
+        + json.dumps(
+            _codex_message(message_id="m1", role="user", text="hello", timestamp="2026-05-01T00:00:00Z")
+        ).encode()
+        + b"\n"
+    )
+    tail = (
+        json.dumps(
+            _codex_message(message_id="m2", role="assistant", text="reply", timestamp="2026-05-01T00:00:01Z")
+        ).encode()
+        + b"\n"
+    )
+    source_path.write_bytes(prefix + tail)
+    initialize_active_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=prefix,
+            source_path=str(source_path),
+            acquired_at_ms=1,
+            native_id="session-1",
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                "codex:session-1",
+                RawRevisionKind.FULL,
+                "revision-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.apply_raw_revision_replay(
+            archive.raw_revision_replay_plan("codex:session-1"),
+            {
+                raw_id: ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="session-1",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
+                )
+            },
+            acquired_at_ms=1,
+        )
+
+    cursor = CursorStore(root / "ops.db")
+    stat = source_path.stat()
+    cursor_offset = len(prefix) if exact_frontier else len(prefix) + 1
+    local_prefix_hash = sha256(source_path.read_bytes()[:cursor_offset]).hexdigest()
+    cursor.set(
+        source_path,
+        cursor_offset,
+        byte_offset=cursor_offset,
+        last_complete_newline=len(prefix),
+        parser_fingerprint="stale-parser" if force_full_fallback else live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="revision-0",
+        tail_hash=encode_cursor_hash_authority(local_prefix_hash, local_prefix_hash, ctime_ns=stat.st_ctime_ns),
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=source_root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    watcher = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=source_root),),
+        cursor=cursor,
+        parse_stage=None,
+    )
+    watcher._batch_processor = processor
+    return processor, watcher, cursor, source_path
+
+
+def _live_archive_snapshot(root: Path) -> tuple[object, ...]:
+    return (
+        _sqlite_snapshot(root / "source.db"),
+        _sqlite_snapshot(root / "index.db"),
+        _sqlite_snapshot(root / "ops.db"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "force_full_fallback",
+    [False, True],
+    ids=["append-route", "full-fallback-route"],
+)
+async def test_live_watcher_refuses_ahead_cursor_before_append_or_full_write(
+    tmp_path: Path,
+    force_full_fallback: bool,
+) -> None:
+    """An ahead cursor with a locally matching prefix cannot select either live route."""
+    processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
+        tmp_path,
+        force_full_fallback=force_full_fallback,
+    )
+    record = cursor.get_record(source_path)
+    assert record is not None
+    if force_full_fallback:
+        assert processor._append_plan(source_path, cursor=record) is None
+    else:
+        assert processor._append_plan(source_path, cursor=record) is not None
+    before = _live_archive_snapshot(tmp_path)
+
+    with pytest.raises(CursorAuthorityBlockedError, match="source-selection gate blocked"):
+        await watcher._ingest_files([source_path])
+
+    assert _live_archive_snapshot(tmp_path) == before
+    watcher.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_full_fallback", [False, True], ids=["append-route", "full-fallback-route"])
+async def test_live_watcher_catch_up_refuses_ahead_cursor_before_cursor_planning(
+    tmp_path: Path,
+    force_full_fallback: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch-up must stop before initialize or planning can mutate cursor state."""
+    _processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
+        tmp_path,
+        force_full_fallback=force_full_fallback,
+    )
+    candidates = watcher._scan_catch_up_candidates([source_path.parent])
+    before = _live_archive_snapshot(tmp_path)
+    initialize_calls = 0
+    plan_calls = 0
+
+    def track_initialize() -> None:
+        nonlocal initialize_calls
+        initialize_calls += 1
+
+    def track_plan(_candidates: tuple[live_watcher.CandidateSourceFile, ...]) -> live_watcher.CatchUpPlan:
+        nonlocal plan_calls
+        plan_calls += 1
+        raise AssertionError("cursor authority must gate catch-up before planning")
+
+    monkeypatch.setattr(cursor, "initialize", track_initialize)
+    monkeypatch.setattr(watcher, "_plan_catch_up", track_plan)
+
+    await watcher._catch_up_candidates(candidates)
+
+    assert initialize_calls == 0
+    assert plan_calls == 0
+    assert _live_archive_snapshot(tmp_path) == before
+    watcher.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_full_fallback", [False, True], ids=["append-route", "full-fallback-route"])
+async def test_live_watcher_flush_refuses_ahead_cursor_before_cursor_filtering(
+    tmp_path: Path,
+    force_full_fallback: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flush must stop before initialize or cursor lifecycle decisions can run."""
+    _processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
+        tmp_path,
+        force_full_fallback=force_full_fallback,
+    )
+    watcher._pending_paths.add(source_path)
+    before = _live_archive_snapshot(tmp_path)
+    initialize_calls = 0
+    filter_calls = 0
+
+    def track_initialize() -> None:
+        nonlocal initialize_calls
+        initialize_calls += 1
+
+    def fail_filter(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        nonlocal filter_calls
+        filter_calls += 1
+        raise AssertionError("cursor authority must gate flush before cursor filtering")
+
+    monkeypatch.setattr(cursor, "initialize", track_initialize)
+    monkeypatch.setattr(watcher, "_needs_work_from_state", fail_filter)
+
+    assert await watcher._flush_pending() is True
+
+    assert initialize_calls == 0
+    assert filter_calls == 0
+    assert _live_archive_snapshot(tmp_path) == before
+    assert watcher._pending_paths == {source_path}
+    watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Path) -> None:
+    """An exact accepted frontier retains the real append success path."""
+    processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(
+        tmp_path,
+        exact_frontier=True,
+    )
+
+    metrics = await processor.ingest_files([source_path], emit_event=False)
+
+    assert metrics.succeeded_file_count == 1
+    assert metrics.append_file_count == 1
+    assert metrics.full_file_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
+    watcher.stop()
 
 
 def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
@@ -774,13 +1015,23 @@ def _make_watcher(
     *,
     debounce_s: float = 0.01,
     event_emitter: MagicMock | None = None,
+    catch_up_event_emitter: Callable[..., None] | None = None,
+    write_coordinator: object | None = None,
     sources: tuple[WatchSource, ...] | None = None,
 ) -> tuple[LiveWatcher, _FullIngestMock]:
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     sources = sources or (WatchSource(name="test", root=root),)
-    watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor, event_emitter=event_emitter)
+    watcher = LiveWatcher(
+        polylogue,
+        sources,
+        debounce_s=debounce_s,
+        cursor=cursor,
+        event_emitter=event_emitter,
+        catch_up_event_emitter=catch_up_event_emitter,
+        write_coordinator=write_coordinator,
+    )
     full_ingest = _FullIngestMock()
     watcher._batch_processor._ingest_full_paths = full_ingest  # type: ignore[method-assign]
     return watcher, full_ingest
@@ -843,6 +1094,135 @@ def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.M
     assert captured["paths"] == files
     assert captured["queued_file_count"] == 3
     assert captured["skipped_file_count"] == 0
+
+
+def test_real_catch_up_route_emits_coordinated_success_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    source = root / "session.jsonl"
+    source.write_text('{"role":"user","content":"a"}\n')
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    coordinator_events: list[DaemonWriteEvent] = []
+    coordinator = DaemonWriteCoordinator(observer=coordinator_events.append)
+    watcher, full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        catch_up_event_emitter=emit_catch_up_cycle,
+        write_coordinator=coordinator,
+    )
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert full_ingest.await_count == 1
+    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
+    payloads: list[dict[str, object]] = []
+    for event in events:
+        payload = event["payload"]
+        assert isinstance(payload, dict)
+        payloads.append(payload)
+    assert [payload["phase"] for payload in payloads] == ["start", "end", "terminal"]
+    start, end, terminal = events
+    assert start["operation_id"] == end["operation_id"] == terminal["operation_id"]
+    start_payload, end_payload, terminal_payload = payloads
+    assert start_payload["backlog_start"] == 1
+    assert end_payload["attempted"] == 1
+    assert end_payload["ingested"] == 1
+    assert end_payload["backlog_end"] == 0
+    assert terminal_payload["terminal_outcome"] == "success"
+    assert [
+        event.actor
+        for event in coordinator_events
+        if event.actor == "watcher.catch_up.event" and event.phase == "released"
+    ] == [
+        "watcher.catch_up.event",
+        "watcher.catch_up.event",
+        "watcher.catch_up.event",
+    ]
+
+
+@pytest.mark.parametrize(("outcome", "exception"), [("failure", RuntimeError), ("cancelled", asyncio.CancelledError)])
+def test_real_catch_up_route_emits_terminal_receipt_after_ingest_abort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    exception: type[BaseException],
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "session.jsonl").write_text('{"role":"user","content":"a"}\n')
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
+    coordinator_events: list[DaemonWriteEvent] = []
+    watcher, _ = _make_watcher(
+        tmp_path,
+        root,
+        catch_up_event_emitter=emit_catch_up_cycle,
+        write_coordinator=DaemonWriteCoordinator(observer=coordinator_events.append),
+    )
+
+    async def abort_ingest(
+        _paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> LiveBatchMetrics:
+        del queued_file_count, skipped_file_count
+        raise exception("abort")
+
+    watcher._ingest_files = abort_ingest  # type: ignore[assignment]
+
+    with pytest.raises(exception):
+        asyncio.run(watcher._catch_up([root]))
+
+    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
+    payloads = [cast(dict[str, object], event["payload"]) for event in events]
+    assert [payload["phase"] for payload in payloads] == ["start", "terminal"]
+    assert payloads[-1]["terminal_outcome"] == outcome
+    assert any(event.actor == "watcher.catch_up.event" and event.phase == "released" for event in coordinator_events)
+
+
+def test_real_catch_up_route_emits_terminal_receipt_when_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "session.jsonl").write_text('{"role":"user","content":"a"}\n')
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
+    coordinator_events: list[DaemonWriteEvent] = []
+    watcher, full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        catch_up_event_emitter=emit_catch_up_cycle,
+        write_coordinator=DaemonWriteCoordinator(observer=coordinator_events.append),
+    )
+    original_ingest = watcher._ingest_files
+
+    async def stop_after_ingest(
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> LiveBatchMetrics:
+        metrics = await original_ingest(
+            paths,
+            queued_file_count=queued_file_count,
+            skipped_file_count=skipped_file_count,
+        )
+        watcher.stop()
+        return metrics
+
+    watcher._ingest_files = stop_after_ingest  # type: ignore[method-assign]
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert full_ingest.await_count == 1
+    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
+    payloads = [cast(dict[str, object], event["payload"]) for event in events]
+    assert [payload["phase"] for payload in payloads] == ["start", "terminal"]
+    assert payloads[-1]["terminal_outcome"] == "stopped"
+    assert any(event.actor == "watcher.catch_up.event" and event.phase == "released" for event in coordinator_events)
 
 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:

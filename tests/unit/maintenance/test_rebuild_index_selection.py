@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.maintenance.archive_verification import REINDEX_CANARY_ACCEPTANCE_CHECKS
 from polylogue.maintenance.rebuild_index import (
     RebuildIndexRequest,
     all_index_rebuild_raw_ids,
@@ -102,3 +103,20 @@ class TestValidateRebuildIndexRequestSharedService:
         request = RebuildIndexRequest(archive_root=tmp_path, raw_ids=("raw-1",), promote=True)
         with pytest.raises(ValueError, match="require --no-promote"):
             validate_rebuild_index_request(request)
+
+    def test_rejects_caller_supplied_acceptance_profile_for_promotion(self, tmp_path: Path) -> None:
+        request = RebuildIndexRequest(
+            archive_root=tmp_path,
+            promote=True,
+            candidate_acceptance_checks=REINDEX_CANARY_ACCEPTANCE_CHECKS,
+        )
+        with pytest.raises(ValueError, match="require --no-promote"):
+            validate_rebuild_index_request(request)
+
+    def test_allows_caller_supplied_canary_profile_without_promotion(self, tmp_path: Path) -> None:
+        request = RebuildIndexRequest(
+            archive_root=tmp_path,
+            promote=False,
+            candidate_acceptance_checks=REINDEX_CANARY_ACCEPTANCE_CHECKS,
+        )
+        validate_rebuild_index_request(request)

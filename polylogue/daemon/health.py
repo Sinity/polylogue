@@ -670,6 +670,29 @@ def _check_raw_failures_medium() -> HealthAlert:
         from polylogue.daemon.status import _raw_failure_info
 
         info = _raw_failure_info()
+        lifecycle_available = info.get("raw_failure_lifecycle_available") is True
+        lifecycle_state = info.get("raw_failure_lifecycle_state")
+        if not lifecycle_available or lifecycle_state not in {"healthy", "degraded", "blocked"}:
+            reason = str(info.get("raw_failure_lifecycle_reason") or "source.db evidence is unavailable")
+            return HealthAlert(
+                check_name="raw_failures",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.ERROR,
+                message=f"raw failure lifecycle unavailable: {reason}",
+                checked_at=now,
+                consecutive_failures=_record_failure("raw_failures", False),
+            )
+        if lifecycle_state == "blocked":
+            unexplained = info.get("unexplained_failures")
+            reason = str(info.get("raw_failure_lifecycle_reason") or f"{unexplained or 0} unexplained raw failures")
+            return HealthAlert(
+                check_name="raw_failures",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.ERROR,
+                message=f"raw failure lifecycle blocked: {reason}",
+                checked_at=now,
+                consecutive_failures=_record_failure("raw_failures", False),
+            )
         raw_parse = info.get("parse_failures", 0)
         parse = int(raw_parse) if isinstance(raw_parse, (int, float)) else 0
         raw_val = info.get("validation_failures", 0)
@@ -677,7 +700,13 @@ def _check_raw_failures_medium() -> HealthAlert:
         quarantined = info.get("quarantined", 0) if isinstance(info.get("quarantined"), int) else 0
         raw_maint = info.get("maintenance_failures", 0)
         maintenance = int(raw_maint) if isinstance(raw_maint, (int, float)) else 0
-        total_failures = parse + validation + maintenance
+        raw_deferred = info.get("deferred_failures", 0)
+        deferred = int(raw_deferred) if isinstance(raw_deferred, (int, float)) else 0
+        raw_terminal = info.get("terminal_rejections", 0)
+        terminal = int(raw_terminal) if isinstance(raw_terminal, (int, float)) else 0
+        raw_unexplained = info.get("unexplained_failures")
+        unexplained = int(raw_unexplained) if isinstance(raw_unexplained, (int, float)) else parse + validation
+        total_failures = unexplained + maintenance
 
         op_hint = ""
         if maintenance > 0:
@@ -690,31 +719,42 @@ def _check_raw_failures_medium() -> HealthAlert:
                         op_hint = f" (op={str(op_id)[:8]})"
                         break
 
-        if total_failures == 0:
+        if total_failures == 0 and deferred == 0:
             severity = HealthSeverity.OK
-            message = "no raw failures"
+            message = (
+                f"no unexplained raw failures ({terminal} terminal rejections recorded)"
+                if terminal
+                else "no raw failures"
+            )
+        elif total_failures == 0:
+            severity = HealthSeverity.WARNING
+            terminal_context = f"; {terminal} terminal rejection(s) recorded" if terminal else ""
+            message = f"{deferred} deferred retryable raw capture(s){terminal_context}; daemon work remains pending"
         elif total_failures <= _RAW_FAILURE_WARN_COUNT:
             severity = HealthSeverity.WARNING
             message = (
-                f"{total_failures} raw failures ({quarantined} quarantined, {maintenance} maintenance){op_hint}"
+                f"{total_failures} unexplained raw failures ({quarantined} quarantined, {maintenance} maintenance, "
+                f"{deferred} deferred, {terminal} terminal){op_hint}"
                 if maintenance
-                else f"{total_failures} raw failures ({quarantined} quarantined)"
+                else f"{total_failures} unexplained raw failures ({quarantined} quarantined, {deferred} deferred, {terminal} terminal)"
             )
         elif total_failures <= _RAW_FAILURE_ERROR_COUNT:
             severity = HealthSeverity.ERROR
             message = (
-                f"{total_failures} raw failures ({quarantined} quarantined, {maintenance} maintenance){op_hint}"
+                f"{total_failures} unexplained raw failures ({quarantined} quarantined, {maintenance} maintenance, "
+                f"{deferred} deferred, {terminal} terminal){op_hint}"
                 if maintenance
-                else f"{total_failures} raw failures ({quarantined} quarantined)"
+                else f"{total_failures} unexplained raw failures ({quarantined} quarantined, {deferred} deferred, {terminal} terminal)"
             )
         else:
             severity = HealthSeverity.CRITICAL
             base = (
-                f"{total_failures} raw failures ({quarantined} quarantined, {maintenance} maintenance){op_hint}"
+                f"{total_failures} unexplained raw failures ({quarantined} quarantined, {maintenance} maintenance, "
+                f"{deferred} deferred, {terminal} terminal){op_hint}"
                 if maintenance
-                else f"{total_failures} raw failures ({quarantined} quarantined)"
+                else f"{total_failures} unexplained raw failures ({quarantined} quarantined, {deferred} deferred, {terminal} terminal)"
             )
-            message = f"{base} — investigation needed"
+            message = f"{base}; investigation needed"
         return HealthAlert(
             check_name="raw_failures",
             tier=HealthTier.MEDIUM,

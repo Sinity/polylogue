@@ -27,6 +27,7 @@ def _record_field(record: SyntheticRecord, field_name: str) -> SyntheticRecord:
 class _WireFormatContext(Protocol):
     provider: str
     _active_record_bucket: tuple[str, str] | None
+    _coverage_witness_mode: bool
 
     def _ensure_wire_chatgpt(
         self,
@@ -104,6 +105,26 @@ def _ensure_wire_format(
             self._ensure_wire_codex(data, role, rng, ts, index=index, theme=theme)
         case "gemini":
             self._ensure_wire_gemini(data, role, rng, index=index, theme=theme)
+        case _:
+            raise ValueError(f"No executable synthetic wire adapter for provider {self.provider!r}")
+
+
+def validate_wire_payload(provider: str, data: JSONValue) -> None:
+    """Reject provider-wire combinations the production parser does not own."""
+
+    if provider != "codex" or not isinstance(data, list):
+        return
+    has_flat_message = any(
+        isinstance(record, dict) and (record.get("type") == "message" or isinstance(record.get("role"), str))
+        for record in data
+    )
+    has_envelope_message = any(
+        isinstance(record, dict)
+        and record.get("type") in {"response_item", "event_msg", "turn_context", "session_meta"}
+        for record in data
+    )
+    if has_flat_message and has_envelope_message:
+        raise ValueError("Codex synthetic payload cannot mix flat records with envelope records")
 
 
 def _ensure_wire_chatgpt(
@@ -128,6 +149,12 @@ def _ensure_wire_chatgpt(
     content.setdefault("content_type", "text")
 
     msg.setdefault("create_time", ts)
+    if self._coverage_witness_mode:
+        # Coverage generation may choose arbitrary schema-valid enum values;
+        # keep the message discriminator on the parser-owned conversational
+        # branch so every schema witness still proves parser materialization.
+        author["role"] = role
+        content["content_type"] = "text"
 
 
 def _ensure_wire_claude_ai(
@@ -179,8 +206,26 @@ def _ensure_wire_claude_code(
         msg.setdefault("role", role)
         if "content" not in msg:
             msg["content"] = _claude_code_content_fallback(rng, role, index, theme)  # type: ignore[assignment]
+        elif self._coverage_witness_mode:
+            _normalize_claude_code_coverage_content(msg, rng, role, index, theme)
     if "timestamp" not in data:
         data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _normalize_claude_code_coverage_content(
+    message: SyntheticRecord,
+    rng: random.Random,
+    role: str,
+    index: int,
+    theme: SessionTheme | None,
+) -> None:
+    """Keep coverage witnesses on block forms the Claude Code route emits."""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict) and isinstance(block.get("content"), list):
+            block["content"] = _text_for_role(rng, role, turn_index=index, theme=theme)
 
 
 def _claude_code_content_fallback(rng: random.Random, role: str, index: int, theme: SessionTheme | None) -> object:
@@ -327,4 +372,5 @@ __all__ = [
     "_ensure_wire_codex",
     "_ensure_wire_format",
     "_ensure_wire_gemini",
+    "validate_wire_payload",
 ]

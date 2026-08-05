@@ -25,7 +25,7 @@ from polylogue.archive.actions.fields import (
 )
 from polylogue.archive.actions.parsing import build_tool_calls_from_content_blocks
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory
-from polylogue.core.enums import Origin
+from polylogue.core.enums import ActionResultState, Origin
 
 _CANONICAL_TOOL_NAMES = {
     "bash": "bash",
@@ -98,6 +98,10 @@ class Action:
     #: (polylogue-9e5.3 audit). Consumers must not text-scan ``output_text``
     #: to recover a verdict this field reports as ``None``.
     tool_success: bool | None = None
+    #: Whether a result block was paired and whether it carried an outcome.
+    #: This keeps no result distinct from a result whose provider outcome is
+    #: unknown, while preserving ``tool_success`` for existing callers.
+    result_state: ActionResultState = ActionResultState.NO_RESULT
 
     @property
     def normalized_tool_name(self) -> str:
@@ -170,6 +174,7 @@ def _build_action_from_message_fields(
         ),
         raw=call.raw,
         tool_success=call.success,
+        result_state=call.result_state,
     )
 
 

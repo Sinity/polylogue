@@ -107,7 +107,6 @@ def iter_source_raw_data(
                     provider_hint,
                     cursor_state=cursor_state,
                     zip_path=path,
-                    session_only=False,
                 )
                 with zipfile.ZipFile(path) as zf:
                     for info in validator.filter_entries(zf.infolist()):

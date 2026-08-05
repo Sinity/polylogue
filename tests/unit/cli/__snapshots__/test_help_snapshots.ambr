@@ -26,7 +26,7 @@
   
     Verbs (actions on matched sessions):
         polylogue find id:abc then read          # exact ref: one selected session
-        polylogue find id:abc then select --json # expose selected-session identity
+        polylogue find id:abc then select --format json # expose selected-session identity
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
         polylogue find id:abc then analyze --facets
@@ -198,6 +198,7 @@
       agent        Install executable agent guidance.
       annotations  Import typed annotation batches.
       compare      Blind pairwise comparative judgment and calibration.
+      setting      Get, set, and list durable user settings.
   
   '''
 # ---

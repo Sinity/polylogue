@@ -61,7 +61,11 @@ class SQLiteConnectionProfile:
             statements.append(f"PRAGMA synchronous = {self.synchronous}")
         statements.extend(
             (
-                f"PRAGMA mmap_size = {self.mmap_size_bytes}",
+                # Qualify the schema explicitly.  An unqualified mmap_size
+                # pragma becomes the default for databases attached later,
+                # charging every sibling tier against a budget that counts
+                # this profile once.
+                f"PRAGMA main.mmap_size = {self.mmap_size_bytes}",
                 f"PRAGMA temp_store = {self.temp_store}",
             )
         )
@@ -89,12 +93,42 @@ DB_TIMEOUT = 30
 # wait out the checkpoint and succeed while staying far below the 30 s writer
 # timeout, so reads remain responsive.
 READ_DB_TIMEOUT = 5
-WRITE_CACHE_SIZE_KIB = 131072  # 128 MiB
-DAEMON_WRITE_CACHE_SIZE_KIB = 16384  # 16 MiB
-READ_CACHE_SIZE_KIB = 32768  # 32 MiB
-WRITE_MMAP_SIZE_BYTES = 1073741824  # 1 GiB
-DAEMON_WRITE_MMAP_SIZE_BYTES = 67108864  # 64 MiB
-READ_MMAP_SIZE_BYTES = 134217728  # 128 MiB
+MEMORY_BUDGET_ENV_VAR = "POLYLOGUE_MEMORY_BUDGET_BYTES"
+DEFAULT_MEMORY_BUDGET_BYTES = 18 * 1024**3
+
+
+def _read_declared_memory_budget_bytes() -> int:
+    """Resolve the optional typed config/env budget, preserving current defaults."""
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().memory_budget_bytes
+    return configured if configured is not None else DEFAULT_MEMORY_BUDGET_BYTES
+
+
+MEMORY_BUDGET_BYTES = _read_declared_memory_budget_bytes()
+
+
+def _scale_profile_size(default_size: int) -> int:
+    """Scale one mmap/cache limit proportionally to the effective budget."""
+    return max(1, round(default_size * MEMORY_BUDGET_BYTES / DEFAULT_MEMORY_BUDGET_BYTES))
+
+
+# The measured defaults remain unchanged when no budget is configured. The
+# service unit can export MEMORY_BUDGET_ENV_VAR from the same declared budget
+# used for its cgroup limits, moving every SQLite mmap/cache allowance together.
+WRITE_CACHE_SIZE_KIB = _scale_profile_size(131072)  # 128 MiB
+DAEMON_WRITE_CACHE_SIZE_KIB = _scale_profile_size(16384)  # 16 MiB
+READ_CACHE_SIZE_KIB = _scale_profile_size(32768)  # 32 MiB
+WRITE_MMAP_SIZE_BYTES = _scale_profile_size(1073741824)  # 1 GiB
+DAEMON_WRITE_MMAP_SIZE_BYTES = _scale_profile_size(67108864)  # 64 MiB
+READ_MMAP_SIZE_BYTES = _scale_profile_size(134217728)  # 128 MiB
+# The bounded FTS repair connection is opened separately from the daemon's
+# ordinary writer and must remain inside the same process budget.
+BOUNDED_REPAIR_CACHE_SIZE_KIB = _scale_profile_size(32768)  # 32 MiB
+BOUNDED_REPAIR_MMAP_SIZE_BYTES = _scale_profile_size(134217728)  # 128 MiB
+# Schema inference keeps its own WAL journal connection alive while it scans
+# provider artifacts. It has no mmap allowance, only this page-cache limit.
+OBSERVATION_JOURNAL_CACHE_SIZE_KIB = _scale_profile_size(65536)  # 64 MiB
 WAL_AUTOCHECKPOINT_PAGES = 10000
 # #1614: soft cap on the WAL file. After any checkpoint that frees
 # pages, SQLite truncates the WAL down to this size. Without this cap
@@ -158,8 +192,8 @@ DAEMON_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
 #     built) is far larger than one incremental daemon write, and there is no
 #     competing live-writer cgroup budget to share (this is a throwaway,
 #     single-purpose process).
-BULK_BUILD_CACHE_SIZE_KIB = 524288  # 512 MiB
-BULK_BUILD_MMAP_SIZE_BYTES = 4294967296  # 4 GiB
+BULK_BUILD_CACHE_SIZE_KIB = _scale_profile_size(524288)  # 512 MiB
+BULK_BUILD_MMAP_SIZE_BYTES = _scale_profile_size(4294967296)  # 4 GiB
 
 BULK_BUILD_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     role="write",
@@ -238,12 +272,11 @@ def mapped_bytes_budget(*, concurrent_read_connections: int = 4) -> int:
     concurrently with the daemon's own long-lived write connection
     (`DAEMON_WRITE_CONNECTION_PROFILE`) and a handful of concurrent
     short-lived read connections (CLI/MCP/API reads against the live
-    archive while a rebuild is in flight). It deliberately excludes the
-    ad hoc `WRITE_CONNECTION_PROFILE` (1 GiB mmap) that one-shot
-    maintenance/CLI writers use -- those do not overlap with a
-    daemon-triggered bulk rebuild in the failure mode this budget guards
-    against, and folding it in would inflate the budget past what was ever
-    observed live without adding real signal.
+    archive while a rebuild is in flight), plus one ordinary writer, one
+    bounded FTS repair connection, and one schema-observation journal
+    connection. This is a conservative upper bound across the production
+    profiles, including one-shot maintenance/CLI writers, so cgroup allowance
+    does not depend on an assumed lifecycle ordering.
 
     `concurrent_read_connections` defaults to 4: a conservative but not
     extreme estimate of simultaneous interactive reads (CLI/MCP/API) during
@@ -253,9 +286,14 @@ def mapped_bytes_budget(*, concurrent_read_connections: int = 4) -> int:
     return (
         BULK_BUILD_MMAP_SIZE_BYTES
         + BULK_BUILD_CACHE_SIZE_KIB * 1024
+        + WRITE_MMAP_SIZE_BYTES
+        + WRITE_CACHE_SIZE_KIB * 1024
         + DAEMON_WRITE_MMAP_SIZE_BYTES
         + DAEMON_WRITE_CACHE_SIZE_KIB * 1024
         + concurrent_read_connections * (READ_MMAP_SIZE_BYTES + READ_CACHE_SIZE_KIB * 1024)
+        + BOUNDED_REPAIR_MMAP_SIZE_BYTES
+        + BOUNDED_REPAIR_CACHE_SIZE_KIB * 1024
+        + OBSERVATION_JOURNAL_CACHE_SIZE_KIB * 1024
     )
 
 
@@ -267,10 +305,41 @@ class MappedBytesBudgetCheck:
     memory_max_bytes: int | None
     memory_high_bytes: int | None
     concurrent_read_connections: int
+    memory_budget_bytes: int | None = None
 
     @property
     def budget_mb(self) -> float:
         return round(self.budget_bytes / (1024 * 1024), 1)
+
+    @property
+    def effective_memory_budget_bytes(self) -> int:
+        return self.memory_budget_bytes if self.memory_budget_bytes is not None else MEMORY_BUDGET_BYTES
+
+    @property
+    def memory_budget_mb(self) -> float:
+        return round(self.effective_memory_budget_bytes / (1024 * 1024), 1)
+
+    @property
+    def concurrent_read_budget_bytes(self) -> int:
+        return self.concurrent_read_connections * (READ_MMAP_SIZE_BYTES + READ_CACHE_SIZE_KIB * 1024)
+
+    @property
+    def concurrent_profile_budget_bytes(self) -> int:
+        return (
+            BULK_BUILD_MMAP_SIZE_BYTES
+            + BULK_BUILD_CACHE_SIZE_KIB * 1024
+            + WRITE_MMAP_SIZE_BYTES
+            + WRITE_CACHE_SIZE_KIB * 1024
+            + DAEMON_WRITE_MMAP_SIZE_BYTES
+            + DAEMON_WRITE_CACHE_SIZE_KIB * 1024
+            + BOUNDED_REPAIR_MMAP_SIZE_BYTES
+            + BOUNDED_REPAIR_CACHE_SIZE_KIB * 1024
+            + OBSERVATION_JOURNAL_CACHE_SIZE_KIB * 1024
+        )
+
+    @property
+    def concurrent_allowance_bytes(self) -> int:
+        return self.concurrent_read_budget_bytes + self.concurrent_profile_budget_bytes
 
     @property
     def memory_max_mb(self) -> float | None:
@@ -316,6 +385,7 @@ def check_mapped_bytes_budget_against_cgroup_limit(*, concurrent_read_connection
         memory_max_bytes=read_cgroup_memory_max_bytes(),
         memory_high_bytes=read_cgroup_memory_high_bytes(),
         concurrent_read_connections=concurrent_read_connections,
+        memory_budget_bytes=MEMORY_BUDGET_BYTES,
     )
 
 
@@ -333,7 +403,13 @@ def log_mapped_bytes_budget_check(logger: BoundLoggerLike, check: MappedBytesBud
     if check.memory_max_bytes is None and check.memory_high_bytes is None:
         logger.debug(
             "mmap_budget_no_cgroup_limit_detected",
+            memory_budget_bytes=check.effective_memory_budget_bytes,
+            memory_budget_mb=check.memory_budget_mb,
+            budget_bytes=check.budget_bytes,
             budget_mb=check.budget_mb,
+            concurrent_allowance_bytes=check.concurrent_allowance_bytes,
+            concurrent_read_budget_bytes=check.concurrent_read_budget_bytes,
+            concurrent_profile_budget_bytes=check.concurrent_profile_budget_bytes,
             concurrent_read_connections=check.concurrent_read_connections,
         )
         return
@@ -341,7 +417,13 @@ def log_mapped_bytes_budget_check(logger: BoundLoggerLike, check: MappedBytesBud
     if at_risk:
         logger.warning(
             "mmap_budget_at_or_above_cgroup_limit",
+            memory_budget_bytes=check.effective_memory_budget_bytes,
+            memory_budget_mb=check.memory_budget_mb,
+            budget_bytes=check.budget_bytes,
             budget_mb=check.budget_mb,
+            concurrent_allowance_bytes=check.concurrent_allowance_bytes,
+            concurrent_read_budget_bytes=check.concurrent_read_budget_bytes,
+            concurrent_profile_budget_bytes=check.concurrent_profile_budget_bytes,
             memory_max_mb=check.memory_max_mb,
             memory_high_mb=check.memory_high_mb,
             at_risk_limits=list(at_risk),
@@ -350,7 +432,13 @@ def log_mapped_bytes_budget_check(logger: BoundLoggerLike, check: MappedBytesBud
     else:
         logger.info(
             "mmap_budget_within_cgroup_limit",
+            memory_budget_bytes=check.effective_memory_budget_bytes,
+            memory_budget_mb=check.memory_budget_mb,
+            budget_bytes=check.budget_bytes,
             budget_mb=check.budget_mb,
+            concurrent_allowance_bytes=check.concurrent_allowance_bytes,
+            concurrent_read_budget_bytes=check.concurrent_read_budget_bytes,
+            concurrent_profile_budget_bytes=check.concurrent_profile_budget_bytes,
             memory_max_mb=check.memory_max_mb,
             memory_high_mb=check.memory_high_mb,
             concurrent_read_connections=check.concurrent_read_connections,
@@ -500,6 +588,9 @@ def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iter
 
 __all__ = [
     "DB_TIMEOUT",
+    "DEFAULT_MEMORY_BUDGET_BYTES",
+    "BOUNDED_REPAIR_CACHE_SIZE_KIB",
+    "BOUNDED_REPAIR_MMAP_SIZE_BYTES",
     "BULK_BUILD_CACHE_SIZE_KIB",
     "BULK_BUILD_MMAP_SIZE_BYTES",
     "BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS",
@@ -508,7 +599,10 @@ __all__ = [
     "DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "DAEMON_WRITE_CONNECTION_PROFILE",
     "DAEMON_WRITE_MMAP_SIZE_BYTES",
+    "MEMORY_BUDGET_BYTES",
+    "MEMORY_BUDGET_ENV_VAR",
     "MappedBytesBudgetCheck",
+    "OBSERVATION_JOURNAL_CACHE_SIZE_KIB",
     "READ_CACHE_SIZE_KIB",
     "READ_CONNECTION_PRAGMA_STATEMENTS",
     "READ_CONNECTION_PROFILE",

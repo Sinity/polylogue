@@ -12,13 +12,19 @@ from polylogue.paths import archive_root
 
 @click.command("blob-namespace-quarantine")
 @click.option(
+    "--plan",
+    "plan_only",
+    is_flag=True,
+    help="Build a backup-attested, read-only cleanup plan without moving or deleting entries.",
+)
+@click.option(
     "--apply", "apply_changes", is_flag=True, help="Move the proven invalid namespace entries into quarantine."
 )
 @click.option(
     "--backup-manifest",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
-    help="Verified, attested source-tier backup manifest required with --apply.",
+    help="Verified, attested source-tier backup manifest required with --plan or --apply.",
 )
 @click.option(
     "--receipt-dir",
@@ -36,26 +42,55 @@ from polylogue.paths import archive_root
     show_default=True,
 )
 def blob_namespace_quarantine_command(
+    plan_only: bool,
     apply_changes: bool,
     backup_manifest: Path | None,
     receipt_dir: Path | None,
     recover: bool,
     output_format: str,
 ) -> None:
-    """Census invalid blob namespace entries; apply only as offline quarantine.
+    """Plan or census invalid blob namespace entries; apply only as offline quarantine.
 
-    The default is a complete, read-only census. ``--apply`` requires the
-    daemon stopped, the archive writer lease to be clear, a verified attested
-    source backup, a clean WAL checkpoint, and a fresh explicit receipt
-    directory. It only uses atomic same-filesystem moves and never deletes,
-    garbage-collects, changes SQLite rows, or moves canonical blobs.
+    The default is a complete, read-only census. ``--plan`` additionally
+    authenticates a supplied backup manifest and remains fully non-mutating.
+    ``--apply`` requires the daemon stopped, the archive writer lease to be
+    clear, a verified attested source backup, a clean WAL checkpoint, and a
+    fresh explicit receipt directory. It only uses atomic same-filesystem
+    moves and never deletes, garbage-collects, changes SQLite rows, or moves
+    canonical blobs.
     """
 
     from polylogue.operations.blob_namespace_quarantine import (
         BlobNamespaceQuarantineError,
         classify_blob_namespace_quarantine_recovery,
+        plan_blob_namespace_cleanup,
         quarantine_blob_namespace,
     )
+
+    if plan_only:
+        if apply_changes or recover:
+            raise click.UsageError("--plan cannot be combined with --apply or --recover")
+        if backup_manifest is None:
+            raise click.UsageError("--plan requires --backup-manifest")
+        try:
+            plan = plan_blob_namespace_cleanup(archive_root(), backup_manifest=backup_manifest)
+        except BlobNamespaceQuarantineError as exc:
+            raise click.ClickException(str(exc)) from exc
+        payload = {"mode": "blob_namespace_cleanup_plan", **plan.to_dict()}
+        if output_format == "json":
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            click.echo("Blob namespace cleanup plan")
+            click.echo(f"Blob root:  {plan.blob_root}")
+            click.echo(f"Canonical: {len(plan.census.canonical):,}")
+            click.echo(f"Candidates: {len(plan.census.candidates):,}")
+            click.echo(f"Blockers:   {len(plan.census.blockers):,}")
+            click.echo("Moves:      no")
+            click.echo("Deletes:    no")
+            click.echo("SQLite writes: no")
+            for blocker in plan.census.blockers:
+                click.echo(f"  blocker: {blocker}")
+        return
 
     if recover:
         if apply_changes or backup_manifest is not None:

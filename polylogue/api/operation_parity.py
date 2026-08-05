@@ -265,6 +265,7 @@ API_OPERATIONS: tuple[ApiOperation, ...] = (
             "Polylogue.pathology_report",
             "Polylogue.portfolio_bundle",
             "Polylogue.export_insight_bundle",
+            "Polylogue.regenerate_private_fable_packet",
         ),
         _surface("analyze", "read"),
         _surface("query", "get", "status", "explain"),

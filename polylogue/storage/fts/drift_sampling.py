@@ -37,6 +37,12 @@ _FRESHNESS_SURFACE_COLUMNS = (
     "identity_mismatch_rows",
 )
 
+# Drift history is diagnostic telemetry. It must never hold an index repair
+# behind an ops.db writer or schema bootstrap lock. A zero wait keeps the
+# best-effort contract literal: the current index freshness state remains the
+# authority, and a missed sample is preferable to delaying convergence.
+_OPS_SAMPLE_TIMEOUT_SECONDS = 0.0
+
 
 def _index_db_path_sync(conn: sqlite3.Connection) -> Path | None:
     """Return the main database file path backing ``conn``, if any."""
@@ -94,7 +100,7 @@ def sample_fts_drift_to_ops_sync(conn: sqlite3.Connection, *, archive_root: Path
 
     ops_conn: sqlite3.Connection | None = None
     try:
-        ops_conn = open_connection(ops_db_path, timeout=5.0)
+        ops_conn = open_connection(ops_db_path, timeout=_OPS_SAMPLE_TIMEOUT_SECONDS)
         initialize_archive_tier(ops_conn, ArchiveTier.OPS)
         sampled_at_ms = int(time.time() * 1000)
         written = 0

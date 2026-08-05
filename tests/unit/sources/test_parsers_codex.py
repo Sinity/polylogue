@@ -16,7 +16,7 @@ from polylogue.archive.session_revision_membership import MembershipRevision, cl
 from polylogue.core.enums import BlockType, MaterialOrigin, Role
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.parsers.codex import _tool_input_from_arguments, parse_stream
+from polylogue.sources.parsers.codex import _tool_input_from_arguments, is_supported_session_stream, parse_stream
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
@@ -80,6 +80,146 @@ class TestLooksLike:
     def test_non_dict_items_skipped(self) -> None:
         payload = ["string", 42, None, {"type": "message", "role": "user", "content": []}]
         assert looks_like(payload)  # The dict item matches
+
+
+class TestSessionStreamContract:
+    def test_headerless_envelope_append_delta_uses_fallback_identity(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload
+
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "append delta"}],
+                },
+            }
+        ]
+
+        assert is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "rollout-fallback", source_path="/tmp/append.jsonl")
+
+        assert [session.provider_session_id for session in sessions] == ["rollout-fallback"]
+        assert len(sessions[0].messages) == 1
+
+    def test_real_wire_stream_parses_and_passes_materialization_evidence_gate(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+
+        payload = [
+            {"type": "session_meta", "payload": {"id": "real-stream"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
+        ]
+
+        assert is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "fallback", source_path="/tmp/real-stream.jsonl")
+
+        assert [session.provider_session_id for session in sessions] == ["real-stream"]
+        assert (
+            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/real-stream.jsonl")
+            == sessions
+        )
+
+    def test_session_header_plus_direct_messages_is_admitted_and_parsed(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload
+
+        payload = [
+            {"type": "session_meta", "payload": {"id": "legacy-stream"}},
+            {
+                "type": "message",
+                "id": "legacy-user",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "header plus direct"}],
+            },
+        ]
+
+        assert is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "fallback", source_path="/tmp/header-direct.jsonl")
+
+        assert [session.provider_session_id for session in sessions] == ["legacy-stream"]
+        assert len(sessions[0].messages) == 1
+        assert sessions[0].messages[0].provider_message_id == "legacy-user"
+
+    def test_legacy_direct_stream_uses_fallback_identity_and_passes_contract(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+
+        payload = [
+            {
+                "type": "message",
+                "id": "legacy-user",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+            {
+                "type": "message",
+                "id": "legacy-assistant",
+                "timestamp": "2024-01-01T00:00:01Z",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "world"}],
+            },
+        ]
+
+        assert is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "legacy-fallback", source_path="/tmp/legacy.jsonl")
+
+        assert [session.provider_session_id for session in sessions] == ["legacy-fallback"]
+        assert len(sessions[0].messages) == 2
+        assert (
+            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/legacy.jsonl")
+            == sessions
+        )
+
+    def test_bare_session_headers_fail_parser_contract_and_materialization_gate(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+
+        payload = [{"type": "session_meta"}, {"type": "session_meta"}]
+
+        assert not is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "fallback", source_path="/tmp/bare-headers.jsonl")
+
+        assert sessions[0].messages == []
+        assert (
+            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/bare-headers.jsonl")
+            == []
+        )
+
+    def test_mixed_envelope_and_direct_stream_fails_admission_and_evidence_gate(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+
+        payload = [
+            {"type": "session_meta", "payload": {"id": "mixed-stream"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "envelope"}],
+                },
+            },
+            {
+                "type": "message",
+                "id": "legacy-user",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "direct"}],
+            },
+        ]
+
+        assert not is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "fallback", source_path="/tmp/mixed.jsonl")
+
+        assert sessions[0].messages
+        assert (
+            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/mixed.jsonl")
+            == sessions
+        )
 
 
 # =============================================================================

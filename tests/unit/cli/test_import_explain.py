@@ -8,9 +8,9 @@ from pathlib import Path
 from click.testing import CliRunner
 from pytest import MonkeyPatch
 
+from polylogue.archive import zip_admission as zip_admission_module
 from polylogue.cli.click_app import cli
 from polylogue.core.enums import Provider
-from polylogue.sources import decoder_zip as decoder_zip_module
 from polylogue.sources import import_explain as import_explain_module
 from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.import_explain import explain_import_path
@@ -112,6 +112,39 @@ def test_import_explain_zip_propagates_member_decode_skip(tmp_path: Path) -> Non
     assert payload.skipped[0].reason.startswith("decode failure:")
 
 
+def test_import_explain_zip_recovers_path_classified_json_record_array(tmp_path: Path) -> None:
+    """Explain applies decoded-session evidence before a workflow path skip."""
+    archive = tmp_path / "workflow-json.zip"
+    records = [
+        {
+            "sessionId": "explain-json-session",
+            "parentUuid": None,
+            "type": "user",
+            "message": {"role": "user", "content": "explain this session"},
+            "uuid": "explain-json-user",
+            "timestamp": "2025-01-01T00:00:00Z",
+        },
+        {
+            "sessionId": "explain-json-session",
+            "parentUuid": "explain-json-user",
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "explained"}]},
+            "uuid": "explain-json-assistant",
+            "timestamp": "2025-01-01T00:00:01Z",
+        },
+    ]
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("workflows/explain.json", json.dumps(records))
+
+    payload = explain_import_path(archive, source_name="claude-code")
+
+    assert payload.produced.sessions >= 1
+    assert not any(
+        row.source_path and row.source_path.endswith("workflow-json.zip:workflows/explain.json")
+        for row in payload.skipped
+    )
+
+
 def test_import_explain_zip_rejects_oversized_member_before_read(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -120,6 +153,7 @@ def test_import_explain_zip_rejects_oversized_member_before_read(
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("big.json", b"{}")
     monkeypatch.setattr(import_explain_module, "MAX_UNCOMPRESSED_SIZE", 1)
+    monkeypatch.setattr(zip_admission_module, "MAX_UNCOMPRESSED_SIZE", 1)
 
     payload = explain_import_path(archive)
 
@@ -148,8 +182,7 @@ def test_import_explain_zip_rejects_aggregate_over_cap_before_read(
     with zipfile.ZipFile(archive, "w") as zf:
         for name in entry_names:
             zf.writestr(name, entry_bytes)
-    monkeypatch.setattr(import_explain_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes))
-    monkeypatch.setattr(decoder_zip_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes))
+    monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes))
 
     payload = explain_import_path(archive)
 
@@ -169,71 +202,53 @@ def test_import_explain_zip_rejects_aggregate_over_cap_before_read(
     assert rejected_by_preview == set(entry_names) - accepted_names
 
 
-def test_import_explain_zip_excludes_non_session_artifact_from_aggregate(
+def test_import_explain_zip_aggregate_admission_precedes_path_session_decode(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """A non-session-classified entry must not count toward the preview's
-    aggregate total (CodeRabbit finding on PR #3317): ``process_zip`` always
-    constructs ``ZipEntryValidator`` with ``session_only=True``, which
-    excludes non-session-classified entries from the running total entirely
-    (they ``continue`` before the aggregate check in ``decoder_zip.py``).
-    The preview must apply the identical exclusion, or it can wrongly
-    predict an aggregate-cap rejection a real import would never hit.
+    """Aggregate admission rejects a later session-shaped member before decode.
 
-    Uses a monkeypatched ``classify_artifact_path`` (isolating the exclusion
-    LOGIC in ``_zip_entry_skip_reason`` from real ``OriginArtifactRule``
-    matching, which is covered separately) matching on the bare intra-archive
-    relative path -- both ``_zip_entry_skip_reason`` and
-    ``ZipEntryValidator.filter_entries`` classify on that bare path, not a
-    ``{zip_path}:{name}`` prefix (polylogue-dc1k: every rule's ``(?:^|/)``-anchored
-    pattern only matches after start-of-string or ``/``, never after the ``:``
-    a container prefix would insert).
+    The tiny cap stands in for the production 64 GiB aggregate ceiling. The
+    central-directory sizes are enough to exercise admission, so this test
+    does not allocate a hostile payload.
     """
-    from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
-
     archive = tmp_path / "workflow.zip"
-    session_bytes = b'{"a": 1}'
-    non_session_bytes = b'{"run": "snapshot"}' * 1000
+    first_bytes = b"{}"
+    later_session_bytes = json.dumps(
+        [
+            {
+                "sessionId": "later-session",
+                "type": "user",
+                "uuid": "later-user",
+                "message": {"role": "user", "content": "later"},
+            }
+        ]
+    ).encode()
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("session.json", session_bytes)
-        zf.writestr("run.json", non_session_bytes)
-    # Cap sits between the session entry alone and session+non-session
-    # combined -- if the non-session entry wrongly counted, this would
-    # falsely reject the accepted session entry too.
-    monkeypatch.setattr(
-        import_explain_module,
-        "MAX_AGGREGATE_UNCOMPRESSED_SIZE",
-        len(session_bytes) + len(non_session_bytes) // 2,
-    )
+        zf.writestr("safe.json", first_bytes)
+        zf.writestr("workflows/later.json", later_session_bytes)
+    monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(first_bytes))
 
-    def fake_classify(source_path: object, *, provider: object) -> ArtifactClassification | None:
-        if str(source_path) == "run.json":
-            return ArtifactClassification(
-                provider=Provider.CLAUDE_CODE,
-                kind=ArtifactKind.WORKFLOW_RUN_SNAPSHOT,
-                parse_as_session=False,
-                schema_eligible=False,
-                default_priority=0,
-                reason="non-session workflow snapshot (test fixture)",
-            )
-        return None
+    decoded_members: list[str] = []
 
-    monkeypatch.setattr(import_explain_module, "classify_artifact_path", fake_classify)
+    def fail_if_later_member_decoded(
+        _archive: zipfile.ZipFile,
+        info: zipfile.ZipInfo,
+        *,
+        provider: Provider,
+    ) -> object:
+        del provider
+        decoded_members.append(info.filename)
+        raise AssertionError(f"aggregate admission must reject {info.filename} before decode")
+
+    monkeypatch.setattr(import_explain_module, "zip_entry_session_artifact", fail_if_later_member_decoded)
 
     payload = explain_import_path(archive, source_name="claude-code")
 
-    assert not any("aggregate uncompressed size" in row.reason for row in payload.skipped)
-    non_session_skips = [row for row in payload.skipped if row.source_path == f"{archive}:run.json"]
-    assert len(non_session_skips) == 1
-    assert non_session_skips[0].reason == "non-session workflow snapshot (test fixture)"
-    # session.json is separately skipped as "metadata-oriented document" (its
-    # trivial fixture bytes aren't a real session shape) -- but crucially
-    # NOT for an aggregate-size reason, which is the only thing this test
-    # proves: run.json's bytes never reached the running aggregate total.
-    session_skips = [row for row in payload.skipped if row.source_path == f"{archive}:session.json"]
-    assert len(session_skips) == 1
-    assert "aggregate uncompressed size" not in session_skips[0].reason
+    assert decoded_members == []
+    assert payload.produced.sessions == 0
+    aggregate_skips = [row for row in payload.skipped if "aggregate uncompressed size" in row.reason]
+    assert [row.source_path for row in aggregate_skips] == [f"{archive}:workflows/later.json"]
 
 
 def test_import_explain_zip_allows_archive_comfortably_under_aggregate_cap(
@@ -248,7 +263,7 @@ def test_import_explain_zip_allows_archive_comfortably_under_aggregate_cap(
     with zipfile.ZipFile(archive, "w") as zf:
         for i in range(3):
             zf.writestr(f"entry_{i}.json", entry_bytes)
-    monkeypatch.setattr(import_explain_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes) * 10)
+    monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes) * 10)
 
     payload = explain_import_path(archive)
 

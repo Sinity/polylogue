@@ -23,6 +23,7 @@ import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from polylogue.config import Config, Source
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
@@ -38,6 +39,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.models import SyntheticArtifactFacts
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 
 _ARTIFACT_PROTOCOL_VERSION = 1
 _CACHE_ROOT = Path("/realm/tmp/polylogue-seeded-artifacts")
@@ -434,13 +436,18 @@ def build_seeded_archive(
                 SyntheticCorpus.write_spec_artifacts(spec, corpus_root / spec.provider, prefix=f"seed-{index:02d}")
                 for index, spec in enumerate(selected_specs)
             )
-            sources = [
-                Source(name=spec.provider, path=path)
-                for spec, written in zip(selected_specs, written_batches, strict=True)
-                for path in written.files
-            ]
+            sources = []
+            for spec, written in zip(selected_specs, written_batches, strict=True):
+                if spec.provider == "antigravity":
+                    sources.append(Source(name=spec.provider, path=written.files[0].parent.parent))
+                else:
+                    sources.extend(Source(name=spec.provider, path=path) for path in written.files)
             with _configured_archive_root(staging):
-                asyncio.run(parse_sources_archive(staging, sources))
+                with patch(
+                    "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+                    SyntheticAntigravityLanguageServerClient,
+                ):
+                    asyncio.run(parse_sources_archive(staging, sources))
             inspect_raw_authority_frontier(
                 Config(
                     archive_root=staging,

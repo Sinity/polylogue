@@ -29,6 +29,7 @@ def _base_kwargs() -> dict[str, object]:
         "search_ready": True,
         "search_summary": "ready",
         "active_writer": False,
+        "convergence_debt_available": True,
         "active_writer_summary": "",
     }
 
@@ -112,6 +113,28 @@ def test_raw_materialization_not_ready_takes_precedence_over_frontier_integrity(
 
     assert guard["converged"]["value"] is False
     assert guard["converged"]["reason"] == "raw evidence pending materialization"
+
+
+def test_pending_convergence_debt_blocks_converged() -> None:
+    kwargs = _base_kwargs()
+    kwargs["convergence_debt_pending"] = True
+    kwargs["convergence_debt_summary"] = "convergence debt pending: 1 deferred"
+    guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
+
+    assert guard["converged"]["value"] is False
+    assert guard["converged"]["reason"] == "convergence debt pending: 1 deferred"
+    assert "convergence_debt_summary" in str(guard["converged"]["signal"])
+
+
+def test_unavailable_convergence_debt_blocks_converged_as_unknown() -> None:
+    kwargs = _base_kwargs()
+    kwargs["convergence_debt_available"] = False
+    kwargs["convergence_debt_summary"] = "convergence debt status unavailable: disk I/O error"
+    guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
+
+    assert guard["converged"]["value"] is False
+    assert guard["converged"]["reason"] == "convergence debt status unavailable: disk I/O error"
+    assert "unknown debt" in str(guard["converged"]["signal"])
 
 
 def test_search_not_ready_reports_component_summary() -> None:

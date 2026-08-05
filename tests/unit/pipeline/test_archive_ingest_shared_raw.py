@@ -8,7 +8,7 @@ a file into two `ParsedSession`s that share the identical captured raw bytes.
 
 Before this fix, `pipeline/services/archive_ingest.py`'s one-shot importer
 (`parse_sources_archive` / `write_pair`) wrote a SEPARATE `raw_sessions` row
-per split session via `write_raw_and_parsed_result`, whose raw_id is derived
+per split session via `admit_raw_and_parsed_result`, whose raw_id is derived
 from `deterministic_raw_session_id(..., native_id=session.provider_session_id)`
 (see `write_source_raw_session`). Two sessions parsed from the SAME bytes
 therefore produced TWO DIFFERENT raw_id rows differentiated only by
@@ -36,16 +36,43 @@ sessions instead of writing a duplicate raw row.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import zipfile
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from polylogue.config import Source
+from polylogue.pipeline.services import archive_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.sources.parsers.base import ParsedSession, RawSessionData
+from polylogue.sources.source_parsing import iter_source_sessions_with_raw
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
+class _RejectUnboundedRead:
+    """ZIP handle proxy that rejects a full member read in archive admission."""
+
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+
+    def __enter__(self) -> _RejectUnboundedRead:
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._handle.__exit__(*args)
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            raise AssertionError("ZIP artifact admission must stream to the blob store")
+        return cast("bytes", self._handle.read(size))
+
+
+def _write_carryover_chain(root: Path, *, session_prefix: str = "") -> tuple[Path, Path]:
     """Write parent-session.jsonl (real "parent" session) + child-session.jsonl
     (a 1-record carryover of parent's tail under `sessionId=parent-session`,
     then real "child-session" content) -- the exact structural shape found in
@@ -55,6 +82,8 @@ def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
     on, so the fixture must use real-shaped filenames, not human-readable
     stand-ins, to exercise it honestly).
     """
+    parent_session = f"{session_prefix}parent-session"
+    child_session = f"{session_prefix}child-session"
     parent_file = root / "parent-session.jsonl"
     child_file = root / "child-session.jsonl"
 
@@ -75,8 +104,8 @@ def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
     parent_file.write_text(
         "\n".join(
             [
-                rec("parent-session", "p-u1", "user", "p1"),
-                rec("parent-session", "p-a1", "assistant", "p2", parent_uuid="p-u1"),
+                rec(parent_session, "p-u1", "user", "p1"),
+                rec(parent_session, "p-a1", "assistant", "p2", parent_uuid="p-u1"),
             ]
         )
         + "\n"
@@ -87,14 +116,14 @@ def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
                 # Boundary carryover: same conversation thread, still tagged
                 # with the PARENT's sessionId, referencing parent's last uuid.
                 rec(
-                    "parent-session",
+                    parent_session,
                     "carryover",
                     "user",
                     "[Request interrupted by user for tool use]",
                     parent_uuid="p-a1",
                 ),
-                rec("child-session", "c-u1", "user", "c1"),
-                rec("child-session", "c-a1", "assistant", "c2", parent_uuid="c-u1"),
+                rec(child_session, "c-u1", "user", "c1"),
+                rec(child_session, "c-a1", "assistant", "c2", parent_uuid="c-u1"),
             ]
         )
         + "\n"
@@ -114,6 +143,270 @@ def _raw_rows_for_path(source_db: Path, source_path: str) -> list[tuple[str, str
     return [(str(r[0]), r[1]) for r in rows]
 
 
+def _membership_rows(source_db: Path, raw_id: str) -> set[tuple[str, str]]:
+    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT logical_source_key, provider_session_id FROM raw_session_memberships WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {(str(row[0]), str(row[1])) for row in rows}
+
+
+def _workflow_journal_payload(*, malformed: bool = False, delayed: bool = False) -> bytes:
+    if malformed:
+        return b'{"contentKey":"broken"\n'
+    prefix = b""
+    if delayed:
+        prefix = b"".join(
+            b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
+            for index in range(32)
+        )
+    return prefix + (
+        b'{"sessionId":"journal-session","parentUuid":null,"type":"user",'
+        b'"message":{"role":"user","content":[{"type":"text","text":"recover journal"}]},'
+        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"sessionId":"journal-session","parentUuid":"journal-user","type":"assistant",'
+        b'"message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+
+
+def _write_session_shaped_workflow_journal(root: Path, *, malformed: bool = False) -> Path:
+    journal = root / "subagents" / "workflows" / "wf-archive" / "journal.jsonl"
+    journal.parent.mkdir(parents=True)
+    journal.write_bytes(_workflow_journal_payload(malformed=malformed))
+    return journal
+
+
+def _write_workflow_journal_zip(root: Path, *, malformed: bool = False) -> Path:
+    archive = root / "claude-export.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "subagents/workflows/wf-archive/journal.jsonl",
+            _workflow_journal_payload(malformed=malformed, delayed=not malformed),
+        )
+    return archive
+
+
+def _write_large_zip_member(root: Path, name: str, payload: bytes) -> Path:
+    archive = root / "large-export.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr(name, payload)
+    return archive
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_session_shaped_workflow_journal_reaches_parser_idempotently(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """The production one-shot route must decode a journal before path exclusion."""
+    archive_root = workspace_env["archive_root"]
+    journal = _write_session_shaped_workflow_journal(tmp_path / "sessions")
+    sources = [Source(name="claude-code", path=journal)]
+
+    first = await parse_sources_archive(archive_root, sources, parse_workers=1)
+    second = await parse_sources_archive(archive_root, sources, parse_workers=1)
+
+    assert first.parse_failures == 0
+    assert first.counts["sessions"] == 1
+    assert second.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """A journal with no decodable session evidence remains a typed artifact."""
+    archive_root = workspace_env["archive_root"]
+    journal = _write_session_shaped_workflow_journal(tmp_path / "sessions", malformed=True)
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=journal)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
+            "workflow_journal",
+            0,
+        )
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_zip_workflow_journal_scans_delayed_session_evidence_idempotently(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """ZIP member routing must decode beyond 32 artifact records before exclusion."""
+    archive_root = workspace_env["archive_root"]
+    journal_zip = _write_workflow_journal_zip(tmp_path / "sessions")
+    sources = [Source(name="claude-code", path=journal_zip)]
+
+    first = await parse_sources_archive(archive_root, sources, parse_workers=1)
+    second = await parse_sources_archive(archive_root, sources, parse_workers=1)
+
+    assert first.parse_failures == 0
+    assert first.counts["sessions"] == 1
+    assert second.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evidence(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """Malformed ZIP journals are retained as typed evidence without sessions."""
+    archive_root = workspace_env["archive_root"]
+    journal_zip = _write_workflow_journal_zip(tmp_path / "sessions", malformed=True)
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=journal_zip)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
+            "workflow_journal",
+            0,
+        )
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large ZIP journal artifact must not be read into an admission payload."""
+    from polylogue.sources.decoder_zip import _ZIP_READ_CHUNK_SIZE, MAX_UNCOMPRESSED_SIZE, open_bounded_zip_entry
+
+    archive_root = workspace_env["archive_root"]
+    payload = b'{"contentKey":"artifact","agentId":"workflow-agent","body":"' + b"x" * _ZIP_READ_CHUNK_SIZE + b'"}\n'
+    journal_zip = _write_large_zip_member(
+        tmp_path / "sessions",
+        "subagents/workflows/wf-archive/journal.jsonl",
+        payload,
+    )
+    original_open = open_bounded_zip_entry
+
+    def reject_unbounded_read(
+        zf: zipfile.ZipFile,
+        info: zipfile.ZipInfo,
+        *,
+        max_bytes: int = MAX_UNCOMPRESSED_SIZE,
+    ) -> _RejectUnboundedRead:
+        return _RejectUnboundedRead(original_open(zf, info, max_bytes=max_bytes))
+
+    monkeypatch.setattr(
+        "polylogue.pipeline.services.archive_ingest.open_bounded_zip_entry",
+        reject_unbounded_read,
+    )
+
+    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=journal_zip)], parse_workers=1)
+
+    assert result.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
+        assert conn.execute("SELECT blob_size FROM raw_sessions").fetchone() == (len(payload),)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_large_ordinary_zip_jsonl_skips_delayed_artifact_scan(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unclassified ZIP JSONL follows normal parsing without a second full scan."""
+    from polylogue.sources import decoder_zip
+
+    archive_root = workspace_env["archive_root"]
+    payload = (
+        b'{"sessionId":"ordinary-session","parentUuid":null,"type":"user",'
+        b'"message":{"role":"user","content":[{"type":"text","text":"' + b"x" * (1024 * 1024) + b'"}]},'
+        b'"uuid":"ordinary-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"sessionId":"ordinary-session","parentUuid":"ordinary-user","type":"assistant",'
+        b'"message":{"role":"assistant","content":[{"type":"text","text":"reply"}]},'
+        b'"uuid":"ordinary-assistant","timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    session_zip = _write_large_zip_member(tmp_path / "sessions", "nested/ordinary.jsonl", payload)
+
+    def fail_unexpected_scan(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ordinary ZIP JSONL must not receive a delayed artifact scan")
+
+    monkeypatch.setattr(decoder_zip, "zip_entry_session_artifact", fail_unexpected_scan)
+
+    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=session_zip)], parse_workers=1)
+
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_path_classified_zip_json_record_array_reaches_parser(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """Decoded Claude records outrank a non-session workflow snapshot path."""
+    archive_root = workspace_env["archive_root"]
+    journal_zip = _write_large_zip_member(
+        tmp_path / "sessions",
+        "workflows/wf-json.json",
+        json.dumps(
+            [
+                {
+                    "sessionId": "json-array-session",
+                    "parentUuid": None,
+                    "type": "user",
+                    "message": {"role": "user", "content": "recover JSON records"},
+                    "uuid": "json-array-user",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                },
+                {
+                    "sessionId": "json-array-session",
+                    "parentUuid": "json-array-user",
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "recovered reply"}],
+                    },
+                    "uuid": "json-array-assistant",
+                    "timestamp": "2025-01-01T00:00:01Z",
+                },
+            ]
+        ).encode(),
+    )
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=journal_zip)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] >= 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+
+
 @pytest.mark.asyncio
 async def test_grouped_carryover_sessions_share_one_raw_row(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
     """Two sessions split from ONE Claude Code file's bytes must NOT produce
@@ -131,10 +424,15 @@ async def test_grouped_carryover_sessions_share_one_raw_row(tmp_path: Path, work
     rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
     # Anti-vacuity: this is the production dependency under test --
     # write_pair's shared-raw cache (pipeline/services/archive_ingest.py).
-    # Deleting that cache (reverting to one write_raw_and_parsed_result call
+    # Deleting that cache (reverting to one admit_raw_and_parsed_result call
     # per split session, each deriving its own native_id-based raw_id) makes
     # this assertion fail with TWO rows instead of one.
     assert len(rows) == 1, f"expected exactly one raw row for child-session.jsonl's bytes, got {rows}"
+    assert rows[0][1] is None
+    assert _membership_rows(archive_root / "source.db", rows[0][0]) == {
+        ("claude-code:parent-session:child-session", "parent-session:child-session"),
+        ("claude-code:child-session", "child-session"),
+    }
 
     # Both split sessions must still have been indexed -- but as of
     # bd polylogue-jc4q the 1-record carryover no longer collides identity
@@ -302,3 +600,104 @@ async def test_reingesting_identical_bytes_resolves_to_the_same_raw_id(
 
     assert len(second_rows) == 1, f"re-ingest must not create a second raw row, got {second_rows}"
     assert second_rows[0][0] == first_raw_id, "raw_id must be deterministic across re-acquisitions of identical bytes"
+
+
+@pytest.mark.asyncio
+async def test_reordered_grouped_reingest_keeps_raw_identity_and_memberships(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real importer must tolerate a different grouped-session order on retry."""
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
+    archive_root = workspace_env["archive_root"]
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _parent_file, child_file = _write_carryover_chain(root)
+    sources = [Source(name="claude-code", path=child_file)]
+
+    original_iter = iter_source_sessions_with_raw
+    calls = 0
+
+    def reordered_iter(source: Source, **kwargs: Any) -> Iterator[tuple[RawSessionData | None, ParsedSession]]:
+        nonlocal calls
+        pairs = list(original_iter(source, **kwargs))
+        if calls == 1:
+            pairs.reverse()
+        calls += 1
+        yield from pairs
+
+    monkeypatch.setattr(archive_ingest, "iter_source_sessions_with_raw", reordered_iter)
+
+    first_result = await parse_sources_archive(archive_root, sources)
+    assert first_result.parse_failures == 0
+    first_rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
+    assert len(first_rows) == 1
+    first_raw_id = first_rows[0][0]
+
+    second_result = await parse_sources_archive(archive_root, sources)
+    assert second_result.parse_failures == 0
+    assert calls == 2
+    second_rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
+
+    assert second_rows == [(first_raw_id, None)]
+    assert _membership_rows(archive_root / "source.db", first_raw_id) == {
+        ("claude-code:parent-session:child-session", "parent-session:child-session"),
+        ("claude-code:child-session", "child-session"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_batched_grouped_ingest_commits_census_before_next_raw(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grouped raw publication must not wait behind the index message batch."""
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+    # Keep the index transaction open across both files. The default production
+    # threshold has the same shape for this small demo-sized input.
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "1000")
+    archive_root = workspace_env["archive_root"]
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    _first_parent, first_child = _write_carryover_chain(first_root)
+    _second_parent, second_child = _write_carryover_chain(second_root, session_prefix="second-")
+
+    original_census = ArchiveStore.replace_raw_membership_census
+    census_calls = 0
+
+    def require_source_transaction(
+        archive: ArchiveStore,
+        raw_id: str,
+        sessions: list[ParsedSession] | None,
+        **kwargs: Any,
+    ) -> None:
+        nonlocal census_calls
+        census_calls += 1
+        assert kwargs["manage_transaction"] is True
+        original_census(archive, raw_id, sessions, **kwargs)
+
+    monkeypatch.setattr(ArchiveStore, "replace_raw_membership_census", require_source_transaction)
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=first_child), Source(name="claude-code", path=second_child)],
+        parse_workers=1,
+    )
+
+    # Anti-vacuity: this calls the production grouped parser, raw admission,
+    # source census, and index writer with a positive batch threshold. Removing
+    # the source-tier transaction ownership fix fails at the first real census
+    # call, and without that guard the next file's publisher blocks on the
+    # census transaction's source.db write lock.
+    assert result.parse_failures == 0
+    assert census_calls == 4
+    assert result.counts["sessions"] == 4
+    assert len(_raw_rows_for_path(archive_root / "source.db", str(first_child))) == 1
+    assert len(_raw_rows_for_path(archive_root / "source.db", str(second_child))) == 1
+    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 4

@@ -219,7 +219,7 @@ def test_process_pool_reingest_reserves_before_publish_and_consumes_with_source_
     source_write_entered = fork_ctx.Event()
     allow_source_write = fork_ctx.Event()
     original_publish_many = BlobStore.publish_many
-    original_write = ArchiveStore.write_raw_and_parsed_result
+    original_write = ArchiveStore.admit_raw_and_parsed_result
 
     def pause_worker_publication(store: BlobStore, prepared):  # type: ignore[no-untyped-def]
         batch = tuple(prepared)
@@ -233,7 +233,7 @@ def test_process_pool_reingest_reserves_before_publish_and_consumes_with_source_
         return original_write(archive, *args, **kwargs)
 
     monkeypatch.setattr(BlobStore, "publish_many", pause_worker_publication)
-    monkeypatch.setattr(ArchiveStore, "write_raw_and_parsed_result", pause_main_source_write)
+    monkeypatch.setattr(ArchiveStore, "admit_raw_and_parsed_result", pause_main_source_write)
 
     read_result, write_result = fork_ctx.Pipe(duplex=False)
 
@@ -342,7 +342,7 @@ def test_failed_write_rolls_back_uncommitted_batch(
     sources = _build_sources(tmp_path, count=4, seed=23)
     assert len(sources) >= 2
 
-    original_write = ArchiveStore.write_raw_and_parsed_result
+    original_write = ArchiveStore.admit_raw_and_parsed_result
     calls = {"n": 0}
 
     def failing_write(self: ArchiveStore, *args: object, **kwargs: object) -> ArchiveRawParsedWriteResult:
@@ -358,7 +358,7 @@ def test_failed_write_rolls_back_uncommitted_batch(
         rollbacks["n"] += 1
         original_rollback(self)
 
-    monkeypatch.setattr(ArchiveStore, "write_raw_and_parsed_result", failing_write)
+    monkeypatch.setattr(ArchiveStore, "admit_raw_and_parsed_result", failing_write)
     monkeypatch.setattr(ArchiveStore, "rollback", spy_rollback)
 
     with pytest.raises(RuntimeError, match="simulated mid-batch write failure"):

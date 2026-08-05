@@ -142,6 +142,81 @@ def test_hook_payload_ref_survives_gc_while_hook_event_row_exists_then_is_reclai
     assert not blob_store.exists(blob_hash)
 
 
+def test_gc_retains_live_raw_attachment_and_hook_references_together(tmp_path: Path) -> None:
+    """The real GC route protects every durable source reference surface.
+
+    Raw payload and attachment refs are keyed to source rows, while hook
+    payload refs join to ``raw_hook_events``.  Keeping all three in one pass
+    prevents a future change from preserving the already-tested hook path
+    while regressing one of the source-ref branches.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    blob_store = BlobStore(archive_root / "blob")
+    raw_hash, _ = blob_store.write_from_bytes(b"raw payload")
+    attachment_hash, _ = blob_store.write_from_bytes(b"attachment payload")
+    _write_hook_event(
+        archive_root,
+        hook_event_id="hook-batch",
+        source_path="/hooks/batch.jsonl",
+        payload=b'{"event":"PostToolUse","batch":true}',
+    )
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('raw-live', 'codex-session', 'raw-live', '/raw.jsonl', ?, 11, 1)
+            """,
+            (bytes.fromhex(raw_hash),),
+        )
+        # Attachment refs use the parent raw session as their ref_id in the
+        # source tier. Its payload is deliberately a different, non-file hash
+        # so this assertion exercises the attachment ref join itself.
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('attachment-parent', 'codex-session', 'attachment-parent', '/parent.jsonl', ?, 1, 1)
+            """,
+            (b"p" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-live', 'raw_payload', '/raw.jsonl', 11, 1)
+            """,
+            (bytes.fromhex(raw_hash),),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'attachment-parent', 'attachment', '/parent.jsonl', 18, 1)
+            """,
+            (bytes.fromhex(attachment_hash),),
+        )
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        hook_hash = conn.execute("SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = 'hook-batch'").fetchone()[
+            0
+        ]
+
+    for blob_hash in (raw_hash, attachment_hash, bytes(hook_hash).hex()):
+        _backdate(blob_store, blob_hash)
+
+    assert run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10) == 0
+    assert all(blob_store.exists(blob_hash) for blob_hash in (raw_hash, attachment_hash, bytes(hook_hash).hex()))
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("DELETE FROM blob_refs WHERE ref_id IN ('raw-live', 'attachment-parent')")
+        conn.execute("DELETE FROM raw_sessions WHERE raw_id IN ('raw-live', 'attachment-parent')")
+    assert _delete_hook_event(archive_root, hook_event_id="hook-batch") is True
+
+    assert run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10) == 3
+    assert not any(blob_store.exists(blob_hash) for blob_hash in (raw_hash, attachment_hash, bytes(hook_hash).hex()))
+
+
 def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -184,6 +259,10 @@ def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
 
     monkeypatch.setattr(
         "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_manifest",
+        lambda *args, **kwargs: args[0],
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_live_fingerprint",
         lambda *args, **kwargs: args[0],
     )
     monkeypatch.setattr(

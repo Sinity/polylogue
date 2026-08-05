@@ -80,6 +80,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     if args.json:
         payload = dict(report.to_json())
         payload["blocking"] = blocking
+        payload["verdict"] = "FAIL" if blocking else "PASS"
         json.dump(payload, output, indent=2, sort_keys=True)
         print(file=output)
     else:

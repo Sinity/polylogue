@@ -64,12 +64,22 @@ import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from devtools import repo_root as _get_root
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index_convergence import (
     INDEX_BENIGN_DDL_REGISTRY,
     BenignDDLEntry,
+)
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.durable_change_train import (
+    DurableMigrationClaim,
+    durable_change_train_policy_report,
+    durable_migration_claim_for_sql,
+)
+from polylogue.storage.sqlite.durable_change_train import (
+    durable_migration_collision_report as _durable_migration_collision_report,
 )
 from polylogue.storage.sqlite.lifecycle import IndexDeltaDeclarationReport, index_delta_declaration_report
 
@@ -93,6 +103,9 @@ _HELPER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^_?migrate_v\d+(_to_v\d+)?$"),
     re.compile(r"^ensure_schema_upgrades_v\d+$"),
 )
+
+_DURABLE_MIGRATION_SQL_RE = re.compile(r"^\d{3,}_[a-z0-9_]+\.sql$")
+_DURABLE_MIGRATION_SIDECAR_RE = re.compile(r"^\d{3,}\.train\.json$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,10 +206,42 @@ def _invalid_migration_paths() -> list[Path]:
         if (
             len(rel.parts) != 2
             or rel.parts[0] not in ALLOWED_MIGRATION_TIERS
-            or not re.match(r"^\d{3,}_[a-z0-9_]+\.sql$", rel.parts[1])
+            or not (
+                _DURABLE_MIGRATION_SQL_RE.fullmatch(rel.parts[1])
+                or _DURABLE_MIGRATION_SIDECAR_RE.fullmatch(rel.parts[1])
+            )
         ):
             invalid.append(path)
     return invalid
+
+
+def _durable_migration_claims_on_disk() -> tuple[DurableMigrationClaim, ...]:
+    """Build the shared migration-slot claims from checked-in SQL resources."""
+    claims: list[DurableMigrationClaim] = []
+    for tier_name in sorted(ALLOWED_MIGRATION_TIERS):
+        tier = ArchiveTier(tier_name)
+        tier_dir = MIGRATIONS_DIR / tier_name
+        if not tier_dir.exists():
+            continue
+        for path in sorted(tier_dir.glob("*.sql")):
+            if re.fullmatch(r"\d{3,}_[a-z0-9_]+\.sql", path.name) is None:
+                continue
+            claims.append(
+                durable_migration_claim_for_sql(
+                    tier,
+                    path.relative_to(ROOT),
+                    path.read_text(encoding="utf-8"),
+                    owner_ref=str(path.relative_to(ROOT)),
+                )
+            )
+    return tuple(claims)
+
+
+def durable_migration_collision_report(
+    claims: Iterable[DurableMigrationClaim],
+) -> dict[str, object]:
+    """Expose the shared slot report to schema-policy callers and tests."""
+    return _durable_migration_collision_report(claims)
 
 
 def _format_report(
@@ -205,10 +250,29 @@ def _format_report(
     invalid_migrations: list[Path],
     delta_report: IndexDeltaDeclarationReport,
     benign_ddl_violations: list[BenignDDLViolation],
+    durable_change_train_reports: dict[str, dict[str, object]] | None = None,
+    durable_migration_collisions: dict[str, object] | None = None,
 ) -> str:
+    durable_change_train_reports = durable_change_train_reports or {}
+    durable_violations = [
+        violation
+        for report in durable_change_train_reports.values()
+        for violation in cast(tuple[object, ...], report.get("violations", ()))
+        if isinstance(violation, str)
+    ]
+    durable_reservations = [
+        reservation
+        for report in durable_change_train_reports.values()
+        for reservation in cast(tuple[object, ...], report.get("reservations", ()))
+    ]
+    durable_migration_collisions = durable_migration_collisions or {}
+    collision_entries = cast(tuple[object, ...], durable_migration_collisions.get("collisions", ()))
     lines = [
         f"derived-tier upgrade helpers found: {len(helpers)}",
         f"invalid durable migration resources found: {len(invalid_migrations)}",
+        f"durable change-train reservations found: {len(durable_reservations)}",
+        f"durable change-train violations found: {len(durable_violations)}",
+        f"durable migration slot collisions found: {len(collision_entries)}",
         f"undeclared index schema deltas found: {len(delta_report['missing_versions'])}",
         f"invalid index benign-DDL registry entries found: {len(benign_ddl_violations)}",
     ]
@@ -245,7 +309,26 @@ def _format_report(
             "data-non-transforming CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS / "
             "DROP TABLE IF EXISTS statements."
         )
-    if not helpers and not invalid_migrations and bool(delta_report["ok"]) and not benign_ddl_violations:
+    if durable_reservations:
+        lines.append("")
+        lines.append("Durable change-train reservations:")
+        lines.extend(f"  {reservation}" for reservation in durable_reservations)
+    if durable_violations:
+        lines.append("")
+        lines.append("Durable change-train violations:")
+        lines.extend(f"  {violation}" for violation in durable_violations)
+    if collision_entries:
+        lines.append("")
+        lines.append("Durable migration slot collisions:")
+        lines.extend(f"  {collision}" for collision in collision_entries)
+    if (
+        not helpers
+        and not invalid_migrations
+        and bool(delta_report["ok"])
+        and not benign_ddl_violations
+        and not durable_violations
+        and not collision_entries
+    ):
         lines.append("")
         lines.append("Schema evolution policy intact.")
     return "\n".join(lines)
@@ -261,10 +344,21 @@ def main(argv: list[str] | None = None) -> int:
 
     helpers = _collect_upgrade_helpers()
     invalid_migrations = _invalid_migration_paths()
+    durable_change_train_reports = {
+        tier.value: durable_change_train_policy_report(tier) for tier in (ArchiveTier.SOURCE, ArchiveTier.USER)
+    }
+    durable_migration_collisions = durable_migration_collision_report(_durable_migration_claims_on_disk())
     delta_report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)
     benign_ddl_violations = _invalid_benign_ddl_entries()
 
-    ok = not helpers and not invalid_migrations and bool(delta_report["ok"]) and not benign_ddl_violations
+    ok = (
+        not helpers
+        and not invalid_migrations
+        and bool(delta_report["ok"])
+        and not benign_ddl_violations
+        and all(bool(report.get("ok")) for report in durable_change_train_reports.values())
+        and bool(durable_migration_collisions["ok"])
+    )
 
     if args.json:
         payload = {
@@ -272,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
                 {"name": hit.name, "path": str(hit.path.relative_to(ROOT)), "line": hit.lineno} for hit in helpers
             ],
             "invalid_migration_resources": [str(path.relative_to(ROOT)) for path in invalid_migrations],
+            "durable_change_trains": durable_change_train_reports,
+            "durable_migration_collisions": durable_migration_collisions,
             "index_delta_declarations": delta_report,
             "invalid_benign_ddl_entries": [
                 {"name": violation.entry_name, "reason": violation.reason} for violation in benign_ddl_violations
@@ -286,6 +382,8 @@ def main(argv: list[str] | None = None) -> int:
                 invalid_migrations=invalid_migrations,
                 delta_report=delta_report,
                 benign_ddl_violations=benign_ddl_violations,
+                durable_change_train_reports=durable_change_train_reports,
+                durable_migration_collisions=durable_migration_collisions,
             )
         )
 

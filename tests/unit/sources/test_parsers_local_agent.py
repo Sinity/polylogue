@@ -920,11 +920,27 @@ def test_hermes_state_db_raw_payload_envelope_uses_marker(tmp_path: Path) -> Non
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)
 
-    envelope = build_raw_payload_envelope(db_path, source_path=db_path, fallback_provider="inbox")
+    envelope = build_raw_payload_envelope(
+        db_path,
+        source_path=db_path,
+        fallback_provider="inbox",
+        sqlite_immutable=False,
+    )
 
     assert envelope.provider is Provider.HERMES
     assert envelope.artifact.parse_as_session is True
-    assert envelope.payload == hermes_state.marker_payload(db_path, profile_root=db_path.parent)
+    assert envelope.payload == hermes_state.marker_payload(db_path, profile_root=db_path.parent, immutable=False)
+    assert "sqlite_immutable" not in envelope.payload
+
+
+def test_hermes_state_db_raw_payload_envelope_default_keeps_live_marker_semantics(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+
+    envelope = build_raw_payload_envelope(db_path, source_path=db_path, fallback_provider="inbox")
+
+    assert envelope.payload == hermes_state.marker_payload(db_path, profile_root=db_path.parent, immutable=False)
+    assert "sqlite_immutable" not in envelope.payload
 
 
 def test_hermes_state_db_live_batch_classifies_as_session_artifact(tmp_path: Path) -> None:

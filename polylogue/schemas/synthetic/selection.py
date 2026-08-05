@@ -8,7 +8,10 @@ from typing import Protocol, TypeAlias
 from polylogue.schemas.packages import SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticSchemaSelection
-from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
+from polylogue.schemas.synthetic.wire_formats import (
+    PROVIDER_WIRE_ROUTES,
+    UnsupportedSyntheticWireRouteError,
+)
 
 
 class _SchemaRegistryLike(Protocol):
@@ -66,7 +69,11 @@ def select_synthetic_schema(
             )
         schema = registry.get_element_schema(
             canonical_provider,
-            version=version,
+            # ``get_package`` resolves aliases such as ``default``.  Reuse
+            # that exact package identity for every subsequent load so a
+            # registry cannot pair one package's manifest with another
+            # package's element schema.
+            version=package.version,
             element_kind=resolved_element_kind,
         )
         canonical_version = package.version
@@ -86,9 +93,14 @@ def select_synthetic_schema(
             f"version={canonical_version}, element_kind={resolved_element_kind})"
         )
 
-    wire_format = PROVIDER_WIRE_FORMATS.get(canonical_provider)
-    if not wire_format:
-        raise ValueError(f"No wire format config for provider: {canonical_provider}")
+    route = PROVIDER_WIRE_ROUTES.get(canonical_provider)
+    if route is None:
+        raise UnsupportedSyntheticWireRouteError(canonical_provider, "no explicit synthetic wire route")
+    if route.status == "unsupported":
+        raise UnsupportedSyntheticWireRouteError(canonical_provider, route.reason or "route is unsupported")
+    wire_format = route.wire_format
+    if wire_format is None:
+        raise UnsupportedSyntheticWireRouteError(canonical_provider, "supported route has no wire format")
 
     profile_loader = getattr(registry, "get_workload_profile", None)
     workload_profile = profile_loader(canonical_provider, canonical_version) if callable(profile_loader) else None
@@ -107,7 +119,11 @@ def available_synthetic_providers(
     registry_factory: RegistryFactory = _default_registry_factory,
 ) -> list[str]:
     schema_providers = set(registry_factory().list_providers())
-    return [provider for provider in PROVIDER_WIRE_FORMATS if provider in schema_providers]
+    return [
+        provider
+        for provider, route in PROVIDER_WIRE_ROUTES.items()
+        if route.status == "supported" and provider in schema_providers
+    ]
 
 
 __all__ = [

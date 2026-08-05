@@ -14,7 +14,7 @@ from polylogue.archive.viewport.tools import (
     clean_metadata_path_candidate,
     clean_shell_path_candidate,
 )
-from polylogue.core.enums import Origin
+from polylogue.core.enums import ActionResultState, Origin
 
 
 class ReasoningTrace(BaseModel):
@@ -40,6 +40,7 @@ class ToolCall(BaseModel):
     input: Mapping[str, object] = Field(default_factory=dict)
     output: str | None = None
     success: bool | None = None
+    result_state: ActionResultState = ActionResultState.NO_RESULT
     category: ToolCategory = ToolCategory.OTHER
     origin: Origin | None = None
     raw: Mapping[str, object] = Field(default_factory=dict)

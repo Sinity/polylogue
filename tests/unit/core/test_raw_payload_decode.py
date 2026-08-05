@@ -66,6 +66,103 @@ def test_build_raw_payload_envelope_reports_first_bad_jsonl_line(tmp_path: Path)
     assert "line 2" in envelope.malformed_jsonl_detail
 
 
+def test_build_raw_payload_envelope_refuses_bare_session_meta_for_non_codex() -> None:
+    envelope = build_raw_payload_envelope(
+        b'{"type":"session_meta"}\n' * 2,
+        source_path="/tmp/rollout-repeated.jsonl",
+        fallback_provider="claude-code",
+        jsonl_dict_only=True,
+    )
+
+    assert envelope.artifact.parse_as_session is False
+    assert envelope.artifact.schema_eligible is False
+
+
+def test_build_raw_payload_envelope_refuses_codex_single_session_header() -> None:
+    envelope = build_raw_payload_envelope(
+        b'{"type":"session_meta","payload":{"id":"header-only"}}\n',
+        source_path="/tmp/header-only.jsonl",
+        fallback_provider="codex",
+        jsonl_dict_only=True,
+    )
+
+    assert envelope.artifact.parse_as_session is False
+    assert envelope.artifact.schema_eligible is False
+
+
+def test_build_raw_payload_envelope_refuses_non_session_record_after_codex_prefix() -> None:
+    raw_content = (
+        b'{"type":"session_meta","payload":{"id":"mixed-after-prefix"}}\n'
+        + (
+            b'{"type":"response_item","payload":{"type":"message","role":"user",'
+            b'"content":[{"type":"input_text","text":"hello"}]}}\n' * 31
+        )
+        + b'{"type":"settings"}\n'
+    )
+
+    envelope = build_raw_payload_envelope(
+        raw_content,
+        source_path="/tmp/mixed-after-prefix.jsonl",
+        fallback_provider="codex",
+        jsonl_dict_only=True,
+    )
+
+    assert envelope.artifact.parse_as_session is False
+    assert envelope.artifact.schema_eligible is False
+
+
+def test_build_raw_payload_envelope_admits_real_codex_session_stream() -> None:
+    envelope = build_raw_payload_envelope(
+        b'{"type":"session_meta","payload":{"id":"real-stream"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"hello"}]}}\n',
+        source_path="/tmp/real-stream.jsonl",
+        fallback_provider="codex",
+        jsonl_dict_only=True,
+    )
+
+    assert envelope.artifact.kind is ArtifactKind.SESSION_RECORD_STREAM
+    assert envelope.artifact.parse_as_session is True
+    assert envelope.artifact.schema_eligible is True
+
+
+def test_build_raw_payload_envelope_admits_legacy_direct_codex_stream() -> None:
+    envelope = build_raw_payload_envelope(
+        b'{"type":"message","id":"legacy-user","timestamp":"2024-01-01T00:00:00Z",'
+        b'"role":"user","content":[{"type":"input_text","text":"hello"}]}\n'
+        b'{"type":"message","id":"legacy-assistant","timestamp":"2024-01-01T00:00:01Z",'
+        b'"role":"assistant","content":[{"type":"text","text":"world"}]}\n',
+        source_path="/tmp/legacy.jsonl",
+        fallback_provider="codex",
+        jsonl_dict_only=True,
+    )
+
+    assert envelope.artifact.kind is ArtifactKind.SESSION_RECORD_STREAM
+    assert envelope.artifact.parse_as_session is True
+    assert envelope.artifact.schema_eligible is True
+
+
+def test_build_raw_payload_envelope_refuses_mixed_codex_envelope_and_direct_stream() -> None:
+    raw_content = (
+        b'{"type":"session_meta","payload":{"id":"mixed-stream"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"envelope"}]}}\n'
+        b'{"type":"message","id":"legacy-user","role":"user",'
+        b'"content":[{"type":"input_text","text":"direct"}]}\n'
+    )
+
+    envelope = build_raw_payload_envelope(
+        raw_content,
+        source_path="/tmp/mixed-envelope-direct.jsonl",
+        fallback_provider="codex",
+        jsonl_dict_only=True,
+    )
+
+    assert envelope.artifact.kind is ArtifactKind.UNKNOWN
+    assert envelope.artifact.parse_as_session is False
+    assert envelope.artifact.schema_eligible is False
+
+
 def test_jsonl_sampling_can_stop_after_bounded_prefix(tmp_path: Path) -> None:
     path = tmp_path / "bounded.jsonl"
     path.write_text('{"ok": 1}\n{"ok": 2}\n{"broken": \n', encoding="utf-8")

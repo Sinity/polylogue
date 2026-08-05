@@ -1770,6 +1770,7 @@ def build_verify_steps(
                 ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
                 ("verify manifests", _devtools_cmd("verify manifests")),
                 ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),
+                ("verify catalog-bypasses", _devtools_cmd("verify catalog-bypasses")),
                 ("verify doc-commands", _devtools_cmd("verify doc-commands")),
                 ("verify docs-coverage", _devtools_cmd("verify docs-coverage")),
                 ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),

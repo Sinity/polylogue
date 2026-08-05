@@ -22,6 +22,7 @@ from .base import (
     ParsedSession,
     ParsedSessionEvent,
     ParsedWebConstruct,
+    attachment_from_meta,
     human_authored_override,
 )
 
@@ -638,27 +639,9 @@ def extract_messages_from_mapping(
             msg_attachments = msg_metadata.get("attachments") or []
             if isinstance(msg_attachments, list):
                 for attach in msg_attachments:
-                    if isinstance(attach, dict) and attach.get("id"):
-                        # #1252: ChatGPT attachments arrive through the OAuth-
-                        # authenticated export; the only native identifier is
-                        # `id`. file_id is recorded when the export carries one
-                        # (some private deployments surface it).
-                        file_id_raw = attach.get("file_id") or attach.get("fileId")
-                        attachments.append(
-                            ParsedAttachment(
-                                provider_attachment_id=str(attach["id"]),
-                                message_provider_id=str(msg_id),
-                                name=str(attach["name"]) if attach.get("name") else None,
-                                mime_type=str(attach["mime_type"]) if attach.get("mime_type") else None,
-                                size_bytes=int(attach["size"])
-                                if isinstance(attach.get("size"), (int, float))
-                                else None,
-                                provider_file_id=str(file_id_raw)
-                                if isinstance(file_id_raw, str) and file_id_raw
-                                else None,
-                                upload_origin="oauth",
-                            )
-                        )
+                    attachment = attachment_from_meta(attach, str(msg_id))
+                    if attachment is not None:
+                        attachments.append(attachment)
 
         # Assistant-generated downloadable files (#sandbox links). Code
         # Interpreter deliverables surface only as `sandbox:/mnt/data/...`

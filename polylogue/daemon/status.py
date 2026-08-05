@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
@@ -59,7 +58,9 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     latest_stage_events,
     workload_fields,
 )
+from polylogue.daemon.slo import IngestSloStatus, slo_status_info
 from polylogue.logging import get_logger
+from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
@@ -404,6 +405,7 @@ class RawFailureSample(BaseModel):
     source: Literal["ingest", "maintenance"] = "ingest"
     operation_id: str | None = None
     locator: str | None = None
+    lifecycle: Literal["deferred", "terminal", "unexplained"] | None = None
 
     @field_validator("redacted_error", mode="before")
     @classmethod
@@ -465,6 +467,7 @@ class DaemonStatus(BaseModel):
     catchup: CatchupStatus = Field(default_factory=CatchupStatus)
     convergence: ConvergenceDebtSummary = Field(default_factory=ConvergenceDebtSummary)
     cursor_lag: CursorLagSummary = Field(default_factory=CursorLagSummary)
+    ingest_slo: IngestSloStatus = Field(default_factory=IngestSloStatus)
     db_size_bytes: int = 0
     wal_size_bytes: int = 0
     blob_dir_size_bytes: int = 0
@@ -486,6 +489,12 @@ class DaemonStatus(BaseModel):
     raw_validation_failures: int = 0
     raw_quarantined: int = 0
     raw_maintenance_failures: int = 0
+    raw_deferred_failures: int = 0
+    raw_terminal_rejections: int = 0
+    raw_unexplained_failures: int = 0
+    raw_failure_lifecycle_available: bool = False
+    raw_failure_lifecycle_state: Literal["healthy", "degraded", "blocked", "unavailable"] = "unavailable"
+    raw_failure_lifecycle_reason: str | None = None
     raw_failure_samples: list[RawFailureSample] = Field(default_factory=list)
     raw_detection_warnings: int = 0
     health: DaemonHealth = Field(default_factory=DaemonHealth)
@@ -830,136 +839,38 @@ def _raw_failure_info() -> dict[str, object]:
     distinguish ``"ingest"`` rows from ``"maintenance"`` rows without
     re-querying.
     """
-    dbf = _active_status_db_path()
+    root = archive_root()
+    source_db = root / "source.db"
     maintenance_samples, maintenance_count = _maintenance_failure_info()
-    if not dbf.exists():
-        archive_info = _archive_raw_failure_info(
-            dbf.with_name("source.db"),
-            maintenance_samples=maintenance_samples,
-            maintenance_count=maintenance_count,
-        )
-        if archive_info is not None:
-            return archive_info
-        return {
-            "parse_failures": 0,
-            "validation_failures": 0,
-            "quarantined": 0,
-            "maintenance_failures": maintenance_count,
-            "samples": maintenance_samples,
-        }
     archive_info = _archive_raw_failure_info(
-        dbf.with_name("source.db"),
+        source_db,
         maintenance_samples=maintenance_samples,
         maintenance_count=maintenance_count,
     )
-    if dbf.with_name("source.db").exists() and archive_info is not None:
-        return archive_info
+    return archive_info
 
-    try:
-        conn = open_readonly_connection(dbf)
-        try:
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='raw_sessions'"
-                ).fetchall()
-            }
-            if "raw_sessions" not in tables:
-                return {
-                    "parse_failures": 0,
-                    "validation_failures": 0,
-                    "quarantined": 0,
-                    "detection_warnings": 0,
-                    "maintenance_failures": maintenance_count,
-                    "samples": maintenance_samples,
-                }
 
-            parse_fail = int(
-                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL").fetchone()[0] or 0
-            )
-            validation_fail = int(
-                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE validation_status = 'FAILED'").fetchone()[0] or 0
-            )
-            quarantined = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM raw_sessions WHERE parsed_at IS NULL AND (parse_error IS NOT NULL OR validation_status = 'FAILED')"
-                ).fetchone()[0]
-                or 0
-            )
-            detection_warnings_count = 0
-            try:
-                with contextlib.suppress(sqlite3.OperationalError):
-                    detection_warnings_count = int(
-                        conn.execute(
-                            "SELECT COUNT(*) FROM raw_sessions WHERE detection_warnings IS NOT NULL"
-                        ).fetchone()[0]
-                        or 0
-                    )
-            except Exception as exc:
-                # contextlib.suppress above already covers the expected
-                # "detection_warnings column not on this schema yet" case;
-                # anything reaching here is unexpected and previously
-                # vanished silently behind a 0 count.
-                logger.warning("detection-warnings count query failed: %s", exc, exc_info=True)
-            # Bounded failure samples (most recent 50), typed.
-            samples: list[RawFailureSample] = []
-            raw_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)").fetchall()}
-            acquired_order_column = "acquired_at_ms" if "acquired_at_ms" in raw_columns else "acquired_at"
-            for row in conn.execute(
-                "SELECT raw_id, source_name, parse_error, validation_status, validation_error "
-                "FROM raw_sessions "
-                "WHERE parse_error IS NOT NULL OR validation_status = 'FAILED' "
-                f"ORDER BY {acquired_order_column} DESC LIMIT 50"
-            ).fetchall():
-                parse_err = str(row[2] or "") if row[2] else ""
-                val_status = str(row[3] or "") if row[3] else ""
-                val_err = str(row[4] or "") if row[4] else ""
-                provider = str(row[1]) if row[1] else None
-
-                # Classify failure kind from the available error signals.
-                if "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
-                    kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"] = "decode_error"
-                elif val_status == "FAILED":
-                    kind = "schema_violation"
-                elif parse_err:
-                    kind = "parse_error"
-                else:
-                    kind = "unknown"
-
-                # Redacted error text: prefer parse_error, fall back to validation_error.
-                error_text = parse_err or val_err
-
-                samples.append(
-                    RawFailureSample(
-                        failure_kind=kind,
-                        provider_hint=provider,
-                        redacted_error=error_text,
-                    )
-                )
-        finally:
-            conn.close()
-        combined: list[RawFailureSample] = list(samples)
-        combined.extend(maintenance_samples)
-        if len(combined) > 50:
-            combined = combined[:50]
-        return {
-            "parse_failures": parse_fail,
-            "validation_failures": validation_fail,
-            "quarantined": quarantined,
-            "detection_warnings": detection_warnings_count,
-            "maintenance_failures": maintenance_count,
-            "samples": combined,
-        }
-    except sqlite3.Error as exc:
-        logger.warning("status: raw-failure query failed for %s: %s", dbf, exc, exc_info=True)
-        return {
-            "parse_failures": 0,
-            "validation_failures": 0,
-            "quarantined": 0,
-            "detection_warnings": 0,
-            "maintenance_failures": maintenance_count,
-            "samples": maintenance_samples,
-        }
+def _unavailable_raw_failure_info(
+    *,
+    reason: str,
+    maintenance_samples: list[RawFailureSample],
+    maintenance_count: int,
+) -> dict[str, object]:
+    """Represent missing source evidence without manufacturing zero counts."""
+    return {
+        "parse_failures": 0,
+        "validation_failures": 0,
+        "quarantined": 0,
+        "detection_warnings": 0,
+        "maintenance_failures": maintenance_count,
+        "deferred_failures": 0,
+        "terminal_rejections": 0,
+        "unexplained_failures": 0,
+        "raw_failure_lifecycle_available": False,
+        "raw_failure_lifecycle_state": "unavailable",
+        "raw_failure_lifecycle_reason": reason,
+        "samples": maintenance_samples,
+    }
 
 
 def _archive_raw_failure_info(
@@ -967,27 +878,38 @@ def _archive_raw_failure_info(
     *,
     maintenance_samples: list[RawFailureSample],
     maintenance_count: int,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     if not archive_db.exists():
-        return None
+        return _unavailable_raw_failure_info(
+            reason=f"source.db not found: {archive_db}",
+            maintenance_samples=maintenance_samples,
+            maintenance_count=maintenance_count,
+        )
+    lifecycle_snapshot = read_raw_failure_lifecycle(archive_db, sample_limit=50)
+    if not lifecycle_snapshot.available:
+        return _unavailable_raw_failure_info(
+            reason=lifecycle_snapshot.reason or "raw failure lifecycle is unavailable",
+            maintenance_samples=maintenance_samples,
+            maintenance_count=maintenance_count,
+        )
     try:
         conn = open_readonly_connection(archive_db)
         try:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone():
-                return None
-            parse_fail = int(
-                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL").fetchone()[0] or 0
-            )
-            validation_fail = int(
-                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE validation_status = 'failed'").fetchone()[0] or 0
-            )
+                return _unavailable_raw_failure_info(
+                    reason="source.db is missing raw_sessions",
+                    maintenance_samples=maintenance_samples,
+                    maintenance_count=maintenance_count,
+                )
+            parse_fail = lifecycle_snapshot.parse_failures
+            validation_fail = lifecycle_snapshot.validation_failures
             quarantined = int(
                 conn.execute(
                     """
                     SELECT COUNT(*)
                     FROM raw_sessions
                     WHERE parsed_at_ms IS NULL
-                      AND (parse_error IS NOT NULL OR validation_status = 'failed')
+                      AND ((parse_error IS NOT NULL AND TRIM(parse_error) != '') OR validation_status = 'failed')
                     """
                 ).fetchone()[0]
                 or 0
@@ -1003,16 +925,21 @@ def _archive_raw_failure_info(
                 ).fetchone()[0]
                 or 0
             )
+            lifecycle_by_raw_id = {
+                str(sample["raw_id"]): str(sample["lifecycle"])
+                for sample in lifecycle_snapshot.samples
+                if sample.get("raw_id") is not None and sample.get("lifecycle") is not None
+            }
             samples: list[RawFailureSample] = []
             for row in conn.execute(
                 """
-                SELECT raw_id, origin, parse_error, validation_status, validation_error
-                FROM raw_sessions
-                WHERE parse_error IS NOT NULL OR validation_status = 'failed'
-                ORDER BY acquired_at_ms DESC
+                SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error
+                FROM raw_sessions AS r
+                WHERE (parse_error IS NOT NULL AND TRIM(parse_error) != '') OR validation_status = 'failed'
+                ORDER BY acquired_at_ms DESC, raw_id DESC
                 LIMIT 50
                 """
-            ).fetchall():
+            ):
                 parse_err = str(row[2] or "") if row[2] else ""
                 val_status = str(row[3] or "") if row[3] else ""
                 val_err = str(row[4] or "") if row[4] else ""
@@ -1030,6 +957,10 @@ def _archive_raw_failure_info(
                         failure_kind=kind,
                         provider_hint=origin,
                         redacted_error=parse_err or val_err,
+                        lifecycle=cast(
+                            Literal["deferred", "terminal", "unexplained"],
+                            lifecycle_by_raw_id.get(str(row[0]), "unexplained"),
+                        ),
                     )
                 )
         finally:
@@ -1044,13 +975,39 @@ def _archive_raw_failure_info(
             "quarantined": quarantined,
             "detection_warnings": detection_warnings_count,
             "maintenance_failures": maintenance_count,
+            "deferred_failures": lifecycle_snapshot.deferred,
+            "terminal_rejections": lifecycle_snapshot.terminal,
+            "unexplained_failures": lifecycle_snapshot.unexplained,
+            "raw_failure_lifecycle_available": True,
+            "raw_failure_lifecycle_state": lifecycle_snapshot.state,
             "samples": combined,
         }
-    except sqlite3.Error:
-        return None
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("status: raw-failure query failed for %s: %s", archive_db, exc, exc_info=True)
+        return _unavailable_raw_failure_info(
+            reason=f"could not read source.db raw failure relations: {exc}",
+            maintenance_samples=maintenance_samples,
+            maintenance_count=maintenance_count,
+        )
 
 
-def _maintenance_failure_info() -> tuple[list[RawFailureSample], int]:
+def raw_failure_info_for_root(root: Path) -> dict[str, object]:
+    """Return raw lifecycle evidence from one archive root without a daemon."""
+    maintenance_samples, maintenance_count = _maintenance_failure_info(root)
+    archive_info = _archive_raw_failure_info(
+        root / "source.db",
+        maintenance_samples=maintenance_samples,
+        maintenance_count=maintenance_count,
+    )
+    return archive_info
+
+
+def raw_failure_lifecycle_for_root(root: Path) -> Any:
+    """Return the bounded source-tier lifecycle snapshot for a status route."""
+    return read_raw_failure_lifecycle(root / "source.db", sample_limit=0)
+
+
+def _maintenance_failure_info(root: Path | None = None) -> tuple[list[RawFailureSample], int]:
     """Read routed maintenance failures into typed daemon samples (#1198).
 
     Returns a ``(samples, total_count)`` pair so the caller can both
@@ -1063,9 +1020,9 @@ def _maintenance_failure_info() -> tuple[list[RawFailureSample], int]:
     )
 
     try:
-        root = archive_root()
-        records = read_maintenance_failures(root)
-        total = count_maintenance_failures(root)
+        archive = root or archive_root()
+        records = read_maintenance_failures(archive)
+        total = count_maintenance_failures(archive)
     except Exception as exc:
         logger.warning("status: maintenance-failure read failed: %s", exc, exc_info=True)
         return [], 0
@@ -1909,6 +1866,21 @@ def _attach_collection_state(
         }
 
 
+def _convergence_debt_from_snapshot(snapshot: ComponentSnapshot) -> ConvergenceDebtSummary:
+    """Adapt a registry snapshot without treating unavailable debt as empty."""
+    if snapshot.state != "fresh" or snapshot.value is None or snapshot.error is not None:
+        return ConvergenceDebtSummary(
+            available=False,
+            error=snapshot.error or f"convergence debt status {snapshot.state}",
+        )
+    if not isinstance(snapshot.value, ConvergenceDebtSummary):
+        return ConvergenceDebtSummary(
+            available=False,
+            error="convergence debt snapshot returned an unexpected value",
+        )
+    return snapshot.value
+
+
 def _daemon_component_readiness(
     *,
     component_state: ComponentState,
@@ -1950,6 +1922,7 @@ def _daemon_claim_guard(
     raw_frontier_integrity: RawFrontierIntegrity,
     fts_readiness: FTSReadiness,
     live_ingest_attempts: LiveIngestAttemptSummary,
+    convergence: ConvergenceDebtSummary,
 ) -> dict[str, object]:
     """Derive the claim-guard block for the daemon-serving status path."""
     raw_component = _component_from_raw_materialization_readiness(raw_materialization_readiness)
@@ -1961,6 +1934,18 @@ def _daemon_claim_guard(
         writer_parts.append(f"{live_ingest_attempts.running_count} live ingest attempt(s) running")
     if rebuild_attempts:
         writer_parts.append(f"{rebuild_attempts} index rebuild attempt(s) running")
+    convergence_debt_pending = convergence.failed_count > 0 or convergence.deferred_count > 0
+    if not convergence.available:
+        convergence_debt_summary = convergence.error or "convergence debt unavailable; convergence state is unknown"
+    elif convergence_debt_pending:
+        pending_parts: list[str] = []
+        if convergence.failed_count:
+            pending_parts.append(f"{convergence.failed_count} failed")
+        if convergence.deferred_count:
+            pending_parts.append(f"{convergence.deferred_count} deferred")
+        convergence_debt_summary = f"convergence debt pending: {', '.join(pending_parts)}"
+    else:
+        convergence_debt_summary = "no pending convergence debt"
     guard = derive_claim_guard(
         archive_schema_ready=archive_storage.archive_schema_ready,
         schema_mismatches=archive_storage.schema_mismatches,
@@ -1973,6 +1958,9 @@ def _daemon_claim_guard(
         search_summary=fts_component.summary,
         active_writer=active_writer,
         active_writer_summary="; ".join(writer_parts),
+        convergence_debt_available=convergence.available,
+        convergence_debt_pending=convergence_debt_pending,
+        convergence_debt_summary=convergence_debt_summary,
     )
     return cast(dict[str, object], guard.to_dict())
 
@@ -2556,8 +2544,9 @@ def build_daemon_status(
     )
     live_cursor = _v("live_cursor", LiveCursorSummary())
     live_ingest_attempts = _v("live_ingest_attempts", LiveIngestAttemptSummary())
-    convergence = _v("convergence", ConvergenceDebtSummary())
+    convergence = _convergence_debt_from_snapshot(snapshots["convergence"])
     cursor_lag = _v("cursor_lag", CursorLagSummary())
+    ingest_slo = slo_status_info(cursor_lag=cursor_lag)
     catchup = catchup_status_info(
         active_db,
         latest_attempt=live_ingest_attempts.recent[0] if live_ingest_attempts.recent else None,
@@ -2565,6 +2554,13 @@ def build_daemon_status(
         ops_db=archive_root() / "ops.db",
     )
     raw_failures: dict[str, object] = _v("raw_failures", {})
+    raw_lifecycle_available = raw_failures.get("raw_failure_lifecycle_available") is True
+    raw_lifecycle_state = raw_failures.get("raw_failure_lifecycle_state")
+    if raw_lifecycle_state not in {"healthy", "degraded", "blocked", "unavailable"}:
+        raw_lifecycle_state = "unavailable"
+    raw_lifecycle_reason = raw_failures.get("raw_failure_lifecycle_reason")
+    if not raw_lifecycle_available and not raw_lifecycle_reason:
+        raw_lifecycle_reason = "raw failure lifecycle evidence is unavailable"
     blob_publication_reservations = _v("blob_publication_reservations", BlobPublicationReservationStatus())
     embedding_info: dict[str, object] = _v("embedding_readiness", {})
     health = _v("health", _checked_health())
@@ -2659,6 +2655,12 @@ def build_daemon_status(
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
         raw_quarantined=_safe_int(raw_failures.get("quarantined", 0)),
         raw_maintenance_failures=_safe_int(raw_failures.get("maintenance_failures", 0)),
+        raw_deferred_failures=_safe_int(raw_failures.get("deferred_failures", 0)),
+        raw_terminal_rejections=_safe_int(raw_failures.get("terminal_rejections", 0)),
+        raw_unexplained_failures=_safe_int(raw_failures.get("unexplained_failures", 0)),
+        raw_failure_lifecycle_available=raw_lifecycle_available,
+        raw_failure_lifecycle_state=cast(Literal["healthy", "degraded", "blocked", "unavailable"], raw_lifecycle_state),
+        raw_failure_lifecycle_reason=str(raw_lifecycle_reason) if raw_lifecycle_reason is not None else None,
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
         daemon_liveness=_check_daemon_liveness(daemon_lifecycle),
@@ -2671,6 +2673,7 @@ def build_daemon_status(
         catchup=catchup,
         convergence=convergence,
         cursor_lag=cursor_lag,
+        ingest_slo=ingest_slo,
         db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
         blob_dir_size_bytes=_v("blob_size", 0),
@@ -2690,6 +2693,7 @@ def build_daemon_status(
             raw_frontier_integrity=raw_frontier_integrity,
             fts_readiness=fts_readiness,
             live_ingest_attempts=live_ingest_attempts,
+            convergence=convergence,
         ),
         health=health,
         health_tiers=health_tiers,
@@ -2795,7 +2799,11 @@ def daemon_status_payload(
 
     return json_document(
         {
-            "ok": status.raw_frontier_integrity.overall_status == "healthy",
+            "ok": (
+                status.raw_frontier_integrity.overall_status == "healthy"
+                and status.raw_failure_lifecycle_available
+                and status.raw_failure_lifecycle_state == "healthy"
+            ),
             "daemon": "polylogued",
             "daemon_liveness": status.daemon_liveness,
             "daemon_lifecycle": status.daemon_lifecycle,
@@ -2856,6 +2864,12 @@ def daemon_status_payload(
             "raw_validation_failures": status.raw_validation_failures,
             "raw_quarantined": status.raw_quarantined,
             "raw_maintenance_failures": status.raw_maintenance_failures,
+            "raw_deferred_failures": status.raw_deferred_failures,
+            "raw_terminal_rejections": status.raw_terminal_rejections,
+            "raw_unexplained_failures": status.raw_unexplained_failures,
+            "raw_failure_lifecycle_available": status.raw_failure_lifecycle_available,
+            "raw_failure_lifecycle_state": status.raw_failure_lifecycle_state,
+            "raw_failure_lifecycle_reason": status.raw_failure_lifecycle_reason,
             "raw_detection_warnings": status.raw_detection_warnings,
             "raw_failure_samples": [s.model_dump() for s in status.raw_failure_samples],
         }
@@ -3264,12 +3278,24 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     raw_val = _safe_int(payload.get("raw_validation_failures"))
     raw_quarantined = _safe_int(payload.get("raw_quarantined"))
     raw_maintenance = _safe_int(payload.get("raw_maintenance_failures"))
+    raw_deferred = _safe_int(payload.get("raw_deferred_failures"))
+    raw_terminal = _safe_int(payload.get("raw_terminal_rejections"))
+    raw_unexplained = _safe_int(payload.get("raw_unexplained_failures"))
+    raw_lifecycle_available = payload.get("raw_failure_lifecycle_available") is True
+    lifecycle_state = str(payload.get("raw_failure_lifecycle_state") or "unavailable")
+    raw_lifecycle_unavailable = not raw_lifecycle_available or lifecycle_state == "unavailable"
+    if raw_lifecycle_unavailable or lifecycle_state == "blocked":
+        lifecycle_reason = str(payload.get("raw_failure_lifecycle_reason") or "source.db evidence is unavailable")
+        lines.append(f"Raw failures: {lifecycle_state} ({lifecycle_reason})")
     total_raw = raw_parse + raw_val + raw_maintenance
-    if total_raw > 0:
+    if not raw_lifecycle_unavailable and total_raw > 0:
         breakdown = f"{raw_parse} parse + {raw_val} validation"
         if raw_maintenance > 0:
             breakdown += f" + {raw_maintenance} maintenance"
         lines.append(f"Raw failures: {total_raw} total ({raw_quarantined} quarantined), {breakdown}")
+        lines.append(
+            f"  Lifecycle: {raw_deferred} deferred retryable, {raw_terminal} terminal, {raw_unexplained} unexplained"
+        )
         samples = payload.get("raw_failure_samples")
         if isinstance(samples, list) and samples:
             for s in samples[:5]:
