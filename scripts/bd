@@ -1,9 +1,13 @@
-#!/usr/bin/env sh
+#!/bin/sh
 set -eu
 
-_bd_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+_bd_wrapper_real=$(readlink -f "$0" 2>/dev/null || true)
+if [ -z "$_bd_wrapper_real" ] || [ ! -f "$_bd_wrapper_real" ]; then
+  echo "polylogue bd wrapper: cannot resolve wrapper executable" >&2
+  exit 126
+fi
+_bd_script_dir=$(CDPATH= cd -- "$(dirname -- "$_bd_wrapper_real")" && pwd -P)
 _bd_guard="$_bd_script_dir/../devtools/bd_reimport_guard.py"
-_bd_wrapper_real=$(readlink -f "$_bd_script_dir/bd")
 _bd_real=${POLYLOGUE_BD_REAL:-}
 
 if [ -z "$_bd_real" ]; then
@@ -55,4 +59,24 @@ if [ ! -f "$_bd_real" ] || [ ! -x "$_bd_real" ]; then
   exit 126
 fi
 
-exec python3 "$_bd_guard" invoke "$_bd_real" "$@"
+_bd_python=
+_bd_old_ifs=$IFS
+IFS=:
+for _bd_path_entry in $PATH; do
+  [ -n "$_bd_path_entry" ] || _bd_path_entry=.
+  _bd_python_candidate="$_bd_path_entry/python3"
+  if [ -x "$_bd_python_candidate" ] && [ ! -d "$_bd_python_candidate" ]; then
+    _bd_python_candidate_real=$(readlink -f "$_bd_python_candidate" 2>/dev/null || true)
+    if [ -n "$_bd_python_candidate_real" ] && [ "$_bd_python_candidate_real" != "$_bd_wrapper_real" ]; then
+      _bd_python=$_bd_python_candidate_real
+      break
+    fi
+  fi
+done
+IFS=$_bd_old_ifs
+if [ -z "$_bd_python" ]; then
+  echo "polylogue bd wrapper: Python 3 interpreter not found" >&2
+  exit 126
+fi
+
+exec "$_bd_python" "$_bd_guard" invoke "$_bd_real" "$@"

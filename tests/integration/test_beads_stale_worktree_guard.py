@@ -116,9 +116,9 @@ def _set_export_row(repo: Path, issue_id: str, **updates: object) -> None:
     export_path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
 
 
-def _historical_file(relative_path: str) -> str:
+def _historical_file(relative_path: str, *, commit: str = BASE_COMMIT) -> str:
     result = subprocess.run(
-        ["git", "show", f"{BASE_COMMIT}^:{relative_path}"],
+        ["git", "show", f"{commit}:{relative_path}"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -149,7 +149,7 @@ def _deploy_current_common_checkout(repo: Path) -> None:
     shutil.copy2(ROOT / "devtools" / "bd_reimport_guard.py", guard)
 
 
-def _execute_historical_envrc(lane: Path, env: dict[str, str], tmp_path: Path, installed_bd: str) -> None:
+def _execute_historical_envrc(lane: Path, env: dict[str, str], tmp_path: Path, installed_bd: str) -> dict[str, str]:
     """Source the retained envrc and execute its branch-point use-flake hook."""
     historical_use_flake = tmp_path / "historical-use-flake"
     historical_flake = _historical_file("flake.nix")
@@ -161,28 +161,25 @@ def _execute_historical_envrc(lane: Path, env: dict[str, str], tmp_path: Path, i
     historical_use_flake.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\n{historical_shell_hook}")
     historical_use_flake.chmod(0o755)
 
-    marker = tmp_path / "historical-direct-bd-ran"
-    probe_bin = tmp_path / "historical-bin"
-    probe_bin.mkdir()
-    direct_bd = probe_bin / "bd"
-    direct_bd.write_text(f"#!/bin/sh\nprintf '%s\\n' ran > {marker!s}\n")
-    direct_bd.chmod(0o755)
-
     historical_env = env.copy()
+    environment_dump = tmp_path / "historical-environment"
     historical_env["HISTORICAL_USE_FLAKE"] = str(historical_use_flake)
-    # Keep the historical direct command-v bd route observable through the
-    # probe while the deployed wrapper follows the valid installed binary.
     historical_env["POLYLOGUE_BD_REAL"] = installed_bd
-    historical_env["PATH"] = os.pathsep.join((str(probe_bin), historical_env["PATH"]))
     _run(
         [
             "bash",
             "-c",
-            'use() { "$HISTORICAL_USE_FLAKE" "$@"; }; source .envrc',
+            'PATH_add() { PATH="$1:$PATH"; export PATH; }; '
+            'use() { "$HISTORICAL_USE_FLAKE" "$@"; }; '
+            'source .envrc; env -0 > "$HISTORICAL_ENVIRONMENT_DUMP"',
         ],
         lane,
-        historical_env,
+        historical_env | {"HISTORICAL_ENVIRONMENT_DUMP": str(environment_dump)},
     )
+    for entry in environment_dump.read_bytes().split(b"\0"):
+        if entry:
+            key, _, value = entry.partition(b"=")
+            historical_env[key.decode()] = value.decode()
 
     # The old shell hook wrote a relative value through git config --local.
     # The worktree-level common-dir pin must still select the deployed hook.
@@ -194,7 +191,7 @@ def _execute_historical_envrc(lane: Path, env: dict[str, str], tmp_path: Path, i
     assert effective_hooks_origin.endswith("/config.worktree\t" + effective_hooks_path)
 
     _run(["git", "switch", "--detach", "HEAD"], lane, historical_env)
-    assert not marker.exists(), "historical direct bd hook must not execute"
+    return historical_env
 
 
 def _setup_stale_worktree(
@@ -216,14 +213,22 @@ def _setup_stale_worktree(
     _run([bd, "init", "--prefix", "guard", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents"], repo, env)
     _write_import_policy(repo, import_auto)
 
-    # This is the branch-point checkout: it has only the historical relative
-    # hook and envrc paths, with no current wrapper or guard files.
+    # This is the branch-point checkout: it has the historical relative hook,
+    # envrc, wrapper, and a deliberately stale guard implementation.
     historical_hooks = repo / ".beads-hooks"
     historical_hooks.mkdir()
     historical_hook = historical_hooks / "post-checkout"
-    historical_hook.write_text(_historical_file(".beads-hooks/post-checkout"))
+    historical_hook.write_text(_historical_file(".beads-hooks/post-checkout", commit=BASE_COMMIT))
     historical_hook.chmod(0o755)
-    (repo / ".envrc").write_text(_historical_file(".envrc"))
+    (repo / ".envrc").write_text(_historical_file(".envrc", commit=BASE_COMMIT))
+    historical_scripts = repo / "scripts"
+    historical_scripts.mkdir()
+    historical_wrapper = historical_scripts / "bd"
+    historical_wrapper.write_text(_historical_file("scripts/bd", commit=BASE_COMMIT))
+    historical_wrapper.chmod(0o755)
+    stale_guard = repo / "devtools" / "bd_reimport_guard.py"
+    stale_guard.parent.mkdir()
+    stale_guard.write_text("raise SystemExit('stale guard loaded')\n")
 
     setup_hooks = repo / ".setup-hooks"
     setup_hooks.mkdir()
@@ -258,13 +263,17 @@ def _setup_stale_worktree(
     _run(["git", "commit", "-m", "deploy Beads guard"], repo, env)
 
     _run([str(repo / "scripts" / "configure-git-hooks")], repo, env)
-    _execute_historical_envrc(lane, env, tmp_path, bd)
+    env = _execute_historical_envrc(lane, env, tmp_path, bd)
+    lane_wrapper = lane / "scripts" / "bd"
+    assert lane_wrapper.is_symlink()
+    assert lane_wrapper.resolve() == (repo / "scripts" / "bd").resolve()
 
-    env["PATH"] = os.pathsep.join((str(repo / "scripts"), env["PATH"]))
     _run([bd, "close", issue_id, "--reason", "coordinator close"], repo, env)
-    assert not (lane / "scripts" / "bd").exists()
-    assert (lane / ".envrc").read_text() == _historical_file(".envrc")
-    assert (lane / ".beads-hooks" / "post-checkout").read_text() == _historical_file(".beads-hooks/post-checkout")
+    assert (lane / "scripts" / "bd").is_symlink()
+    assert (lane / ".envrc").read_text() == _historical_file(".envrc", commit=BASE_COMMIT)
+    assert (lane / ".beads-hooks" / "post-checkout").read_text() == _historical_file(
+        ".beads-hooks/post-checkout", commit=BASE_COMMIT
+    )
     return issue_id, env, repo, lane
 
 
@@ -402,3 +411,22 @@ def test_bd_wrapper_rejects_recursive_real_binary_routes(tmp_path: Path, route: 
     expected_returncode = 126 if route != "bare-wrapper" else 127
     assert result.returncode == expected_returncode
     assert not (common_dir / "polylogue-bd-guard.lock").exists()
+
+
+@pytest.mark.parametrize("interpreter_name", ["sh", "python3"])
+def test_bd_wrapper_survives_interpreter_path_alias_to_wrapper(tmp_path: Path, interpreter_name: str) -> None:
+    """The wrapper reaches the guard when PATH aliases an interpreter to itself."""
+    env, repo, lane, common_dir = _setup_guard_linked_worktree(tmp_path)
+    wrapper = repo / "scripts" / "bd"
+    alias_dir = tmp_path / "interpreter-alias"
+    alias_dir.mkdir()
+    (alias_dir / interpreter_name).symlink_to(wrapper)
+    env["PATH"] = os.pathsep.join((str(alias_dir), env["PATH"]))
+    true_binary = shutil.which("true", path=env["PATH"])
+    assert true_binary is not None
+    env["POLYLOGUE_BD_REAL"] = true_binary
+
+    result = subprocess.run([str(wrapper), "--help"], cwd=lane, env=env, capture_output=True, text=True, timeout=10)
+
+    assert result.returncode == 0, result.stderr
+    assert (common_dir / "polylogue-bd-guard.lock").exists()
