@@ -185,6 +185,24 @@ def test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures(tmp_pat
     assert check.evidence["unexplained"] == 1
 
 
+def test_cross_tier_reindex_profile_includes_raw_failure_lifecycle(tmp_path: Path) -> None:
+    """Candidate acceptance cannot bypass the source failure lifecycle gate."""
+    _seed_coherent_archive(tmp_path)
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(tmp_path / "index.db", candidate)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parse_error = 'parser failed' WHERE raw_id = 'raw-1'")
+        conn.commit()
+
+    report = verify_archive(
+        tmp_path,
+        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        index_path_override=candidate,
+    )
+
+    assert _check(report, "raw-failure-lifecycle").status is OutcomeStatus.ERROR
+
+
 def test_missing_tier_trips_tier_schema_check(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
     (tmp_path / "embeddings.db").unlink()

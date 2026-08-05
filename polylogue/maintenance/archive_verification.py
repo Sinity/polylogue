@@ -2549,6 +2549,7 @@ REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
 #: candidate runner so ``index_path_override`` cannot silently inspect the
 #: active generation.
 REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS: tuple[str, ...] = (
+    "raw-failure-lifecycle",
     "source-index-coverage",
     "blob-refs-liveness",
     "embeddings-refs-liveness",
