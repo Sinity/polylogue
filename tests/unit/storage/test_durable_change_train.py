@@ -224,6 +224,10 @@ def _install_synthetic_migration(
     monkeypatch.setattr(
         migration_runner, "_migration_package", lambda observed_tier: f"{package_name}.{observed_tier.value}"
     )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda observed_tier: f"{package_name}.{observed_tier.value}",
+    )
 
 
 def _reserve_and_authorize(
