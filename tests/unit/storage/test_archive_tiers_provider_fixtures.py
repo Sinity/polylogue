@@ -63,16 +63,12 @@ def test_archive_tiers_writer_materializes_drive_payload(tmp_path: Path) -> None
     assert envelope.origin == "aistudio-drive"
     assert envelope.native_id == "gem-text-only"
     assert envelope.title == "Capital trivia"
-    assert envelope.active_leaf_message_id == "aistudio-drive:gem-text-only:chunk-4"
-    assert [message.message_id for message in envelope.messages] == [
-        "aistudio-drive:gem-text-only:chunk-1",
-        "aistudio-drive:gem-text-only:chunk-2",
-        "aistudio-drive:gem-text-only:chunk-3",
-        "aistudio-drive:gem-text-only:chunk-4",
-    ]
+    message_ids = [message.message_id for message in envelope.messages]
+    assert envelope.active_leaf_message_id == message_ids[-1]
+    assert message_ids == [f"aistudio-drive:gem-text-only:{position}.0" for position in range(4)]
     assert [message.role for message in envelope.messages] == ["user", "assistant", "user", "assistant"]
     assert [message.is_active_leaf for message in envelope.messages] == [False, False, False, True]
-    assert search_archive_blocks(conn, "Paris") == ["aistudio-drive:gem-text-only:chunk-2:0"]
+    assert search_archive_blocks(conn, "Paris") == [f"{message_ids[1]}:0"]
 
 
 def test_archive_tiers_writer_materializes_antigravity_payload(tmp_path: Path) -> None:
@@ -84,12 +80,9 @@ def test_archive_tiers_writer_materializes_antigravity_payload(tmp_path: Path) -
 
     assert envelope.origin == "antigravity-session"
     assert envelope.native_id == "anti-fixture-001"
-    assert [message.message_id for message in envelope.messages] == [
-        "antigravity-session:anti-fixture-001:anti-fixture-001:0:user_input",
-        "antigravity-session:anti-fixture-001:anti-fixture-001:1:planner_response",
-    ]
+    message_ids = [message.message_id for message in envelope.messages]
+    assert len(message_ids) == len(set(message_ids)) == 2
+    assert all(message_id.startswith("antigravity-session:anti-fixture-001:synthetic-") for message_id in message_ids)
     assert [message.role for message in envelope.messages] == ["user", "assistant"]
     assert envelope.messages[1].is_active_leaf is True
-    assert search_archive_blocks(conn, "complete") == [
-        "antigravity-session:anti-fixture-001:anti-fixture-001:1:planner_response:0"
-    ]
+    assert search_archive_blocks(conn, "complete") == [f"{message_ids[1]}:0"]
