@@ -9,49 +9,60 @@ from pathlib import Path
 
 import pytest
 
-from devtools import click_dispatch, corpus_fidelity
+from devtools import click_dispatch
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from tests.infra.workload_artifacts import SeededArchiveArtifact, clone_seeded_archive
 
 
-def test_command_runs_registered_gate_against_real_seeded_archive(
-    corpus_fidelity_archive: SeededArchiveArtifact,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    exit_code = corpus_fidelity.main(["--archive-root", str(corpus_fidelity_archive.root)])
-
-    assert exit_code == 0
-    output = capsys.readouterr().out
-    assert "Corpus fidelity:" in output
-    assert "[OK] corpus-absences:" in output
-    assert "[OK] corpus-attachment-fidelity:" in output
-    assert "[OK] corpus-revision-fidelity:" in output
-    assert "clear" in output
+def _archive_tier_bytes(root: Path) -> dict[str, bytes]:
+    """Capture exact bytes for every registered tier file present in a fixture."""
+    snapshots: dict[str, bytes] = {}
+    for spec in ARCHIVE_TIER_SPECS.values():
+        path = root / spec.filename
+        if path.is_file():
+            snapshots[spec.filename] = path.read_bytes()
+    assert snapshots, f"expected at least one archive tier under {root}"
+    return snapshots
 
 
-def test_registered_click_route_emits_verdict_and_preserves_archive(
+def _run_registered_route(root: Path, *, json_output: bool) -> int:
+    argv = ["verify", "corpus-fidelity", "--archive-root", str(root)]
+    if json_output:
+        argv.append("--json")
+    return click_dispatch.main(argv)
+
+
+@pytest.mark.parametrize("json_output", (False, True), ids=("plain", "json"))
+def test_registered_route_preserves_all_existing_archive_tiers(
     corpus_fidelity_archive: SeededArchiveArtifact,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    json_output: bool,
 ) -> None:
-    monkeypatch.setenv("POLYLOGUE_TASK_HISTORY_DISABLE", "1")
-    paths = (corpus_fidelity_archive.root / "source.db", corpus_fidelity_archive.root / "index.db")
-    before = tuple(hashlib.sha256(path.read_bytes()).digest() for path in paths)
+    """Run the real registered route and prove it is read-only across tiers.
 
-    exit_code = click_dispatch.main(
-        [
-            "verify",
-            "corpus-fidelity",
-            "--archive-root",
-            str(corpus_fidelity_archive.root),
-            "--json",
-        ]
-    )
+    Anti-vacuity: mutating the command to write ``user.db``, ``ops.db``, or
+    ``embeddings.db`` would fail the exact-byte assertion below. The previous
+    source/index-only snapshot left those unchecked-tier mutations green.
+    """
+    monkeypatch.setenv("POLYLOGUE_TASK_HISTORY_DISABLE", "1")
+    before = _archive_tier_bytes(corpus_fidelity_archive.root)
+
+    exit_code = _run_registered_route(corpus_fidelity_archive.root, json_output=json_output)
 
     assert exit_code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["verdict"] == "PASS"
-    assert payload["blocking"] is False
-    assert tuple(hashlib.sha256(path.read_bytes()).digest() for path in paths) == before
+    output = capsys.readouterr().out
+    if json_output:
+        payload = json.loads(output)
+        assert payload["verdict"] == "PASS"
+        assert payload["blocking"] is False
+    else:
+        assert "Corpus fidelity:" in output
+        assert "[OK] corpus-absences:" in output
+        assert "[OK] corpus-attachment-fidelity:" in output
+        assert "[OK] corpus-revision-fidelity:" in output
+        assert "clear" in output
+    assert _archive_tier_bytes(corpus_fidelity_archive.root) == before
 
 
 def _clone(artifact: SeededArchiveArtifact, destination: Path) -> Path:
@@ -59,11 +70,14 @@ def _clone(artifact: SeededArchiveArtifact, destination: Path) -> Path:
 
 
 @pytest.mark.parametrize(
-    ("violation", "expected_check"),
+    ("violation", "expected_check", "json_output"),
     (
-        ("absent", "corpus-absences"),
-        ("attachment", "corpus-attachment-fidelity"),
-        ("revision", "corpus-revision-fidelity"),
+        ("absent", "corpus-absences", False),
+        ("absent", "corpus-absences", True),
+        ("attachment", "corpus-attachment-fidelity", False),
+        ("attachment", "corpus-attachment-fidelity", True),
+        ("revision", "corpus-revision-fidelity", False),
+        ("revision", "corpus-revision-fidelity", True),
     ),
 )
 def test_command_blocks_real_seeded_archive_fidelity_violations(
@@ -73,6 +87,7 @@ def test_command_blocks_real_seeded_archive_fidelity_violations(
     monkeypatch: pytest.MonkeyPatch,
     violation: str,
     expected_check: str,
+    json_output: bool,
 ) -> None:
     """The command drives the production registry over a writable clone of
     the real seeded SQLite archive. Removing its ``verify_archive`` call or
@@ -127,9 +142,16 @@ def test_command_blocks_real_seeded_archive_fidelity_violations(
             )
 
     monkeypatch.setenv("POLYLOGUE_TASK_HISTORY_DISABLE", "1")
-    exit_code = click_dispatch.main(["verify", "corpus-fidelity", "--archive-root", str(root), "--json"])
+    before = _archive_tier_bytes(root)
+    exit_code = _run_registered_route(root, json_output=json_output)
     assert exit_code == 1
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["verdict"] == "FAIL"
-    assert payload["blocking"] is True
-    assert {check["name"]: check["status"] for check in payload["checks"]}[expected_check] == "error"
+    output = capsys.readouterr().out
+    if json_output:
+        payload = json.loads(output)
+        assert payload["verdict"] == "FAIL"
+        assert payload["blocking"] is True
+        assert {check["name"]: check["status"] for check in payload["checks"]}[expected_check] == "error"
+    else:
+        assert f"[FAIL] {expected_check}:" in output
+        assert "BLOCKING" in output
+    assert _archive_tier_bytes(root) == before
