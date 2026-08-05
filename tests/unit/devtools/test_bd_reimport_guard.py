@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -70,10 +71,15 @@ def test_validated_real_bd_path_rejects_interpreter_mediated_launcher(tmp_path: 
         guard._validated_real_bd_path(str(launcher))
 
 
+def test_validated_real_bd_path_rejects_direct_python_target() -> None:
+    with pytest.raises(ValueError, match="interpreter"):
+        guard._validated_real_bd_path(sys.executable)
+
+
 # --- merge_rows: the monotonic per-row merge engine --------------------------
 
 
-def test_merge_rows_classifies_new_updated_equal_and_skips_downgrade() -> None:
+def test_merge_rows_refuses_unproven_candidate_only_rows() -> None:
     current = {
         "polylogue-a": {"id": "polylogue-a", "updated_at": "2026-07-15T10:00:00Z", "title": "a-current"},
         "polylogue-b": {"id": "polylogue-b", "updated_at": "2026-07-15T10:00:00Z", "title": "b-current"},
@@ -86,7 +92,7 @@ def test_merge_rows_classifies_new_updated_equal_and_skips_downgrade() -> None:
         "polylogue-b": {"id": "polylogue-b", "updated_at": "2026-07-15T10:00:00Z", "title": "b-current"},
         # older than current -- a downgrade, must be refused by default
         "polylogue-c": {"id": "polylogue-c", "updated_at": "2026-07-14T10:00:00Z", "title": "c-stale"},
-        # not present in current at all -- a new row
+        # not present in current at all -- no durable proof of newness
         "polylogue-d": {"id": "polylogue-d", "updated_at": "2026-07-16T10:00:00Z", "title": "d-new"},
     }
 
@@ -96,7 +102,7 @@ def test_merge_rows_classifies_new_updated_equal_and_skips_downgrade() -> None:
     assert by_id["polylogue-a"].outcome == "updated"
     assert by_id["polylogue-b"].outcome == "equal"
     assert by_id["polylogue-c"].outcome == "skipped_downgrade"
-    assert by_id["polylogue-d"].outcome == "new"
+    assert by_id["polylogue-d"].outcome == "unproven_new"
 
     # The mutation that would make this fail: merging the stale candidate
     # for polylogue-c into `merged` (i.e. treating merge as a blind upsert,
@@ -104,7 +110,7 @@ def test_merge_rows_classifies_new_updated_equal_and_skips_downgrade() -> None:
     # is exactly the anti-regression property this bead exists to enforce.
     assert merged["polylogue-c"]["title"] == "c-current"
     assert merged["polylogue-a"]["title"] == "a-newer"
-    assert merged["polylogue-d"]["title"] == "d-new"
+    assert "polylogue-d" not in merged
 
 
 def test_merge_rows_incomparable_revision_is_conflicted_not_guessed() -> None:
@@ -156,6 +162,25 @@ def test_parse_and_validate_jsonl_rejects_missing_id() -> None:
 def test_parse_and_validate_jsonl_rejects_duplicate_id() -> None:
     text = '{"id": "polylogue-a", "title": "first"}\n{"id": "polylogue-a", "title": "second"}\n'
     with pytest.raises(guard.InvalidJsonlError, match="duplicate"):
+        guard.parse_and_validate_jsonl(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('{"id":"polylogue-a","priority":NaN}\n', "non-finite"),
+        ('{"id":"polylogue-a","id":"polylogue-b"}\n', "duplicate JSON key"),
+        ('{"id":42}\n', "Beads id"),
+        ('{"id":"polylogue-a","updated_at":"tomorrow"}\n', "timestamp"),
+        ('{"id":"polylogue-a","labels":"area:beads"}\n', "list of strings"),
+        (
+            '{"id":"polylogue-a","dependencies":[{"issue_id":42,"depends_on_id":"polylogue-b"}]}\n',
+            "Beads id",
+        ),
+    ],
+)
+def test_parse_and_validate_jsonl_rejects_malicious_or_invalid_payload(text: str, message: str) -> None:
+    with pytest.raises(guard.InvalidJsonlError, match=message):
         guard.parse_and_validate_jsonl(text)
 
 
@@ -221,7 +246,7 @@ def test_reconcile_applies_new_and_updated_but_refuses_downgrade(
     # A skipped downgrade means the sync is not "clean" -- rc reports it
     # rather than silently succeeding.
     assert rc == 1
-    assert set(imported) == {"polylogue-a", "polylogue-d"}
+    assert set(imported) == {"polylogue-a"}
     assert "polylogue-c" not in imported, "the stale replacement for polylogue-c must never reach bd import"
 
     receipts = list((tmp_path / "receipts").glob("*.json"))
@@ -229,7 +254,7 @@ def test_reconcile_applies_new_and_updated_but_refuses_downgrade(
     receipt = json.loads(receipts[0].read_text())
     assert receipt["summary"]["skipped_downgrade"] == 1
     assert receipt["summary"]["updated"] == 1
-    assert receipt["summary"]["new"] == 1
+    assert receipt["summary"]["unproven_new"] == 1
     assert not receipt["is_clean"]
 
 

@@ -11,10 +11,11 @@ This module owns the explicit reconciliation flows that remain legitimate:
 
 - ``merge_rows`` compares every row by revision (`updated_at`, the only
   per-row freshness signal bd's export exposes) and classifies each id as
-  new / updated / equal / skipped_downgrade / conflicted (incomparable) /
-  recovered_downgrade. Ordinary synchronization can never silently apply a
-  downgrade; incomparable rows (missing revision on either side) are never
-  guessed at -- they are reported as conflicts, not merged.
+  updated / equal / skipped_downgrade / unproven_new / conflicted
+  (incomparable) / recovered_downgrade. Ordinary synchronization can never
+  silently apply a downgrade or resurrect a candidate-only row: a new-row
+  claim needs durable proof outside the candidate snapshot, so unproven rows
+  are reported and left untouched.
 - ``SyncReceipt`` is the union outcome: every row's classification plus the
   actor/reason/source-fingerprint that produced it, written to
   ``.cache/bd-sync-receipts/`` so downstream policy consumers (the
@@ -29,11 +30,13 @@ This module owns the explicit reconciliation flows that remain legitimate:
   marker-bearing file can never be staged as if it were clean.
 - ``cmd_reconcile`` is the explicit, operator-invokable entry point for
   explicit-recovery flows such as `git reset --hard` or a hand-merged
-  conflict file. Normal ``scripts/bd`` invocations apply only new/updated
+  conflict file. Normal ``scripts/bd`` invocations apply only strictly newer
   rows before delegating to Beads. Recovering a genuine downgrade (accepting
   an older row on purpose, e.g. because live state itself was corrupted)
   requires ``--allow-downgrade`` plus a recorded ``--actor``/``--reason``,
-  and every downgraded row is still named in the receipt.
+  and every downgraded row is still named in the receipt. Candidate-only rows
+  remain refused because an operator-supplied reason is not proof that a
+  deleted row was genuinely new.
 
 This module deliberately depends on nothing beyond the Python stdlib so an
 operator can use it from a repository checkout without the devshell/venv.
@@ -59,8 +62,9 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import IO, Any, Literal
+from typing import IO, Any, Literal, NoReturn
 
 # --- revision-comparable row classification ---------------------------------
 
@@ -69,6 +73,7 @@ Outcome = Literal[
     "updated",
     "equal",
     "skipped_downgrade",
+    "unproven_new",
     "conflicted",
     "recovered_downgrade",
 ]
@@ -119,8 +124,8 @@ class SyncReceipt:
 
     @property
     def is_clean(self) -> bool:
-        """True when synchronization applied with no conflicts and no unauthorized downgrades."""
-        if self.conflicted_ids:
+        """True when synchronization applied without unresolved outcomes."""
+        if self.conflicted_ids or any(o.outcome == "unproven_new" for o in self.outcomes):
             return False
         return not any(o.outcome == "skipped_downgrade" for o in self.outcomes)
 
@@ -138,6 +143,7 @@ class SyncReceipt:
                 "updated": sum(1 for o in self.outcomes if o.outcome == "updated"),
                 "equal": sum(1 for o in self.outcomes if o.outcome == "equal"),
                 "skipped_downgrade": sum(1 for o in self.outcomes if o.outcome == "skipped_downgrade"),
+                "unproven_new": sum(1 for o in self.outcomes if o.outcome == "unproven_new"),
                 "recovered_downgrade": sum(1 for o in self.outcomes if o.outcome == "recovered_downgrade"),
                 "conflicted": sum(1 for o in self.outcomes if o.outcome == "conflicted"),
             },
@@ -166,12 +172,14 @@ def merge_rows(
 ) -> tuple[dict[str, dict[str, Any]], list[RowOutcome]]:
     """Merge `candidate` rows into `current` by per-row revision.
 
-    Returns (merged, outcomes). `merged` always contains every id from
-    `current` plus every new id from `candidate`; a candidate row only
-    replaces a current row when its revision is strictly newer, or when
-    `allow_downgrade=True` and it is older (recorded as an explicit
-    recovery, never silent). Rows present only in `current` are left
-    untouched and produce no outcome entry (nothing to reconcile).
+    Returns (merged, outcomes). `merged` contains every id from `current`.
+    A candidate row only replaces a current row when its revision is strictly
+    newer, or when `allow_downgrade=True` and it is older (recorded as an
+    explicit recovery, never silent). A candidate-only row has no evidence in
+    the live export that it was created after a live row was deleted, so it is
+    classified as ``unproven_new`` and left out of `merged`. It must not be
+    resurrected by a routine snapshot import. Rows present only in `current`
+    are left untouched and produce no outcome entry.
     """
     merged = dict(current)
     outcomes: list[RowOutcome] = []
@@ -179,8 +187,7 @@ def merge_rows(
         cur_row = current.get(issue_id)
         cand_rev = _revision_of(cand_row)
         if cur_row is None:
-            merged[issue_id] = cand_row
-            outcomes.append(RowOutcome(issue_id, "new", None, cand_rev))
+            outcomes.append(RowOutcome(issue_id, "unproven_new", None, cand_rev))
             continue
 
         cur_rev = _revision_of(cur_row)
@@ -357,6 +364,8 @@ def _validated_real_bd_path(path: str) -> Path:
         raise ValueError(f"real Beads binary is unavailable: {resolved}") from exc
     if not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
         raise ValueError(f"real Beads binary is not an executable file: {resolved}")
+    if _is_interpreter(resolved):
+        raise ValueError("refusing interpreter as POLYLOGUE_BD_REAL")
     _validate_executable_route(resolved, wrapper, set())
     return resolved
 
@@ -430,13 +439,133 @@ def _has_conflict_markers(text: str) -> bool:
     return any(line.startswith(marker) for line in text.splitlines() for marker in CONFLICT_MARKERS)
 
 
+_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_TIMESTAMP_FIELDS = frozenset(
+    {
+        "created_at",
+        "updated_at",
+        "closed_at",
+        "defer_until",
+        "started_at",
+        "heartbeat_at",
+        "lease_expires_at",
+    }
+)
+_STRING_FIELDS = frozenset(
+    {
+        "_type",
+        "title",
+        "description",
+        "design",
+        "acceptance_criteria",
+        "status",
+        "issue_type",
+        "owner",
+        "assignee",
+        "created_by",
+        "close_reason",
+        "notes",
+        "external_ref",
+    }
+)
+_INTEGER_FIELDS = frozenset({"priority", "comment_count", "dependency_count", "dependent_count"})
+
+
+def _reject_non_finite_json(value: str) -> NoReturn:
+    raise InvalidJsonlError(f"non-finite JSON number {value!r} is not allowed")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise InvalidJsonlError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _validate_id(value: Any, *, field: str) -> None:
+    if not isinstance(value, str) or not _ID_PATTERN.fullmatch(value):
+        raise InvalidJsonlError(f"{field} must be a non-empty Beads id")
+
+
+def _validate_timestamp(value: Any, *, field: str) -> None:
+    if not isinstance(value, str) or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", value
+    ):
+        raise InvalidJsonlError(f"{field} must be an RFC3339 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise InvalidJsonlError(f"{field} is not a valid timestamp") from exc
+    if parsed.tzinfo is None:
+        raise InvalidJsonlError(f"{field} must include a timezone")
+
+
+def _validate_nested_object(value: Any, *, field: str, required_ids: tuple[str, ...]) -> None:
+    if not isinstance(value, dict):
+        raise InvalidJsonlError(f"{field} must be an object")
+    for required_id in required_ids:
+        if required_id not in value:
+            raise InvalidJsonlError(f"{field}.{required_id} is required")
+        _validate_id(value[required_id], field=f"{field}.{required_id}")
+    for key, nested_value in value.items():
+        nested_field = f"{field}.{key}"
+        if key in _TIMESTAMP_FIELDS:
+            _validate_timestamp(nested_value, field=nested_field)
+        elif key in {"id", "issue_id", "depends_on_id"}:
+            _validate_id(nested_value, field=nested_field)
+        elif key in {"author", "created_by", "text", "type", "metadata"} and not isinstance(nested_value, str):
+            raise InvalidJsonlError(f"{nested_field} must be a string")
+
+
+def _validate_row(row: dict[str, Any], *, lineno: int) -> None:
+    if "id" not in row:
+        raise InvalidJsonlError(f"line {lineno}: row missing a non-empty 'id'")
+    _validate_id(row.get("id"), field=f"line {lineno} id")
+    for field_name in _STRING_FIELDS:
+        if field_name in row and not isinstance(row[field_name], str):
+            raise InvalidJsonlError(f"line {lineno} {field_name} must be a string")
+    for field_name in _TIMESTAMP_FIELDS:
+        if field_name in row:
+            _validate_timestamp(row[field_name], field=f"line {lineno} {field_name}")
+    for field_name in _INTEGER_FIELDS:
+        if field_name in row and (
+            not isinstance(row[field_name], int) or isinstance(row[field_name], bool) or row[field_name] < 0
+        ):
+            raise InvalidJsonlError(f"line {lineno} {field_name} must be a non-negative integer")
+    if "priority" in row and row["priority"] > 4:
+        raise InvalidJsonlError(f"line {lineno} priority is outside the Beads range")
+    if "labels" in row and (
+        not isinstance(row["labels"], list) or any(not isinstance(label, str) for label in row["labels"])
+    ):
+        raise InvalidJsonlError(f"line {lineno} labels must be a list of strings")
+    if "metadata" in row and not isinstance(row["metadata"], dict):
+        raise InvalidJsonlError(f"line {lineno} metadata must be an object")
+    if "comments" in row:
+        if not isinstance(row["comments"], list):
+            raise InvalidJsonlError(f"line {lineno} comments must be a list")
+        for index, comment in enumerate(row["comments"]):
+            _validate_nested_object(comment, field=f"line {lineno} comments[{index}]", required_ids=("id", "issue_id"))
+    if "dependencies" in row:
+        if not isinstance(row["dependencies"], list):
+            raise InvalidJsonlError(f"line {lineno} dependencies must be a list")
+        for index, dependency in enumerate(row["dependencies"]):
+            _validate_nested_object(
+                dependency,
+                field=f"line {lineno} dependencies[{index}]",
+                required_ids=("issue_id", "depends_on_id"),
+            )
+
+
 def parse_and_validate_jsonl(text: str) -> dict[str, dict[str, Any]]:
     """Parse a JSONL payload into {id: row}, refusing corrupt/ambiguous input.
 
     Raises InvalidJsonlError when the text carries literal merge-conflict
-    markers, contains a line that isn't valid JSON, contains a row without
-    an `id`, or contains a duplicate id -- all cases where "the file parses"
-    is not proof the content is a coherent, mergeable snapshot.
+    markers, contains a line that isn't valid JSON, contains duplicate object
+    keys, non-finite numbers, a row with invalid Beads field types, invalid
+    timestamps or ids, or duplicate row ids. A successful JSON parse alone is
+    not proof that the content is a coherent, mergeable snapshot.
     """
     if _has_conflict_markers(text):
         raise InvalidJsonlError("payload contains unresolved merge-conflict markers")
@@ -447,11 +576,18 @@ def parse_and_validate_jsonl(text: str) -> dict[str, dict[str, Any]]:
         if not line:
             continue
         try:
-            row = json.loads(line)
+            row = json.loads(
+                line,
+                object_pairs_hook=_reject_duplicate_json_keys,
+                parse_constant=_reject_non_finite_json,
+            )
+        except InvalidJsonlError as exc:
+            raise InvalidJsonlError(f"line {lineno}: {exc}") from exc
         except json.JSONDecodeError as exc:
             raise InvalidJsonlError(f"line {lineno}: invalid JSON ({exc})") from exc
-        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
-            raise InvalidJsonlError(f"line {lineno}: row missing a non-empty 'id'")
+        if not isinstance(row, dict):
+            raise InvalidJsonlError(f"line {lineno}: row must be a JSON object")
+        _validate_row(row, lineno=lineno)
         issue_id = row["id"]
         if issue_id in rows:
             raise InvalidJsonlError(f"duplicate id {issue_id!r} (line {lineno})")
@@ -471,7 +607,7 @@ def atomic_write_jsonl(path: Path, rows: dict[str, dict[str, Any]]) -> None:
         if _has_conflict_markers(existing):
             raise InvalidJsonlError(f"refusing to overwrite {path}: existing content has unresolved conflict markers")
 
-    text = "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows.values())
+    text = "".join(json.dumps(row, allow_nan=False, sort_keys=True) + "\n" for row in rows.values())
     # Validate our own output round-trips cleanly before it ever touches disk.
     parse_and_validate_jsonl(text)
 
@@ -513,7 +649,10 @@ def _export_live_state(
         )
         if process_result.returncode != 0:
             raise RuntimeError(f"bd export failed ({process_result.returncode}): {process_result.stderr.strip()}")
-        return parse_and_validate_jsonl(Path(path).read_text())
+        try:
+            return parse_and_validate_jsonl(Path(path).read_text(encoding="utf-8", errors="strict"))
+        except UnicodeDecodeError as exc:
+            raise InvalidJsonlError(f"export is not valid UTF-8: {exc}") from exc
     finally:
         Path(path).unlink(missing_ok=True)
 
@@ -534,7 +673,7 @@ def _bd_import_rows(
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tf:
         import_path = tf.name
         for row in rows.values():
-            tf.write(json.dumps(row) + "\n")
+            tf.write(json.dumps(row, allow_nan=False) + "\n")
     try:
         result = subprocess.run(
             [bd_command, "import", import_path],
@@ -571,6 +710,22 @@ def _find_candidate_jsonl(start: Path | None = None) -> Path | None:
     return None
 
 
+def _imports_candidate_snapshot(bd_args: list[str], candidate_path: Path | None, cwd: Path) -> bool:
+    """Identify explicit ``bd import`` of the checkout's stale snapshot."""
+    if candidate_path is None or not bd_args or bd_args[0] != "import":
+        return False
+    after_separator = False
+    for arg in bd_args[1:]:
+        if arg == "--":
+            after_separator = True
+            continue
+        if not after_separator and arg.startswith("-"):
+            continue
+        if (cwd / arg).resolve() == candidate_path.resolve():
+            return True
+    return False
+
+
 def _preflight_invocation(
     bd_command: str,
     candidate_path: Path | None = None,
@@ -592,7 +747,10 @@ def _preflight_invocation(
     safe_env["BD_IMPORT_AUTO"] = "false"
     try:
         live = _export_live_state(bd_command=bd_command, env=safe_env, cwd=cwd)
-        candidate = parse_and_validate_jsonl(candidate_path.read_text())
+        try:
+            candidate = parse_and_validate_jsonl(candidate_path.read_text(encoding="utf-8", errors="strict"))
+        except UnicodeDecodeError as exc:
+            raise InvalidJsonlError(f"candidate is not valid UTF-8: {exc}") from exc
         merged, outcomes = merge_rows(live, candidate)
     except InvalidJsonlError:
         raise
@@ -600,11 +758,17 @@ def _preflight_invocation(
         print(f"bd guard: skipped automatic JSONL reconciliation: {exc}", file=sys.stderr)
         return
 
-    to_apply = {o.issue_id: merged[o.issue_id] for o in outcomes if o.outcome in ("new", "updated")}
+    to_apply = {o.issue_id: merged[o.issue_id] for o in outcomes if o.outcome == "updated"}
     skipped = [o.issue_id for o in outcomes if o.outcome == "skipped_downgrade"]
     if skipped:
         print(
             f"bd guard: skipped {len(skipped)} stale JSONL row(s) before bd invocation",
+            file=sys.stderr,
+        )
+    unproven_new = [o.issue_id for o in outcomes if o.outcome == "unproven_new"]
+    if unproven_new:
+        print(
+            f"bd guard: refused {len(unproven_new)} candidate-only JSONL row(s) without durable new-row proof",
             file=sys.stderr,
         )
     if not to_apply:
@@ -630,6 +794,12 @@ def cmd_invoke(args: list[str]) -> int:
         return 126
     invocation_dir = _invocation_directory(bd_args)
     candidate_path = _find_candidate_jsonl(invocation_dir)
+    if _imports_candidate_snapshot(bd_args, candidate_path, invocation_dir):
+        print(
+            "bd guard: refusing explicit import of the checkout snapshot; candidate-only rows lack durable new-row proof",
+            file=sys.stderr,
+        )
+        return 125
     lock = _acquire_invocation_lock(invocation_dir)
     try:
         _preflight_invocation(bd_command, candidate_path, cwd=invocation_dir)
@@ -700,7 +870,10 @@ def cmd_reconcile(args: list[str]) -> int:
         return 1
 
     try:
-        candidate = parse_and_validate_jsonl(candidate_path.read_text())
+        try:
+            candidate = parse_and_validate_jsonl(candidate_path.read_text(encoding="utf-8", errors="strict"))
+        except UnicodeDecodeError as exc:
+            raise InvalidJsonlError(f"candidate is not valid UTF-8: {exc}") from exc
     except InvalidJsonlError as exc:
         print(f"reconcile: candidate file failed validation: {exc}", file=sys.stderr)
         receipt = build_receipt([], source=source, actor=actor, reason=reason or str(exc), recovery=allow_downgrade)
@@ -712,7 +885,7 @@ def cmd_reconcile(args: list[str]) -> int:
     receipt = build_receipt(outcomes, source=source, actor=actor, reason=reason, recovery=allow_downgrade)
     receipt_path = write_receipt(receipt)
 
-    apply_outcomes = ("new", "updated", "recovered_downgrade")
+    apply_outcomes = ("updated", "recovered_downgrade")
     to_apply = {o.issue_id: merged[o.issue_id] for o in outcomes if o.outcome in apply_outcomes}
 
     print(
@@ -730,14 +903,21 @@ def cmd_reconcile(args: list[str]) -> int:
             f"reconcile: {len(skipped)} downgrade(s) refused (rerun with --allow-downgrade to recover): {skipped}",
             file=sys.stderr,
         )
+    if any(o.outcome == "unproven_new" for o in outcomes):
+        unproven_new = [o.issue_id for o in outcomes if o.outcome == "unproven_new"]
+        print(
+            f"reconcile: {len(unproven_new)} candidate-only row(s) refused without durable new-row proof: {unproven_new}",
+            file=sys.stderr,
+        )
 
+    recovery_is_clean = allow_downgrade and not any(o.outcome == "unproven_new" for o in outcomes)
     if dry_run:
         print("reconcile: --dry-run set, no changes applied", file=sys.stderr)
-        return 0 if receipt.is_clean or allow_downgrade else 1
+        return 0 if receipt.is_clean or recovery_is_clean else 1
 
     _bd_import_rows(to_apply)
 
-    return 0 if receipt.is_clean or allow_downgrade else 1
+    return 0 if receipt.is_clean or recovery_is_clean else 1
 
 
 def cmd_export(args: list[str]) -> int:

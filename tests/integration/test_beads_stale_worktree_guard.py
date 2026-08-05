@@ -414,6 +414,19 @@ def test_bd_wrapper_rejects_recursive_real_binary_routes(tmp_path: Path, route: 
     assert not (common_dir / "polylogue-bd-guard.lock").exists()
 
 
+def test_bd_wrapper_rejects_direct_python_target_before_guard_lock(tmp_path: Path) -> None:
+    """POLYLOGUE_BD_REAL cannot turn the wrapper into a Python trampoline."""
+    env, _repo, lane, common_dir = _setup_guard_linked_worktree(tmp_path)
+    wrapper = lane.parent / "coordinator" / "scripts" / "bd"
+    env["POLYLOGUE_BD_REAL"] = sys.executable
+
+    result = subprocess.run([str(wrapper), "--help"], cwd=lane, env=env, capture_output=True, text=True, timeout=10)
+
+    assert result.returncode == 126
+    assert "interpreter" in result.stderr
+    assert not (common_dir / "polylogue-bd-guard.lock").exists()
+
+
 @pytest.mark.parametrize("interpreter_name", ["sh", "python3"])
 def test_bd_wrapper_survives_interpreter_path_alias_to_wrapper(tmp_path: Path, interpreter_name: str) -> None:
     """The wrapper reaches the guard when PATH aliases an interpreter to itself."""
@@ -454,38 +467,82 @@ def test_bd_wrapper_skips_indirect_python3_trampoline(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("label", "export_payload"),
+    ("label", "candidate_payload"),
     [
         ("malformed", '{"id":"guard-a"}\nnot-json\n'),
         ("missing-id", '{"title":"guard-a"}\n'),
         ("duplicate", '{"id":"guard-a"}\n{"id":"guard-a"}\n'),
+        ("non-finite", '{"id":"guard-a","priority":NaN}\n'),
+        ("duplicate-key", '{"id":"guard-a","id":"guard-b"}\n'),
+        ("invalid-type", '{"id":"guard-a","labels":"area:beads"}\n'),
+        ("invalid-timestamp", '{"id":"guard-a","updated_at":"tomorrow"}\n'),
+        ("invalid-id", '{"id":42}\n'),
     ],
 )
-def test_bd_wrapper_fails_closed_on_invalid_successful_export(tmp_path: Path, label: str, export_payload: str) -> None:
-    """The real wrapper refuses invalid successful exports before import or delegation."""
+def test_bd_wrapper_fails_closed_on_invalid_candidate_jsonl(tmp_path: Path, label: str, candidate_payload: str) -> None:
+    """The real wrapper rejects malicious candidate JSONL before delegation."""
     env, repo, lane, _common_dir = _setup_guard_linked_worktree(tmp_path)
     wrapper = repo / "scripts" / "bd"
-    (lane / ".beads").mkdir()
-    (lane / ".beads" / "issues.jsonl").write_text('{"id":"candidate"}\n')
+    bd = _installed_bd()
+    if bd is None:
+        pytest.skip("bd is not installed")
+    _run([bd, "init", "--prefix", "guard", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents"], lane, env)
+    (lane / ".beads").mkdir(exist_ok=True)
+    (lane / ".beads" / "issues.jsonl").write_text(candidate_payload)
+    env["POLYLOGUE_BD_REAL"] = bd
 
-    # Point the wrapper at the real Python ELF and provide command-named Python
-    # programs in the invocation directory. This exercises the wrapper and
-    # guard subprocess route without requiring a second installed Beads binary.
-    marker = tmp_path / f"{label}-delegated"
-    (lane / "export").write_text(
-        "from pathlib import Path\n"
-        "import os\n"
-        "import sys\n"
-        "output = sys.argv[sys.argv.index('-o') + 1]\n"
-        "Path(output).write_text(os.environ['FAKE_EXPORT_PAYLOAD'] + '\\n')\n"
-    )
-    for command in ("import", "show"):
-        (lane / command).write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('delegated\\n')\n")
-    env["POLYLOGUE_BD_REAL"] = sys.executable
-    env["FAKE_EXPORT_PAYLOAD"] = export_payload
-
-    result = subprocess.run([str(wrapper), "show"], cwd=lane, env=env, capture_output=True, text=True, timeout=10)
+    result = subprocess.run([str(wrapper), "show"], cwd=lane, env=env, capture_output=True, text=True, timeout=30)
 
     assert result.returncode == 125, result.stderr
     assert "failed validation" in result.stderr
-    assert not marker.exists(), "invalid export must stop before import or delegated bd execution"
+
+
+def test_bd_wrapper_does_not_resurrect_deleted_candidate_only_row(tmp_path: Path) -> None:
+    """A row absent from live export is not treated as a newly-created row."""
+    env, repo, lane, _common_dir = _setup_guard_linked_worktree(tmp_path)
+    wrapper = repo / "scripts" / "bd"
+    bd = _installed_bd()
+    if bd is None:
+        pytest.skip("bd is not installed")
+    _run([bd, "init", "--prefix", "guard", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents"], lane, env)
+    candidate_id = "guard-deleted"
+    (lane / ".beads").mkdir(exist_ok=True)
+    (lane / ".beads" / "issues.jsonl").write_text(
+        json.dumps(
+            {
+                "_type": "issue",
+                "id": candidate_id,
+                "title": "deleted live row",
+                "description": "",
+                "status": "open",
+                "priority": 1,
+                "issue_type": "bug",
+                "owner": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "created_by": "test",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "labels": [],
+                "comment_count": 0,
+                "dependency_count": 0,
+                "dependent_count": 0,
+            }
+        )
+        + "\n"
+    )
+    env["POLYLOGUE_BD_REAL"] = bd
+
+    result = subprocess.run(
+        [str(wrapper), "import", ".beads/issues.jsonl"],
+        cwd=lane,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 125
+    assert "durable new-row proof" in result.stderr
+    safe_env = env | {"BD_IMPORT_AUTO": "false"}
+    snapshot = tmp_path / "live.jsonl"
+    _run([bd, "export", "-o", str(snapshot)], lane, safe_env)
+    assert candidate_id not in snapshot.read_text()
