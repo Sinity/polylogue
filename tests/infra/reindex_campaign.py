@@ -323,7 +323,7 @@ def build_reindex_campaign_corpus(root: Path) -> ReindexCampaignCorpus:
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         parser_failure_raw_id = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
-            payload=b"not-json\nparser-failure-residual\n",
+            payload=first_payload,
             source_path="campaign-parser-failure.jsonl",
             native_id=restart_native_id,
             acquired_at_ms=3,

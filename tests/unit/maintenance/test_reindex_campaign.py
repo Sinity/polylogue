@@ -25,6 +25,7 @@ from polylogue.maintenance.reindex_canary import run_reindex_canary
 from polylogue.sources.live.convergence_debt import convergence_debt_from_states
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.index_generation import IndexGenerationStore
+from polylogue.storage.raw_byte_duplicate_supersession import plan_byte_duplicate_supersession
 from tests.infra.convergence_harness import (
     debt_ledger_row,
     make_messages_fts_stale,
@@ -156,6 +157,16 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
                 ).fetchone()
                 is None
             )
+    source_conn = sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)
+    index_conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        duplicate_plan = plan_byte_duplicate_supersession(source_conn, index_conn)
+    finally:
+        source_conn.close()
+        index_conn.close()
+    assert not (
+        {candidate.raw_id for candidate in duplicate_plan.duplicates} & set(corpus.manifest.parser_failure_raw_ids)
+    )
 
     canary = run_reindex_canary(root, sessions_per_origin=100, no_promote=True)
     assert canary.comparison.unexpected_count > 0
