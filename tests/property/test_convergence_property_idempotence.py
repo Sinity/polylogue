@@ -24,9 +24,10 @@ from tests.infra.convergence_harness import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(st.permutations((0, 1, 2)))
-def test_convergence_property_reingest_is_idempotent(tmp_path: Path, order: tuple[int, ...]) -> None:
+@given(st.data())
+def test_convergence_property_reingest_is_idempotent(tmp_path: Path, data: st.DataObject) -> None:
     corpus = rich_convergence_pathology()
+    order = data.draw(st.permutations(tuple(range(len(corpus.members)))))
     archive = build_converged_archive(tmp_path / "archive", corpus, session_order=order)
     baseline = build_converged_archive(tmp_path / "baseline", corpus, session_order=order)
 

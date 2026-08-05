@@ -24,12 +24,20 @@ from polylogue.schemas.operator.registry import RuntimeSchemaRegistryLike
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticSchemaSelection
-from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS, WireFormat
+from polylogue.schemas.synthetic.wire_formats import (
+    PROVIDER_WIRE_FORMATS,
+    PROVIDER_WIRE_ROUTES,
+    WireFormat,
+    WireSupportEntry,
+    WireSupportReceipt,
+)
 
 ConstructSupportState: TypeAlias = Literal["supported", "unsupported"]
 INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION = 1
 UnsupportedCorpusReason: TypeAlias = Literal[
     "provider_without_wire_format",
+    "unsupported_wire_route",
+    "wire_support_receipt_incomplete",
     "unsupported_element",
     "missing_schema",
     "unsupported_json_schema_construct",
@@ -496,6 +504,8 @@ def _manifest_entry_from_payload(payload: object) -> InferredCorpusManifestEntry
         raise ValueError("manifest unsupported record fields changed")
     valid_reasons = {
         "provider_without_wire_format",
+        "unsupported_wire_route",
+        "wire_support_receipt_incomplete",
         "unsupported_element",
         "missing_schema",
         "unsupported_json_schema_construct",
@@ -980,15 +990,15 @@ def assert_inferred_corpus_convergence_handoff_complete(
 def _selection_for_entry(entry: InferredCorpusManifestEntry) -> SyntheticSchemaSelection:
     if entry.spec is None or entry.generator_schema is None:
         raise ValueError("unsupported inferred corpus entry cannot produce a generator selection")
-    wire_format = PROVIDER_WIRE_FORMATS.get(entry.key.provider)
-    if wire_format is None:
-        raise ValueError(f"inferred corpus entry has no production wire format: {entry.key.provider!r}")
+    route = PROVIDER_WIRE_ROUTES.get(entry.key.provider)
+    if route is None or route.status != "supported" or route.wire_format is None:
+        raise ValueError(f"inferred corpus entry has no supported production wire route: {entry.key.provider!r}")
     return SyntheticSchemaSelection(
         provider=entry.key.provider,
         package_version=entry.key.package_version,
         element_kind=entry.key.element_kind,
         schema=entry.generator_schema,
-        wire_format=wire_format,
+        wire_format=route.wire_format,
         workload_profile=entry.workload_profile,
     )
 
@@ -1018,15 +1028,37 @@ def _unsupported_reason(
     schema: SchemaRecord | None,
     wire_format: WireFormat | None,
     construct_support: tuple[ConstructSupport, ...],
+    support_entry: WireSupportEntry | None,
 ) -> UnsupportedCorpusRecord | None:
-    if wire_format is None:
+    if support_entry is not None:
+        if support_entry.status == "unsupported":
+            return UnsupportedCorpusRecord(
+                "unsupported_wire_route",
+                (support_entry.reason or "route is explicitly unsupported",),
+            )
+        if not support_entry.healthy:
+            details = tuple(
+                detail
+                for detail in (
+                    support_entry.validation_error,
+                    *(support_entry.construct_coverage.missing_keywords if support_entry.construct_coverage else ()),
+                )
+                if detail
+            )
+            return UnsupportedCorpusRecord("wire_support_receipt_incomplete", details)
+    elif wire_format is None:
         return UnsupportedCorpusRecord("provider_without_wire_format")
     if not element.supported:
         return UnsupportedCorpusRecord("unsupported_element")
     if schema is None or element.schema_file is None:
         return UnsupportedCorpusRecord("missing_schema")
     unsupported_constructs = tuple(item.construct for item in construct_support if item.state == "unsupported")
-    if unsupported_constructs:
+    # The generic manifest census intentionally records every unsupported
+    # construct.  A healthy support receipt may classify those constructs as
+    # explicitly nonrepresentable for the selected wire route, so they remain
+    # evidence on the key without preventing the route from entering the
+    # production parser/ingest loop.
+    if unsupported_constructs and not (support_entry is not None and support_entry.healthy):
         return UnsupportedCorpusRecord("unsupported_json_schema_construct", unsupported_constructs)
     return None
 
@@ -1038,6 +1070,7 @@ def _compile_entry(
     element: SchemaElementManifest,
     registry: RuntimeSchemaRegistryLike,
     wire_formats: Mapping[str, WireFormat],
+    support_entry: WireSupportEntry | None,
 ) -> InferredCorpusManifestEntry:
     key_without_constructs = CorpusManifestKey(provider, package.version, element.element_kind)
     schema = registry.get_element_schema(
@@ -1053,6 +1086,7 @@ def _compile_entry(
         schema=schema if isinstance(schema, dict) else None,
         wire_format=wire_format,
         construct_support=construct_support,
+        support_entry=support_entry,
     )
     if unsupported is not None:
         return InferredCorpusManifestEntry(key=key, unsupported=unsupported)
@@ -1120,10 +1154,14 @@ def compile_inferred_corpus_manifest(
     registry: RuntimeSchemaRegistryLike,
     package_receipt: PackageReceipt | None = None,
     wire_formats: Mapping[str, WireFormat] | None = None,
+    wire_support_receipt: WireSupportReceipt | None = None,
 ) -> InferredCorpusManifest:
     """Compile every persisted package/version/element into a typed manifest."""
 
     formats = PROVIDER_WIRE_FORMATS if wire_formats is None else wire_formats
+    support_entries = (
+        {entry.provider: entry for entry in wire_support_receipt.entries} if wire_support_receipt is not None else {}
+    )
     entries = tuple(
         _compile_entry(
             provider=provider,
@@ -1131,11 +1169,17 @@ def compile_inferred_corpus_manifest(
             element=element,
             registry=registry,
             wire_formats=formats,
+            support_entry=support_entries.get(provider),
         )
         for provider, catalog, package, element in _catalog_entries(registry)
     )
     manifest = InferredCorpusManifest(
-        entries=tuple(sorted(entries, key=lambda entry: entry.key)), package_receipt=package_receipt
+        entries=tuple(sorted(entries, key=lambda entry: entry.key)),
+        package_receipt=(
+            cast(PackageReceipt, wire_support_receipt.to_dict())
+            if wire_support_receipt is not None
+            else package_receipt
+        ),
     )
     assert_inferred_corpus_manifest_complete(manifest, registry)
     return manifest

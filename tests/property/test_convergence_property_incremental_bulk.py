@@ -21,9 +21,10 @@ from tests.infra.convergence_harness import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(st.permutations((0, 1, 2)))
-def test_convergence_property_incremental_equals_bulk(tmp_path: Path, order: tuple[int, ...]) -> None:
+@given(st.data())
+def test_convergence_property_incremental_equals_bulk(tmp_path: Path, data: st.DataObject) -> None:
     corpus = rich_convergence_pathology()
+    order = data.draw(st.permutations(tuple(range(len(corpus.members)))))
     bulk = build_converged_archive(tmp_path / "bulk", corpus, session_order=order)
     incremental = build_converged_archive(tmp_path / "incremental", corpus, session_order=order, incremental=True)
     assert_archives_equivalent(bulk, incremental)

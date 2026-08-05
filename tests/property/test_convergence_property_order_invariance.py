@@ -30,9 +30,10 @@ from tests.infra.convergence_harness import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(st.permutations((0, 1, 2)))
-def test_convergence_property_ingestion_order_invariance(tmp_path: Path, order: tuple[int, ...]) -> None:
+@given(st.data())
+def test_convergence_property_ingestion_order_invariance(tmp_path: Path, data: st.DataObject) -> None:
     corpus = rich_convergence_pathology()
+    order = data.draw(st.permutations(tuple(range(len(corpus.members)))))
     canonical = build_converged_archive(tmp_path / "canonical", corpus)
     permuted = build_converged_archive(tmp_path / "permuted", corpus, session_order=order)
     assert_archives_equivalent(canonical, permuted)
@@ -59,8 +60,8 @@ class ConvergencePropertyInterruptionMachine(RuleBasedStateMachine):
 
     @rule(data=st.data())
     def ingest_before_interruption(self, data: st.DataObject) -> None:
-        indexes = data.draw(st.permutations((0, 1, 2)))
-        selected = tuple(indexes[: data.draw(st.integers(min_value=1, max_value=3))])
+        indexes = data.draw(st.permutations(tuple(range(len(self._corpus.members)))))
+        selected = tuple(indexes[: data.draw(st.integers(min_value=1, max_value=len(indexes)))])
         self._seen.update(selected)
         self._archive = ingest_convergence_pathology(
             self._root,

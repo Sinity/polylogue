@@ -350,13 +350,14 @@ def build_session_profile_record(
     evidence_search_text = profile_evidence_search_text(profile)
     inference_search_text = profile_inference_search_text(profile)
     source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
+    source_sort_timestamp = profile.updated_at or profile.created_at
     return SessionProfileRecord(
         session_id=SessionId(profile.session_id),
         logical_session_id=SessionId(resolved_logical_session_id),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=built_at,
         source_updated_at=source_updated_at,
-        source_sort_key=profile.updated_at.timestamp() if profile.updated_at else None,
+        source_sort_key=source_sort_timestamp.timestamp() if source_sort_timestamp else None,
         input_high_water_mark=source_updated_at,
         input_high_water_mark_source=classify_profile_hwm_source(profile.updated_at),
         input_row_count=profile.message_count,

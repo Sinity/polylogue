@@ -11,7 +11,7 @@ from polylogue.core.json import JSONValue
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.models import SchemaRecord
-from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
+from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS, PROVIDER_WIRE_ROUTES
 from tests.infra.inferred_corpus import (
     CorpusManifestKey,
     InferredCorpusManifest,
@@ -257,7 +257,7 @@ def test_completeness_guard_detects_a_removed_enumerated_entry() -> None:
 def test_missing_element_schema_becomes_explicit_unsupported_record() -> None:
     registry = _registry()
     proxy = _RegistryProxy(registry)
-    target_provider = registry.list_providers()[0]
+    target_provider, _, _ = _first_wired_catalog_entry(registry)
     catalog = registry.load_package_catalog(target_provider)
     assert catalog is not None
     target_package = catalog.packages[0]
@@ -284,7 +284,7 @@ def test_missing_element_schema_becomes_explicit_unsupported_record() -> None:
 def test_catalog_element_marked_unsupported_is_retained_as_a_typed_record() -> None:
     registry = _registry()
     proxy = _RegistryProxy(registry)
-    provider = registry.list_providers()[0]
+    provider, _, _ = _first_wired_catalog_entry(registry)
     catalog = registry.load_package_catalog(provider)
     assert catalog is not None
     package = catalog.packages[0]
@@ -633,14 +633,44 @@ def test_convergence_handoff_rejects_an_omitted_supported_spec() -> None:
     assert_inferred_corpus_convergence_handoff_complete(manifest, handoff)
 
 
-def _first_wired_catalog_entry(registry: SchemaRegistry) -> tuple[str, str, str]:
+def _first_wired_catalog_entry(
+    registry: SchemaRegistry,
+    *,
+    annotation: str | None = None,
+) -> tuple[str, str, str]:
     for provider in registry.list_providers():
-        if provider not in PROVIDER_WIRE_FORMATS:
+        route = PROVIDER_WIRE_ROUTES.get(provider)
+        if route is None or route.status != "supported":
             continue
         catalog = registry.load_package_catalog(provider)
         assert catalog is not None
-        package = catalog.packages[0]
-        return provider, package.version, package.elements[0].element_kind
+        for package in catalog.packages:
+            for element in package.elements:
+                if annotation is not None:
+                    proxy = _RegistryProxy(registry)
+                    proxy.schema_overrides[(provider, package.version, element.element_kind)] = _schema_with_annotation(
+                        registry,
+                        provider=provider,
+                        package_version=package.version,
+                        element_kind=element.element_kind,
+                        annotation=annotation,
+                    )
+                    manifest = compile_inferred_corpus_manifest(registry=proxy)  # type: ignore[arg-type]
+                    candidate = next(
+                        entry
+                        for entry in manifest.entries
+                        if (
+                            entry.key.provider,
+                            entry.key.package_version,
+                            entry.key.element_kind,
+                        )
+                        == (provider, package.version, element.element_kind)
+                    )
+                    if (annotation, "supported") not in {
+                        (item.construct, item.state) for item in candidate.key.construct_support
+                    }:
+                        continue
+                return provider, package.version, element.element_kind
     raise AssertionError("expected a persisted provider with a wire format")
 
 
@@ -694,7 +724,10 @@ def _schema_with_root_annotation(
 def test_known_generator_annotation_remains_supported_and_is_keyed() -> None:
     registry = _registry()
     proxy = _RegistryProxy(registry)
-    provider, package_version, element_kind = _first_wired_catalog_entry(registry)
+    provider, package_version, element_kind = _first_wired_catalog_entry(
+        registry,
+        annotation="x-polylogue-format",
+    )
     proxy.schema_overrides[(provider, package_version, element_kind)] = _schema_with_annotation(
         registry,
         provider=provider,

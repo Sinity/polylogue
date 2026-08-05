@@ -10,7 +10,8 @@ from hypothesis import HealthCheck, Phase, given, settings
 from hypothesis import strategies as st
 
 from tests.infra.convergence_harness import (
-    append_convergence_member,
+    CorpusMember,
+    append_convergence_members,
     assert_append_provenance,
     assert_archives_equivalent,
     build_append_prefix_archive,
@@ -28,9 +29,13 @@ from tests.infra.convergence_harness import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
+@pytest.mark.parametrize(
+    "member",
+    append_convergence_members(),
+    ids=lambda member: f"{member.provider}-{member.spec.package_version}-{member.spec.element_kind}",
+)
 @given(st.integers(min_value=2, max_value=6))
-def test_convergence_property_append_prefix_matches_full(tmp_path: Path, split_line: int) -> None:
-    member = append_convergence_member()
+def test_convergence_property_append_prefix_matches_full(tmp_path: Path, member: CorpusMember, split_line: int) -> None:
     full = build_full_live_archive(tmp_path / "full", member)
     appended = build_append_prefix_archive(tmp_path / "append", member, split_line=split_line)
 

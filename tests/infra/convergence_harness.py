@@ -7,7 +7,6 @@ ledger. It deliberately owns no alternate convergence state machine.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import random
 import re
@@ -15,13 +14,15 @@ import shutil
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
+from functools import lru_cache
 from pathlib import Path
 from typing import cast
 
 import polylogue.daemon.convergence_stages as convergence_stages
 from polylogue.config import Source
 from polylogue.core.outcomes import OutcomeStatus
-from polylogue.daemon.convergence import DaemonConverger, SessionState
+from polylogue.core.sources import origin_from_provider
+from polylogue.daemon.convergence import DaemonConverger, SessionState, StageState
 from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
@@ -30,10 +31,15 @@ from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.models import SyntheticArtifactFacts, SyntheticSchemaSelection, SyntheticWrittenBatch
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
+from polylogue.schemas.synthetic.wire_formats import WireSupportReceipt, build_wire_support_receipt
 from polylogue.sources.live import LiveBatchProcessor, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.inferred_corpus import compile_inferred_corpus_manifest
+from tests.infra.inferred_corpus import (
+    InferredCorpusManifest,
+    build_inferred_corpus_convergence_handoff,
+    compile_inferred_corpus_manifest,
+)
 
 SqlValue = str | int | float | bytes | None
 FactRow = tuple[SqlValue, ...]
@@ -135,6 +141,7 @@ class ConvergenceCorpus:
     """Persisted-selection-backed provider materials used by every property."""
 
     members: tuple[CorpusMember, ...]
+    manifest: InferredCorpusManifest | None = None
 
     @property
     def sessions(self) -> tuple[CorpusMember, ...]:
@@ -142,74 +149,60 @@ class ConvergenceCorpus:
         return self.members
 
 
-def _persisted_provider_receipt(provider: str) -> dict[str, object] | None:
-    path = SCHEMA_DIR / provider / "representatives" / "corpus-manifest.json"
-    if not path.is_file():
-        return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise AssertionError(f"persisted provider receipt is not an object: {path}")
-    return {str(key): value for key, value in payload.items()}
-
-
 def _persisted_registry_factory() -> SchemaRegistry:
     return SchemaRegistry(storage_root=SCHEMA_DIR)
 
 
-def inferred_convergence_corpus() -> ConvergenceCorpus:
-    """Load representative origins from persisted package selections.
+@lru_cache(maxsize=1)
+def _persisted_wire_support_receipt() -> WireSupportReceipt:
+    """Use the registry-derived production support receipt once per process."""
 
-    The schema and receipt are read from the repository's persisted registry.
-    No test-owned schema or parser substitute is introduced here. The live
-    inferred manifest is also compiled so unsupported constructs remain typed
-    receipts instead of silently becoming executable materials.
+    return build_wire_support_receipt(registry=SchemaRegistry(storage_root=SCHEMA_DIR))
+
+
+def inferred_convergence_corpus() -> ConvergenceCorpus:
+    """Load every supported persisted package selection.
+
+    The manifest and support receipt come from the persisted registry and the
+    production synthetic route authority. Every supported selection is carried
+    into the real parser and ingest path; unsupported origins remain receipts.
     """
     registry = SchemaRegistry(storage_root=SCHEMA_DIR)
-    manifest = compile_inferred_corpus_manifest(registry=registry)
+    support_receipt = _persisted_wire_support_receipt()
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        wire_support_receipt=support_receipt,
+    )
+    handoff = build_inferred_corpus_convergence_handoff(manifest)
     if not manifest.unsupported_records:
-        raise AssertionError("the persisted inferred manifest lost unsupported-construct receipts")
+        raise AssertionError("the persisted inferred manifest lost unsupported-origin receipts")
+    supported_entries = tuple(entry for entry in manifest.entries if entry.spec is not None)
+    if len(handoff.selections) != len(supported_entries) or not handoff.selections:
+        raise AssertionError("the persisted inferred handoff dropped all or part of the supported selection corpus")
     members: list[CorpusMember] = []
-    for index, provider in enumerate(("codex", "chatgpt", "claude-ai")):
-        selection = select_synthetic_schema(
-            provider,
-            version="v1",
-            element_kind="session_record_stream" if provider == "codex" else "session_document",
-            registry_factory=_persisted_registry_factory,
+    for index, (entry, selection) in enumerate(zip(supported_entries, handoff.selections, strict=True)):
+        if entry.spec is None:
+            raise AssertionError("supported inferred corpus entry lost its CorpusSpec")
+        pinned_ids = (
+            ()
+            if entry.key.provider == "codex"
+            else (f"convergence-{entry.key.provider}-{entry.key.package_version}-{index}",)
         )
-        native_id = f"convergence-{provider}-{index}"
-        spec = CorpusSpec.for_provider(
-            provider,
-            package_version=selection.package_version,
-            element_kind=selection.element_kind,
-            count=1,
-            messages_min=4,
-            messages_max=4,
-            seed=1843 + index * 101,
+        spec = entry.spec.with_generation_overrides(
             style="demo-attachments",
-            session_native_ids=(native_id,),
+            session_native_ids=pinned_ids,
             origin="inferred.convergence.property",
-            tags=("inferred", "convergence", provider),
+            tags=("inferred", "convergence", entry.key.provider, entry.key.package_version),
         )
         members.append(
             CorpusMember(
-                provider=provider,
+                provider=entry.key.provider,
                 spec=spec,
                 selection=selection,
-                receipt=_persisted_provider_receipt(provider),
-                material_path=(
-                    SCHEMA_DIR / provider / "representatives" / "sample-00.json"
-                    if provider in {"chatgpt", "claude-ai"}
-                    else None
-                ),
+                receipt=support_receipt.to_dict(),
             )
         )
-    if not all(
-        member.receipt and member.material_path is not None and member.material_path.is_file()
-        for member in members
-        if member.provider in {"chatgpt", "claude-ai"}
-    ):
-        raise AssertionError("representative persisted provider receipts are missing")
-    return ConvergenceCorpus(tuple(members))
+    return ConvergenceCorpus(tuple(members), manifest=manifest)
 
 
 def rich_convergence_pathology() -> ConvergenceCorpus:
@@ -218,27 +211,45 @@ def rich_convergence_pathology() -> ConvergenceCorpus:
 
 
 def append_convergence_member() -> CorpusMember:
-    """Build a Claude Code JSONL member whose provider preserves tail parents."""
-    selection = select_synthetic_schema(
-        "claude-code",
-        version="v1",
-        element_kind="session_record_stream",
-        registry_factory=_persisted_registry_factory,
+    """Compatibility helper for the first supported appendable selection."""
+    return append_convergence_members()[0]
+
+
+def append_convergence_members() -> tuple[CorpusMember, ...]:
+    """Return persisted JSONL selections with stable append identity evidence."""
+    members = tuple(
+        CorpusMember(
+            provider=member.provider,
+            spec=member.spec.with_generation_overrides(
+                style="demo-tool-heavy",
+                origin="append.convergence.property",
+                tags=("append", "convergence", member.provider, member.spec.package_version),
+            ),
+            selection=member.selection,
+            receipt=member.receipt,
+        )
+        for member in inferred_convergence_corpus().members
+        if member.selection.wire_format.encoding == "jsonl" and member.spec.session_native_ids
     )
-    spec = CorpusSpec.for_provider(
-        "claude-code",
-        package_version=selection.package_version,
-        element_kind=selection.element_kind,
-        count=1,
-        messages_min=4,
-        messages_max=4,
-        seed=2939,
-        style="demo-tool-heavy",
-        session_native_ids=("convergence-claude-code-append",),
-        origin="append.convergence.property",
-        tags=("append", "convergence"),
+    if not members:
+        raise AssertionError("the supported inferred corpus has no appendable JSONL selection")
+    return members
+
+
+def append_convergence_unsupported_receipts() -> tuple[dict[str, str], ...]:
+    """Return explicit receipts for JSONL selections not representable by append replay."""
+    return tuple(
+        {
+            "provider": member.provider,
+            "package_version": member.spec.package_version,
+            "element_kind": member.spec.element_kind or "",
+            "operation": "append_prefix",
+            "status": "unsupported",
+            "reason": "wire route has no stable persisted session identity for prefix replay",
+        }
+        for member in inferred_convergence_corpus().members
+        if member.selection.wire_format.encoding == "jsonl" and not member.spec.session_native_ids
     )
-    return CorpusMember("claude-code", spec, selection, None)
 
 
 def convergence_max_examples() -> int:
@@ -275,6 +286,7 @@ def build_converged_archive(
     )
     if not incremental:
         converge_convergence_archive(archive)
+        assert_corpus_materialization(archive)
     return archive
 
 
@@ -313,7 +325,24 @@ def ingest_convergence_pathology(
                 prefix=f"member-{index:02d}",
             )
             source_path = written.files[0]
-        asyncio.run(parse_sources_archive(root, [Source(name=member.provider, path=source_path)], parse_workers=1))
+        had_durable_raw = False
+        if (root / "source.db").exists():
+            with sqlite3.connect(root / "source.db") as conn:
+                had_durable_raw = (
+                    conn.execute(
+                        "SELECT 1 FROM raw_sessions WHERE source_path = ? LIMIT 1",
+                        (str(source_path),),
+                    ).fetchone()
+                    is not None
+                )
+        ingest_result = asyncio.run(
+            parse_sources_archive(root, [Source(name=member.provider, path=source_path)], parse_workers=1)
+        )
+        if not had_durable_raw and (ingest_result.counts["sessions"] < 1 or ingest_result.counts["messages"] < 1):
+            raise AssertionError(
+                "production parser dispatch or ingest dropped a supported inferred selection: "
+                f"provider={member.provider!r}, result={ingest_result!r}"
+            )
         source_paths.append(source_path)
         if written is not None:
             artifact_facts.extend(item.facts for item in written.batch.artifacts)
@@ -329,6 +358,7 @@ def ingest_convergence_pathology(
         for session_id in archive.session_ids:
             make_messages_fts_stale(root / "index.db", session_id=session_id)
         if converge_after_each:
+            _quiet_test_owned_sources(archive.source_paths)
             converge_convergence_archive(archive)
 
     return ConvergenceArchive(
@@ -342,15 +372,90 @@ def ingest_convergence_pathology(
 
 def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, SessionState]:
     """Run the real FTS and insight debt stages for the materialized sessions."""
-    converger = DaemonConverger(
-        (make_fts_stage(archive.root / "index.db"), make_insights_stage(archive.root / "index.db"))
+    _quiet_test_owned_sources(archive.source_paths)
+    stages = (
+        make_fts_stage(archive.root / "index.db"),
+        make_insights_stage(archive.root / "index.db"),
     )
+    converger = DaemonConverger(stages)
+    required_stages = {"fts", "insights"}
+    if not required_stages.issubset(converger.stage_names):
+        raise AssertionError(
+            "convergence harness omitted a required stage: "
+            f"required={sorted(required_stages)!r}, actual={converger.stage_names!r}"
+        )
     states, _timings = converger.converge_sessions(archive.session_ids)
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
     if not_converged:
         raise AssertionError(f"production convergence left pending work: {not_converged}")
+    skipped = {
+        session_id: sorted(stage for stage in required_stages if state.stages.get(stage) is not StageState.DONE)
+        for session_id, state in states.items()
+    }
+    skipped = {session_id: stages for session_id, stages in skipped.items() if stages}
+    if skipped:
+        raise AssertionError(f"production convergence skipped required stages: {skipped!r}")
     _analyze_registry_tables(archive.root / "index.db")
     return states
+
+
+def _quiet_test_owned_sources(source_paths: Sequence[Path]) -> None:
+    """Make generated test files satisfy the production quiet-window contract."""
+    for source_path in source_paths:
+        if source_path.exists() and source_path.stat().st_size >= convergence_stages._HOT_INSIGHT_SOURCE_BYTES:
+            os.utime(source_path, (0, 0))
+
+
+def assert_corpus_materialization(archive: ConvergenceArchive) -> None:
+    """Require every corpus member's origin to reach all derived surfaces."""
+    with sqlite3.connect(archive.root / "index.db") as conn:
+        expected_by_origin: dict[str, int] = {}
+        for member in archive.corpus.members:
+            origin = origin_from_provider(member.provider).value
+            expected_by_origin[origin] = expected_by_origin.get(origin, 0) + 1
+        for origin, expected_count in expected_by_origin.items():
+            sessions = conn.execute(
+                """
+                SELECT session_id, parent_session_id, root_session_id, message_count
+                FROM sessions WHERE origin = ? ORDER BY session_id
+                """,
+                (origin,),
+            ).fetchall()
+            if len(sessions) != expected_count:
+                raise AssertionError(
+                    "supported inferred selections did not materialize the expected origin sessions: "
+                    f"origin={origin!r}, expected={expected_count}, sessions={sessions!r}"
+                )
+            for session_id, parent_session_id, root_session_id, message_count in sessions:
+                if not root_session_id or (parent_session_id is None and root_session_id != session_id):
+                    raise AssertionError(f"lineage root was not materialized for {session_id!r}: {sessions!r}")
+                if parent_session_id is not None:
+                    link = conn.execute(
+                        "SELECT 1 FROM session_links WHERE src_session_id = ? LIMIT 1",
+                        (session_id,),
+                    ).fetchone()
+                    if link is None:
+                        raise AssertionError(f"lineage link was not materialized for {session_id!r}")
+
+                profile = conn.execute(
+                    "SELECT message_count FROM session_profiles WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if profile is None or int(profile[0]) != int(message_count):
+                    raise AssertionError(f"profile materialization drifted for {session_id!r}: {profile!r}")
+
+                fts_counts = conn.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM blocks WHERE session_id = ? AND NULLIF(search_text, '') IS NOT NULL),
+                        (SELECT COUNT(*) FROM messages_fts WHERE rowid IN (
+                            SELECT rowid FROM blocks WHERE session_id = ? AND NULLIF(search_text, '') IS NOT NULL
+                        ))
+                    """,
+                    (session_id, session_id),
+                ).fetchone()
+                if fts_counts is None or int(fts_counts[0]) != int(fts_counts[1]) or int(fts_counts[0]) == 0:
+                    raise AssertionError(f"FTS materialization drifted for {session_id!r}: {fts_counts!r}")
 
 
 def assert_archive_verification_green(root: Path) -> ArchiveVerificationReport:
@@ -483,7 +588,7 @@ def archive_snapshot(root: Path) -> ArchiveSnapshot:
                    inference_payload_json, enrichment_payload_json, evidence_search_text,
                    inference_search_text, enrichment_search_text, enrichment_version,
                    enrichment_family, inference_version, inference_family, search_text,
-                   duration_ms, cost_credits, cost_usd, priced_with, priced_at_ms,
+                   duration_ms, cost_credits, cost_usd, priced_with, NULL AS priced_at_ms,
                    primary_model_name, primary_model_family
             FROM session_profiles ORDER BY session_id
             """
@@ -663,6 +768,7 @@ def build_append_prefix_archive(
         (artifact.facts,),
     )
     converge_convergence_archive(archive)
+    assert_corpus_materialization(archive)
     return archive
 
 
@@ -702,6 +808,7 @@ def build_full_live_archive(root: Path, member: CorpusMember) -> ConvergenceArch
         make_messages_fts_stale(root / "index.db", session_id=session_id)
     archive = ConvergenceArchive(root, ConvergenceCorpus((member,)), (source_path,), session_ids, (artifact.facts,))
     converge_convergence_archive(archive)
+    assert_corpus_materialization(archive)
     return archive
 
 
@@ -1033,7 +1140,7 @@ def _seed_raw_source_session(conn: sqlite3.Connection, *, session_id: str, sourc
         messages_max=1,
         seed=sum(ord(character) for character in session_id),
         style="demo-tool-heavy",
-        session_native_ids=(session_id,),
+        session_native_ids=(),
         origin="partial.convergence.fixture",
     )
     artifact = SyntheticCorpus.generate_batch_for_selection(selection, spec).artifacts[0]
@@ -1044,7 +1151,7 @@ def _seed_raw_source_session(conn: sqlite3.Connection, *, session_id: str, sourc
         raise AssertionError(f"partial convergence fixture did not use the real Codex ingest route: {result!r}")
     row = conn.execute(
         "SELECT session_id FROM sessions WHERE origin = 'codex-session' AND native_id = ?",
-        (session_id,),
+        (source_path.stem,),
     ).fetchone()
     if row is None:
         raise AssertionError(f"real Codex ingest did not write session {session_id!r}")
@@ -1073,7 +1180,10 @@ __all__ = [
     "archive_snapshot",
     "assert_archive_verification_green",
     "assert_archives_equivalent",
+    "assert_corpus_materialization",
     "append_convergence_member",
+    "append_convergence_members",
+    "append_convergence_unsupported_receipts",
     "build_append_prefix_archive",
     "build_converged_archive",
     "build_full_live_archive",
@@ -1086,6 +1196,8 @@ __all__ = [
     "initialize_active_archive",
     "make_messages_fts_stale",
     "messages_fts_match_count",
+    "make_fts_stage",
+    "make_insights_stage",
     "raw_authority_facts",
     "rich_convergence_pathology",
     "convergence_max_examples",
