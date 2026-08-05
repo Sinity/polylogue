@@ -39,6 +39,7 @@ Two properties this module adds on top of the existing rebuild engine:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -56,6 +57,43 @@ if TYPE_CHECKING:
     from polylogue.maintenance.rebuild_index import RebuildIndexReceipt
 
 logger = get_logger(__name__)
+
+
+def _validate_rebuild_provenance_receipt(root: Path, receipt_path: Path | None) -> None:
+    """Validate daemon rebuild provenance at the current ownership boundary."""
+    from polylogue.maintenance.schema_inference_gate import (
+        SchemaInferenceGateError,
+        validate_schema_inference_receipt,
+    )
+
+    try:
+        validate_schema_inference_receipt(root, receipt_path)
+    except SchemaInferenceGateError as exc:
+        raise RuntimeError(f"daemon bulk rebuild schema-inference preflight gate failed: {exc}") from exc
+
+
+def _discard_daemon_transaction_after_provenance_failure(
+    store: IndexGenerationStore, transaction: IndexRebuildTransaction
+) -> None:
+    """Best-effort cleanup after a post-create provenance failure.
+
+    The caller still owns the archive location. Cleanup does not consume source
+    evidence, so it must remain available even when the receipt that authorized
+    candidate creation has just expired or the source snapshot has drifted.
+    Each record is retired independently so one failed cleanup step cannot
+    strand the other record.
+    """
+    try:
+        generation = store.load(transaction.generation_id)
+        if generation.state == "inactive":
+            store.discard_if_inactive(generation)
+    except Exception:
+        logger.warning("bulk-rebuild: failed to discard post-validation candidate", exc_info=True)
+    try:
+        store.discard_transaction(transaction.operation_id)
+    except Exception:
+        logger.warning("bulk-rebuild: failed to discard post-validation transaction", exc_info=True)
+
 
 #: Fixed operation id for the daemon's own bulk-rebuild transaction. Exactly
 #: one such operation is ever in flight per archive -- this module's only
@@ -82,7 +120,9 @@ DAEMON_BULK_REBUILD_BATCH_SIZE = 500
 _TERMINAL_NOT_RESUMABLE = frozenset({"promoted", "stale", "failed"})
 
 
-def resolve_or_start_daemon_bulk_rebuild_transaction(root: Path) -> IndexRebuildTransaction:
+def resolve_or_start_daemon_bulk_rebuild_transaction(
+    root: Path, *, schema_inference_receipt_path: Path | None = None
+) -> IndexRebuildTransaction:
     """Load the daemon's resumable bulk-rebuild transaction, starting one if needed.
 
     Read-only fast path when a resumable transaction already exists (a
@@ -100,27 +140,33 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(root: Path) -> IndexRebuild
     generation directory, so both must fail closed against a foreign/rotated
     archive location before touching disk, not just the eventual write pass.
     """
+    _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
     location = ArchiveLocation.resolve(root)
-    store = IndexGenerationStore(location)
-    transaction: IndexRebuildTransaction | None
-    try:
-        transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
-    except FileNotFoundError:
-        transaction = None
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        logger.warning(
-            "bulk-rebuild: could not load persisted transaction %s; starting a fresh one: %s",
-            DAEMON_BULK_REBUILD_OPERATION_ID,
-            exc,
-        )
-        transaction = None
-
-    if transaction is not None and transaction.status not in _TERMINAL_NOT_RESUMABLE:
-        return transaction
-
     owned = OwnedArchiveLocation.acquire(location)
     try:
         assert_owns_archive_location(owned, location)
+        # The first validation is only a cheap early rejection. Revalidate
+        # after ownership acquisition so receipt expiry, source revision, or
+        # external-corpus drift cannot reach generation bookkeeping.
+        _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+        store = IndexGenerationStore(location)
+        transaction: IndexRebuildTransaction | None
+        try:
+            transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
+        except FileNotFoundError:
+            transaction = None
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logger.warning(
+                "bulk-rebuild: could not load persisted transaction %s; starting a fresh one: %s",
+                DAEMON_BULK_REBUILD_OPERATION_ID,
+                exc,
+            )
+            transaction = None
+
+        if transaction is not None and transaction.status not in _TERMINAL_NOT_RESUMABLE:
+            _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+            return transaction
+
         if transaction is not None:
             # Terminal: retire the old candidate/transaction record before
             # reusing the well-known operation id. A "promoted" generation is
@@ -131,13 +177,25 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(root: Path) -> IndexRebuild
             except (FileNotFoundError, OSError, ValueError):
                 generation = None
             if generation is not None and generation.state == "inactive":
+                _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
                 store.discard_if_inactive(generation)
+            _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
             store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
 
-        return store.create_transaction(
-            source_snapshot=rebuild_source_evidence_snapshot(root),
+        _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+        source_snapshot = rebuild_source_evidence_snapshot(root)
+        transaction = store.create_transaction(
+            source_snapshot=source_snapshot,
             operation_id=DAEMON_BULK_REBUILD_OPERATION_ID,
         )
+        try:
+            _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+            if rebuild_source_evidence_snapshot(root) != source_snapshot:
+                raise RuntimeError("daemon bulk rebuild source evidence changed during transaction creation")
+        except Exception:
+            _discard_daemon_transaction_after_provenance_failure(store, transaction)
+            raise
+        return transaction
     finally:
         owned.release()
 
@@ -151,12 +209,18 @@ def has_resumable_daemon_bulk_rebuild_transaction(root: Path) -> bool:
     threshold -- abandoning a partially-built generation mid-flight would
     waste every page already replayed into it.
     """
-    store = IndexGenerationStore.for_archive_root(root)
-    try:
-        transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
-    except FileNotFoundError:
+    anchor = root / ".index-active-pointer"
+    if not anchor.exists() and not anchor.is_symlink():
         return False
-    except (OSError, ValueError, TypeError, KeyError):
+    try:
+        pointer_target = Path(anchor.read_text(encoding="utf-8").strip())
+        if not pointer_target.is_absolute() or pointer_target.name != "index.db":
+            return False
+        transaction_path = (
+            pointer_target.parent / ".index-rebuild-transactions" / f"{DAEMON_BULK_REBUILD_OPERATION_ID}.json"
+        )
+        transaction = IndexRebuildTransaction(**json.loads(transaction_path.read_text(encoding="utf-8")))
+    except (FileNotFoundError, OSError, ValueError, TypeError, KeyError):
         return False
     return transaction.status not in _TERMINAL_NOT_RESUMABLE
 
@@ -186,14 +250,28 @@ async def run_daemon_bulk_rebuild_pass(
     """
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
     from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+    from polylogue.maintenance.schema_inference_gate import resolve_schema_inference_receipt_reference
 
     root = Path(config.archive_root)
-    transaction = await asyncio.to_thread(resolve_or_start_daemon_bulk_rebuild_transaction, root)
+    receipt_path = resolve_schema_inference_receipt_reference(root)
+    transaction = await asyncio.to_thread(
+        resolve_or_start_daemon_bulk_rebuild_transaction,
+        root,
+        schema_inference_receipt_path=receipt_path,
+    )
     if transaction.status == "promoted":
         return None
 
-    store = IndexGenerationStore.for_archive_root(root)
-    page = await asyncio.to_thread(store.next_raw_page, transaction, limit=batch_size)
+    location = ArchiveLocation.resolve(root)
+    owned = await asyncio.to_thread(OwnedArchiveLocation.acquire, location)
+    try:
+        await asyncio.to_thread(assert_owns_archive_location, owned, location)
+        await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
+        store = IndexGenerationStore(location)
+        await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
+        page = await asyncio.to_thread(store.next_raw_page, transaction, limit=batch_size)
+    finally:
+        owned.release()
     raw_ids = [raw_id for raw_id, _blob_hash_hex, _blob_size in page.rows]
     if raw_ids:
         warmed = await asyncio.to_thread(
@@ -213,6 +291,7 @@ async def run_daemon_bulk_rebuild_pass(
         archive_root=root,
         promote=True,
         operation_id=transaction.operation_id,
+        schema_inference_receipt_path=receipt_path,
         raw_batch_size=batch_size,
         prefetch_cache=parse_stage.cache,
     )
