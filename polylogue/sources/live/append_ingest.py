@@ -100,6 +100,7 @@ def _ingest_append_plans_archive(
             for plan in plans:
                 provider: Provider | None = None
                 raw_id: str | None = None
+                session_artifact = None
                 try:
                     provider = Provider.from_string(plan.source_name)
                     path_artifact = classify_artifact_path(
