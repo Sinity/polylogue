@@ -731,6 +731,7 @@ def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
     root = clone_seeded_archive(artifact, tmp_path / "archive").root
     active_index = root / "index.db"
     active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
 
     from polylogue.maintenance import replay as rebuild_replay
@@ -746,7 +747,7 @@ def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
     monkeypatch.setattr(rebuild_replay, "rebuild_index_from_source", mutate_source_after_replay)
 
     with pytest.raises(RuntimeError, match="source evidence changed while rebuilding"):
-        run_reindex_canary(root, sessions_per_origin=1, no_promote=True)
+        run_reindex_canary(root, schema_inference_receipt_path=receipt_path, sessions_per_origin=1, no_promote=True)
 
     assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
 
@@ -767,10 +768,16 @@ def test_rebuild_rejects_evidence_mutation_in_deadline_interrupted_pass(
         raise RebuildDeadlineExceededError("synthetic deadline")
 
     monkeypatch.setattr(rebuild_replay, "rebuild_index_from_source", mutate_source_then_interrupt)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
 
     with pytest.raises(RuntimeError, match="stale because source evidence changed"):
         rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=root, raw_batch_size=10, pass_deadline_seconds=30.0)
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                raw_batch_size=10,
+                pass_deadline_seconds=30.0,
+            )
         )
 
 
@@ -1002,7 +1009,12 @@ def test_run_reindex_canary_refuses_foreign_input_index_before_rebuild(
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fail_if_rebuild_runs)
 
     with pytest.raises(CanarySelectionError, match="configured archive active generation"):
-        run_reindex_canary(archive_root, input_index=foreign_index, no_promote=True)
+        run_reindex_canary(
+            archive_root,
+            input_index=foreign_index,
+            schema_inference_receipt_path=_receipt_path(tmp_path),
+            no_promote=True,
+        )
 
 
 def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:
