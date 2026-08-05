@@ -24,6 +24,7 @@ from polylogue.paths import cache_home
 from polylogue.schemas.generation.models import _ProfileSummary, _UnitMembership
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.observation_models import ObservationTerminalStatus
+from polylogue.storage.sqlite.connection_profile import OBSERVATION_JOURNAL_CACHE_SIZE_KIB
 
 logger = get_logger(__name__)
 
@@ -257,11 +258,11 @@ class ObservationJournal:
             connection = sqlite3.connect(path)
             connection.row_factory = sqlite3.Row
             connection.executescript(
-                """
+                f"""
                 PRAGMA journal_mode = WAL;
                 PRAGMA synchronous = NORMAL;
                 PRAGMA temp_store = FILE;
-                PRAGMA cache_size = -65536;
+                PRAGMA cache_size = -{OBSERVATION_JOURNAL_CACHE_SIZE_KIB};
 
                 CREATE TABLE journal_meta (
                     format_version INTEGER NOT NULL,

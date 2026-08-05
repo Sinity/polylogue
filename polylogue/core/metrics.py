@@ -14,6 +14,8 @@ from pathlib import Path
 
 from polylogue.core.json import JSONDocument, is_json_value, require_json_value
 
+_CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
+
 
 def _read_proc_status_kb(field_name: str) -> int | None:
     """Read a numeric memory field from ``/proc/self/status`` in KiB."""
@@ -75,11 +77,19 @@ def _cgroup_file(name: str) -> Path | None:
     cgroup_path = read_cgroup_path()
     if cgroup_path is None:
         return None
-    return Path("/sys/fs/cgroup") / cgroup_path.lstrip("/") / name
+    return _CGROUP_V2_ROOT / cgroup_path.lstrip("/") / name
 
 
-def _read_cgroup_int(name: str) -> int | None:
-    path = _cgroup_file(name)
+def _cgroup_limit_files(name: str) -> tuple[Path, ...]:
+    """Return the leaf-to-root cgroup v2 paths for one hierarchical limit."""
+    cgroup_path = read_cgroup_path()
+    if cgroup_path is None:
+        return ()
+    components = tuple(part for part in cgroup_path.split("/") if part)
+    return tuple(_CGROUP_V2_ROOT.joinpath(*components[:depth], name) for depth in range(len(components), -1, -1))
+
+
+def _read_cgroup_int_from_path(path: Path | None) -> int | None:
     if path is None:
         return None
     try:
@@ -92,6 +102,16 @@ def _read_cgroup_int(name: str) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _read_cgroup_int(name: str) -> int | None:
+    return _read_cgroup_int_from_path(_cgroup_file(name))
+
+
+def _read_cgroup_limit_int(name: str) -> int | None:
+    """Return the minimum finite value across this cgroup and its ancestors."""
+    values = [value for path in _cgroup_limit_files(name) if (value := _read_cgroup_int_from_path(path)) is not None]
+    return min(values) if values else None
 
 
 def _bytes_to_mb(value: int | None) -> float | None:
@@ -116,27 +136,28 @@ def read_cgroup_memory_swap_current_mb() -> float | None:
 
 
 def read_cgroup_memory_max_bytes() -> int | None:
-    """Return this cgroup's ``memory.max`` (hard ceiling) in bytes.
+    """Return the effective cgroup hierarchy ``memory.max`` hard ceiling in bytes.
 
-    ``None`` when the cgroup v2 controller is not mounted, the file is
-    missing (no controller delegated, e.g. outside a cgroup or in a
-    container without ``memory`` enabled), or the limit is literally
-    ``max`` (unlimited) -- ``_read_cgroup_int`` already treats ``max`` as
-    ``None``, which is the correct "no ceiling" reading here too.
+    The effective limit is the minimum finite value exposed by the process'
+    cgroup and each ancestor. ``None`` when the cgroup v2 controller is not
+    mounted, no hierarchy file is available, or every visible limit is
+    literally ``max`` (unlimited).
     """
-    return _read_cgroup_int("memory.max")
+    return _read_cgroup_limit_int("memory.max")
 
 
 def read_cgroup_memory_high_bytes() -> int | None:
-    """Return this cgroup's ``memory.high`` (soft throttle threshold) in bytes.
+    """Return the effective cgroup hierarchy ``memory.high`` threshold in bytes.
 
-    ``None`` under the same conditions as :func:`read_cgroup_memory_max_bytes`.
+    The effective threshold is the minimum finite value exposed by the
+    process' cgroup and each ancestor. ``None`` under the same conditions as
+    :func:`read_cgroup_memory_max_bytes`.
     Reclaimable/mmap'd file-backed pages are throttled (evict-under-pressure)
     once usage crosses this threshold, before ``memory.max`` would ever OOM-kill
     -- see ``polylogue.storage.sqlite.connection_profile.mapped_bytes_budget``
     for why this threshold matters independently of the hard ceiling.
     """
-    return _read_cgroup_int("memory.high")
+    return _read_cgroup_limit_int("memory.high")
 
 
 def read_cgroup_memory_stat_mb() -> dict[str, float]:
