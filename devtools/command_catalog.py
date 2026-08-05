@@ -1284,6 +1284,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-authority-artifact-census",
+        "workspace",
+        "Census quarantined raws into artifact, terminal duplicate, novel, missing-byte, and unresolved-authority buckets.",
+        "devtools.raw_authority_artifact_census",
+        use_when=(
+            "Run one full read-only quarantine census through inspect_raw_artifact. The optional --apply is bounded, "
+            "requires a verified source-tier backup, and only upserts raw_artifacts observations; it never changes "
+            "raw revision authority, index rows, or blobs."
+        ),
+        examples=(
+            "devtools workspace raw-authority-artifact-census --json --receipt /realm/tmp/work/raw-census.json",
+            "devtools workspace raw-authority-artifact-census --apply --backup-manifest /path/to/manifest.json --json",
+        ),
+    ),
+    CommandSpec(
         "workspace binary-artifact-reclassify-apply",
         "workspace",
         "Persist raw_artifacts classification for binary-shaped raw rows.",

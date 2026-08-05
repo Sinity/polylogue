@@ -302,6 +302,7 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local-verification receipt + no late review comments. |
 | `devtools workspace pr-scope` | Render and validate the versioned PR Bead-scope carrier. |
 | `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |
+| `devtools workspace raw-authority-artifact-census` | Census quarantined raws into artifact, terminal duplicate, novel, missing-byte, and unresolved-authority buckets. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |

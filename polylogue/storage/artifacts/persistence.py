@@ -33,6 +33,21 @@ def _upsert_artifact_observation(
     return exists is None
 
 
+def upsert_artifact_observations(
+    conn: sqlite3.Connection,
+    records: Sequence[ArtifactObservationRecord],
+) -> int:
+    """Upsert a caller-selected observation batch without committing.
+
+    The raw-authority census uses this narrow primitive so its apply path can
+    hold one source-tier transaction and prove that no raw authority or blob
+    relation was touched. Callers own transaction boundaries.
+    """
+    for record in records:
+        _upsert_artifact_observation(conn, record)
+    return len(records)
+
+
 def materialize_artifact_observations(
     conn: sqlite3.Connection,
 ) -> list[ArtifactObservationRecord]:
@@ -115,4 +130,5 @@ __all__ = [
     "ensure_artifact_observations",
     "materialize_artifact_observations",
     "materialize_artifact_observations_for_raw_ids",
+    "upsert_artifact_observations",
 ]
