@@ -31,6 +31,7 @@ Two claims this file proves:
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -176,7 +177,7 @@ def test_resolve_or_start_creates_resumes_and_retires_transaction(
 ) -> None:
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     _seed_corpus(tmp_path, count=2)
-    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path / "receipt.json")
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
     store = IndexGenerationStore.for_archive_root(tmp_path)
 
     assert has_resumable_daemon_bulk_rebuild_transaction(tmp_path) is False
@@ -204,6 +205,62 @@ def test_resolve_or_start_creates_resumes_and_retires_transaction(
     assert restarted.processed_raw_count == 0
 
 
+@pytest.mark.parametrize("cleanup_failure", ["false", "exception"], ids=["discard-false", "discard-exception"])
+def test_daemon_post_create_cleanup_surfaces_candidate_and_transaction_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup_failure: str
+) -> None:
+    """Daemon provenance cleanup cannot hide failed discard actuators."""
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    _seed_corpus(tmp_path, count=2)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
+    original_create_transaction = IndexGenerationStore.create_transaction
+
+    def expire_after_create(
+        store: IndexGenerationStore,
+        *,
+        source_snapshot: str,
+        operation_id: str | None = None,
+        pass_byte_budget: int | None = None,
+        pass_deadline_ms: int | None = None,
+    ) -> object:
+        transaction = original_create_transaction(
+            store,
+            source_snapshot=source_snapshot,
+            operation_id=operation_id,
+            pass_byte_budget=pass_byte_budget,
+            pass_deadline_ms=pass_deadline_ms,
+        )
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["generated_at"] = "2000-01-01T00:00:00Z"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        return transaction
+
+    monkeypatch.setattr(IndexGenerationStore, "create_transaction", expire_after_create)
+
+    def failed_discard(*args: object, **kwargs: object) -> bool:
+        if cleanup_failure == "exception":
+            raise OSError("synthetic daemon cleanup failure")
+        return False
+
+    monkeypatch.setattr(IndexGenerationStore, "discard_if_inactive", failed_discard)
+    monkeypatch.setattr(IndexGenerationStore, "discard_transaction", failed_discard)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed") as raised:
+        resolve_or_start_daemon_bulk_rebuild_transaction(
+            tmp_path,
+            schema_inference_receipt_path=receipt_path,
+        )
+
+    notes = "\n".join(getattr(raised.value, "__notes__", ()))
+    assert "daemon bulk-rebuild transaction cleanup also failed" in notes
+    assert "candidate" in notes
+    assert "transaction" in notes
+    expected_detail = "synthetic daemon cleanup failure" if cleanup_failure == "exception" else "was not discarded"
+    assert expected_detail in notes
+    assert list((tmp_path / ".index-generations").glob("gen-*"))
+    assert list((tmp_path / ".index-rebuild-transactions").glob("*.json"))
+
+
 def test_daemon_bulk_pass_uses_rebuild_evidence_snapshot_before_replay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -219,7 +276,7 @@ def test_daemon_bulk_pass_uses_rebuild_evidence_snapshot_before_replay(
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     _seed_corpus(tmp_path, count=2)
-    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path / "receipt.json")
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     evidence_snapshot = rebuild_source_evidence_snapshot(tmp_path)
     full_row_snapshot = source_revision_snapshot(tmp_path)
@@ -264,7 +321,7 @@ def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     _seed_corpus(tmp_path)
-    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path / "receipt.json")
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     receipts = asyncio.run(_drive_daemon_bulk_rebuild_to_promotion(tmp_path, batch_size=2))
 
@@ -293,7 +350,7 @@ def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(
 def test_daemon_bulk_rebuild_pass_next_page_excludes_already_scheduled_raws(tmp_path: Path) -> None:
     """Direct proof that a later page never reselects an earlier page's raws."""
     _seed_corpus(tmp_path)
-    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path / "receipt.json")
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
     store = IndexGenerationStore.for_archive_root(tmp_path)
     transaction = resolve_or_start_daemon_bulk_rebuild_transaction(tmp_path, schema_inference_receipt_path=receipt_path)
 

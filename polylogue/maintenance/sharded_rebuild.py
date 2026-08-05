@@ -404,8 +404,10 @@ def merge_shards_into_target(
                 )
         finally:
             for alias in attached:
-                with contextlib.suppress(sqlite3.Error):
+                try:
                     conn.execute(f"DETACH DATABASE {alias}")
+                except sqlite3.Error as exc:
+                    raise RuntimeError(f"sharded rebuild failed to detach {alias}") from exc
         conn.execute("PRAGMA foreign_keys = ON")
         conn.commit()
     return row_counts

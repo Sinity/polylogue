@@ -551,25 +551,17 @@ def _parse_receipt_datetime(value: object, *, field: str) -> datetime:
 
 
 def rebuild_source_revision_snapshot(archive_root: Path) -> str:
-    """Hash immutable source-row revision fields used by a derived rebuild."""
+    """Return the exact canonical source proof consumed by rebuild execution.
 
-    digest = hashlib.sha256()
-    source_path = Path(archive_root) / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
-    with open_readonly_connection(source_path) as source:
-        for row in source.execute(
-            """
-            SELECT raw_id, origin, native_id, source_path,
-                   acquired_at_ms, blob_hash, blob_size, validation_status
-            FROM raw_sessions
-            ORDER BY raw_id
-            """
-        ):
-            for value in row:
-                encoded = value.hex() if isinstance(value, bytes) else str(value)
-                digest.update(encoded.encode("utf-8"))
-                digest.update(b"\0")
-            digest.update(b"\n")
-    return digest.hexdigest()
+    Receipt production and rebuild execution must commit to one snapshot
+    function. The shared evidence snapshot includes every durable input that
+    can affect parsing, including capture mode/index, file metadata, blob
+    references, and capture observations. Keeping this adapter name preserves
+    the schema-gate API while removing the old, narrower receipt-only digest.
+    """
+    from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
+
+    return rebuild_source_evidence_snapshot(Path(archive_root))
 
 
 def _canonical_external_ground_truth_digest(origins: Mapping[str, object]) -> str:

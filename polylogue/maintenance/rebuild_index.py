@@ -190,6 +190,29 @@ def _add_cleanup_failure_notes(primary: BaseException, errors: list[BaseExceptio
         primary.add_note(f"{label} cleanup also failed: {detail}")
 
 
+def _cleanup_nonresumable_generation_failure(
+    generation_store: IndexGenerationStore,
+    generation: IndexGeneration,
+    *,
+    root: Path,
+    receipt_path: Path | None,
+    consumed_evidence: dict[str, object],
+    primary: BaseException,
+) -> None:
+    """Retire a one-shot candidate and expose every discard outcome."""
+    cleanup_context = RebuildProvenanceContext(
+        root=root,
+        receipt_path=receipt_path,
+        source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
+        consumed_evidence=consumed_evidence,
+    )
+    try:
+        cleanup_errors = _discard_generation_after_provenance_failure(generation_store, generation, cleanup_context)
+    except BaseException as cleanup_error:
+        cleanup_errors = [cleanup_error]
+    _add_cleanup_failure_notes(primary, cleanup_errors, label="nonresumable rebuild")
+
+
 def _create_rebuild_transaction_after_receipt_validation(
     generation_store: IndexGenerationStore,
     request: RebuildIndexRequest,
@@ -1215,14 +1238,26 @@ async def _rebuild_index_from_source_owned(
             )
             precreate_provenance.validate()
             generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
-        selection_evidence = rebuild_selection_evidence(
-            selected_raw_ids,
-            archive_root=root,
-            generation_id=generation.generation_id,
-            generation_owner_id=generation.owner_id,
-            candidate_index=Path(generation.index_path),
-            source_snapshot=generation.source_snapshot,
-        )
+        try:
+            selection_evidence = rebuild_selection_evidence(
+                selected_raw_ids,
+                archive_root=root,
+                generation_id=generation.generation_id,
+                generation_owner_id=generation.owner_id,
+                candidate_index=Path(generation.index_path),
+                source_snapshot=generation.source_snapshot,
+            )
+        except BaseException as exc:
+            if transaction is None:
+                _cleanup_nonresumable_generation_failure(
+                    generation_store,
+                    generation,
+                    root=root,
+                    receipt_path=request.schema_inference_receipt_path,
+                    consumed_evidence=consumed_evidence,
+                    primary=exc,
+                )
+            raise
         provenance = RebuildProvenanceContext(
             root=root,
             receipt_path=request.schema_inference_receipt_path,
@@ -1749,7 +1784,7 @@ async def _rebuild_index_from_source_owned(
                     )
                 _add_cleanup_failure_notes(exc, cleanup_errors, label="rebuild provenance")
             elif transaction is not None and not source_drifted:
-                with contextlib.suppress(Exception):
+                try:
                     # A process can fail after ``checkpoint_transaction`` has
                     # atomically published the output batch but before this
                     # frame receives its returned replacement object.  Never
@@ -1764,50 +1799,69 @@ async def _rebuild_index_from_source_owned(
                         status="failed",
                         error="bounded rebuild pass failed; candidate retained for diagnosis or explicit recovery",
                     )
-            else:
-                with contextlib.suppress(Exception):
-                    try:
-                        provenance.validate()
-                    except Exception:
-                        provenance.validate_cleanup()
-                    generation_store.discard_if_inactive(generation)
+                except BaseException as checkpoint_error:
+                    exc.add_note(
+                        "resumable rebuild failure-state checkpoint also failed: "
+                        f"{type(checkpoint_error).__name__}: {checkpoint_error}"
+                    )
+            elif transaction is None:
+                _cleanup_nonresumable_generation_failure(
+                    generation_store,
+                    generation,
+                    root=root,
+                    receipt_path=request.schema_inference_receipt_path,
+                    consumed_evidence=consumed_evidence,
+                    primary=exc,
+                )
             raise
-    final_receipt = RebuildIndexReceipt(
-        archive_root=str(root),
-        raw_session_count=raw_count,
-        selected_raw_count=selected_raw_count,
-        skipped_by_blob_limit_count=skipped_by_blob_limit_count,
-        status="replayed",
-        materialized=True,
-        materialization=cast(dict[str, object], insight_result.to_dict()),
-        generation=cast(dict[str, object], asdict(generation)),
-        readiness=cast(dict[str, object], readiness),
-        replay=replay,
-        transaction=cast(dict[str, object], asdict(transaction)) if transaction is not None else None,
-        operation=_operation_evidence(
-            root,
-            generation=generation,
-            transaction=transaction,
-            recovery_state="promoted" if request.promote else "ready",
-        ),
-        selection_evidence=selection_evidence,
-        source_evidence_after=source_evidence_after,
-        timings_s=_receipt_timings(
-            selection_s=selection_elapsed_s,
+    try:
+        final_receipt = RebuildIndexReceipt(
+            archive_root=str(root),
+            raw_session_count=raw_count,
+            selected_raw_count=selected_raw_count,
+            skipped_by_blob_limit_count=skipped_by_blob_limit_count,
+            status="replayed",
+            materialized=True,
+            materialization=cast(dict[str, object], insight_result.to_dict()),
+            generation=cast(dict[str, object], asdict(generation)),
+            readiness=cast(dict[str, object], readiness),
             replay=replay,
-            terminal_timings_s=terminal_timings_s,
-        ),
-        consumed_evidence=consumed_evidence,
-    )
-    _persist_candidate_receipt(generation, final_receipt.to_dict())
-    if transaction is not None:
-        _save_rebuild_pass_receipt_after_receipt_validation(
-            generation_store,
-            transaction.operation_id,
-            final_receipt,
-            root,
-            request.schema_inference_receipt_path,
+            transaction=cast(dict[str, object], asdict(transaction)) if transaction is not None else None,
+            operation=_operation_evidence(
+                root,
+                generation=generation,
+                transaction=transaction,
+                recovery_state="promoted" if request.promote else "ready",
+            ),
+            selection_evidence=selection_evidence,
+            source_evidence_after=source_evidence_after,
+            timings_s=_receipt_timings(
+                selection_s=selection_elapsed_s,
+                replay=replay,
+                terminal_timings_s=terminal_timings_s,
+            ),
+            consumed_evidence=consumed_evidence,
         )
+        _persist_candidate_receipt(generation, final_receipt.to_dict())
+        if transaction is not None:
+            _save_rebuild_pass_receipt_after_receipt_validation(
+                generation_store,
+                transaction.operation_id,
+                final_receipt,
+                root,
+                request.schema_inference_receipt_path,
+            )
+    except BaseException as exc:
+        if transaction is None:
+            _cleanup_nonresumable_generation_failure(
+                generation_store,
+                generation,
+                root=root,
+                receipt_path=request.schema_inference_receipt_path,
+                consumed_evidence=consumed_evidence,
+                primary=exc,
+            )
+        raise
     return final_receipt
 
 

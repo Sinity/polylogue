@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -342,6 +343,17 @@ def test_sharded_route_cleans_every_sibling_after_post_graph_failure(
     discard_calls: list[str] = []
     repopulate_calls: list[Path] = []
     insight_calls: list[object] = []
+    source_write_lock = threading.Lock()
+
+    from polylogue.sources import revision_backfill as revision_backfill_module
+
+    original_backfill = cast(Any, revision_backfill_module.backfill_historical_revision_evidence)
+
+    def serialize_backfill(*args: object, **kwargs: object) -> object:
+        with source_write_lock:
+            return original_backfill(*args, **kwargs)
+
+    monkeypatch.setattr(revision_backfill_module, "backfill_historical_revision_evidence", serialize_backfill)
 
     def record_create(
         store: IndexGenerationStore, *, owner_id: str | None = None, source_snapshot: str

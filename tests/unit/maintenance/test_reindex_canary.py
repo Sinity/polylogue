@@ -574,6 +574,49 @@ def test_run_reindex_canary_rejects_missing_receipt_even_with_ambient_valid_rece
         run_reindex_canary(root, schema_inference_receipt_path=None, sessions_per_origin=1, no_promote=True)
 
 
+def test_run_reindex_canary_cleans_candidate_after_comparison_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-rebuild canary failure cannot strand its inactive candidate."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+
+    def fail_compare(*args: object, **kwargs: object) -> CanaryDiffReport:
+        raise RuntimeError("synthetic canary comparison failure")
+
+    monkeypatch.setattr(reindex_canary_module, "compare_reindex_generations", fail_compare)
+
+    with pytest.raises(RuntimeError, match="synthetic canary comparison failure"):
+        run_reindex_canary(
+            root,
+            schema_inference_receipt_path=receipt_path,
+            sessions_per_origin=1,
+            no_promote=True,
+        )
+
+    assert not list((root / ".index-generations").glob("gen-*"))
+
+
+def test_run_reindex_canary_clean_success_retains_a_valid_inactive_candidate(tmp_path: Path) -> None:
+    """A successful canary returns the candidate for its comparison evidence."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+
+    result = run_reindex_canary(
+        root,
+        schema_inference_receipt_path=receipt_path,
+        sessions_per_origin=1,
+        no_promote=True,
+    )
+
+    generation = result.rebuild_receipt["generation"]
+    assert isinstance(generation, dict)
+    assert generation["state"] == "inactive"
+    assert Path(str(generation["index_path"])).is_file()
+
+
 def test_run_reindex_canary_rejects_input_index_outside_archive_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -750,7 +793,7 @@ def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
 
     monkeypatch.setattr(rebuild_replay, "rebuild_index_from_source", mutate_source_after_replay)
 
-    with pytest.raises(RuntimeError, match="source evidence changed while rebuilding"):
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
         run_reindex_canary(root, schema_inference_receipt_path=receipt_path, sessions_per_origin=1, no_promote=True)
 
     assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest

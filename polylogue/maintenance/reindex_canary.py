@@ -15,7 +15,6 @@ import sqlite3
 import tempfile
 from collections import Counter
 from collections.abc import Iterable
-from contextlib import suppress
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from hashlib import sha256
@@ -345,31 +344,70 @@ def run_reindex_canary(
         )
     )
     try:
-        active_after_rebuild = ArchiveLocation.resolve(root).active_index
-        selected_active_index = TierFileIdentity.resolve("index", current_index)
-        if not active_after_rebuild.same_file(selected_active_index):
-            raise CanarySelectionError("canary active index changed during rebuild")
-    except OSError as exc:
-        raise CanarySelectionError("canary active index could not be revalidated after rebuild") from exc
-    receipt_payload = receipt.to_dict()
-    _validate_selection_evidence(receipt_payload, selection.selected_raw_ids)
-    candidate_path = _validate_canary_candidate(
-        root,
-        current_index=current_index,
-        selection=selection,
-        receipt=receipt,
-    )
-    _validate_authoritative_rebuild_receipt(receipt_payload, candidate_path)
-    comparison = compare_reindex_generations(
-        current_index,
-        candidate_path,
-        session_ids=selection.selected_session_ids,
-    )
+        try:
+            active_after_rebuild = ArchiveLocation.resolve(root).active_index
+            selected_active_index = TierFileIdentity.resolve("index", current_index)
+            if not active_after_rebuild.same_file(selected_active_index):
+                raise CanarySelectionError("canary active index changed during rebuild")
+        except OSError as exc:
+            raise CanarySelectionError("canary active index could not be revalidated after rebuild") from exc
+        receipt_payload = receipt.to_dict()
+        _validate_selection_evidence(receipt_payload, selection.selected_raw_ids)
+        candidate_path = _validate_canary_candidate(
+            root,
+            current_index=current_index,
+            selection=selection,
+            receipt=receipt,
+        )
+        _validate_authoritative_rebuild_receipt(receipt_payload, candidate_path)
+        comparison = compare_reindex_generations(
+            current_index,
+            candidate_path,
+            session_ids=selection.selected_session_ids,
+        )
+    except BaseException as exc:
+        cleanup_errors = _discard_canary_candidate(root, receipt)
+        _add_canary_cleanup_notes(exc, cleanup_errors)
+        raise
     return CanaryRunResult(
         selection=selection,
         comparison=comparison,
         rebuild_receipt=receipt_payload,
     )
+
+
+def _discard_canary_candidate(archive_root: Path, receipt: object) -> list[BaseException]:
+    """Discard the inactive canary candidate after a post-rebuild failure."""
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    errors: list[BaseException] = []
+    generation = getattr(receipt, "generation", None)
+    if not isinstance(generation, dict):
+        return [RuntimeError("canary receipt did not identify a candidate for cleanup")]
+    generation_id = generation.get("generation_id")
+    if not isinstance(generation_id, str) or not generation_id:
+        return [RuntimeError("canary receipt candidate generation id is missing")]
+    store = IndexGenerationStore(ArchiveLocation.resolve(archive_root))
+    try:
+        candidate = store.load(generation_id)
+    except BaseException as exc:
+        return [exc]
+    if candidate.state != "inactive":
+        return [RuntimeError(f"canary candidate {generation_id} is not inactive")]
+    try:
+        if not store.discard_if_inactive(candidate):
+            errors.append(RuntimeError(f"canary candidate {generation_id} was not discarded"))
+    except BaseException as exc:
+        errors.append(exc)
+    return errors
+
+
+def _add_canary_cleanup_notes(primary: BaseException, errors: list[BaseException]) -> None:
+    """Surface candidate cleanup failures without hiding the route failure."""
+    if errors:
+        detail = "; ".join(f"{type(error).__name__}: {error}" for error in errors)
+        primary.add_note(f"canary candidate cleanup also failed: {detail}")
 
 
 def _resolve_canary_input_index(archive_root: Path, input_index: Path | None) -> Path:
@@ -636,10 +674,14 @@ def write_canary_report(
         os.replace(temporary, path)
         temporary = None
         _fsync_directory(path.parent)
-    except BaseException:
+    except BaseException as exc:
         if temporary is not None:
-            with suppress(OSError):
+            try:
                 temporary.unlink()
+            except BaseException as cleanup_error:
+                exc.add_note(
+                    f"canary report temporary-file cleanup also failed: {type(cleanup_error).__name__}: {cleanup_error}"
+                )
         raise
     return durable
 

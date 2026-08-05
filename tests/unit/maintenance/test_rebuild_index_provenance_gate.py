@@ -81,6 +81,11 @@ def _same_shard_raw_ids(root: Path) -> tuple[str, ...]:
     return tuple(next(bucket for bucket in shard_raw_ids(root, raw_ids, 2) if len(bucket) >= 2))
 
 
+def _raw_ids(root: Path) -> tuple[str, ...]:
+    with sqlite3.connect(root / "source.db") as conn:
+        return tuple(str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id"))
+
+
 def _interpose_receipt_mutation(monkeypatch: pytest.MonkeyPatch, receipt_path: Path, *, expire: bool) -> None:
     original_acquire = OwnedArchiveLocation.acquire
 
@@ -502,6 +507,103 @@ def test_full_source_provenance_cleanup_reports_failed_discards(
     notes = "\n".join(raised.value.__notes__ or ())
     assert "rebuild transaction cleanup also failed" in notes
     assert "was not discarded" in notes
+
+
+@pytest.mark.parametrize("failure_kind", ["replay", "readiness"], ids=["replay-failure", "readiness-failure"])
+def test_nonresumable_failure_discards_inactive_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str
+) -> None:
+    """One-shot rebuild failures cannot leave an inactive candidate behind.
+
+    Anti-vacuity: both cases enter the production nonresumable raw-id route and
+    create a real SQLite generation. The replay case fails inside the real
+    replay call, while the readiness case completes replay and fails at the
+    terminal readiness gate. Removing the explicit cleanup leaves ``gen-*``
+    metadata behind.
+    """
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    if failure_kind == "replay":
+
+        async def fail_replay(*args: Any, **kwargs: Any) -> dict[str, object]:
+            raise RuntimeError("synthetic nonresumable replay failure")
+
+        monkeypatch.setattr("polylogue.maintenance.replay.rebuild_index_from_source", fail_replay)
+        expected = "synthetic nonresumable replay failure"
+    else:
+        monkeypatch.setattr(
+            "polylogue.storage.archive_readiness.archive_readiness_status",
+            lambda root: {
+                "checked": True,
+                "blocked_surface_count": 1,
+                "surfaces": {"synthetic": {"ready": False}},
+            },
+        )
+        expected = "is not exact-ready"
+
+    with pytest.raises(RuntimeError, match=expected):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                raw_ids=_raw_ids(root),
+                promote=False,
+                schema_inference_receipt_path=receipt_path,
+            )
+        )
+
+    assert _generation_ids(root) == set()
+
+
+def test_capture_evidence_mutation_after_receipt_rejects_before_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Capture evidence drift after receipt production cannot be promoted.
+
+    Anti-vacuity: the real full-source promote route replays into an inactive
+    generation before the patched production replay boundary mutates capture
+    mode, capture index, file metadata, and capture observations in source.db.
+    The canonical source-evidence snapshot rejects the candidate before the
+    activation swap and cleans its transaction and generation.
+    """
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    active_before = _active_bytes(root)
+    from polylogue.maintenance import replay as replay_module
+
+    real_replay = cast(Callable[..., Any], replay_module.rebuild_index_from_source)
+
+    async def mutate_capture_evidence(*args: object, **kwargs: object) -> dict[str, object]:
+        replay = await real_replay(*args, **kwargs)
+        with sqlite3.connect(root / "source.db") as conn:
+            raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id LIMIT 1").fetchone()[0])
+            conn.execute(
+                "UPDATE raw_sessions SET capture_mode = 'gemini', source_index = source_index + 1, "
+                "file_mtime_ms = COALESCE(file_mtime_ms, 0) + 1 WHERE raw_id = ?",
+                (raw_id,),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO raw_capture_observations "
+                "(raw_id, capture_mode, first_observed_at_ms) VALUES (?, 'gemini', 999999)",
+                (raw_id,),
+            )
+        return cast(dict[str, object], replay)
+
+    monkeypatch.setattr(replay_module, "rebuild_index_from_source", mutate_capture_evidence)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                promote=True,
+                schema_inference_receipt_path=receipt_path,
+            )
+        )
+
+    assert _active_bytes(root) == active_before
+    assert _generation_ids(root) == set()
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
 
 
 def test_sharded_graph_drift_blocks_derived_stages_and_cleans_resumable_state(

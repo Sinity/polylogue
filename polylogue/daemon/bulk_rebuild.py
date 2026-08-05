@@ -74,25 +74,54 @@ def _validate_rebuild_provenance_receipt(root: Path, receipt_path: Path | None) 
 
 def _discard_daemon_transaction_after_provenance_failure(
     store: IndexGenerationStore, transaction: IndexRebuildTransaction
-) -> None:
-    """Best-effort cleanup after a post-create provenance failure.
+) -> list[BaseException]:
+    """Attempt candidate and transaction cleanup independently.
 
     The caller still owns the archive location. Cleanup does not consume source
     evidence, so it must remain available even when the receipt that authorized
     candidate creation has just expired or the source snapshot has drifted.
     Each record is retired independently so one failed cleanup step cannot
-    strand the other record.
+    prevent the other record from being attempted. False return values are
+    failures too: a daemon cleanup path must never silently strand an inactive
+    candidate.
     """
+    errors: list[BaseException] = []
     try:
         generation = store.load(transaction.generation_id)
-        if generation.state == "inactive":
-            store.discard_if_inactive(generation)
-    except Exception:
-        logger.warning("bulk-rebuild: failed to discard post-validation candidate", exc_info=True)
+        if generation.state != "inactive":
+            errors.append(RuntimeError(f"candidate {generation.generation_id} is not inactive"))
+        elif not store.discard_if_inactive(generation):
+            errors.append(RuntimeError(f"candidate {generation.generation_id} was not discarded"))
+    except BaseException as exc:
+        logger.error("bulk-rebuild: candidate discard raised", exc_info=True)
+        cleanup_error = RuntimeError(f"candidate {transaction.generation_id} discard failed: {exc}")
+        cleanup_error.__cause__ = exc
+        errors.append(cleanup_error)
     try:
-        store.discard_transaction(transaction.operation_id)
-    except Exception:
-        logger.warning("bulk-rebuild: failed to discard post-validation transaction", exc_info=True)
+        if not store.discard_transaction(transaction.operation_id):
+            errors.append(RuntimeError(f"transaction {transaction.operation_id} was not discarded"))
+    except BaseException as exc:
+        logger.error("bulk-rebuild: transaction discard raised", exc_info=True)
+        cleanup_error = RuntimeError(f"transaction {transaction.operation_id} discard failed: {exc}")
+        cleanup_error.__cause__ = exc
+        errors.append(cleanup_error)
+    return errors
+
+
+def _surface_daemon_cleanup_failures(
+    primary: BaseException, cleanup_errors: list[BaseException], *, label: str
+) -> None:
+    """Keep the primary failure while surfacing every cleanup outcome."""
+    if cleanup_errors:
+        detail = "; ".join(f"{type(error).__name__}: {error}" for error in cleanup_errors)
+        primary.add_note(f"{label} cleanup also failed: {detail}")
+
+
+def _raise_daemon_cleanup_failures(cleanup_errors: list[BaseException], *, label: str) -> None:
+    """Raise when terminal daemon cleanup itself is the primary failure."""
+    if cleanup_errors:
+        detail = "; ".join(f"{type(error).__name__}: {error}" for error in cleanup_errors)
+        raise RuntimeError(f"{label} cleanup failed: {detail}") from cleanup_errors[0]
 
 
 #: Fixed operation id for the daemon's own bulk-rebuild transaction. Exactly
@@ -172,15 +201,36 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
             # reusing the well-known operation id. A "promoted" generation is
             # already the active index (nothing to discard); "stale"/"failed"
             # candidates are still inactive and safe to discard.
+            cleanup_errors: list[BaseException] = []
+            if transaction.status != "promoted":
+                try:
+                    generation = store.load(transaction.generation_id)
+                except BaseException as exc:
+                    logger.error("bulk-rebuild: terminal candidate load failed", exc_info=True)
+                    cleanup_errors.append(exc)
+                else:
+                    if generation.state != "inactive":
+                        cleanup_errors.append(RuntimeError(f"candidate {generation.generation_id} is not inactive"))
+                    else:
+                        try:
+                            if not store.discard_if_inactive(generation):
+                                cleanup_errors.append(
+                                    RuntimeError(f"candidate {generation.generation_id} was not discarded")
+                                )
+                        except BaseException as exc:
+                            logger.error("bulk-rebuild: terminal candidate discard raised", exc_info=True)
+                            cleanup_error = RuntimeError(f"candidate {generation.generation_id} discard failed: {exc}")
+                            cleanup_error.__cause__ = exc
+                            cleanup_errors.append(cleanup_error)
             try:
-                generation = store.load(transaction.generation_id)
-            except (FileNotFoundError, OSError, ValueError):
-                generation = None
-            if generation is not None and generation.state == "inactive":
-                _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
-                store.discard_if_inactive(generation)
-            _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
-            store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
+                if not store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID):
+                    cleanup_errors.append(
+                        RuntimeError(f"transaction {DAEMON_BULK_REBUILD_OPERATION_ID} was not discarded")
+                    )
+            except BaseException as exc:
+                logger.error("bulk-rebuild: terminal transaction discard failed", exc_info=True)
+                cleanup_errors.append(exc)
+            _raise_daemon_cleanup_failures(cleanup_errors, label="daemon bulk-rebuild terminal")
 
         _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
         source_snapshot = rebuild_source_evidence_snapshot(root)
@@ -192,8 +242,9 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
             _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
             if rebuild_source_evidence_snapshot(root) != source_snapshot:
                 raise RuntimeError("daemon bulk rebuild source evidence changed during transaction creation")
-        except Exception:
-            _discard_daemon_transaction_after_provenance_failure(store, transaction)
+        except BaseException as exc:
+            cleanup_errors = _discard_daemon_transaction_after_provenance_failure(store, transaction)
+            _surface_daemon_cleanup_failures(exc, cleanup_errors, label="daemon bulk-rebuild transaction")
             raise
         return transaction
     finally:
