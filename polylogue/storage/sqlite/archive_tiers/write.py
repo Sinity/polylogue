@@ -683,11 +683,7 @@ def write_parsed_session_to_archive(
             projection_carry_forward: _ProjectionCarryForward | None = None
             t0 = time.perf_counter()
             if merge_append:
-                row = conn.execute(
-                    "SELECT COALESCE(MAX(position) + 1, 0) FROM messages WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
-                position_offset = int(row[0] or 0) if row is not None else 0
+                position_offset = _next_message_position(conn, session_id)
                 _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
                 conn.execute(
                     """
@@ -3365,6 +3361,15 @@ def _attachment_message_id_maps(
         if message.position is not None
     }
     return by_native_message_id, by_message_position
+
+
+def _next_message_position(conn: sqlite3.Connection, session_id: str) -> int:
+    """Return the position offset used when appending messages to a session."""
+    row = conn.execute(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM messages WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
 
 
 def _write_attachments(
@@ -6473,29 +6478,38 @@ def _message_id(
 
 
 def _duplicate_message_native_ids(messages: Iterable[ParsedMessage]) -> frozenset[str]:
-    """Native ids that collide once normalized the same way ``messages.native_id`` stores them.
+    """Native ids that collide after the same normalization ``messages.native_id`` stores.
 
-    Counts by the surrogate-substituted (``_sqlite_text``) form, not the raw
-    provider string, so two distinct raw ids that collapse onto the same
-    U+FFFD-substituted text are treated as ambiguous too -- otherwise the
-    ``messages`` UNIQUE generated ``message_id`` column would silently
-    resolve the collision via ``INSERT OR REPLACE`` (one message vanishes)
-    while Python-side code still believed both had distinct identities.
+    Counts by the stripped, surrogate-substituted (``_sqlite_text``) form,
+    not the raw provider string, so whitespace variants and two distinct raw
+    ids that collapse onto the same U+FFFD-substituted text are treated as
+    ambiguous too. Otherwise the ``messages`` UNIQUE generated ``message_id``
+    column would silently resolve the collision via ``INSERT OR REPLACE`` (one
+    message vanishes) while Python-side code still believed both had distinct
+    identities.
     """
     counts = Counter(
-        normalized for message in messages if (normalized := _sqlite_text(message.provider_message_id)) is not None
+        normalized for message in messages if (normalized := _normalized_message_native_id(message)) is not None
     )
     return frozenset(native_id for native_id, count in counts.items() if count > 1)
 
 
+def _normalized_message_native_id(message: ParsedMessage) -> str | None:
+    native_id = _sqlite_text(message.provider_message_id)
+    if native_id is None:
+        return None
+    stripped = native_id.strip()
+    return stripped or None
+
+
 def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: frozenset[str]) -> str | None:
-    """Return the surrogate-normalized native id, or ``None`` if ambiguous.
+    """Return the storage-normalized native id, or ``None`` if ambiguous.
 
     ``duplicate_native_ids`` (from ``_duplicate_message_native_ids``) is keyed
-    by the same surrogate-substituted form computed here, so membership is
-    always compared apples-to-apples.
+    by the same stripped, surrogate-substituted form computed here, so
+    membership is always compared apples-to-apples.
     """
-    native_id = _sqlite_text(message.provider_message_id)
+    native_id = _normalized_message_native_id(message)
     if native_id in duplicate_native_ids:
         return None
     return native_id

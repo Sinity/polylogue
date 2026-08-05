@@ -102,6 +102,8 @@ def _mapping_fixture(
     *,
     messages: list[ParsedMessage],
     attachment: ParsedAttachment,
+    append_only: bool = False,
+    existing_messages: list[ParsedMessage] | None = None,
 ) -> tuple[Path, str, str, RawSessionParser]:
     """Build a real closure archive with a parser result for one session."""
     root = tmp_path
@@ -125,10 +127,19 @@ def _mapping_fixture(
         attachments=[attachment],
     )
     attachment_hash, attachment_size = blob_store.write_from_bytes(attachment.inline_bytes or b"")
+    if append_only:
+        if existing_messages is None:
+            raise AssertionError("append fixtures require existing messages")
+        write_parsed_session_to_archive(
+            index,
+            session.model_copy(update={"messages": existing_messages, "attachments": []}),
+            raw_id="raw-mapping-base",
+        )
     session_id = write_parsed_session_to_archive(
         index,
         session,
         raw_id="raw-mapping",
+        merge_append=append_only,
         preacquired_attachment_blobs={id(attachment): (bytes.fromhex(attachment_hash), attachment_size, "acquired")},
     )
     attachment_id = str(index.execute("SELECT attachment_id FROM attachments").fetchone()[0])
@@ -146,6 +157,7 @@ def _mapping_fixture(
                     session_id=session_id,
                     content_hash="mapping-fixture",
                     parsed_session=session,
+                    append_only=append_only,
                 )
             ],
         )
@@ -214,13 +226,45 @@ def test_closure_repairs_idless_attachment_by_authoritative_message_position(
     assert ref == (f"{session_id}:second",)
 
 
-def test_closure_does_not_use_duplicate_native_id_for_attachment_owner(
+def test_closure_repairs_idless_append_attachment_with_production_position_offset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attachment = ParsedAttachment(
+        provider_attachment_id="append-position",
+        message_position=0,
+        name="append.txt",
+        mime_type="text/plain",
+        size_bytes=6,
+        inline_bytes=b"append",
+    )
+    root, session_id, attachment_id, parser = _mapping_fixture(
+        tmp_path,
+        messages=[ParsedMessage(provider_message_id="appended", role=Role.ASSISTANT, text="appended", position=0)],
+        existing_messages=[ParsedMessage(provider_message_id="older", role=Role.USER, text="older", position=0)],
+        attachment=attachment,
+        append_only=True,
+    )
+
+    dry = reconcile_blob_reference_closure(root, raw_session_parser=parser)
+    assert dry.plan.attachment_candidates[0].message_id == f"{session_id}:appended"
+    assert dry.plan.attachment_candidates[0].message_id != f"{session_id}:older"
+
+    _apply_mapping_fixture(monkeypatch, root, parser)
+    with sqlite3.connect(root / "index.db") as conn:
+        ref = conn.execute(
+            "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
+        ).fetchone()
+    assert ref == (f"{session_id}:appended",)
+    assert ref != (f"{session_id}:older",)
+
+
+def test_closure_does_not_use_whitespace_duplicate_native_id_for_attachment_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     attachment = ParsedAttachment(
         provider_attachment_id="duplicate-native-position",
         message_provider_id="duplicate",
-        message_position=0,
+        message_position=1,
         name="duplicate.txt",
         mime_type="text/plain",
         size_bytes=9,
@@ -230,13 +274,14 @@ def test_closure_does_not_use_duplicate_native_id_for_attachment_owner(
         tmp_path,
         messages=[
             ParsedMessage(provider_message_id="duplicate", role=Role.USER, text="first", position=0),
-            ParsedMessage(provider_message_id="duplicate", role=Role.ASSISTANT, text="second", position=1),
+            ParsedMessage(provider_message_id=" duplicate ", role=Role.ASSISTANT, text="second", position=1),
         ],
         attachment=attachment,
     )
 
     plan = plan_blob_reference_closure(root, raw_session_parser=parser)
-    assert plan.attachment_candidates[0].message_id == f"{session_id}:0.0"
+    assert plan.attachment_candidates[0].message_id == f"{session_id}:1.0"
+    assert plan.attachment_candidates[0].message_id != f"{session_id}:0.0"
     assert not plan.blockers
 
     _apply_mapping_fixture(monkeypatch, root, parser)
@@ -244,7 +289,8 @@ def test_closure_does_not_use_duplicate_native_id_for_attachment_owner(
         ref = conn.execute(
             "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
         ).fetchone()
-    assert ref == (f"{session_id}:0.0",)
+    assert ref == (f"{session_id}:1.0",)
+    assert ref != (f"{session_id}:0.0",)
 
 
 def test_plan_is_complete_and_typed_for_deterministic_and_irreparable_rows(tmp_path: Path) -> None:

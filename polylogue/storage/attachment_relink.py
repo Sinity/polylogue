@@ -47,6 +47,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _attachment_message_id_maps,
     _attachment_position,
     _attachment_source_url,
+    _next_message_position,
 )
 from polylogue.storage.sqlite.queries.mappers_archive import _row_to_raw_session
 
@@ -243,7 +244,12 @@ def _match_session_payload(
         return
     session_id = payload.session_id
     messages = payload.parsed_session.messages
-    by_native_message_id, by_message_position = _attachment_message_id_maps(session_id, messages)
+    position_offset = _next_message_position(index_conn, session_id) if payload.append_only else 0
+    by_native_message_id, by_message_position = _attachment_message_id_maps(
+        session_id,
+        messages,
+        position_offset=position_offset,
+    )
     # Attachments are session-level (``ParsedSession.attachments``), each
     # linked to its owning message via ``message_provider_id`` -- mirroring
     # exactly how ``_write_attachments`` consumes them (write.py:_attachment_message_id_maps).
