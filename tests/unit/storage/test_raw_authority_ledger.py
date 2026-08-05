@@ -1793,6 +1793,93 @@ def test_census_retention_keeps_the_newest_censuses_readable(tmp_path: Path, mon
     assert surviving == {receipts[-1].census_id, receipts[-2].census_id}
 
 
+def test_census_header_retention_preserves_predecessor_fk_and_prunes_safe_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production census route must keep a retained child's predecessor.
+
+    A direct header filter deleted census 687 while retained census 688 still
+    named it as ``predecessor_census_id``, leaving the source tier with an FK
+    violation. The production route below builds that boundary shape, checks
+    the retained edge and foreign-key audit, then proves the same pruning
+    routine still removes an older header once no surviving census names it.
+    """
+    monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 2)
+    monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_HEADER_RETENTION", 2)
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="predecessor", source_path="predecessor.jsonl", acquired_at_ms=1)
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+
+    receipts = [
+        record_raw_authority_census(
+            tmp_path,
+            (plan,),
+            selected_plan_ids=set(),
+            mode="dry_run",
+            quiescent=True,
+            scope={"test": f"predecessor-{index}"},
+            residual={},
+        )
+        for index in range(3)
+    ]
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        child_predecessor = conn.execute(
+            "SELECT predecessor_census_id FROM raw_authority_censuses WHERE census_id = ?",
+            (receipts[1].census_id,),
+        ).fetchone()[0]
+        retained_headers = {str(row[0]) for row in conn.execute("SELECT census_id FROM raw_authority_censuses")}
+        assert child_predecessor == receipts[0].census_id
+        assert retained_headers == {receipt.census_id for receipt in receipts}
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+    # A disconnected older header is safe to retire on the next production
+    # prune cycle. It exercises the bounded-delete path without severing the
+    # predecessor chain under test above.
+    safe_root = tmp_path / "safe-prune"
+    initialize_active_archive_root(safe_root)
+    with sqlite3.connect(safe_root / "source.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_authority_censuses (
+                census_id, sequence_no, scope_json, residual_json,
+                parser_fingerprint, mode, lifecycle_status, quiescent,
+                inventory_digest, residual_digest, plan_count,
+                post_inventory_digest, post_residual_json, post_residual_digest,
+                post_plan_count, postflight_at_ms, executable_plan_count,
+                residual_plan_count, predecessor_census_id, fixed_point,
+                created_at_ms, completed_at_ms
+            ) VALUES (?, ?, '{}', '{}', 'test', 'dry_run', 'completed', 1,
+                      ?, ?, 0, ?, '{}', ?, 0, 1, 0, 0, NULL, 0, 1, 1)
+            """,
+            (
+                ("census:detached:1", 1, "a" * 64, "b" * 64, "a" * 64, "b" * 64),
+                ("census:detached:2", 2, "c" * 64, "d" * 64, "c" * 64, "d" * 64),
+            ),
+        )
+        conn.commit()
+
+    later = record_raw_authority_census(
+        safe_root,
+        (),
+        selected_plan_ids=set(),
+        mode="dry_run",
+        quiescent=True,
+        scope={"test": "predecessor-safe-prune"},
+        residual={},
+    )
+
+    with sqlite3.connect(safe_root / "source.db") as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        surviving = {str(row[0]) for row in conn.execute("SELECT census_id FROM raw_authority_censuses")}
+        assert "census:detached:1" not in surviving
+        assert "census:detached:2" in surviving
+        assert later.census_id in surviving
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_census_plan_rows_prune_past_retention_even_with_an_unresolved_blocker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

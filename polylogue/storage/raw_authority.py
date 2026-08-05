@@ -59,12 +59,14 @@ RAW_AUTHORITY_DETAIL_CHUNK_CHARS = 16_384
 #: ~990 MB/day (polylogue-wkc6).
 RAW_AUTHORITY_CENSUS_PLAN_RETENTION = 8
 
-#: How many census HEADERS (``raw_authority_censuses``) to keep.
+#: Minimum number of census HEADERS (``raw_authority_censuses``) to keep.
 #:
 #: Deliberately much larger than the plan-row window: headers carry the
 #: convergence history that is actually worth reading back -- sequence,
 #: digests, ``fixed_point``, and the ``predecessor_census_id`` chain -- and a
-#: header is far cheaper than a plan set. They are not free, though:
+#: header is far cheaper than a plan set. An intact predecessor chain may
+#: extend this floor while its retained edges still require the older headers.
+#: Headers are not free, though:
 #: ``residual_json`` and ``post_residual_json`` embed the full quarantined-raw
 #: id arrays and average ~144 KB each, so headers alone accrue ~28 MB/day at
 #: the observed ~97 censuses/day.
@@ -880,7 +882,9 @@ def unresolved_raw_replay_blockers(archive_root: Path) -> int:
 
 
 def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, int]:
-    """Bound census history to its retention windows. Returns (plan_rows, headers) deleted.
+    """Prune census history without breaking retained lineage.
+
+    Returns (plan_rows, headers) deleted.
 
     Runs inside the caller's transaction, immediately after a census is
     recorded, so growth is bounded at the point of growth rather than by a
@@ -961,17 +965,46 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
     headers = 0
     if header_floor_row is not None:
         # Same obligation guard, and additionally an FK guard:
-        # raw_authority_blockers references raw_authority_censuses(census_id),
-        # so a header may only go once nothing references it.
-        cursor = conn.execute(
-            """
-            DELETE FROM raw_authority_censuses
-            WHERE sequence_no < ?
-              AND census_id NOT IN (SELECT census_id FROM raw_authority_blockers)
-            """,
-            (int(header_floor_row[0]),),
-        )
-        headers = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        # raw_authority_blockers and predecessor_census_id both reference
+        # raw_authority_censuses(census_id). Keep the full predecessor closure
+        # of every header that survives the retention floor or remains pinned
+        # by a blocker. A direct predecessor check is insufficient: a stale
+        # header can itself survive because a newer retained header points to
+        # it, while still naming an older header as its predecessor.
+        floor = int(header_floor_row[0])
+        stale = [
+            str(row[0])
+            for row in conn.execute(
+                """
+                WITH RECURSIVE retained(census_id) AS (
+                    SELECT census_id
+                    FROM raw_authority_censuses
+                    WHERE sequence_no >= ?
+                    UNION
+                    SELECT census_id FROM raw_authority_blockers
+                    UNION
+                    SELECT c.predecessor_census_id
+                    FROM raw_authority_censuses AS c
+                    JOIN retained AS r ON r.census_id = c.census_id
+                    WHERE c.predecessor_census_id IS NOT NULL
+                )
+                SELECT c.census_id
+                FROM raw_authority_censuses AS c
+                WHERE c.sequence_no < ?
+                  AND c.census_id NOT IN (SELECT census_id FROM retained)
+                ORDER BY c.sequence_no DESC
+                """,
+                (floor, floor),
+            )
+        ]
+        # Delete newest-to-oldest so a stale predecessor chain is removed from
+        # the leaves upward while immediate foreign-key enforcement remains on.
+        for census_id in stale:
+            cursor = conn.execute(
+                "DELETE FROM raw_authority_censuses WHERE census_id = ?",
+                (census_id,),
+            )
+            headers += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
     return plan_rows, headers
 
 
