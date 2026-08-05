@@ -74,7 +74,9 @@ class HookPayloadRefReconciliationPlan:
 
 _MATCH_TABLE = "hook_payload_ref_reconciliation_matches"
 _ORPHAN_TABLE = "hook_payload_ref_reconciliation_orphans"
+_HOOK_EVIDENCE_TABLE = "hook_payload_ref_reconciliation_hook_evidence"
 _HOOK_TABLE = "hook_payload_ref_reconciliation_hooks"
+_IDENTITY_TABLE = "hook_payload_ref_reconciliation_identity_matches"
 _AMBIGUOUS_TABLE = "hook_payload_ref_reconciliation_ambiguous"
 
 
@@ -101,7 +103,7 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
     """Stage exact hook matches in SQLite, avoiding a Python cross-product."""
 
     conn.create_function("polylogue_deterministic_raw_session_id", 5, _deterministic_raw_session_id_udf)
-    for table in (_MATCH_TABLE, _ORPHAN_TABLE, _HOOK_TABLE, _AMBIGUOUS_TABLE):
+    for table in (_MATCH_TABLE, _ORPHAN_TABLE, _HOOK_EVIDENCE_TABLE, _HOOK_TABLE, _IDENTITY_TABLE, _AMBIGUOUS_TABLE):
         conn.execute(f"DROP TABLE IF EXISTS temp.{table}")
     conn.execute(
         f"""
@@ -115,7 +117,7 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
     conn.execute(f"CREATE INDEX {_ORPHAN_TABLE}_source_path ON {_ORPHAN_TABLE}(source_path, blob_hash)")
     conn.execute(
         f"""
-        CREATE TEMP TABLE {_HOOK_TABLE} AS
+        CREATE TEMP TABLE {_HOOK_EVIDENCE_TABLE} AS
         SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
         FROM (
             SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
@@ -138,15 +140,60 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
               ON o.source_path IS h.source_path
             WHERE h.blob_hash IS NULL
         ) AS h
+        """
+    )
+    conn.execute(f"CREATE INDEX {_HOOK_EVIDENCE_TABLE}_source_hash ON {_HOOK_EVIDENCE_TABLE}(source_path, blob_hash)")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {_HOOK_TABLE} AS
+        SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
+        FROM {_HOOK_EVIDENCE_TABLE} AS h
         WHERE NOT EXISTS (
             SELECT 1 FROM blob_refs AS b
-            WHERE b.blob_hash = h.blob_hash
-              AND b.ref_type = 'hook_payload'
+            WHERE b.ref_type = 'hook_payload'
               AND b.ref_id = h.hook_event_id
         )
         """
     )
     conn.execute(f"CREATE INDEX {_HOOK_TABLE}_source_path ON {_HOOK_TABLE}(source_path, blob_hash)")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {_IDENTITY_TABLE} AS
+        SELECT o.blob_hash, o.ref_id, h.hook_event_id, h.blob_hash AS hook_blob_hash
+        FROM {_ORPHAN_TABLE} AS o
+        JOIN {_HOOK_EVIDENCE_TABLE} AS h
+          ON h.source_path IS o.source_path
+         AND h.blob_hash = o.blob_hash
+         AND polylogue_deterministic_raw_session_id(
+               h.origin, o.source_path, 0, o.blob_hash, h.native_id
+             ) = o.ref_id
+        UNION ALL
+        SELECT o.blob_hash, o.ref_id, h.hook_event_id, h.blob_hash AS hook_blob_hash
+        FROM {_ORPHAN_TABLE} AS o
+        JOIN (
+            SELECT source_path
+            FROM {_ORPHAN_TABLE}
+            GROUP BY source_path
+            HAVING COUNT(*) = 1
+        ) AS unique_orphan_paths
+          ON unique_orphan_paths.source_path IS o.source_path
+        JOIN (
+            SELECT source_path
+            FROM {_HOOK_EVIDENCE_TABLE}
+            WHERE blob_hash IS NULL
+            GROUP BY source_path
+            HAVING COUNT(*) = 1
+        ) AS unique_legacy_paths
+          ON unique_legacy_paths.source_path IS o.source_path
+        JOIN {_HOOK_EVIDENCE_TABLE} AS h
+          ON h.source_path IS o.source_path
+         AND h.blob_hash IS NULL
+         AND polylogue_deterministic_raw_session_id(
+               h.origin, o.source_path, 0, o.blob_hash, h.native_id
+             ) = o.ref_id
+        """
+    )
+    conn.execute(f"CREATE INDEX {_IDENTITY_TABLE}_candidate ON {_IDENTITY_TABLE}(blob_hash, ref_id)")
     conn.execute(
         f"""
         CREATE TEMP TABLE {_AMBIGUOUS_TABLE} (
@@ -158,7 +205,16 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
     )
     conn.execute(
         f"""
-        INSERT INTO {_AMBIGUOUS_TABLE} (blob_hash, orphaned_ref_id)
+        INSERT OR IGNORE INTO {_AMBIGUOUS_TABLE} (blob_hash, orphaned_ref_id)
+        SELECT blob_hash, ref_id
+        FROM {_IDENTITY_TABLE}
+        GROUP BY blob_hash, ref_id
+        HAVING COUNT(DISTINCT hook_event_id) > 1
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO {_AMBIGUOUS_TABLE} (blob_hash, orphaned_ref_id)
         SELECT o.blob_hash, o.ref_id
         FROM {_ORPHAN_TABLE} AS o
         WHERE EXISTS (
@@ -197,6 +253,10 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
           ON h.source_path IS o.source_path
          AND h.blob_hash = o.blob_hash
          AND polylogue_deterministic_raw_session_id(h.origin, o.source_path, 0, o.blob_hash, h.native_id) = o.ref_id
+        WHERE NOT EXISTS (
+                SELECT 1 FROM {_AMBIGUOUS_TABLE} AS a
+                WHERE a.blob_hash = o.blob_hash AND a.orphaned_ref_id = o.ref_id
+              )
         GROUP BY o.blob_hash, o.ref_id, o.source_path, o.size_bytes, o.acquired_at_ms
         HAVING COUNT(*) = 1
         """
@@ -215,7 +275,11 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         JOIN {_HOOK_TABLE} AS h
           ON h.source_path IS o.source_path
          AND h.blob_hash IS NULL
-        WHERE (SELECT COUNT(*) FROM {_ORPHAN_TABLE} AS o2 WHERE o2.source_path IS o.source_path) = 1
+        WHERE NOT EXISTS (
+                SELECT 1 FROM {_AMBIGUOUS_TABLE} AS a
+                WHERE a.blob_hash = o.blob_hash AND a.orphaned_ref_id = o.ref_id
+              )
+          AND (SELECT COUNT(*) FROM {_ORPHAN_TABLE} AS o2 WHERE o2.source_path IS o.source_path) = 1
           AND (SELECT COUNT(*) FROM {_HOOK_TABLE} AS h2
                WHERE h2.source_path IS h.source_path AND h2.blob_hash IS NULL) = 1
           AND polylogue_deterministic_raw_session_id(h.origin, o.source_path, 0, o.blob_hash, h.native_id) = o.ref_id

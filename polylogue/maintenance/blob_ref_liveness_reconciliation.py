@@ -33,7 +33,9 @@ from polylogue.storage.sqlite.migration_runner import (
 TOOL_VERSION = "blob-ref-liveness-reconciliation-v1"
 BATCH_SIZE = 1_000
 _LOCKED_HOOK_TABLE = "blob_ref_liveness_locked_hooks"
-_LOCKED_KNOWN_HOOK_MATCH_TABLE = "blob_ref_liveness_locked_known_hook_matches"
+_LOCKED_MISSING_HOOK_TABLE = "blob_ref_liveness_locked_missing_hooks"
+_LOCKED_IDENTITY_MATCH_TABLE = "blob_ref_liveness_locked_identity_matches"
+_LOCKED_LEGACY_HOOK_COUNTS = "blob_ref_liveness_locked_legacy_hook_counts"
 _RECOVERY_TERMINAL_PHASES = {
     "committed",
     "aborted",
@@ -377,10 +379,36 @@ def _delete_candidate_batch(conn: sqlite3.Connection, candidate_table: str, batc
     return deleted_count
 
 
+def _stage_locked_legacy_hook_counts(conn: sqlite3.Connection, hook_table: str) -> str:
+    """Aggregate legacy null-hash evidence once for the locked snapshot."""
+
+    conn.execute(f"DROP TABLE IF EXISTS temp.{_LOCKED_LEGACY_HOOK_COUNTS}")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {_LOCKED_LEGACY_HOOK_COUNTS} AS
+        SELECT source_path, COUNT(*) AS hook_count
+        FROM {hook_table}
+        WHERE blob_hash IS NULL
+        GROUP BY source_path
+        """
+    )
+    conn.execute(
+        f"CREATE UNIQUE INDEX {_LOCKED_LEGACY_HOOK_COUNTS}_source_path ON {_LOCKED_LEGACY_HOOK_COUNTS}(source_path)"
+    )
+    return _LOCKED_LEGACY_HOOK_COUNTS
+
+
 def _stage_locked_hook_snapshot(conn: sqlite3.Connection, candidate_table: str) -> str:
     """Capture all hook evidence relevant to the complete staged plan once."""
 
-    conn.execute(f"DROP TABLE IF EXISTS temp.{_LOCKED_HOOK_TABLE}")
+    for table in (
+        _LOCKED_HOOK_TABLE,
+        _LOCKED_MISSING_HOOK_TABLE,
+        _LOCKED_IDENTITY_MATCH_TABLE,
+        _LOCKED_LEGACY_HOOK_COUNTS,
+    ):
+        conn.execute(f"DROP TABLE IF EXISTS temp.{table}")
+    conn.create_function("polylogue_deterministic_raw_session_id", 5, _deterministic_raw_session_id_udf)
     if _table_exists(conn, "raw_hook_events"):
         conn.execute(
             f"""
@@ -407,12 +435,6 @@ def _stage_locked_hook_snapshot(conn: sqlite3.Connection, candidate_table: str) 
                   ON c.source_path IS h.source_path
                 WHERE h.blob_hash IS NULL
             ) AS h
-            WHERE NOT EXISTS (
-                SELECT 1 FROM blob_refs AS b
-                WHERE b.blob_hash = h.blob_hash
-                  AND b.ref_type = 'hook_payload'
-                  AND b.ref_id = h.hook_event_id
-            )
             """
         )
     else:
@@ -428,6 +450,60 @@ def _stage_locked_hook_snapshot(conn: sqlite3.Connection, candidate_table: str) 
             """
         )
     conn.execute(f"CREATE INDEX {_LOCKED_HOOK_TABLE}_source_hash ON {_LOCKED_HOOK_TABLE}(source_path, blob_hash)")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {_LOCKED_MISSING_HOOK_TABLE} AS
+        SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
+        FROM {_LOCKED_HOOK_TABLE} AS h
+        WHERE NOT EXISTS (
+            SELECT 1 FROM blob_refs AS b
+            WHERE b.ref_type = 'hook_payload'
+              AND b.ref_id = h.hook_event_id
+        )
+        """
+    )
+    conn.execute(
+        f"CREATE INDEX {_LOCKED_MISSING_HOOK_TABLE}_source_hash ON {_LOCKED_MISSING_HOOK_TABLE}(source_path, blob_hash)"
+    )
+    _stage_locked_legacy_hook_counts(conn, _LOCKED_HOOK_TABLE)
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {_LOCKED_IDENTITY_MATCH_TABLE} AS
+        SELECT c.blob_hash, c.ref_id, h.hook_event_id, h.blob_hash AS hook_blob_hash
+        FROM {candidate_table} AS c
+        JOIN {_LOCKED_HOOK_TABLE} AS h
+          ON h.source_path IS c.source_path
+         AND h.blob_hash = c.blob_hash
+         AND polylogue_deterministic_raw_session_id(
+               h.origin, c.source_path, 0, c.blob_hash, h.native_id
+             ) = c.ref_id
+        WHERE c.ref_type = 'raw_payload'
+        UNION ALL
+        SELECT c.blob_hash, c.ref_id, h.hook_event_id, h.blob_hash AS hook_blob_hash
+        FROM {candidate_table} AS c
+        JOIN (
+            SELECT source_path
+            FROM {candidate_table}
+            WHERE ref_type = 'raw_payload'
+            GROUP BY source_path
+            HAVING COUNT(*) = 1
+        ) AS unique_candidate_paths
+          ON unique_candidate_paths.source_path IS c.source_path
+        JOIN {_LOCKED_LEGACY_HOOK_COUNTS} AS unique_legacy_paths
+          ON unique_legacy_paths.source_path IS c.source_path
+         AND unique_legacy_paths.hook_count = 1
+        JOIN {_LOCKED_HOOK_TABLE} AS h
+          ON h.source_path IS c.source_path
+         AND h.blob_hash IS NULL
+         AND polylogue_deterministic_raw_session_id(
+               h.origin, c.source_path, 0, c.blob_hash, h.native_id
+             ) = c.ref_id
+        WHERE c.ref_type = 'raw_payload'
+        """
+    )
+    conn.execute(
+        f"CREATE INDEX {_LOCKED_IDENTITY_MATCH_TABLE}_candidate ON {_LOCKED_IDENTITY_MATCH_TABLE}(blob_hash, ref_id)"
+    )
     return _LOCKED_HOOK_TABLE
 
 
@@ -476,7 +552,8 @@ def _validate_locked_candidate_plan(
             raise BlobRefLivenessReconciliationError(
                 f"prepared candidate referents became live under lock: {live_referent_count}"
             )
-    hook_table = locked_hook_table or _stage_locked_hook_snapshot(conn, candidate_table)
+    if locked_hook_table is None:
+        _stage_locked_hook_snapshot(conn, candidate_table)
     legacy_ambiguous_path_count = int(
         conn.execute(
             f"""
@@ -490,10 +567,8 @@ def _validate_locked_candidate_plan(
                     GROUP BY source_path
                 ) AS candidates
                 JOIN (
-                    SELECT source_path, COUNT(*) AS hook_count
-                    FROM {hook_table}
-                    WHERE blob_hash IS NULL
-                    GROUP BY source_path
+                    SELECT source_path, hook_count
+                    FROM {_LOCKED_LEGACY_HOOK_COUNTS}
                 ) AS hooks
                   ON hooks.source_path IS candidates.source_path
                 WHERE candidates.candidate_count > 1 OR hooks.hook_count > 1
@@ -506,29 +581,19 @@ def _validate_locked_candidate_plan(
             "prepared candidates have ambiguous legacy hook evidence under lock: "
             f"{legacy_ambiguous_path_count} source path(s)"
         )
-    conn.create_function("polylogue_deterministic_raw_session_id", 5, _deterministic_raw_session_id_udf)
-    conn.execute(f"DROP TABLE IF EXISTS temp.{_LOCKED_KNOWN_HOOK_MATCH_TABLE}")
-    conn.execute(
-        f"""
-        CREATE TEMP TABLE {_LOCKED_KNOWN_HOOK_MATCH_TABLE} AS
-        SELECT c.blob_hash, c.ref_id, h.hook_event_id
-        FROM {candidate_table} AS c
-        JOIN {hook_table} AS h
-          ON h.source_path IS c.source_path
-         AND h.blob_hash = c.blob_hash
-         AND polylogue_deterministic_raw_session_id(h.origin, c.source_path, 0, c.blob_hash, h.native_id) = c.ref_id
-        WHERE c.ref_type = 'raw_payload'
-        """
-    )
     duplicate_known_hash_count = int(
         conn.execute(
             f"""
             SELECT COUNT(*)
             FROM (
-                SELECT blob_hash, ref_id
-                FROM {_LOCKED_KNOWN_HOOK_MATCH_TABLE}
-                GROUP BY blob_hash, ref_id
-                HAVING COUNT(DISTINCT hook_event_id) > 1
+                SELECT i.blob_hash, i.ref_id
+                FROM {_LOCKED_IDENTITY_MATCH_TABLE} AS i
+                JOIN {candidate_table} AS c
+                  ON c.blob_hash = i.blob_hash
+                 AND c.ref_id = i.ref_id
+                GROUP BY i.blob_hash, i.ref_id
+                HAVING COUNT(DISTINCT i.hook_event_id) > 1
+                   AND COUNT(DISTINCT CASE WHEN i.hook_blob_hash IS NOT NULL THEN i.hook_event_id END) > 1
             )
             """
         ).fetchone()[0]
@@ -538,27 +603,60 @@ def _validate_locked_candidate_plan(
             "prepared candidates have duplicate known-hash hook evidence under lock: "
             f"{duplicate_known_hash_count} candidate(s)"
         )
+    duplicate_identity_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT i.blob_hash, i.ref_id
+                FROM {_LOCKED_IDENTITY_MATCH_TABLE} AS i
+                JOIN {candidate_table} AS c
+                  ON c.blob_hash = i.blob_hash
+                 AND c.ref_id = i.ref_id
+                GROUP BY i.blob_hash, i.ref_id
+                HAVING COUNT(DISTINCT i.hook_event_id) > 1
+            )
+            """
+        ).fetchone()[0]
+    )
+    if duplicate_identity_count:
+        raise BlobRefLivenessReconciliationError(
+            "prepared candidates have duplicate hook identity evidence under lock: "
+            f"{duplicate_identity_count} candidate(s)"
+        )
     rekeyable = int(
         conn.execute(
             f"""
             SELECT COUNT(*)
             FROM (
-                SELECT blob_hash, ref_id
-                FROM {_LOCKED_KNOWN_HOOK_MATCH_TABLE}
-                GROUP BY blob_hash, ref_id
+                SELECT i.blob_hash, i.ref_id
+                FROM {_LOCKED_IDENTITY_MATCH_TABLE} AS i
+                JOIN {_LOCKED_MISSING_HOOK_TABLE} AS h
+                  ON h.hook_event_id = i.hook_event_id
+                JOIN {candidate_table} AS c
+                  ON c.blob_hash = i.blob_hash
+                 AND c.ref_id = i.ref_id
+                WHERE c.ref_type = 'raw_payload'
+                  AND i.hook_blob_hash IS NOT NULL
+                GROUP BY i.blob_hash, i.ref_id
                 HAVING COUNT(*) = 1
                 UNION ALL
-                SELECT c.blob_hash, c.ref_id
-                FROM {candidate_table} AS c
-                JOIN {hook_table} AS h
-                  ON h.source_path IS c.source_path
-                 AND h.blob_hash IS NULL
-                 AND polylogue_deterministic_raw_session_id(h.origin, c.source_path, 0, c.blob_hash, h.native_id) = c.ref_id
+                SELECT i.blob_hash, i.ref_id
+                FROM {_LOCKED_IDENTITY_MATCH_TABLE} AS i
+                JOIN {_LOCKED_MISSING_HOOK_TABLE} AS h
+                  ON h.hook_event_id = i.hook_event_id
+                JOIN {candidate_table} AS c
+                  ON c.blob_hash = i.blob_hash
+                 AND c.ref_id = i.ref_id
+                JOIN {_LOCKED_LEGACY_HOOK_COUNTS} AS hooks
+                  ON hooks.source_path IS c.source_path
                 WHERE c.ref_type = 'raw_payload'
+                  AND i.hook_blob_hash IS NULL
                   AND (SELECT COUNT(*) FROM {candidate_table} AS c2
                        WHERE c2.ref_type = 'raw_payload' AND c2.source_path IS c.source_path) = 1
-                  AND (SELECT COUNT(*) FROM {hook_table} AS h2
-                       WHERE h2.source_path IS h.source_path AND h2.blob_hash IS NULL) = 1
+                  AND hooks.hook_count = 1
+                GROUP BY i.blob_hash, i.ref_id
+                HAVING COUNT(*) = 1
             )
             """
         ).fetchone()[0]

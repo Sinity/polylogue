@@ -496,6 +496,62 @@ def test_apply_rejects_post_staging_duplicate_known_hash_hooks_before_deleting_a
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (2,)
 
 
+def test_apply_rejects_post_staging_ambiguous_legacy_hooks_before_deleting_any_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_path = "/hooks/post-staging-legacy.jsonl"
+    blob_hash = b"l" * 32
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'legacy-orphan', 'raw_payload', ?, 1, 1)
+            """,
+            (blob_hash, source_path),
+        )
+
+    real_stage = stage_blob_ref_liveness
+
+    def stage_then_insert_legacy_hooks(conn: sqlite3.Connection) -> BlobRefLivenessStagedPlan:
+        staged = real_stage(conn)
+        conn.executemany(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES (?, 'codex-session', ?, ?, 'PostToolUse', '{}', 1)
+            """,
+            (
+                ("post-staging-legacy-1", "legacy-native-1", source_path),
+                ("post-staging-legacy-2", "legacy-native-2", source_path),
+            ),
+        )
+        return staged
+
+    def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        return path
+
+    monkeypatch.setattr(liveness_reconciliation, "stage_blob_ref_liveness", stage_then_insert_legacy_hooks)
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_manifest", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_live_fingerprint", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "running_daemon_pid", lambda _config: None)
+    receipt = tmp_path / "receipts" / "post-staging-legacy.jsonl"
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="ambiguous legacy hook evidence"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup" / "manifest.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (2,)
+
+
 def test_apply_fails_closed_if_source_changes_between_bounded_batches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -686,6 +742,7 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
 
     calls = 0
     snapshot_calls = 0
+    legacy_aggregation_calls = 0
     original_id = hook_payload_ref_reconciliation._deterministic_raw_session_id_udf
 
     def count_udf(*args: object) -> str | None:
@@ -706,6 +763,51 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
         return real_snapshot(conn, candidate_table)
 
     monkeypatch.setattr(liveness_reconciliation, "_stage_locked_hook_snapshot", count_snapshot)
+
+    real_legacy_aggregation = liveness_reconciliation._stage_locked_legacy_hook_counts
+
+    def count_legacy_aggregation(conn: sqlite3.Connection, hook_table: str) -> str:
+        nonlocal legacy_aggregation_calls
+        legacy_aggregation_calls += 1
+        return real_legacy_aggregation(conn, hook_table)
+
+    monkeypatch.setattr(liveness_reconciliation, "_stage_locked_legacy_hook_counts", count_legacy_aggregation)
+
+    real_validate_locked_plan = liveness_reconciliation._validate_locked_candidate_plan
+    validation_calls = 0
+
+    def validate_without_post_snapshot_hook_reads(
+        conn: sqlite3.Connection,
+        candidate_table: str,
+        expected_count: int,
+        *,
+        locked_hook_table: str | None = None,
+    ) -> None:
+        nonlocal validation_calls
+        real_validate_locked_plan(
+            conn,
+            candidate_table,
+            expected_count,
+            locked_hook_table=locked_hook_table,
+        )
+        validation_calls += 1
+        if validation_calls == 1:
+
+            def deny_locked_hook_reads(
+                action: int, table: str | None, _column: str | None, _database: str | None, _source: str | None
+            ) -> int:
+                if action == sqlite3.SQLITE_READ and (
+                    table == liveness_reconciliation._LOCKED_HOOK_TABLE
+                    or (table == "raw_hook_events" and _column != "hook_event_id")
+                ):
+                    raise sqlite3.DatabaseError("post-snapshot raw hook-table read")
+                return sqlite3.SQLITE_OK
+
+            conn.set_authorizer(deny_locked_hook_reads)
+
+    monkeypatch.setattr(
+        liveness_reconciliation, "_validate_locked_candidate_plan", validate_without_post_snapshot_hook_reads
+    )
 
     def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
         assert connection.execute("SELECT 1").fetchone() == (1,)
@@ -746,6 +848,8 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
     assert calls <= orphan_count * 3
     assert calls < irrelevant_hook_count
     assert snapshot_calls == 1
+    assert legacy_aggregation_calls == 1
+    assert validation_calls == batches
     assert batches == orphan_count // liveness_reconciliation.BATCH_SIZE
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (1,)

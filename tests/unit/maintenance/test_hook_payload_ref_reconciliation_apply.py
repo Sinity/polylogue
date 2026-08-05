@@ -164,6 +164,76 @@ def test_apply_rekeys_only_the_confirmed_match(tmp_path: Path, monkeypatch: pyte
     assert len(receipt[-1]["reconciled_ids_digest"]) == 64
 
 
+def test_apply_leaves_duplicate_identity_with_existing_canonical_ref_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A canonical duplicate must remain evidence, not disappear from matching."""
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    payload = b'{"event":"PostToolUse","duplicate":true}'
+    blob_hash = deterministic_blob_hash(payload)
+    source_path = "/hooks/duplicate-canonical.jsonl"
+    native_id = "duplicate-native"
+    orphan_ref_id = deterministic_raw_session_id("codex-session", source_path, 0, blob_hash, native_id)
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, session_native_id, source_path, event_type,
+                payload_json, observed_at_ms, blob_hash
+            ) VALUES (?, 'codex-session', ?, 'session-1', ?, 'PostToolUse', '{}', 1, ?)
+            """,
+            (
+                ("hook-canonical", native_id, source_path, blob_hash),
+                ("hook-missing", native_id, source_path, None),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'hook-canonical', 'hook_payload', ?, ?, 1)
+            """,
+            (blob_hash, source_path, len(payload)),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, ?, 1)
+            """,
+            (blob_hash, orphan_ref_id, source_path, len(payload)),
+        )
+        conn.commit()
+
+    _accept_manifest(monkeypatch)
+    receipt_path = tmp_path / "receipts" / "duplicate-canonical.jsonl"
+    manifest = _manifest(tmp_path / "verified-backup" / "manifest.json")
+    report = apply_hook_payload_ref_reconciliation(
+        archive_root,
+        backup_manifest=manifest,
+        receipt_path=receipt_path,
+        dry_run=False,
+    )
+
+    assert report.applied is True
+    assert report.matched_count == 0
+    assert report.unmatched_count == 1
+    assert report.reconciled_hook_event_ids == ()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute(
+            "SELECT ref_type, ref_id FROM blob_refs WHERE blob_hash = ? ORDER BY ref_type, ref_id",
+            (blob_hash,),
+        ).fetchall() == [
+            ("hook_payload", "hook-canonical"),
+            ("raw_payload", orphan_ref_id),
+        ]
+        assert conn.execute(
+            "SELECT hook_event_id, blob_hash FROM raw_hook_events WHERE source_path = ? ORDER BY hook_event_id",
+            (source_path,),
+        ).fetchall() == [("hook-canonical", blob_hash), ("hook-missing", None)]
+
+
 def test_apply_refuses_without_backup_manifest(tmp_path: Path) -> None:
     archive_root = _build_fixture_archive(tmp_path)
     before = _blob_refs_rows(archive_root)
