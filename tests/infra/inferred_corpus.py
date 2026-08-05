@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Literal, TypeAlias
+from pathlib import Path
+from typing import Literal, TypeAlias, cast
 
 from polylogue.core.json import JSONDocument
 from polylogue.scenarios import CorpusSpec
@@ -24,6 +27,7 @@ from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticSchemaSele
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS, WireFormat
 
 ConstructSupportState: TypeAlias = Literal["supported", "unsupported"]
+INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION = 1
 UnsupportedCorpusReason: TypeAlias = Literal[
     "provider_without_wire_format",
     "unsupported_element",
@@ -177,6 +181,46 @@ _SUPPORTED_FORMAT_VALUES = frozenset(
 )
 _SUPPORTED_SEMANTIC_ROLE_VALUES = frozenset({"message_role", "message_body", "message_timestamp", "session_title"})
 
+REPRESENTATIVE_PROVIDER = "codex"
+REPRESENTATIVE_PACKAGE_VERSION = "v1"
+REPRESENTATIVE_ELEMENT_KIND = "session_record_stream"
+_REPRESENTATIVE_SCHEMA: SchemaRecord = {
+    "$id": "https://example.test/polylogue/inferred-corpus/codex-v1-session-record-stream",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "x-polylogue-values": ["message"]},
+        "role": {
+            "type": "string",
+            "x-polylogue-semantic-role": "message_role",
+            "x-polylogue-values": ["user", "assistant"],
+        },
+        "content": {
+            "type": "array",
+            "x-polylogue-array-lengths": [1, 1],
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "x-polylogue-values": ["input_text", "output_text"]},
+                    "text": {
+                        "type": "string",
+                        "x-polylogue-semantic-role": "message_body",
+                        "x-polylogue-multiline": True,
+                    },
+                },
+            },
+        },
+        "id": {"type": "string", "x-polylogue-format": "uuid4"},
+        "timestamp": {
+            "type": "string",
+            "x-polylogue-semantic-role": "message_timestamp",
+            "x-polylogue-format": "iso8601",
+        },
+        "sequence": {"type": "integer", "x-polylogue-range": [0, 1000]},
+    },
+    "x-polylogue-string-lengths": [{"path": "$.role", "min": 1, "max": 24, "avg": 8.0, "stddev": 2.0}],
+}
+
 
 @dataclass(frozen=True, order=True)
 class ConstructSupport:
@@ -225,6 +269,8 @@ class InferredCorpusManifestEntry:
     key: CorpusManifestKey
     spec: CorpusSpec | None = None
     unsupported: UnsupportedCorpusRecord | None = None
+    generator_schema: SchemaRecord | None = None
+    workload_profile: SchemaRecord | None = None
 
     def __post_init__(self) -> None:
         if (self.spec is None) == (self.unsupported is None):
@@ -239,6 +285,12 @@ class InferredCorpusManifestEntry:
             self.key.element_kind,
         ):
             raise ValueError("CorpusSpec identity does not match manifest key")
+        if self.spec is not None and not isinstance(self.generator_schema, dict):
+            raise ValueError("supported manifest entry requires a generator schema")
+        if self.unsupported is not None and self.generator_schema is not None:
+            raise ValueError("unsupported manifest entry must not carry a generator schema")
+        if self.unsupported is not None and self.workload_profile is not None:
+            raise ValueError("unsupported manifest entry must not carry a workload profile")
 
     @property
     def supported(self) -> bool:
@@ -250,6 +302,10 @@ class InferredCorpusManifestEntry:
             payload["spec"] = self.spec.to_payload()
         if self.unsupported is not None:
             payload["unsupported"] = self.unsupported.to_payload()
+        if self.generator_schema is not None:
+            payload["generator_schema"] = self.generator_schema
+        if self.workload_profile is not None:
+            payload["workload_profile"] = self.workload_profile
         return payload
 
 
@@ -282,19 +338,76 @@ class InferredCorpusManifest:
 
     @property
     def manifest_id(self) -> str:
-        encoded = json.dumps(self._payload_without_id(), sort_keys=True, separators=(",", ":"))
+        encoded = _canonical_json(self._payload_without_id())
         return f"manifest:sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+    @property
+    def payload_sha256(self) -> str:
+        encoded = _canonical_json({"manifest_id": self.manifest_id, **self._payload_without_id()})
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _payload_without_id(self) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION,
             "receipt_state": self.receipt_state,
             "package_receipt": self.package_receipt,
             "entries": [entry.to_payload() for entry in self.entries],
         }
 
     def to_payload(self) -> dict[str, object]:
-        return {"manifest_id": self.manifest_id, **self._payload_without_id()}
+        return {
+            "manifest_id": self.manifest_id,
+            **self._payload_without_id(),
+            "payload_sha256": self.payload_sha256,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> InferredCorpusManifest:
+        expected_fields = {
+            "manifest_id",
+            "schema_version",
+            "receipt_state",
+            "package_receipt",
+            "entries",
+            "payload_sha256",
+        }
+        if set(payload) != expected_fields:
+            raise ValueError(f"inferred corpus manifest fields changed: {sorted(set(payload) ^ expected_fields)}")
+        schema_version = payload.get("schema_version")
+        if schema_version != INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported inferred corpus manifest schema_version: "
+                f"expected={INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION}, actual={schema_version!r}"
+            )
+        raw_entries = payload.get("entries")
+        if not isinstance(raw_entries, list):
+            raise ValueError("inferred corpus manifest entries must be a list")
+        entries = tuple(_manifest_entry_from_payload(item) for item in raw_entries)
+        receipt_state = payload.get("receipt_state")
+        package_receipt = payload.get("package_receipt")
+        if receipt_state not in {"catalog_only", "package_receipt_attached"}:
+            raise ValueError(f"invalid inferred corpus manifest receipt_state: {receipt_state!r}")
+        if receipt_state == "catalog_only" and package_receipt is not None:
+            raise ValueError("catalog_only manifest must not carry a package receipt")
+        if receipt_state == "package_receipt_attached" and not isinstance(package_receipt, dict):
+            raise ValueError("package_receipt_attached manifest requires a JSON object receipt")
+        manifest = cls(
+            entries=entries,
+            package_receipt=package_receipt if isinstance(package_receipt, dict) else None,
+        )
+        expected_manifest_id = manifest.manifest_id
+        if payload.get("manifest_id") != expected_manifest_id:
+            raise ValueError(
+                "inferred corpus manifest identity mismatch: "
+                f"expected={expected_manifest_id!r}, actual={payload.get('manifest_id')!r}"
+            )
+        expected_payload_sha256 = manifest.payload_sha256
+        if payload.get("payload_sha256") != expected_payload_sha256:
+            raise ValueError(
+                "inferred corpus manifest payload integrity mismatch: "
+                f"expected={expected_payload_sha256!r}, actual={payload.get('payload_sha256')!r}"
+            )
+        return manifest
 
 
 @dataclass(frozen=True)
@@ -303,20 +416,189 @@ class InferredCorpusConvergenceHandoff:
 
     manifest_id: str
     specs: tuple[CorpusSpec, ...]
+    selections: tuple[SyntheticSchemaSelection, ...]
+
+
+def _canonical_json(payload: Mapping[str, object]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"non-finite JSON constant is not permitted: {value}")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _manifest_entry_from_payload(payload: object) -> InferredCorpusManifestEntry:
+    if not isinstance(payload, Mapping):
+        raise ValueError("inferred corpus manifest entry must be a JSON object")
+    entry_fields = {"key", "supported", "spec", "unsupported", "generator_schema", "workload_profile"}
+    if set(payload) - entry_fields:
+        raise ValueError(f"inferred corpus manifest entry fields changed: {sorted(set(payload) - entry_fields)}")
+    raw_key = payload.get("key")
+    if not isinstance(raw_key, Mapping):
+        raise ValueError("inferred corpus manifest entry key must be a JSON object")
+    if set(raw_key) != {"provider", "package_version", "element_kind", "construct_support"}:
+        raise ValueError("inferred corpus manifest key fields changed")
+    provider = raw_key.get("provider")
+    package_version = raw_key.get("package_version")
+    element_kind = raw_key.get("element_kind")
+    raw_constructs = raw_key.get("construct_support", [])
+    if not isinstance(raw_constructs, list) or not all(isinstance(item, Mapping) for item in raw_constructs):
+        raise ValueError("manifest construct_support must be a list of objects")
+    constructs: list[ConstructSupport] = []
+    for raw_construct in cast(list[Mapping[str, object]], raw_constructs):
+        construct = raw_construct.get("construct")
+        state = raw_construct.get("state")
+        if not isinstance(construct, str) or not construct or state not in {"supported", "unsupported"}:
+            raise ValueError("manifest construct_support contains an invalid row")
+        constructs.append(ConstructSupport(construct=construct, state=state))
+    if (
+        not isinstance(provider, str)
+        or not isinstance(package_version, str)
+        or not isinstance(element_kind, str)
+        or not element_kind
+        or tuple(sorted(constructs)) != tuple(constructs)
+        or len({item.construct for item in constructs}) != len(constructs)
+    ):
+        raise ValueError("manifest entry key has invalid identity or construct ordering")
+    key = CorpusManifestKey(provider, package_version, element_kind, tuple(constructs))
+    supported = payload.get("supported")
+    raw_spec = payload.get("spec")
+    raw_unsupported = payload.get("unsupported")
+    raw_schema = payload.get("generator_schema")
+    raw_workload_profile = payload.get("workload_profile")
+    if supported is True:
+        expected_entry_fields = {"key", "supported", "spec", "generator_schema"}
+        if "workload_profile" in payload:
+            expected_entry_fields.add("workload_profile")
+        if set(payload) != expected_entry_fields:
+            raise ValueError("supported manifest entry fields changed")
+        if not isinstance(raw_spec, Mapping) or not isinstance(raw_schema, Mapping):
+            raise ValueError("supported manifest entry requires spec and generator_schema")
+        if "workload_profile" in payload and not isinstance(raw_workload_profile, Mapping):
+            raise ValueError("manifest workload_profile must be a JSON object when present")
+        spec_fields = {
+            "origin",
+            "path_targets",
+            "artifact_targets",
+            "conceptual_path_targets",
+            "conceptual_artifact_targets",
+            "operation_targets",
+            "maintenance_targets",
+            "tags",
+            "docs_role",
+            "caption",
+            "narrative_order",
+            "audience",
+            "demonstrates",
+            "privacy_level",
+            "media",
+            "visual_style",
+            "provider",
+            "package_version",
+            "count",
+            "messages_min",
+            "messages_max",
+            "style",
+            "element_kind",
+            "seed",
+            "session_native_ids",
+            "profile",
+        }
+        if set(raw_spec) - spec_fields:
+            raise ValueError("inferred corpus spec fields changed")
+        spec = CorpusSpec.from_payload(cast(dict[str, object], raw_spec))
+        return InferredCorpusManifestEntry(
+            key=key,
+            spec=spec,
+            generator_schema=cast(SchemaRecord, dict(raw_schema)),
+            workload_profile=(
+                cast(SchemaRecord, dict(raw_workload_profile)) if isinstance(raw_workload_profile, Mapping) else None
+            ),
+        )
+    if supported is not False:
+        raise ValueError("manifest entry supported must be boolean")
+    if set(payload) != {"key", "supported", "unsupported"}:
+        raise ValueError("unsupported manifest entry fields changed")
+    if not isinstance(raw_unsupported, Mapping):
+        raise ValueError("unsupported manifest entry requires unsupported metadata only")
+    reason = raw_unsupported.get("reason")
+    details = raw_unsupported.get("details", [])
+    if set(raw_unsupported) != {"reason", "details"}:
+        raise ValueError("manifest unsupported record fields changed")
+    valid_reasons = {
+        "provider_without_wire_format",
+        "unsupported_element",
+        "missing_schema",
+        "unsupported_json_schema_construct",
+    }
+    if (
+        reason not in valid_reasons
+        or not isinstance(details, list)
+        or not all(isinstance(item, str) for item in details)
+    ):
+        raise ValueError("manifest unsupported record is invalid")
+    return InferredCorpusManifestEntry(
+        key=key,
+        unsupported=UnsupportedCorpusRecord(
+            reason=cast(UnsupportedCorpusReason, reason),
+            details=tuple(cast(str, item) for item in details),
+        ),
+    )
+
+
+def write_inferred_corpus_manifest(manifest: InferredCorpusManifest, path: Path) -> None:
+    """Persist one canonical manifest payload with an independently checked hash."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(manifest.to_payload(), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
+    )
+
+
+def read_inferred_corpus_manifest(path: Path) -> InferredCorpusManifest:
+    """Read and validate a persisted manifest before exposing executable rows."""
+
+    try:
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"unable to read inferred corpus manifest {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("inferred corpus manifest root must be a JSON object")
+    return InferredCorpusManifest.from_payload(payload)
 
 
 def _is_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
 
 
 def _number(value: object) -> int | float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if _is_number(value) else None
+    if isinstance(value, float) and not isinstance(value, bool) and math.isfinite(value):
         return value
     return None
 
 
 def _valid_pair(value: object, *, integral: bool = False, nonnegative: bool = False) -> bool:
-    if not isinstance(value, list) or len(value) < 2:
+    if not isinstance(value, list) or len(value) != 2:
         return False
     first = _number(value[0])
     second = _number(value[1])
@@ -329,31 +611,71 @@ def _valid_pair(value: object, *, integral: bool = False, nonnegative: bool = Fa
     return first <= second
 
 
+def _histogram_bucket_is_safe(index: int, log_base: int | float) -> bool:
+    try:
+        sampled_value = math.expm1((abs(float(index)) - 0.5) * math.log(float(log_base)))
+    except (OverflowError, ValueError):
+        return False
+    return math.isfinite(sampled_value)
+
+
 def _valid_observed_distribution(value: object) -> bool:
-    if not isinstance(value, Mapping):
+    if not isinstance(value, Mapping) or not value:
         return False
     for distribution in value.values():
         if not isinstance(distribution, Mapping):
-            continue
+            return False
         histogram = distribution.get("histogram")
         log_base = _number(distribution.get("log_base"))
-        if (
-            isinstance(histogram, list)
-            and histogram
-            and _is_number(log_base)
-            and log_base is not None
-            and log_base > 1
-            and all(
-                isinstance(bucket, list)
-                and len(bucket) == 2
-                and isinstance(bucket[0], int)
-                and isinstance(bucket[1], int)
-                and bucket[1] > 0
-                for bucket in histogram
-            )
+        if not isinstance(histogram, list) or not histogram or log_base is None or log_base <= 1:
+            return False
+        log_base_float = float(log_base)
+        if not all(
+            isinstance(bucket, list)
+            and len(bucket) == 2
+            and isinstance(bucket[0], int)
+            and not isinstance(bucket[0], bool)
+            and isinstance(bucket[1], int)
+            and not isinstance(bucket[1], bool)
+            and _number(bucket[0]) is not None
+            and _number(bucket[1]) is not None
+            and bucket[1] > 0
+            and _histogram_bucket_is_safe(bucket[0], log_base_float)
+            for bucket in histogram
         ):
-            return True
-    return False
+            return False
+        for key in ("min", "max", "mean", "p0", "p50", "p90", "p95", "p99", "p100", "stddev"):
+            if key in distribution and not _is_number(distribution[key]):
+                return False
+        minimum = _number(distribution.get("min"))
+        maximum = _number(distribution.get("max"))
+        if minimum is not None and maximum is not None and minimum > maximum:
+            return False
+        stddev = _number(distribution.get("stddev"))
+        if stddev is not None and stddev < 0:
+            return False
+        ordered_stats = tuple(_number(distribution.get(key)) for key in ("p0", "p50", "p90", "p95", "p99", "p100"))
+        present_stats = tuple(value for value in ordered_stats if value is not None)
+        if any(left > right for left, right in zip(present_stats, present_stats[1:], strict=False)):
+            return False
+        if any(
+            (minimum is not None and value < minimum) or (maximum is not None and value > maximum)
+            for value in present_stats
+        ):
+            return False
+        mean = _number(distribution.get("mean"))
+        if mean is not None:
+            if minimum is not None and mean < minimum:
+                return False
+            if maximum is not None and mean > maximum:
+                return False
+            p0 = _number(distribution.get("p0"))
+            p100 = _number(distribution.get("p100"))
+            if p0 is not None and mean < p0:
+                return False
+            if p100 is not None and mean > p100:
+                return False
+    return True
 
 
 def _relation_records(value: object, required: tuple[str, ...]) -> list[dict[str, object]] | None:
@@ -367,6 +689,119 @@ def _relation_records(value: object, required: tuple[str, ...]) -> list[dict[str
             return None
         records.append(record)
     return records
+
+
+_SCHEMA_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+
+
+def _schema_nodes_at_path(schema: SchemaRecord, path: object) -> tuple[SchemaRecord, ...]:
+    """Resolve the JSONPath subset emitted by the relation solver."""
+
+    if not isinstance(path, str) or not path.startswith("$"):
+        return ()
+    if path == "$":
+        return (schema,)
+    if not path.startswith("$."):
+        return ()
+    nodes: tuple[SchemaRecord, ...] = (schema,)
+    for raw_segment in path[2:].split("."):
+        if raw_segment.endswith("[*]"):
+            segment = raw_segment[:-3]
+            wants_items = True
+        else:
+            segment = raw_segment
+            wants_items = False
+        if not _SCHEMA_PATH_SEGMENT.fullmatch(segment):
+            return ()
+        next_nodes: list[SchemaRecord] = []
+        for node in nodes:
+            variants = [node]
+            for branch_key in ("anyOf", "oneOf"):
+                branches = node.get(branch_key)
+                if isinstance(branches, list):
+                    variants.extend(branch for branch in branches if isinstance(branch, dict))
+            for variant in variants:
+                properties = variant.get("properties")
+                child = properties.get(segment) if isinstance(properties, dict) else None
+                if not isinstance(child, dict):
+                    continue
+                if wants_items:
+                    items = child.get("items")
+                    if isinstance(items, dict):
+                        next_nodes.append(items)
+                else:
+                    next_nodes.append(child)
+        nodes = tuple(next_nodes)
+        if not nodes:
+            return ()
+    return nodes
+
+
+def _schema_nodes_have_type(nodes: tuple[SchemaRecord, ...], allowed: set[str]) -> bool:
+    return bool(nodes) and all(_schema_type(node) in allowed for node in nodes)
+
+
+def _schema_type_family(nodes: tuple[SchemaRecord, ...]) -> str | None:
+    types = {_schema_type(node) for node in nodes}
+    if types and types <= {"string"}:
+        return "string"
+    if types and types <= {"number", "integer"}:
+        return "numeric"
+    return None
+
+
+def _relation_annotation_paths_are_enforced(
+    key: str,
+    value: object,
+    root_schema: SchemaRecord,
+) -> bool:
+    records = _relation_records(
+        value,
+        {
+            "x-polylogue-foreign-keys": ("source", "target"),
+            "x-polylogue-time-deltas": ("field_a", "field_b"),
+            "x-polylogue-mutually-exclusive": ("parent",),
+            "x-polylogue-string-lengths": ("path",),
+        }[key],
+    )
+    if records is None:
+        return False
+    if key == "x-polylogue-foreign-keys":
+        return False
+    if key == "x-polylogue-time-deltas":
+        # The solver parses these records, but no production generation path
+        # calls get_time_delta yet. Keep them fail-closed until it does.
+        return False
+    if key == "x-polylogue-time-deltas":
+        return all(
+            _schema_nodes_have_type(_schema_nodes_at_path(root_schema, record["source"]), {"string"})
+            and _schema_nodes_have_type(_schema_nodes_at_path(root_schema, record["target"]), {"string"})
+            for record in records
+        )
+    if key == "x-polylogue-time-deltas":
+        return all(
+            (field_a_family := _schema_type_family(_schema_nodes_at_path(root_schema, record["field_a"]))) is not None
+            and field_a_family == _schema_type_family(_schema_nodes_at_path(root_schema, record["field_b"]))
+            for record in records
+        )
+    if key == "x-polylogue-string-lengths":
+        return all(
+            _schema_nodes_have_type(_schema_nodes_at_path(root_schema, record["path"]), {"string"})
+            for record in records
+        )
+    return all(
+        _schema_nodes_have_type(_schema_nodes_at_path(root_schema, record["parent"]), {"object"})
+        and isinstance(fields := record.get("fields"), list)
+        and all(
+            isinstance(field, str)
+            and _schema_nodes_have_type(
+                _schema_nodes_at_path(root_schema, f"{record['parent']}.{field}"),
+                {"string", "number", "integer", "boolean", "array", "object"},
+            )
+            for field in fields
+        )
+        for record in records
+    )
 
 
 def _synthetic_annotation_is_enforced(key: str, value: object) -> bool:
@@ -384,7 +819,7 @@ def _synthetic_annotation_is_enforced(key: str, value: object) -> bool:
     if key == "x-polylogue-multiline":
         return isinstance(value, bool)
     if key == "x-polylogue-values":
-        return isinstance(value, list) and bool(value) and all(not isinstance(item, (list, Mapping)) for item in value)
+        return isinstance(value, list) and bool(value) and all(isinstance(item, str) and item for item in value)
     if key == "x-polylogue-range":
         return _valid_pair(value)
     if key == "x-polylogue-array-lengths":
@@ -394,12 +829,9 @@ def _synthetic_annotation_is_enforced(key: str, value: object) -> bool:
     if key == "x-polylogue-foreign-keys":
         return _relation_records(value, ("source", "target")) is not None
     if key == "x-polylogue-time-deltas":
-        records = _relation_records(value, ("field_a", "field_b"))
-        return records is not None and all(
-            _number(record.get(field)) is not None
-            for record in records
-            for field in ("min_delta", "max_delta", "avg_delta")
-        )
+        # The solver parses these records, but no production generation path
+        # calls get_time_delta yet. Keep them fail-closed until it does.
+        return False
     if key == "x-polylogue-mutually-exclusive":
         records = _relation_records(value, ("parent",))
         return records is not None and all(
@@ -410,17 +842,88 @@ def _synthetic_annotation_is_enforced(key: str, value: object) -> bool:
         )
     if key == "x-polylogue-string-lengths":
         records = _relation_records(value, ("path",))
-        return records is not None and all(
-            _valid_pair([record.get("min"), record.get("max")], integral=True, nonnegative=True)
-            and _number(record.get("avg")) is not None
-            and _number(record.get("stddev")) is not None
+        if records is None:
+            return False
+        string_records: list[tuple[int | float | None, int | float | None, int | float | None, int | float | None]] = [
+            (
+                _number(record.get("min")),
+                _number(record.get("max")),
+                _number(record.get("avg")),
+                _number(record.get("stddev")),
+            )
             for record in records
-        )
+        ]
+        for minimum, maximum, average, stddev in string_records:
+            if (
+                not _valid_pair([minimum, maximum], integral=True, nonnegative=True)
+                or average is None
+                or stddev is None
+                or minimum is None
+                or maximum is None
+                or not minimum <= average <= maximum
+                or stddev < 0
+            ):
+                return False
+        return True
     raise AssertionError(f"missing annotation validator for {key}")
 
 
+def _schema_type(node: Mapping[str, object]) -> str | None:
+    schema_type = node.get("type")
+    if isinstance(schema_type, str):
+        return schema_type
+    if isinstance(schema_type, list):
+        types = [item for item in schema_type if isinstance(item, str) and item != "null"]
+        return types[0] if len(types) == 1 else None
+    return None
+
+
+def _annotation_is_enforced_at_node(
+    key: str,
+    value: object,
+    node: Mapping[str, object],
+    path: str,
+    root_schema: SchemaRecord,
+) -> bool:
+    schema_type = _schema_type(node)
+    if key in {
+        "x-polylogue-foreign-keys",
+        "x-polylogue-time-deltas",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-string-lengths",
+    }:
+        return (
+            path == "$"
+            and _synthetic_annotation_is_enforced(key, value)
+            and _relation_annotation_paths_are_enforced(key, value, root_schema)
+        )
+    if key == "x-polylogue-frequency":
+        return path != "$" and _synthetic_annotation_is_enforced(key, value)
+    if key in {"x-polylogue-array-lengths", "x-polylogue-observed-distribution"}:
+        if key == "x-polylogue-array-lengths":
+            return schema_type == "array" and _synthetic_annotation_is_enforced(key, value)
+        if schema_type not in {"array", "number", "integer"} or not isinstance(value, Mapping):
+            return False
+        expected_distribution = "array_length" if schema_type == "array" else "numeric"
+        return expected_distribution in value and _valid_observed_distribution(value)
+    if key == "x-polylogue-range":
+        return schema_type in {"number", "integer"} and _synthetic_annotation_is_enforced(key, value)
+    if key in {"x-polylogue-format", "x-polylogue-values", "x-polylogue-multiline"}:
+        if key == "x-polylogue-format" and schema_type in {"number", "integer"}:
+            return value == "unix-epoch"
+        return schema_type == "string" and _synthetic_annotation_is_enforced(key, value)
+    if key == "x-polylogue-semantic-role":
+        role = value if isinstance(value, str) else None
+        if role == "message_timestamp":
+            return schema_type in {"string", "number", "integer"} and _synthetic_annotation_is_enforced(key, value)
+        if role == "message_container":
+            return False
+        return schema_type == "string" and _synthetic_annotation_is_enforced(key, value)
+    return False
+
+
 def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
-    """Census every schema-scope keyword without treating property names as keywords."""
+    """Census schema keywords and annotations at the paths production consumes."""
 
     found: dict[str, ConstructSupportState] = {}
 
@@ -429,14 +932,20 @@ def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
             return
         found[key] = state
 
-    def visit(node: object) -> None:
+    def visit(node: object, path: str = "$") -> None:
         if not isinstance(node, Mapping):
             return
+        node_record = node
         for key, value in node.items():
             if not isinstance(key, str):
                 continue
             if key.startswith("x-"):
-                record_support(key, "supported" if _synthetic_annotation_is_enforced(key, value) else "unsupported")
+                record_support(
+                    key,
+                    "supported"
+                    if _annotation_is_enforced_at_node(key, value, node_record, path, cast(SchemaRecord, schema))
+                    else "unsupported",
+                )
                 continue
             if key in _SUPPORTED_SCHEMA_CONSTRUCTS:
                 record_support(key, "supported")
@@ -447,25 +956,40 @@ def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
 
             if key in _SCHEMA_MAPPING_KEYWORDS and isinstance(value, Mapping):
                 if key in {"$defs", "dependentSchemas", "dependencies", "patternProperties", "properties"}:
-                    for child in value.values():
-                        visit(child)
+                    for child_name, child in value.items():
+                        child_path = f"{path}.{child_name}" if key == "properties" else f"{path}.{key}.{child_name}"
+                        visit(child, child_path)
                 else:
-                    visit(value)
+                    visit(value, f"{path}.{key}")
             elif key in _SCHEMA_ARRAY_KEYWORDS and isinstance(value, Sequence) and not isinstance(value, str):
-                for child in value:
-                    visit(child)
+                for index, child in enumerate(value):
+                    visit(child, f"{path}.{key}[{index}]")
+            elif key == "items":
+                if isinstance(value, Sequence) and not isinstance(value, str):
+                    for index, child in enumerate(value):
+                        visit(child, f"{path}.items[{index}]")
+                else:
+                    visit(value, f"{path}.items")
+            elif key == "additionalProperties" and isinstance(value, Mapping):
+                visit(value, f"{path}.additionalProperties")
 
     visit(schema)
     return tuple(ConstructSupport(construct, found[construct]) for construct in sorted(found))
 
 
 def build_inferred_corpus_convergence_handoff(
-    manifest: InferredCorpusManifest,
+    manifest: InferredCorpusManifest | Path,
 ) -> InferredCorpusConvergenceHandoff:
-    """Bind every supported manifest spec to one convergence-property invocation."""
+    """Bind every supported row from memory or persisted disk to convergence."""
 
-    handoff = InferredCorpusConvergenceHandoff(manifest_id=manifest.manifest_id, specs=manifest.supported_specs)
-    assert_inferred_corpus_convergence_handoff_complete(manifest, handoff)
+    persisted_manifest = read_inferred_corpus_manifest(manifest) if isinstance(manifest, Path) else manifest
+    selections = tuple(_selection_for_entry(entry) for entry in persisted_manifest.entries if entry.spec is not None)
+    handoff = InferredCorpusConvergenceHandoff(
+        manifest_id=persisted_manifest.manifest_id,
+        specs=persisted_manifest.supported_specs,
+        selections=selections,
+    )
+    assert_inferred_corpus_convergence_handoff_complete(persisted_manifest, handoff)
     return handoff
 
 
@@ -485,6 +1009,28 @@ def assert_inferred_corpus_convergence_handoff_complete(
             "inferred corpus convergence handoff omitted or substituted supported specs: "
             f"expected={manifest.supported_specs!r}, actual={handoff.specs!r}"
         )
+    expected_selections = tuple(_selection_for_entry(entry) for entry in manifest.entries if entry.spec is not None)
+    if handoff.selections != expected_selections:
+        raise AssertionError(
+            "inferred corpus convergence handoff omitted or substituted generator selections: "
+            f"expected={expected_selections!r}, actual={handoff.selections!r}"
+        )
+
+
+def _selection_for_entry(entry: InferredCorpusManifestEntry) -> SyntheticSchemaSelection:
+    if entry.spec is None or entry.generator_schema is None:
+        raise ValueError("unsupported inferred corpus entry cannot produce a generator selection")
+    wire_format = PROVIDER_WIRE_FORMATS.get(entry.key.provider)
+    if wire_format is None:
+        raise ValueError(f"inferred corpus entry has no production wire format: {entry.key.provider!r}")
+    return SyntheticSchemaSelection(
+        provider=entry.key.provider,
+        package_version=entry.key.package_version,
+        element_kind=entry.key.element_kind,
+        schema=entry.generator_schema,
+        wire_format=wire_format,
+        workload_profile=entry.workload_profile,
+    )
 
 
 def _stable_seed(key: CorpusManifestKey) -> int:
@@ -504,6 +1050,39 @@ def _catalog_entries(
             for element in sorted(package.elements, key=lambda item: item.element_kind):
                 result.append((provider, catalog, package, element))
     return tuple(result)
+
+
+class _RepresentativeRegistry:
+    """Keep the live package catalog while exposing one executable schema route."""
+
+    def __init__(self, base: RuntimeSchemaRegistryLike) -> None:
+        self._base = base
+
+    def get_element_schema(
+        self,
+        provider: str,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> SchemaRecord | JSONDocument | None:
+        package = self._base.get_package(provider, version=version)
+        resolved_version = package.version if package is not None else version
+        if (
+            provider == REPRESENTATIVE_PROVIDER
+            and resolved_version == REPRESENTATIVE_PACKAGE_VERSION
+            and element_kind == REPRESENTATIVE_ELEMENT_KIND
+        ):
+            return _REPRESENTATIVE_SCHEMA
+        return self._base.get_element_schema(provider, version=version, element_kind=element_kind)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
+def representative_inferred_corpus_registry(base: RuntimeSchemaRegistryLike) -> RuntimeSchemaRegistryLike:
+    """Return a catalog-backed registry with one real provider/package route admitted."""
+
+    return _RepresentativeRegistry(base)  # type: ignore[return-value]
 
 
 def _unsupported_reason(
@@ -579,7 +1158,12 @@ def _compile_entry(
             workload_profile=workload_profile if isinstance(workload_profile, dict) else None,
         )
     )
-    return InferredCorpusManifestEntry(key=key, spec=spec)
+    return InferredCorpusManifestEntry(
+        key=key,
+        spec=spec,
+        generator_schema=schema,
+        workload_profile=workload_profile if isinstance(workload_profile, dict) else None,
+    )
 
 
 def assert_inferred_corpus_manifest_complete(
@@ -633,13 +1217,20 @@ def compile_inferred_corpus_manifest(
 __all__ = [
     "ConstructSupport",
     "CorpusManifestKey",
+    "INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION",
     "InferredCorpusConvergenceHandoff",
     "InferredCorpusManifest",
     "InferredCorpusManifestEntry",
     "PackageReceipt",
+    "REPRESENTATIVE_ELEMENT_KIND",
+    "REPRESENTATIVE_PACKAGE_VERSION",
+    "REPRESENTATIVE_PROVIDER",
     "UnsupportedCorpusRecord",
     "assert_inferred_corpus_convergence_handoff_complete",
     "assert_inferred_corpus_manifest_complete",
     "build_inferred_corpus_convergence_handoff",
     "compile_inferred_corpus_manifest",
+    "read_inferred_corpus_manifest",
+    "representative_inferred_corpus_registry",
+    "write_inferred_corpus_manifest",
 ]

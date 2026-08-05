@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from pathlib import Path
 from typing import cast
 
 import pytest
 
 from polylogue.core.json import JSONValue
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
+from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
 from tests.infra.inferred_corpus import (
     CorpusManifestKey,
@@ -15,6 +18,9 @@ from tests.infra.inferred_corpus import (
     assert_inferred_corpus_manifest_complete,
     build_inferred_corpus_convergence_handoff,
     compile_inferred_corpus_manifest,
+    read_inferred_corpus_manifest,
+    representative_inferred_corpus_registry,
+    write_inferred_corpus_manifest,
 )
 
 
@@ -71,6 +77,119 @@ def test_manifest_covers_every_persisted_package_version_element() -> None:
     assert len(manifest.entries) > len(registry.list_providers())
     assert manifest.receipt_state == "catalog_only"
     assert manifest.manifest_id.startswith("manifest:sha256:")
+    assert len(manifest.payload_sha256) == 64
+
+
+def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path: Path) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
+    path = tmp_path / "inferred-manifest.json"
+
+    write_inferred_corpus_manifest(manifest, path)
+
+    assert read_inferred_corpus_manifest(path) == manifest
+
+
+@pytest.mark.parametrize("field", ["manifest_id", "payload_sha256"])
+def test_persisted_manifest_rejects_tampered_hash_fields(tmp_path: Path, field: str) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
+    path = tmp_path / "inferred-manifest.json"
+    write_inferred_corpus_manifest(manifest, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload[field] = "tampered"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="(identity|integrity) mismatch"):
+        read_inferred_corpus_manifest(path)
+
+
+def test_persisted_manifest_rejects_unknown_schema_version(tmp_path: Path) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
+    path = tmp_path / "inferred-manifest.json"
+    write_inferred_corpus_manifest(manifest, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 99
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema_version"):
+        read_inferred_corpus_manifest(path)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ('{"manifest_id": 1, "manifest_id": 2}', "duplicate"),
+        ('{"manifest_id": NaN}', "non-finite"),
+    ],
+)
+def test_persisted_manifest_rejects_noncanonical_json(tmp_path: Path, payload: str, message: str) -> None:
+    path = tmp_path / "noncanonical.json"
+    path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        read_inferred_corpus_manifest(path)
+
+
+def test_persisted_manifest_rejects_unhashed_extra_fields(tmp_path: Path) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
+    path = tmp_path / "inferred-manifest.json"
+    write_inferred_corpus_manifest(manifest, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["unexpected"] = "tampered"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fields changed"):
+        read_inferred_corpus_manifest(path)
+
+
+def test_persisted_manifest_rejects_spec_identity_tampering(tmp_path: Path) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+    path = tmp_path / "inferred-manifest.json"
+    write_inferred_corpus_manifest(manifest, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    supported = next(entry for entry in payload["entries"] if entry["supported"] is True)
+    supported["spec"]["provider"] = "wrong-provider"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="identity"):
+        read_inferred_corpus_manifest(path)
+
+
+def test_persisted_selection_preserves_workload_profile(tmp_path: Path) -> None:
+    base = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+    supported = next(entry for entry in base.entries if entry.spec is not None)
+    profile: SchemaRecord = {"elements": {supported.key.element_kind: {"structural_variants": []}}}
+    profiled = InferredCorpusManifest(
+        entries=tuple(
+            replace(entry, workload_profile=profile) if entry is supported else entry for entry in base.entries
+        )
+    )
+    path = tmp_path / "profiled-manifest.json"
+    write_inferred_corpus_manifest(profiled, path)
+
+    persisted = read_inferred_corpus_manifest(path)
+    handoff = build_inferred_corpus_convergence_handoff(path)
+
+    persisted_supported = next(entry for entry in persisted.entries if entry.spec is not None)
+    assert persisted_supported.workload_profile == profile
+    assert handoff.selections[0].workload_profile == profile
+
+
+@pytest.mark.parametrize("extra_field", ["workload_profile", "spec"])
+def test_persisted_manifest_rejects_noncanonical_optional_entry_fields(tmp_path: Path, extra_field: str) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+    path = tmp_path / "noncanonical-manifest.json"
+    write_inferred_corpus_manifest(manifest, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if extra_field == "workload_profile":
+        supported = next(entry for entry in payload["entries"] if entry["supported"] is True)
+        supported[extra_field] = None
+    else:
+        unsupported = next(entry for entry in payload["entries"] if entry["supported"] is False)
+        unsupported[extra_field] = None
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fields changed|workload_profile"):
+        read_inferred_corpus_manifest(path)
 
 
 def test_manifest_is_independent_of_default_version_selection() -> None:
@@ -282,6 +401,199 @@ def test_unhandled_standard_constraints_are_typed_unsupported_records(keyword: s
     assert (keyword, "unsupported") in {(item.construct, item.state) for item in target.key.construct_support}
 
 
+@pytest.mark.parametrize(
+    ("annotation", "schema_type", "value"),
+    [
+        ("x-polylogue-range", "string", [1, 2]),
+        ("x-polylogue-array-lengths", "string", [1, 2]),
+        ("x-polylogue-multiline", "integer", True),
+        (
+            "x-polylogue-foreign-keys",
+            "string",
+            [{"source": "$.id", "target": "$.parent"}],
+        ),
+    ],
+)
+def test_annotation_wrong_node_shape_or_path_fails_closed(
+    annotation: str,
+    schema_type: str,
+    value: JSONValue,
+) -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    provider, package_version, element_kind = _first_wired_catalog_entry(registry)
+    schema = registry.get_element_schema(provider, version=package_version, element_kind=element_kind)
+    assert isinstance(schema, dict)
+    mutated: dict[str, JSONValue] = dict(schema)
+    raw_properties = mutated.get("properties")
+    assert isinstance(raw_properties, dict)
+    properties: dict[str, JSONValue] = dict(raw_properties)
+    properties["annotation_probe"] = {"type": schema_type, annotation: value}
+    mutated["properties"] = properties
+    proxy.schema_overrides[(provider, package_version, element_kind)] = mutated
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy)  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (provider, package_version, element_kind)
+    )
+
+    assert target.unsupported is not None
+    assert annotation in target.unsupported.details
+
+
+@pytest.mark.parametrize(
+    ("annotation", "value"),
+    [
+        ("x-polylogue-range", [3, 2]),
+        (
+            "x-polylogue-time-deltas",
+            [{"field_a": "$.a", "field_b": "$.b", "min_delta": 5, "max_delta": 2, "avg_delta": 3}],
+        ),
+        ("x-polylogue-string-lengths", [{"path": "$.text", "min": 10, "max": 2, "avg": 4, "stddev": -1}]),
+        (
+            "x-polylogue-observed-distribution",
+            {
+                "numeric": {"histogram": [[1, 2]], "log_base": 1.1},
+                "array_length": {"histogram": [[1, 0]], "log_base": 1.1},
+            },
+        ),
+        (
+            "x-polylogue-observed-distribution",
+            {"numeric": {"histogram": [[1, 2]], "log_base": 1.1, "stddev": -1}},
+        ),
+        (
+            "x-polylogue-observed-distribution",
+            {"numeric": {"histogram": [[1, 2]], "log_base": 1.1, "min": 0, "max": 10, "p50": 100}},
+        ),
+        (
+            "x-polylogue-observed-distribution",
+            {"numeric": {"histogram": [[10**1000, 1]], "log_base": 1.1}},
+        ),
+        (
+            "x-polylogue-observed-distribution",
+            {"numeric": {"histogram": [[711, 1]], "log_base": 2.718281828459045}},
+        ),
+    ],
+)
+def test_invalid_numeric_relation_or_partial_distribution_fails_closed(
+    annotation: str,
+    value: JSONValue,
+) -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    provider, package_version, element_kind = _first_wired_catalog_entry(registry)
+    schema = registry.get_element_schema(provider, version=package_version, element_kind=element_kind)
+    assert isinstance(schema, dict)
+    mutated: dict[str, JSONValue] = dict(schema)
+    if annotation in {"x-polylogue-time-deltas", "x-polylogue-string-lengths"}:
+        mutated[annotation] = value
+    else:
+        raw_properties = mutated.get("properties")
+        assert isinstance(raw_properties, dict)
+        properties: dict[str, JSONValue] = dict(raw_properties)
+        properties["annotation_probe"] = {
+            "type": "number",
+            annotation: value,
+        }
+        mutated["properties"] = properties
+    proxy.schema_overrides[(provider, package_version, element_kind)] = mutated
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy)  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (provider, package_version, element_kind)
+    )
+
+    assert target.unsupported is not None
+    assert annotation in target.unsupported.details
+
+
+@pytest.mark.parametrize(
+    ("annotation", "value"),
+    [
+        (
+            "x-polylogue-string-lengths",
+            [{"path": "not-a-generated-path", "min": 1, "max": 4, "avg": 2, "stddev": 1}],
+        ),
+        (
+            "x-polylogue-foreign-keys",
+            [{"source": "$.missing", "target": "$.missing_id"}],
+        ),
+        (
+            "x-polylogue-time-deltas",
+            [{"field_a": "$.missing_a", "field_b": "$.missing_b", "min_delta": 1, "max_delta": 2, "avg_delta": 1.5}],
+        ),
+    ],
+)
+def test_relation_annotation_paths_must_resolve_in_schema(
+    annotation: str,
+    value: JSONValue,
+) -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    provider, package_version, element_kind = _first_wired_catalog_entry(registry)
+    proxy.schema_overrides[(provider, package_version, element_kind)] = _schema_with_root_annotation(
+        registry,
+        provider=provider,
+        package_version=package_version,
+        element_kind=element_kind,
+        annotation=annotation,
+        value=value,
+    )
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy)  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (provider, package_version, element_kind)
+    )
+
+    assert target.unsupported is not None
+    assert annotation in target.unsupported.details
+
+
+def test_time_delta_paths_must_have_compatible_types() -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    provider, package_version, element_kind = _first_wired_catalog_entry(registry)
+    schema = registry.get_element_schema(provider, version=package_version, element_kind=element_kind)
+    assert isinstance(schema, dict)
+    mutated: dict[str, JSONValue] = dict(schema)
+    raw_properties = mutated.get("properties")
+    assert isinstance(raw_properties, dict)
+    properties: dict[str, JSONValue] = dict(raw_properties)
+    properties["time_delta_text"] = {"type": "string"}
+    properties["time_delta_number"] = {"type": "integer"}
+    mutated["properties"] = properties
+    mutated["x-polylogue-time-deltas"] = [
+        {
+            "field_a": "$.time_delta_text",
+            "field_b": "$.time_delta_number",
+            "min_delta": 1,
+            "max_delta": 2,
+            "avg_delta": 1.5,
+        }
+    ]
+    proxy.schema_overrides[(provider, package_version, element_kind)] = mutated
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy)  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (provider, package_version, element_kind)
+    )
+
+    assert target.unsupported is not None
+    assert "x-polylogue-time-deltas" in target.unsupported.details
+
+
 def test_convergence_handoff_rejects_an_omitted_supported_spec() -> None:
     manifest = compile_inferred_corpus_manifest(registry=_registry())
     handoff = build_inferred_corpus_convergence_handoff(manifest)
@@ -298,6 +610,22 @@ def _first_wired_catalog_entry(registry: SchemaRegistry) -> tuple[str, str, str]
         package = catalog.packages[0]
         return provider, package.version, package.elements[0].element_kind
     raise AssertionError("expected a persisted provider with a wire format")
+
+
+def test_representative_package_route_is_nonempty_and_uses_persisted_selection() -> None:
+    manifest = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+
+    assert manifest.supported_specs
+    entry = next(entry for entry in manifest.entries if entry.spec is not None)
+    assert (entry.key.provider, entry.key.package_version, entry.key.element_kind) == (
+        "codex",
+        "v1",
+        "session_record_stream",
+    )
+    assert entry.generator_schema is not None
+    handoff = build_inferred_corpus_convergence_handoff(manifest)
+    assert handoff.selections
+    assert handoff.selections[0].schema == entry.generator_schema
 
 
 def _schema_with_annotation(
