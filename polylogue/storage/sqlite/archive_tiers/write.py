@@ -3394,7 +3394,7 @@ def _write_attachments(
         position_offset=position_offset,
         duplicate_native_ids=duplicate_native_ids,
     )
-    attachment_positions = _attachment_reference_positions(attachments)
+    attachment_positions: dict[int, int] = {}
     resolved_message_ids: dict[int, str] = {}
     attachments_by_message: defaultdict[str, list[ParsedAttachment]] = defaultdict(list)
     for attachment in attachments:

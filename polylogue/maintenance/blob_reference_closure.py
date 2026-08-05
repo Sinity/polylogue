@@ -137,16 +137,18 @@ def raw_reference_closure_predicate(raw_alias: str = "r", ref_alias: str = "b") 
     """Return the canonical exact-one raw-payload reference predicate."""
     return f"""
         (
+            (
             SELECT COUNT(*) FROM blob_refs {ref_alias}
             WHERE {ref_alias}.ref_type = 'raw_payload'
               AND {ref_alias}.ref_id = {raw_alias}.raw_id
               AND {ref_alias}.blob_hash = {raw_alias}.blob_hash
-        ) != 1
-        OR (
+            ) != 1
+            OR (
             SELECT COUNT(*) FROM blob_refs {ref_alias}
             WHERE {ref_alias}.ref_type = 'raw_payload'
               AND {ref_alias}.ref_id = {raw_alias}.raw_id
-        ) != 1
+            ) != 1
+        )
     """
 
 
@@ -403,6 +405,7 @@ def reconcile_blob_reference_closure(
     source_repaired = 0
     attachment_repaired = 0
     prepared = False
+    committed = False
     attached_index = False
     try:
         try:
@@ -503,6 +506,7 @@ def reconcile_blob_reference_closure(
                     )
                 attachment_repaired += 1
             source_conn.commit()
+            committed = True
             _append_receipt(receipt_path, "source_committed", repaired_count=source_repaired)
             _append_receipt(receipt_path, "index_committed", repaired_count=attachment_repaired)
             _append_receipt(
@@ -516,7 +520,11 @@ def reconcile_blob_reference_closure(
                 source_conn.rollback()
             if prepared:
                 with suppress(OSError):
-                    _append_receipt(receipt_path, "aborted", error=str(exc))
+                    _append_receipt(
+                        receipt_path,
+                        "committed_receipt_incomplete" if committed else "aborted",
+                        error=str(exc),
+                    )
             raise
     finally:
         if attached_index:

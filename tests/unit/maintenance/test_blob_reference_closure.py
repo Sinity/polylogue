@@ -262,6 +262,7 @@ def _legacy_collision_fixture(
         preacquired_attachment_blobs=preacquired,
     )
     base_position = _attachment_position(attachments[0])
+    assert base_position == _attachment_position(attachments[1])
     kept = index.execute(
         "SELECT attachment_id FROM attachment_refs WHERE message_id = ? AND position = ?",
         (f"{session_id}:n:m1", base_position),

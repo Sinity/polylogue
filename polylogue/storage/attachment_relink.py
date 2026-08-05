@@ -170,23 +170,31 @@ def _append_materialized_message_ids(
         (session_id,),
     ).fetchall()
     duplicate_native_ids = _duplicate_message_native_ids(messages)
+    rows_by_content_hash: dict[bytes, list[sqlite3.Row]] = {}
+    for row in rows:
+        rows_by_content_hash.setdefault(bytes(row[4]), []).append(row)
+    content_hash_cache: dict[tuple[int, int, int], bytes] = {}
     resolved: dict[int, str] = {}
     for message_index, message in enumerate(messages):
         native_id = _normalized_message_native_id(message)
         if native_id is not None and native_id not in duplicate_native_ids:
             matches = [row for row in rows if row[1] == native_id]
         else:
-            matches = [
-                row
-                for row in rows
-                if _message_content_hash(
-                    session_id,
-                    message,
-                    position=int(row[2]),
-                    variant_index=int(row[3]),
-                )
-                == bytes(row[4])
-            ]
+            matches = []
+            for row in rows:
+                position = int(row[2])
+                variant_index = int(row[3])
+                cache_key = (message_index, position, variant_index)
+                message_hash = content_hash_cache.get(cache_key)
+                if message_hash is None:
+                    message_hash = _message_content_hash(
+                        session_id,
+                        message,
+                        position=position,
+                        variant_index=variant_index,
+                    )
+                    content_hash_cache[cache_key] = message_hash
+                matches.extend(rows_by_content_hash.get(message_hash, ()))
         if len(matches) == 1:
             resolved[message_index] = str(matches[0][0])
     return resolved
@@ -453,47 +461,43 @@ def relink_orphaned_attachments(
         raw_session_parser=raw_session_parser,
     )
     relinked = 0
-    errors: list[str] = []
     if not dry_run:
         for item in plan.eligible:
-            try:
+            index_conn.execute(
+                """
+                INSERT INTO attachment_refs (
+                    attachment_id, session_id, message_id, position, upload_origin, source_url, caption
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.attachment_id,
+                    item.session_id,
+                    item.message_id,
+                    item.position,
+                    item.upload_origin,
+                    item.source_url,
+                    item.caption,
+                ),
+            )
+            for id_kind, native_id in item.native_ids:
                 index_conn.execute(
                     """
-                    INSERT INTO attachment_refs (
-                        attachment_id, session_id, message_id, position, upload_origin, source_url, caption
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
+                    VALUES (?, ?, ?)
                     """,
-                    (
-                        item.attachment_id,
-                        item.session_id,
-                        item.message_id,
-                        item.position,
-                        item.upload_origin,
-                        item.source_url,
-                        item.caption,
-                    ),
+                    (f"{item.message_id}:attachment:{item.position}", id_kind, native_id),
                 )
-                for id_kind, native_id in item.native_ids:
-                    index_conn.execute(
-                        """
-                        INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
-                        VALUES (?, ?, ?)
-                        """,
-                        (f"{item.message_id}:attachment:{item.position}", id_kind, native_id),
-                    )
-                index_conn.execute(
-                    """
-                    UPDATE attachments
-                    SET ref_count = (
-                        SELECT COUNT(*) FROM attachment_refs WHERE attachment_refs.attachment_id = attachments.attachment_id
-                    )
-                    WHERE attachment_id = ?
-                    """,
-                    (item.attachment_id,),
+            index_conn.execute(
+                """
+                UPDATE attachments
+                SET ref_count = (
+                    SELECT COUNT(*) FROM attachment_refs WHERE attachment_refs.attachment_id = attachments.attachment_id
                 )
-                relinked += 1
-            except sqlite3.Error:
-                raise
+                WHERE attachment_id = ?
+                """,
+                (item.attachment_id,),
+            )
+            relinked += 1
 
     return OrphanedAttachmentRelinkResult(
         orphan_count=plan.orphan_count,
@@ -501,7 +505,7 @@ def relink_orphaned_attachments(
         relinked_count=relinked,
         unrecoverable_reason_counts=plan.unrecoverable_reason_counts,
         unrecoverable_samples=plan.unrecoverable_samples,
-        errors=tuple(errors),
+        errors=(),
     )
 
 

@@ -69,7 +69,7 @@ def _seed_coherent_archive(root: Path) -> None:
             INSERT INTO blob_refs(blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
             VALUES (?, 'raw-1', 'raw_payload', '/x', 10, 100)
             """,
-            (b"a" * 32,),
+            (bytes.fromhex(blob_hash),),
         )
         source_conn.commit()
     finally:
