@@ -778,7 +778,6 @@ def _summary_all_output_param(destination: str, out_path: str | None) -> str | N
     show_default=True,
     help="Field to print for selected or candidate sessions.",
 )
-@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_context
 def select_verb(ctx: click.Context, limit: int, print_field: str, output_format: str | None) -> None:
@@ -820,13 +819,6 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
     default="terminal",
     show_default=True,
     help="Output destination.",
-)
-@click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
 )
 @click.option(
     "--format",
@@ -1354,13 +1346,6 @@ def read_verb(
     help="Maximum continuation candidates to return.",
 )
 @click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
-)
-@click.option(
     "--format",
     "-f",
     "output_format",
@@ -1472,13 +1457,6 @@ def continue_verb(
 @click.option("--yes", "yes_flag", is_flag=True, help="Confirm the deletion (required for actual deletion)")
 @click.option("--all", "all_flag", is_flag=True, help="Delete all matched sessions (required when multiple match)")
 @click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
-)
-@click.option(
     "--format",
     "output_format",
     type=click.Choice(["json"]),
@@ -1573,13 +1551,6 @@ def delete_verb(
 @click.option("--note", "note_text", default=None, metavar="TEXT", help="Add or update a note annotation")
 @click.option("--all", "apply_all", is_flag=True, help="Apply to all matched sessions (default: singleton only)")
 @click.option("--first", "first_only", is_flag=True, help="Apply to the first matched session only")
-@click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
-)
 @click.option(
     "--format",
     "output_format",
@@ -1784,13 +1755,6 @@ def mark_verb(
     is_flag=True,
     default=False,
     help="With --facets, compute deferred detail families: repos, roles, material origins, message types, actions, flags.",
-)
-@click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
 )
 @click.option(
     "--format",
