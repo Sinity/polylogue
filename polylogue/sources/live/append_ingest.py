@@ -9,6 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -101,6 +102,22 @@ def _ingest_append_plans_archive(
                 raw_id: str | None = None
                 try:
                     provider = Provider.from_string(plan.source_name)
+                    artifact_classification = classify_artifact_path(
+                        str(plan.path),
+                        provider=provider,
+                    )
+                    if artifact_classification is not None and not artifact_classification.parse_as_session:
+                        artifact_result = archive.admit_raw_artifact_payload(
+                            provider=provider,
+                            payload=plan.payload,
+                            source_path=str(plan.path),
+                            source_index=-1,
+                            acquired_at_ms=acquired_at_ms,
+                            classification=artifact_classification,
+                        )
+                        raw_id = artifact_result.raw_id
+                        succeeded.append(plan)
+                        continue
                     t0 = time.perf_counter()
                     raw_id = archive.write_raw_payload(
                         provider=provider,

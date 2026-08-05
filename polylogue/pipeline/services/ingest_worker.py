@@ -19,7 +19,12 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from typing_extensions import TypedDict
 
-from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind, classify_artifact
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactClassification,
+    ArtifactKind,
+    classify_artifact,
+    classify_artifact_path,
+)
 from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
@@ -373,6 +378,27 @@ def _build_fast_stream_parse_plan(
     runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
     if runtime_provider not in STREAM_RECORD_PROVIDERS:
         return None
+
+    # The validation-off shortcut still has to honor path-declared fact and
+    # raw-only artifacts. Without this check, a workflow journal's JSONL path
+    # is replaced by the generic session classification below before the
+    # payload is decoded, so session-shaped journal records materialize as
+    # conversations even though the same path is classified as evidence by
+    # the ordinary envelope route.
+    path_artifact = classify_artifact_path(
+        context.raw_record.source_path,
+        provider=runtime_provider,
+    )
+    if path_artifact is not None and not path_artifact.parse_as_session:
+        return _build_parse_plan(
+            provider=runtime_provider,
+            payload_provider=str(runtime_provider),
+            artifact=path_artifact,
+            source_path=context.raw_record.source_path,
+            mode="stream",
+            schema_payload_source=None,
+            stream_name=context.raw_record.source_path or context.raw_record.raw_id,
+        )
 
     kind = (
         ArtifactKind.AGENT_TRANSCRIPT

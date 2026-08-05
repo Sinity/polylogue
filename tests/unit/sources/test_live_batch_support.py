@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import sqlite3
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -1285,6 +1286,101 @@ def test_unclassified_large_non_jsonl_is_not_streamed_as_session_artifact(
     monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
 
     assert _parse_path_as_session_artifact(target, provider=Provider.UNKNOWN) is False
+
+
+def test_full_ingest_retains_sidecar_evidence_without_materializing_sessions(tmp_path: Path) -> None:
+    """Agent metadata and workflow journals remain durable source evidence.
+
+    The fixtures contain one agent metadata sidecar and a session-shaped
+    workflow journal. The real full-ingest route must classify both from their
+    native paths, retain their raw rows and blobs, and produce no index
+    sessions. This protects the metadata-retention half of the b508/ioz7
+    cluster while the classification regression protects the worker shortcut.
+    """
+    root = tmp_path / ".claude" / "projects" / "project" / "session"
+    metadata_path = root / "subagents" / "agent-a.meta.json"
+    journal_path = root / "subagents" / "workflows" / "wf-run-1" / "journal.jsonl"
+    metadata_path.parent.mkdir(parents=True)
+    journal_path.parent.mkdir(parents=True)
+    metadata_payload = b'{"agentId":"agent-a","transcriptPath":"agent-a.jsonl"}'
+    journal_payload = (
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "wf-run-1",
+                "uuid": "journal-message-1",
+                "message": {"role": "user", "content": "retain this workflow evidence"},
+            }
+        )
+        + "\n"
+    ).encode()
+    metadata_path.write_bytes(metadata_payload)
+    journal_path.write_bytes(journal_payload)
+
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="claude-code", root=tmp_path / ".claude"),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([metadata_path, journal_path], source_name="claude-code")
+
+    assert result.succeeded == [metadata_path, journal_path]
+    assert result.failed == []
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT a.source_path, a.artifact_kind, a.support_status, a.parse_as_session, r.blob_hash
+            FROM raw_artifacts AS a
+            JOIN raw_sessions AS r ON r.raw_id = a.raw_id
+            ORDER BY a.source_path
+            """
+        ).fetchall()
+
+    assert [(Path(row[0]).name, row[1], row[2], row[3]) for row in rows] == [
+        ("agent-a.meta.json", "agent_sidecar_meta", "unknown", 0),
+        ("journal.jsonl", "workflow_journal", "unknown", 0),
+    ]
+    expected_payloads = {
+        metadata_path.name: metadata_payload,
+        journal_path.name: journal_payload,
+    }
+    for source_path, _kind, _support_status, _parse_as_session, blob_hash in rows:
+        blob_hash_hex = bytes(blob_hash).hex()
+        assert (tmp_path / "blob" / blob_hash_hex[:2] / blob_hash_hex[2:]).read_bytes() == expected_payloads[
+            Path(source_path).name
+        ]
+
+
+def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp_path: Path) -> None:
+    """Append acquisition uses the same typed sidecar admission as full ingest."""
+    path = tmp_path / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
+    path.parent.mkdir(parents=True)
+    payload = b'{"contentKey":"call-1","agentId":"agent-a"}\n'
+    path.write_bytes(payload)
+    plan = replace(_append_plan(path, payload, payload_hash="artifact"), source_name="claude-code")
+
+    result = ingest_append_plans(cast(Any, _append_owner(tmp_path)), [plan])
+
+    assert result.succeeded == [plan]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw = conn.execute(
+            "SELECT raw_id, logical_source_key, revision_kind, revision_authority FROM raw_sessions"
+        ).fetchone()
+        artifact = conn.execute(
+            "SELECT artifact_kind, classification_reason, parse_as_session, raw_id FROM raw_artifacts"
+        ).fetchone()
+    assert raw is not None
+    assert raw[1:] == (None, "unknown", "quarantined")
+    assert artifact is not None
+    assert artifact[0] == "workflow_journal"
+    assert "OriginSpec" in artifact[1]
+    assert artifact[2:] == (0, raw[0])
 
 
 def _write_plain_sqlite_db(path: Path) -> None:

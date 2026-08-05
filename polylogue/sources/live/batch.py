@@ -18,6 +18,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -2143,6 +2144,27 @@ class LiveBatchProcessor:
                     fallback_id = Path(record.source_path).stem
                     blob_hash = record.blob_hash or record.raw_id
                     acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
+                    artifact_classification = classify_artifact_path(
+                        record.source_path,
+                        provider=provider,
+                    )
+                    if (
+                        artifact_classification is not None
+                        and not artifact_classification.parse_as_session
+                        and payload is not None
+                    ):
+                        source_raw_id = archive.admit_raw_artifact_payload(
+                            provider=provider,
+                            payload=payload,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            acquired_at_ms=acquired_at_ms,
+                            classification=artifact_classification,
+                            blob_publication_receipt_id=record.blob_publication_receipt_id,
+                        ).raw_id
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
                     source_write_started = time.perf_counter()
                     if payload is None:
                         source_raw_id = archive.write_raw_blob_ref(
