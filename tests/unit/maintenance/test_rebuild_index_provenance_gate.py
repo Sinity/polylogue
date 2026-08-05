@@ -19,7 +19,7 @@ from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_
 from polylogue.maintenance.sharded_rebuild import shard_raw_ids
 from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
 from polylogue.storage.archive_identity import OwnedArchiveLocation
-from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
+from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore, IndexRebuildTransaction
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
@@ -341,59 +341,50 @@ def test_sharded_target_creation_cleans_candidate_when_receipt_expires_after_cre
 def test_full_source_transaction_creation_cleans_candidate_after_post_create_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An absent raw-id filter still gets post-create cleanup on receipt failure."""
-    root = tmp_path / "archive"
-    _seed(root, count=1)
-    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
-    original_create = IndexGenerationStore.create
+    """Full-source setup cleans both durable records after post-create validation fails.
 
-    def expire_after_create(
-        store: IndexGenerationStore, *, owner_id: str | None = None, source_snapshot: str
-    ) -> IndexGeneration:
-        generation = original_create(store, owner_id=owner_id, source_snapshot=source_snapshot)
+    Anti-vacuity: the production full-source route creates both the inactive
+    candidate and its transaction before the receipt is expired. Removing the
+    post-create validation or either cleanup leaves the captured generation or
+    transaction record behind.
+    """
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    original_create_transaction = IndexGenerationStore.create_transaction
+    created_records: list[tuple[str, str]] = []
+
+    def expire_after_transaction(
+        store: IndexGenerationStore,
+        *,
+        source_snapshot: str,
+        operation_id: str | None = None,
+        pass_byte_budget: int | None = None,
+        pass_deadline_ms: int | None = None,
+    ) -> IndexRebuildTransaction:
+        transaction = original_create_transaction(
+            store,
+            source_snapshot=source_snapshot,
+            operation_id=operation_id,
+            pass_byte_budget=pass_byte_budget,
+            pass_deadline_ms=pass_deadline_ms,
+        )
+        assert store.load(transaction.generation_id).state == "inactive"
+        assert store.load_transaction(transaction.operation_id).operation_id == transaction.operation_id
+        created_records.append((transaction.generation_id, transaction.operation_id))
         payload = json.loads(receipt_path.read_text(encoding="utf-8"))
         payload["generated_at"] = "2000-01-01T00:00:00Z"
         receipt_path.write_text(json.dumps(payload), encoding="utf-8")
-        return generation
+        return transaction
 
-    monkeypatch.setattr(IndexGenerationStore, "create", expire_after_create)
-
-    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
-        rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
-        )
-
-    assert _generation_ids(root) == set()
-    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
-
-
-def test_full_source_setup_validation_cleans_candidate_and_transaction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A receipt failure after transaction creation still cleans before replay setup returns."""
-    root = tmp_path / "archive"
-    _seed(root, count=1)
-    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
-    original_validate = rebuild_index_module._validate_rebuild_provenance_receipt
-    validation_calls = 0
-
-    def expire_on_setup_validation(root_arg: Path, receipt_arg: Path | None) -> dict[str, object]:
-        nonlocal validation_calls
-        validation_calls += 1
-        if validation_calls == 3:
-            payload = json.loads(receipt_path.read_text(encoding="utf-8"))
-            payload["generated_at"] = "2000-01-01T00:00:00Z"
-            receipt_path.write_text(json.dumps(payload), encoding="utf-8")
-        return original_validate(root_arg, receipt_arg)
-
-    monkeypatch.setattr(rebuild_index_module, "_validate_rebuild_provenance_receipt", expire_on_setup_validation)
+    monkeypatch.setattr(IndexGenerationStore, "create_transaction", expire_after_transaction)
 
     with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
         rebuild_index_from_source_sync(
             RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
         )
 
-    assert validation_calls == 3
+    assert len(created_records) == 1
     assert _generation_ids(root) == set()
     assert not list((root / ".index-rebuild-transactions").glob("*.json"))
 
