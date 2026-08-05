@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from devtools.testmon_blind_spot_audit import BlindSpotFinding, BlindSpotReport, audit_blind_spots, main
+from devtools.testmon_blind_spot_audit import (
+    BlindSpotFinding,
+    BlindSpotReport,
+    audit_blind_spots,
+    classify_source_ast,
+    main,
+)
 
 
 def _write_coverage(path: Path, files: dict[str, tuple[int, int]]) -> None:
@@ -104,6 +110,65 @@ def test_fingerprint_presence_clears_the_executable_blind_spot(tmp_path: Path) -
     assert finding.testmon_fingerprinted is True
     assert finding.status == "fingerprinted"
     assert finding.safe is True
+
+
+def test_evaluated_function_and_class_headers_are_executable(tmp_path: Path) -> None:
+    source = tmp_path / "declaration_headers.py"
+    source.write_text(
+        "def configured(value=DEFAULT_VALUE, *, named=KEYWORD_DEFAULT):\n"
+        "    pass\n\n"
+        "class Configured(Base, Mixin, metaclass=METACLASS):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    assert classify_source_ast(source) == "executable"
+
+
+def test_fingerprinted_source_read_error_is_unsafe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "unreadable_fixture.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    coverage = tmp_path / "coverage.json"
+    testmon = tmp_path / "testmondata"
+    _write_coverage(coverage, {"unreadable_fixture.py": (0, 0)})
+    _write_testmon(testmon, ("unreadable_fixture.py",))
+
+    original_read_text = Path.read_text
+
+    def read_text(path: Path, *args: object, **kwargs: object) -> str:
+        if path == source:
+            raise OSError("synthetic source read failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    report = audit_blind_spots(
+        coverage_json_path=coverage,
+        testmon_db_path=testmon,
+        source_root=tmp_path,
+    )
+
+    finding = _finding(report, "unreadable_fixture.py")
+    assert finding.testmon_fingerprinted is True
+    assert finding.status == "source-unreadable"
+    assert finding.safe is False
+    assert (
+        main(
+            [
+                "--coverage-json",
+                str(coverage),
+                "--testmon-db",
+                str(testmon),
+                "--source-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+    assert "source-unreadable" in capsys.readouterr().out
 
 
 def test_mutation_proof_fixture_or_ast_change_never_makes_validator_safe(tmp_path: Path) -> None:

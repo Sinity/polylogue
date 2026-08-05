@@ -22,7 +22,7 @@ from typing import Literal
 
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-ASTClassification = Literal["declaration-only", "executable"]
+ASTClassification = Literal["declaration-only", "executable", "source-unreadable"]
 FindingStatus = Literal[
     "fingerprinted",
     "declaration-only-unfingerprinted",
@@ -157,9 +157,13 @@ def _statement_is_executable(node: ast.stmt) -> bool:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         if node.decorator_list:
             return True
+        if node.args.defaults or any(default is not None for default in node.args.kw_defaults):
+            return True
         return _body_is_executable(node.body)
     if isinstance(node, ast.ClassDef):
         if node.decorator_list:
+            return True
+        if node.bases or node.keywords:
             return True
         return _body_is_executable(node.body)
     if isinstance(node, ast.Assign):
@@ -193,10 +197,12 @@ def _body_is_executable(body: list[ast.stmt]) -> bool:
 
 
 def classify_source_ast(source_path: Path) -> ASTClassification:
-    """Classify source by executable AST content, with parse failures as risk."""
+    """Classify source by executable AST content, with read and parse failures as risk."""
     try:
         tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
-    except (OSError, SyntaxError, UnicodeDecodeError):
+    except OSError:
+        return "source-unreadable"
+    except (SyntaxError, UnicodeDecodeError):
         return "executable"
     return "executable" if _body_is_executable(tree.body) else "declaration-only"
 
@@ -216,7 +222,7 @@ def audit_blind_spots(
         readable = source_path.is_file()
         classification = classify_source_ast(source_path)
         fingerprinted = coverage_file.path in fingerprints
-        if not readable:
+        if not readable or classification == "source-unreadable":
             status: FindingStatus = "source-unreadable"
             safe = False
         elif fingerprinted:
