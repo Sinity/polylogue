@@ -11,29 +11,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import sqlite3
 import sys
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypeAlias, TypedDict, cast
+from uuid import uuid4
 
 from polylogue.maintenance.archive_verification import CORPUS_FIDELITY_CHECKS, verify_archive
+from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.version import POLYLOGUE_VERSION
 
-RECEIPT_SCHEMA = "polylogue.schema-inference-gate.v1"
-GATE_VERSION = "2"
+RECEIPT_SCHEMA = "polylogue.schema-inference-gate.v2"
+GATE_VERSION = "3"
 DEFAULT_SAMPLE_LIMIT = 10
 RECEIPT_FILENAME = "schema-inference-gate-receipt.json"
+RECEIPT_TTL = timedelta(hours=24)
+RECEIPT_CLOCK_SKEW = timedelta(minutes=5)
 
 _ALLOWED_RESIDUAL_EXPLANATIONS = frozenset(
     {"materialized", "superseded-duplicate", "legitimately-excluded-non-conversation"}
@@ -474,26 +481,98 @@ def _failed_source_gates(reason: str) -> dict[str, object]:
     }
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_schema_digest(conn: sqlite3.Connection) -> str:
+    rows = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE sql IS NOT NULL AND name != 'sqlite_stat1' ORDER BY type, name, tbl_name"
+    ).fetchall()
+    encoded = json.dumps(
+        [[str(value) if value is not None else None for value in row] for row in rows],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _canonical_schema_digest(tier: ArchiveTier) -> str | None:
+    """Return the schema identity of a fresh canonical tier, when loadable."""
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        if tier is ArchiveTier.EMBEDDINGS:
+            loaded, _error = try_load_sqlite_vec(conn)
+            if not loaded:
+                return None
+        initialize_archive_tier(conn, tier)
+        return _sqlite_schema_digest(conn)
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def _tier_schema_identity(archive_root: Path, location: ArchiveLocation) -> dict[str, object]:
     tiers: dict[str, object] = {}
     for tier, spec in ARCHIVE_TIER_SPECS.items():
-        path = location.active_index_path if tier is ArchiveTier.INDEX else archive_root / spec.filename
+        identity = (
+            location.active_index if tier is ArchiveTier.INDEX else location.configured_tier(cast(Any, tier.value))
+        )
+        path = identity.resolved_path
+        expected_schema_sha256 = _canonical_schema_digest(tier)
         entry: dict[str, object] = {
             "path": str(path),
+            "stable_id": identity.stable_id,
             "expected_user_version": spec.version,
             "durability": spec.durability,
             "exists": path.exists(),
             "actual_user_version": None,
+            "content_sha256": None,
+            "schema_sha256": None,
+            "expected_schema_sha256": expected_schema_sha256,
         }
         if path.exists():
             try:
                 with open_readonly_connection(path) as conn:
                     entry["actual_user_version"] = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                    entry["schema_sha256"] = _sqlite_schema_digest(conn)
             except sqlite3.Error as exc:
                 entry["error"] = str(exc)
+            try:
+                entry["content_sha256"] = _file_sha256(path)
+            except OSError as exc:
+                entry["error"] = str(exc)
         entry["matches_expected"] = entry["actual_user_version"] == spec.version
+        if expected_schema_sha256 is not None:
+            entry["matches_expected"] = bool(entry["matches_expected"]) and (
+                entry["schema_sha256"] == expected_schema_sha256
+            )
         tiers[tier.value] = entry
-    return {"archive": ArchiveIdentity.resolve_location(location).as_dict(), "tiers": tiers}
+    archive_identity = ArchiveIdentity.resolve_location(location)
+    runtime_archive_payload = archive_identity.as_dict()
+    archive_payload = {
+        key: runtime_archive_payload[key]
+        for key in (
+            "configured_root",
+            "durable_id",
+            "active_generation",
+            "generation_owner",
+            "generation_state",
+            "tiers",
+        )
+    }
+    archive_payload["authority_identity_digest"] = archive_identity.authority_identity_digest
+    return {"archive": archive_payload, "tiers": tiers}
 
 
 def _resolve_receipt_path(receipt_path: Path, *, archive_root: Path) -> Path:
@@ -1018,26 +1097,148 @@ def _int_or_zero(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def schema_inference_gate_receipt_digest(payload: Mapping[str, object]) -> str:
+    """Digest every receipt field except the self-authenticating digest."""
+
+    body = {key: value for key, value in payload.items() if key != "receipt_sha256"}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
+    payload["receipt_sha256"] = schema_inference_gate_receipt_digest(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise SchemaInferenceGateError(f"immutable schema-inference gate receipt already exists: {path}") from exc
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
-def run_schema_inference_gate(
+def _archive_config(root: Path) -> Any:
+    from polylogue.config import Config
+
+    return Config(archive_root=root, render_root=root / "render", sources=[])
+
+
+@contextmanager
+def schema_inference_quiescence(archive_root: Path) -> Iterator[None]:
+    """Hold the archive-wide offline lease for the complete evidence window."""
+
+    root = Path(archive_root).absolute()
+    daemon_pid = running_daemon_pid(_archive_config(root))
+    if daemon_pid is not None:
+        raise SchemaInferenceGateError(
+            f"schema-inference gate requires a quiesced archive; polylogued PID {daemon_pid} is running"
+        )
+    try:
+        with RebuildLease(root):
+            yield
+    except RebuildLeaseUnavailableError as exc:
+        raise SchemaInferenceGateError(
+            f"schema-inference gate requires exclusive offline archive ownership: {exc}"
+        ) from exc
+
+
+def _parse_receipt_time(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise SchemaInferenceGateError("schema-inference gate receipt generated_at is missing")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise SchemaInferenceGateError("schema-inference gate receipt generated_at is invalid") from exc
+    if parsed.tzinfo is None:
+        raise SchemaInferenceGateError("schema-inference gate receipt generated_at must include a timezone")
+    return parsed.astimezone(UTC)
+
+
+def validate_schema_inference_gate_receipt(
+    receipt_path: Path,
+    *,
+    archive_root: Path,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Validate a fresh, immutable PASS receipt against the live archive."""
+
+    root = Path(archive_root).absolute()
+    safe_path = _resolve_receipt_path(Path(receipt_path), archive_root=root)
+    try:
+        raw = safe_path.read_bytes()
+        loaded = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SchemaInferenceGateError(f"unable to read schema-inference gate receipt: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise SchemaInferenceGateError("schema-inference gate receipt must be a JSON object")
+    payload = cast(dict[str, object], loaded)
+    if payload.get("schema") != RECEIPT_SCHEMA or payload.get("gate_version") != GATE_VERSION:
+        raise SchemaInferenceGateError("schema-inference gate receipt schema version is unsupported")
+    if payload.get("verdict") != "PASS":
+        raise SchemaInferenceGateError("schema-inference gate receipt is not a PASS")
+    if payload.get("receipt_sha256") != schema_inference_gate_receipt_digest(payload):
+        raise SchemaInferenceGateError("schema-inference gate receipt content digest mismatch")
+    generated_at = _parse_receipt_time(payload.get("generated_at"))
+    current_time = (now or datetime.now(UTC)).astimezone(UTC)
+    age = current_time - generated_at
+    if age < -RECEIPT_CLOCK_SKEW or age > RECEIPT_TTL:
+        raise SchemaInferenceGateError("schema-inference gate receipt is stale or from the future")
+    location = ArchiveLocation.resolve(root)
+    if payload.get("archive_root") != str(root):
+        raise SchemaInferenceGateError("schema-inference gate receipt targets a different archive")
+    live_identity = _tier_schema_identity(root, location)
+    if payload.get("schema_identity") != live_identity:
+        raise SchemaInferenceGateError("schema-inference gate receipt archive or tier identity is stale")
+    archive_payload = _as_dict(live_identity.get("archive"))
+    if payload.get("archive_identity_digest") != archive_payload.get("authority_identity_digest"):
+        raise SchemaInferenceGateError("schema-inference gate receipt archive identity is stale")
+    if payload.get("source_schema_identity") != _as_dict(_as_dict(live_identity.get("tiers")).get("source")):
+        raise SchemaInferenceGateError("schema-inference gate receipt source schema identity is stale")
+    if not all(bool(_as_dict(value).get("matches_expected")) for value in _as_dict(live_identity["tiers"]).values()):
+        raise SchemaInferenceGateError("live archive has a stale durable or derived tier schema identity")
+    input_paths = _as_dict(payload.get("input_paths"))
+    if input_paths.get("receipt") != str(safe_path):
+        raise SchemaInferenceGateError("schema-inference gate receipt is bound to a different receipt path")
+    reasons = payload.get("pass_fail_reasons")
+    if not isinstance(reasons, list) or reasons:
+        raise SchemaInferenceGateError("schema-inference gate receipt contains failure reasons")
+    return payload
+
+
+@contextmanager
+def authorize_schema_generation(archive_root: Path, receipt_path: Path) -> Iterator[dict[str, object]]:
+    """Hold quiescence while authorizing one schema-generation scan."""
+
+    with schema_inference_quiescence(archive_root):
+        yield validate_schema_inference_gate_receipt(receipt_path, archive_root=archive_root)
+
+
+def _run_schema_inference_gate_locked(
     archive_root: Path,
     *,
     receipt_path: Path,
     ground_truth_roots: Mapping[str, Sequence[Path]] | None = None,
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
 ) -> SchemaInferenceGateResult:
-    """Run and persist the schema-inference prerequisite receipt."""
+    """Run and persist the schema-inference prerequisite while already locked."""
 
     if sample_limit <= 0:
         raise SchemaInferenceGateError("sample_limit must be positive")
     root = Path(archive_root).absolute()
     safe_receipt_path = _resolve_receipt_path(Path(receipt_path), archive_root=root)
+    location: ArchiveLocation | None = None
     try:
         location = ArchiveLocation.resolve(root)
         index_path = location.active_index_path
@@ -1104,14 +1305,26 @@ def run_schema_inference_gate(
         if isinstance(ground_truth_reasons, list):
             reasons.extend(str(reason) for reason in ground_truth_reasons)
 
+    final_schema_identity = _tier_schema_identity(root, location) if location is not None else schema_identity
+    tier_entries = _as_dict(final_schema_identity.get("tiers"))
+    schema_identity_ok = len(tier_entries) == len(ARCHIVE_TIER_SPECS) and all(
+        bool(_as_dict(value).get("matches_expected")) for value in tier_entries.values()
+    )
+    if not schema_identity_ok:
+        for tier_name, entry in tier_entries.items():
+            if not bool(_as_dict(entry).get("matches_expected")):
+                reasons.append(f"{tier_name}.db schema identity is stale or does not match the packaged schema")
+    archive_payload = _as_dict(final_schema_identity.get("archive"))
     payload: dict[str, object] = {
         "schema": RECEIPT_SCHEMA,
         "gate_version": GATE_VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
-        "verdict": "PASS" if not reasons and passed_hard_gates else "FAIL",
+        "receipt_nonce": uuid4().hex,
+        "verdict": "PASS" if not reasons and passed_hard_gates and schema_identity_ok else "FAIL",
         "archive_root": str(root),
-        "schema_identity": schema_identity,
-        "source_schema_identity": source_entry,
+        "archive_identity_digest": archive_payload.get("authority_identity_digest"),
+        "schema_identity": final_schema_identity,
+        "source_schema_identity": _as_dict(tier_entries.get("source")),
         "query_results": gate_results,
         "source_denominators": source_gates.get("source_counts", {}),
         "blob_denominators": blob_denominators,
@@ -1126,6 +1339,7 @@ def run_schema_inference_gate(
             "active_index_db": str(index_path),
             "receipt": str(safe_receipt_path),
         },
+        "quiescence": {"lease": "index-rebuild-exclusive", "daemon_pid": None},
         "tool_versions": {
             "polylogue": POLYLOGUE_VERSION,
             "gate": GATE_VERSION,
@@ -1139,6 +1353,24 @@ def run_schema_inference_gate(
     return SchemaInferenceGateResult(payload)
 
 
+def run_schema_inference_gate(
+    archive_root: Path,
+    *,
+    receipt_path: Path,
+    ground_truth_roots: Mapping[str, Sequence[Path]] | None = None,
+    sample_limit: int = DEFAULT_SAMPLE_LIMIT,
+) -> SchemaInferenceGateResult:
+    """Run the prerequisite under exclusive offline ownership."""
+
+    with schema_inference_quiescence(Path(archive_root).absolute()):
+        return _run_schema_inference_gate_locked(
+            archive_root,
+            receipt_path=receipt_path,
+            ground_truth_roots=ground_truth_roots,
+            sample_limit=sample_limit,
+        )
+
+
 __all__ = [
     "DEFAULT_SAMPLE_LIMIT",
     "GROUND_TRUTH_INPUTS",
@@ -1146,5 +1378,9 @@ __all__ = [
     "RECEIPT_SCHEMA",
     "SchemaInferenceGateError",
     "SchemaInferenceGateResult",
+    "authorize_schema_generation",
+    "schema_inference_gate_receipt_digest",
+    "schema_inference_quiescence",
+    "validate_schema_inference_gate_receipt",
     "run_schema_inference_gate",
 ]

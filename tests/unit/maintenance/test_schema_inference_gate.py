@@ -16,6 +16,7 @@ from polylogue.maintenance.schema_inference_gate import (
     run_schema_inference_gate,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.index_generation import RebuildLease
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
@@ -137,9 +138,10 @@ def _run(
     ground_truth_roots: dict[str, tuple[Path, ...]] | None = None,
 ) -> _GateReceipt:
     external_root = ground_truth or root.parent / f"{root.name}-codex-ground-truth"
+    receipt_count = sum(1 for child in tmp_path.iterdir() if child.name.startswith("schema-gate-receipt-"))
     result = run_schema_inference_gate(
         root,
-        receipt_path=tmp_path / RECEIPT_FILENAME,
+        receipt_path=tmp_path / f"schema-gate-receipt-{receipt_count}" / RECEIPT_FILENAME,
         ground_truth_roots=ground_truth_roots or {"codex-session": (external_root,)},
     )
     return cast(_GateReceipt, result.payload)
@@ -179,6 +181,40 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
     assert {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in ("source.db", "index.db")
     } == before
+
+
+def test_gate_rejects_stale_non_source_tier_schema_identity(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute("PRAGMA user_version = 0")
+
+    payload = _run(root, tmp_path, ground_truth=ground_truth)
+
+    assert payload["verdict"] == "FAIL"
+    assert any("user.db schema identity is stale" in reason for reason in payload["pass_fail_reasons"])
+
+
+def test_gate_receipt_path_is_immutable(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt = tmp_path / RECEIPT_FILENAME
+    run_schema_inference_gate(root, receipt_path=receipt, ground_truth_roots={"codex-session": (ground_truth,)})
+
+    with pytest.raises(SchemaInferenceGateError, match="immutable"):
+        run_schema_inference_gate(root, receipt_path=receipt, ground_truth_roots={"codex-session": (ground_truth,)})
+
+
+def test_gate_refuses_concurrent_writer_lease(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    with RebuildLease(root):
+        with pytest.raises(SchemaInferenceGateError, match="exclusive offline archive ownership"):
+            run_schema_inference_gate(
+                root,
+                receipt_path=tmp_path / RECEIPT_FILENAME,
+                ground_truth_roots={"codex-session": (ground_truth,)},
+            )
 
 
 def test_receipt_target_can_never_replace_a_live_tier(tmp_path: Path) -> None:
