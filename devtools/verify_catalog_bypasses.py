@@ -3,14 +3,16 @@
 The CommandSpec catalog is the public execution registry. Workflow ``run:``
 blocks, repository hooks, CI-owned npm scripts, and devtools process-launch
 calls must invoke it as ``devtools ...``. This checker catches literal direct forms such as
-``python -m devtools.some_module`` and ``python devtools/some_module.py``.
+``python -m devtools.some_module``, ``python -mdevtools.some_module``, and
+``python devtools/some_module.py``.
 
 Scope is deliberately execution-only:
 
 * workflow ``run:`` blocks, hook shell scripts, and the declared top-level
   JavaScript workspace npm scripts are scanned as structured command text;
 * ``devtools/**/*.py`` is parsed with ``ast`` and only command-runner call
-  arguments are inspected, including literal ``args=`` keyword vectors.
+  arguments are inspected, including literal ``args=`` keyword vectors and
+  CPython's compact ``-mdevtools.module`` form.
 
 Generated provenance headers, argparse ``prog`` values, comments, and
 docstrings are outside the scope because they do not launch a process. A real
@@ -37,9 +39,21 @@ from devtools import repo_root as _get_root
 from devtools.command_catalog import CATALOG_BYPASS_SITES, CatalogBypassSite
 
 ROOT = _get_root()
-_COMMAND_RUNNERS = {"run", "check_call", "check_output", "Popen", "system", "_run", "run_command", "_run_command"}
+_COMMAND_RUNNERS = {
+    "run",
+    "call",
+    "check_call",
+    "check_output",
+    "Popen",
+    "system",
+    "_run",
+    "run_command",
+    "_run_command",
+}
 _PYTHON = r"python(?:3(?:\.\d+)?)?"
-_MODULE_INVOCATION = re.compile(rf"(?<![\w./-])(?:uv\s+run\s+)?{_PYTHON}\s+-m\s+(devtools\.[A-Za-z_][A-Za-z0-9_]*)")
+_MODULE_INVOCATION = re.compile(
+    rf"(?<![\w./-])(?:uv\s+run\s+)?{_PYTHON}\s+-m(?:[ \t]+)?(devtools\.[A-Za-z_][A-Za-z0-9_]*)"
+)
 _SCRIPT_INVOCATION = re.compile(
     rf"(?<![\w./-])(?:uv\s+run\s+)?{_PYTHON}\s+(?:\./)?(devtools/[A-Za-z_][A-Za-z0-9_]*\.py)"
 )
@@ -125,10 +139,14 @@ def _invocations_from_command_expression(node: ast.expr, *, path: str, lineno: i
         if not _is_python_expression(part) or index + 1 >= len(parts):
             continue
         next_part = _literal_string(parts[index + 1])
+        module: str | None = None
         if next_part == "-m" and index + 2 < len(parts):
             module = _literal_string(parts[index + 2])
-            if module is not None and re.fullmatch(r"devtools\.[A-Za-z_][A-Za-z0-9_]*", module):
-                findings.append(DirectDevtoolsInvocation(path=path, lineno=lineno, invocation=f"python -m {module}"))
+        elif next_part is not None:
+            compact = re.fullmatch(r"-m(devtools\.[A-Za-z_][A-Za-z0-9_]*)", next_part)
+            module = compact.group(1) if compact is not None else None
+        if module is not None and re.fullmatch(r"devtools\.[A-Za-z_][A-Za-z0-9_]*", module):
+            findings.append(DirectDevtoolsInvocation(path=path, lineno=lineno, invocation=f"python -m {module}"))
         elif next_part is not None and re.fullmatch(r"(?:\./)?devtools/[A-Za-z_][A-Za-z0-9_]*\.py", next_part):
             findings.append(
                 DirectDevtoolsInvocation(path=path, lineno=lineno, invocation=f"python {next_part.removeprefix('./')}")

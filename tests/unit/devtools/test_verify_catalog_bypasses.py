@@ -63,6 +63,20 @@ def test_scan_detects_direct_script_execution_in_workflow_run_block(tmp_path: Pa
     ]
 
 
+def test_scan_detects_compact_module_execution_in_workflow_run_block(tmp_path: Path) -> None:
+    workflow = tmp_path / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        "jobs:\n  check:\n    steps:\n      - run: python3 -mdevtools.fourth_bypass\n", encoding="utf-8"
+    )
+
+    violations = lint.collect_violations(tmp_path, paths=(Path(".github/workflows/ci.yml"),))
+
+    assert [(item.path, item.invocation) for item in violations] == [
+        (".github/workflows/ci.yml", "python -m devtools.fourth_bypass")
+    ]
+
+
 def test_scan_detects_direct_module_execution_in_ci_owned_npm_script(tmp_path: Path) -> None:
     manifest = tmp_path / "webui" / "package.json"
     manifest.parent.mkdir()
@@ -74,6 +88,20 @@ def test_scan_detects_direct_module_execution_in_ci_owned_npm_script(tmp_path: P
 
     assert [(item.path, item.lineno, item.invocation, item.reason) for item in violations] == [
         ("webui/package.json", 3, "python -m devtools.fourth_bypass", "undeclared-direct-invocation")
+    ]
+
+
+def test_scan_detects_compact_module_execution_in_ci_owned_npm_script(tmp_path: Path) -> None:
+    manifest = tmp_path / "webui" / "package.json"
+    manifest.parent.mkdir()
+    manifest.write_text(
+        '{\n  "scripts": {\n    "generate": "python3 -mdevtools.fourth_bypass"\n  }\n}\n', encoding="utf-8"
+    )
+
+    violations = lint.collect_violations(tmp_path, paths=(Path("webui/package.json"),))
+
+    assert [(item.path, item.invocation) for item in violations] == [
+        ("webui/package.json", "python -m devtools.fourth_bypass")
     ]
 
 
@@ -89,6 +117,32 @@ def test_scan_detects_direct_module_execution_in_keyword_args(tmp_path: Path) ->
 
     assert [(item.path, item.lineno, item.invocation, item.reason) for item in violations] == [
         ("devtools/control.py", 4, "python -m devtools.fourth_bypass", "undeclared-direct-invocation")
+    ]
+
+
+def test_scan_detects_compact_module_execution_in_subprocess_call_keyword_args(tmp_path: Path) -> None:
+    control = tmp_path / "devtools" / "control.py"
+    control.parent.mkdir()
+    control.write_text(
+        "import subprocess\nsubprocess.call(args=['python', '-mdevtools.fourth_bypass'])\n", encoding="utf-8"
+    )
+
+    violations = lint.collect_violations(tmp_path, paths=(Path("devtools/control.py"),))
+
+    assert [(item.path, item.lineno, item.invocation, item.reason) for item in violations] == [
+        ("devtools/control.py", 2, "python -m devtools.fourth_bypass", "undeclared-direct-invocation")
+    ]
+
+
+def test_scan_detects_compact_module_execution_in_hook(tmp_path: Path) -> None:
+    hook = tmp_path / ".githooks" / "custom-pre-push"
+    hook.parent.mkdir()
+    hook.write_text("python3 -mdevtools.fourth_bypass\n", encoding="utf-8")
+
+    violations = lint.collect_violations(tmp_path, paths=(Path(".githooks/custom-pre-push"),))
+
+    assert [(item.path, item.invocation) for item in violations] == [
+        (".githooks/custom-pre-push", "python -m devtools.fourth_bypass")
     ]
 
 
