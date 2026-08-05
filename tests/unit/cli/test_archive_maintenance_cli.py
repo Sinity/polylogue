@@ -2359,7 +2359,10 @@ def test_rebuild_index_source_snapshot_drift_marks_candidate_stale_before_promot
     receipt_payload["source_snapshot"] = "source-v1"
     receipt_path.write_text(json.dumps(receipt_payload), encoding="utf-8")
     snapshots = iter(("source-v1", "source-v1", "source-v2"))
-    monkeypatch.setattr("polylogue.storage.index_generation.source_revision_snapshot", lambda _root: next(snapshots))
+    monkeypatch.setattr(
+        "polylogue.maintenance.schema_inference_gate.rebuild_source_revision_snapshot",
+        lambda _root: next(snapshots),
+    )
     result = cli_runner.invoke(
         cli,
         ["--plain", "ops", "maintenance", "rebuild-index", "--output-format", "json"],

@@ -23,7 +23,8 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync, rebuild_status
-from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
+from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -137,7 +138,7 @@ def test_reports_transaction_cursor_and_no_delta_when_source_unchanged(tmp_path:
         )
     store = IndexGenerationStore.for_archive_root(root)
     transaction = store.create_transaction(
-        source_snapshot=source_revision_snapshot(root), operation_id="status-probe-op"
+        source_snapshot=rebuild_source_revision_snapshot(root), operation_id="status-probe-op"
     )
     transaction = store.checkpoint_transaction(
         transaction, status="paused", last_raw_id="raw-a", last_blob_hash_hex="00" * 32, processed_raw_count=1
