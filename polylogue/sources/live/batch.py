@@ -2873,7 +2873,6 @@ class LiveBatchProcessor:
             fallback_provider,
             cursor_state=None,
             zip_path=path,
-            session_only=False,
         )
         try:
             with zipfile.ZipFile(path) as zf:

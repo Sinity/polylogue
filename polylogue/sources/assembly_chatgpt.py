@@ -79,7 +79,7 @@ def _acquire_dat_blobs_from_zip(zip_path: Path, store: BlobStore) -> dict[str, t
     decompression via ``open_bounded_zip_entry``, no full-file memory load)
     but scans the whole archive up front rather than the main
     ``ZipEntryValidator`` per-entry loop, which only ever admits
-    ``.json``/``.jsonl`` entries (``session_only=True``) and would otherwise
+    ``.json``/``.jsonl`` entries and would otherwise
     never see a ``.dat`` member at all.
     """
     from polylogue.storage.blob_publication import flush_blob_publications

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypeAlias, cast
+from typing import IO, Literal, TypeAlias, cast
 
 from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
@@ -184,7 +184,7 @@ def _sample_jsonl_payload_with_detail(
 
 
 def jsonl_session_artifact(
-    raw: Path | bytes | str,
+    raw: Path | bytes | str | IO[bytes] | IO[str],
     *,
     provider: Provider,
     jsonl_dict_only: bool = False,

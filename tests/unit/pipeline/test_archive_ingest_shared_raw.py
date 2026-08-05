@@ -37,6 +37,7 @@ sessions instead of writing a duplicate raw row.
 from __future__ import annotations
 
 import sqlite3
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -134,22 +135,42 @@ def _membership_rows(source_db: Path, raw_id: str) -> set[tuple[str, str]]:
     return {(str(row[0]), str(row[1])) for row in rows}
 
 
+def _workflow_journal_payload(*, malformed: bool = False, delayed: bool = False) -> bytes:
+    if malformed:
+        return b'{"contentKey":"broken"\n'
+    prefix = b""
+    if delayed:
+        prefix = b"".join(
+            b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
+            for index in range(32)
+        )
+    return prefix + (
+        b'{"sessionId":"journal-session","parentUuid":null,"type":"user",'
+        b'"message":{"role":"user","content":[{"type":"text","text":"recover journal"}]},'
+        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"sessionId":"journal-session","parentUuid":"journal-user","type":"assistant",'
+        b'"message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+
+
 def _write_session_shaped_workflow_journal(root: Path, *, malformed: bool = False) -> Path:
     journal = root / "subagents" / "workflows" / "wf-archive" / "journal.jsonl"
     journal.parent.mkdir(parents=True)
-    if malformed:
-        journal.write_bytes(b'{"contentKey":"broken"\n')
-    else:
-        journal.write_bytes(
-            b'{"sessionId":"journal-session","parentUuid":null,"type":"user",'
-            b'"message":{"role":"user","content":[{"type":"text","text":"recover journal"}]},'
-            b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
-            b'{"sessionId":"journal-session","parentUuid":"journal-user","type":"assistant",'
-            b'"message":{"role":"assistant",'
-            b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
-            b'"timestamp":"2025-01-01T00:00:01Z"}\n'
-        )
+    journal.write_bytes(_workflow_journal_payload(malformed=malformed))
     return journal
+
+
+def _write_workflow_journal_zip(root: Path, *, malformed: bool = False) -> Path:
+    archive = root / "claude-export.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "subagents/workflows/wf-archive/journal.jsonl",
+            _workflow_journal_payload(malformed=malformed, delayed=not malformed),
+        )
+    return archive
 
 
 @pytest.mark.asyncio
@@ -185,6 +206,53 @@ async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
     result = await parse_sources_archive(
         archive_root,
         [Source(name="claude-code", path=journal)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
+            "workflow_journal",
+            0,
+        )
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_zip_workflow_journal_scans_delayed_session_evidence_idempotently(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """ZIP member routing must decode beyond 32 artifact records before exclusion."""
+    archive_root = workspace_env["archive_root"]
+    journal_zip = _write_workflow_journal_zip(tmp_path / "sessions")
+    sources = [Source(name="claude-code", path=journal_zip)]
+
+    first = await parse_sources_archive(archive_root, sources, parse_workers=1)
+    second = await parse_sources_archive(archive_root, sources, parse_workers=1)
+
+    assert first.parse_failures == 0
+    assert first.counts["sessions"] == 1
+    assert second.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evidence(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """Malformed ZIP journals are retained as typed evidence without sessions."""
+    archive_root = workspace_env["archive_root"]
+    journal_zip = _write_workflow_journal_zip(tmp_path / "sessions", malformed=True)
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=journal_zip)],
         parse_workers=1,
     )
 

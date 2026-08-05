@@ -370,10 +370,8 @@ class TestZipEntryValidator:
         assert len(accepted) == 3
         assert sum(info.file_size for info in accepted) == 3 * one_gib
 
-    def test_session_only_excludes_non_session_artifact_via_real_classification(self) -> None:
-        """``session_only=True`` (what ``process_zip`` always passes in
-        production) must actually exclude a real non-session artifact via a
-        genuine, non-monkeypatched ``classify_artifact_path`` call.
+    def test_validator_leaves_terminal_artifact_classification_to_zip_processing(self) -> None:
+        """ZIP validation must not path-exclude entries before payload decoding.
 
         Regression test for polylogue-dc1k: every ``OriginArtifactRule.path_pattern``
         in ``origin_specs.py`` is anchored ``(?:^|/)``, but the entry was
@@ -392,21 +390,17 @@ class TestZipEntryValidator:
             # Matches the "agent_transcript" OriginArtifactRule for claude-code
             # (parse_policy="session" -> parse_as_session=True): must survive.
             zf.writestr("subagents/agent-1.jsonl", json.dumps({"type": "user"}) + "\n")
-            # No OriginArtifactRule matches this path at all (classify_artifact_path
-            # returns None): must also survive -- session_only only excludes on an
-            # affirmative non-session classification, never on "unclassified".
+            # No OriginArtifactRule matches this path at all, so ZIP processing
+            # must leave it available for ordinary payload classification.
             zf.writestr("sessions.json", json.dumps({"conversations": []}))
         buffer.seek(0)
 
         with zipfile.ZipFile(buffer) as zf:
             validator = _ZipEntryValidator(
-                "claude-code",
-                cursor_state=_seeded_cursor_state(),
-                zip_path=Path("export.zip"),
-                session_only=True,
+                "claude-code", cursor_state=_seeded_cursor_state(), zip_path=Path("export.zip")
             )
             accepted = [info.filename for info in validator.filter_entries(zf.infolist())]
 
-        assert "workflows/run.json" not in accepted
+        assert "workflows/run.json" in accepted
         assert "subagents/agent-1.jsonl" in accepted
         assert "sessions.json" in accepted

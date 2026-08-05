@@ -81,6 +81,7 @@ class _SessionEmitter:
         *,
         pre_read_bytes: bytes | None = None,
         precomputed_raw: RawSessionData | None = None,
+        session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         """Parse a stream and yield ``(raw, conv)`` tuples.
 
@@ -100,6 +101,7 @@ class _SessionEmitter:
                 stream_name,
                 pre_read_bytes,
                 precomputed_raw=precomputed_raw,
+                session_artifact=session_artifact,
             )
             return
 
@@ -122,6 +124,7 @@ class _SessionEmitter:
         *,
         precomputed_raw: RawSessionData | None = None,
         precomputed_payloads: list[JsonValue] | None = None,
+        session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         """Grouped JSONL: entire file = one session."""
         if precomputed_raw is not None:
@@ -142,6 +145,12 @@ class _SessionEmitter:
 
         raw_data = precomputed_raw or (self._make_raw(raw_bytes) if raw_bytes else None)
         resolved = self._resolve_payload(payloads)
+        if session_artifact is not None:
+            resolved = _ResolvedPayload(
+                provider=resolved.provider,
+                artifact=session_artifact,
+                schema_resolution=resolved.schema_resolution,
+            )
         if not resolved.artifact.parse_as_session:
             return
         for conv in parse_payload(

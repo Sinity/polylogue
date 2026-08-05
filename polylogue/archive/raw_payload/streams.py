@@ -12,8 +12,8 @@ RawLineStream: TypeAlias = IO[bytes] | IO[str]
 
 
 @contextmanager
-def raw_line_stream(raw: Path | bytes | str) -> Iterator[RawLineStream]:
-    """Yield a line stream for path, bytes, or in-memory text payloads."""
+def raw_line_stream(raw: Path | bytes | str | RawLineStream) -> Iterator[RawLineStream]:
+    """Yield a line stream for a path, payload, or caller-owned stream."""
     if isinstance(raw, Path):
         with raw.open("rb") as stream:
             yield stream
@@ -21,6 +21,9 @@ def raw_line_stream(raw: Path | bytes | str) -> Iterator[RawLineStream]:
     if isinstance(raw, bytes):
         with BytesIO(raw) as stream:
             yield stream
+        return
+    if not isinstance(raw, str):
+        yield raw
         return
     with StringIO(raw) as stream:
         yield stream

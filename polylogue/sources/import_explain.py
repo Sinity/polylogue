@@ -628,10 +628,10 @@ def _zip_entry_skip_reason(
     carry forward to the next entry.
 
     Mirrors ``ZipEntryValidator.filter_entries`` in ``decoder_zip.py`` (which
-    ``process_zip`` always constructs with ``session_only=True``): an entry
-    that fails the extension/ratio/per-entry-size checks, or that classifies
-    as a non-session artifact (sidecar/metadata), never contributes to the
-    running aggregate total -- the real decode path only accumulates entries
+    ``process_zip`` applies terminal artifact classification only after decoded
+    JSONL evidence): an entry that fails the extension/ratio/per-entry-size
+    checks never contributes to the running aggregate total. The real decode
+    path only accumulates entries
     that clear every earlier check AND are actually parsed as a session. The
     aggregate check itself -- evaluated last, from central-directory metadata
     alone -- is what decides whether *this* entry's size gets added to the

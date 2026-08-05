@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import IO
 
-from polylogue.archive.artifact_taxonomy import classify_artifact_path
+from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact_path
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
@@ -114,7 +114,7 @@ def open_bounded_zip_entry(
 class ZipEntryValidator:
     """Validate ZIP entries for security and relevance."""
 
-    __slots__ = ("_provider_hint", "_cursor_state", "_zip_path", "_session_only", "_aggregate_total")
+    __slots__ = ("_cursor_state", "_zip_path", "_aggregate_total")
 
     def __init__(
         self,
@@ -122,12 +122,10 @@ class ZipEntryValidator:
         *,
         cursor_state: CursorStatePayload | None,
         zip_path: Path,
-        session_only: bool = False,
     ) -> None:
-        self._provider_hint = Provider.from_string(provider_hint)
+        del provider_hint
         self._cursor_state = cursor_state
         self._zip_path = zip_path
-        self._session_only = session_only
         self._aggregate_total = 0
 
     def filter_entries(self, entries: list[zipfile.ZipInfo]) -> Iterable[zipfile.ZipInfo]:
@@ -169,25 +167,6 @@ class ZipEntryValidator:
                 continue
 
             if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
-                if self._session_only:
-                    # Classify on the bare intra-archive relative path, not
-                    # the zip-container-prefixed ``{zip_path}:{name}`` form.
-                    # Every ``OriginArtifactRule.path_pattern`` is anchored
-                    # ``(?:^|/)`` to match a relative filesystem-style path
-                    # (the same convention every non-zip caller of
-                    # ``classify_artifact_path`` already uses, e.g.
-                    # ``sources/live/batch_support.py``): the character
-                    # immediately before a rule's leading path segment must be
-                    # ``/`` or start-of-string. Prefixing with the zip path
-                    # inserts a ``:`` there instead, so no rule could ever
-                    # match and this exclusion was dead code (polylogue-dc1k).
-                    path_classification = classify_artifact_path(
-                        name,
-                        provider=self._provider_hint,
-                    )
-                    if path_classification is not None and not path_classification.parse_as_session:
-                        continue
-
                 # Aggregate cap: the per-entry check above bounds one entry,
                 # but a zip bomb built from many entries each just under the
                 # per-entry cap would otherwise sum to an unbounded total.
@@ -214,6 +193,21 @@ class ZipEntryValidator:
 
                 self._aggregate_total = projected_total
                 yield info
+
+
+def zip_entry_session_artifact(
+    zf: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    provider: Provider,
+) -> ArtifactClassification | None:
+    """Stream a JSONL member before applying a terminal artifact path rule."""
+    if not info.filename.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
+        return None
+    from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+
+    with open_bounded_zip_entry(zf, info.filename) as handle:
+        return jsonl_session_artifact(handle, provider=provider)
 
 
 def zip_entry_provider_hint(entry_name: str, fallback_provider: str | Provider) -> Provider:
@@ -261,13 +255,20 @@ def process_zip(
         provider_hint,
         cursor_state=cursor_state,
         zip_path=zip_path,
-        session_only=True,
     )
 
     with zipfile.ZipFile(zip_path) as zf:
         for info in validator.filter_entries(zf.infolist()):
             name = info.filename
             entry_provider_hint = zip_entry_provider_hint(name, provider_hint)
+            path_classification = classify_artifact_path(name, provider=entry_provider_hint)
+            session_artifact = zip_entry_session_artifact(zf, info, provider=entry_provider_hint)
+            if (
+                path_classification is not None
+                and not path_classification.parse_as_session
+                and session_artifact is None
+            ):
+                continue
             entry_should_group = entry_provider_hint in GROUP_PROVIDERS
             ctx = _ParseContext(
                 provider_hint=entry_provider_hint,
@@ -300,7 +301,12 @@ def process_zip(
                         blob_publication_receipt_id=receipt_id,
                     )
                 with open_bounded_zip_entry(zf, name) as handle:
-                    yield from emitter.emit(handle, name, precomputed_raw=precomputed_raw)
+                    yield from emitter.emit(
+                        handle,
+                        name,
+                        precomputed_raw=precomputed_raw,
+                        session_artifact=session_artifact,
+                    )
             except ZipBombError as exc:
                 logger.warning(
                     "Skipping ZIP entry %s in %s: %s",
@@ -324,5 +330,6 @@ __all__ = [
     "ZipEntryValidator",
     "open_bounded_zip_entry",
     "process_zip",
+    "zip_entry_session_artifact",
     "zip_entry_provider_hint",
 ]
