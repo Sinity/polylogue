@@ -663,6 +663,8 @@ def validate_rebuild_index_request(request: RebuildIndexRequest) -> None:
         raise ValueError("--raw-id cannot be combined with --only-missing")
     if (request.raw_ids or request.only_missing) and request.promote:
         raise ValueError("partial rebuild selections require --no-promote and can never replace the active index")
+    if request.promote and request.candidate_acceptance_checks is not None:
+        raise ValueError("caller-supplied candidate acceptance profiles require --no-promote")
     if request.max_blob_mb is not None and request.max_blob_mb <= 0:
         raise ValueError("max blob size must be positive")
     if request.max_blob_mb is not None and not request.raw_ids and not request.only_missing:
@@ -853,6 +855,8 @@ async def _rebuild_index_from_source_owned(
     from polylogue.maintenance.archive_verification import (
         REINDEX_ACCEPTANCE_CHECKS,
         REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        passes_strict_acceptance,
+        strict_acceptance_failures,
         verify_archive,
     )
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
@@ -1328,13 +1332,20 @@ async def _rebuild_index_from_source_owned(
                 stage="reindex_acceptance",
                 elapsed_s=round(terminal_timings_s["terminal.reindex_acceptance"], 3),
             )
-            if any(report.blocking for report in acceptance_reports):
-                failing = "; ".join(
-                    f"{check.name}: {check.summary}"
-                    for report in acceptance_reports
-                    for check in report.checks
-                    if check.status.value == "error" and getattr(check, "waived_bead_id", None) is None
-                )
+            acceptance_requirements = (
+                REINDEX_ACCEPTANCE_CHECKS,
+                request.candidate_acceptance_checks
+                if request.candidate_acceptance_checks is not None
+                else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+            )
+            acceptance_failures = tuple(
+                failure
+                for report, required_checks in zip(acceptance_reports, acceptance_requirements, strict=True)
+                if not passes_strict_acceptance(report, required_checks=required_checks)
+                for failure in strict_acceptance_failures(report, required_checks=required_checks)
+            )
+            if acceptance_failures:
+                failing = "; ".join(acceptance_failures)
                 raise RuntimeError(
                     f"reindex acceptance gate failed for generation {generation.generation_id}: {failing}"
                 )

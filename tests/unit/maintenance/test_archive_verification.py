@@ -21,11 +21,13 @@ from polylogue.maintenance.archive_verification import (
     ARCHIVE_VERIFICATION_CHECKS,
     ARCHIVE_VERIFICATION_WAIVERS,
     REINDEX_ACCEPTANCE_CHECKS,
+    REINDEX_CANARY_ACCEPTANCE_CHECKS,
     REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
     ArchiveVerificationCheck,
     ArchiveVerificationCheckClass,
     ArchiveVerificationReport,
     ArchiveVerificationWaiver,
+    passes_strict_acceptance,
     verify_archive,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
@@ -181,6 +183,24 @@ def test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures(tmp_pat
     assert check.status is OutcomeStatus.ERROR
     assert check.evidence["validation_failures"] == 1
     assert check.evidence["unexplained"] == 1
+
+
+def test_cross_tier_reindex_profile_includes_raw_failure_lifecycle(tmp_path: Path) -> None:
+    """Candidate acceptance cannot bypass the source failure lifecycle gate."""
+    _seed_coherent_archive(tmp_path)
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(tmp_path / "index.db", candidate)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parse_error = 'parser failed' WHERE raw_id = 'raw-1'")
+        conn.commit()
+
+    report = verify_archive(
+        tmp_path,
+        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        index_path_override=candidate,
+    )
+
+    assert _check(report, "raw-failure-lifecycle").status is OutcomeStatus.ERROR
 
 
 def test_missing_tier_trips_tier_schema_check(tmp_path: Path) -> None:
@@ -1408,12 +1428,58 @@ def test_real_waiver_table_also_waives_embeddings_refs_liveness(tmp_path: Path) 
     assert not report.blocking  # waived by the real table too -- consistent with the mechanism test above
 
 
+def test_strict_acceptance_rejects_warning_skip_and_waived_error() -> None:
+    report = ArchiveVerificationReport(
+        checks=[
+            ArchiveVerificationCheck(name="warning", status=OutcomeStatus.WARNING),
+            ArchiveVerificationCheck(name="skip", status=OutcomeStatus.SKIP),
+            ArchiveVerificationCheck(
+                name="waived-error",
+                status=OutcomeStatus.ERROR,
+                waived_bead_id="polylogue-feu0",
+            ),
+        ]
+    )
+
+    assert not report.blocking
+    assert not passes_strict_acceptance(report)
+
+
+def test_strict_acceptance_requires_every_named_check() -> None:
+    report = ArchiveVerificationReport(checks=[ArchiveVerificationCheck(name="present", status=OutcomeStatus.OK)])
+
+    assert not passes_strict_acceptance(report, required_checks=("present", "missing"))
+
+
 def test_reindex_acceptance_checks_are_all_registered_and_ground_truth_eligible() -> None:
     """Every name in :data:`REINDEX_ACCEPTANCE_CHECKS` must be a real
     registry check, and running it against an index-only root (mirroring a
     real generation directory, which has no source.db/user.db/embeddings.db)
     must never report ``error`` from a missing-tier false positive."""
     assert set(REINDEX_ACCEPTANCE_CHECKS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
+
+
+def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_stays_partial() -> None:
+    expected = {
+        "source-index-coverage",
+        "fts-parity",
+        "lineage-sanity",
+        "session-lineage-acyclic",
+        "blob-refs-liveness",
+        "embeddings-refs-liveness",
+        "user-tier-refs",
+        "session-fingerprint-stamps",
+        "message-count-projection",
+        "excluded-cursor-vocabulary-honesty",
+        "stalled-append-cursor-freshness",
+        "corpus-absences",
+        "corpus-attachment-fidelity",
+        "corpus-revision-fidelity",
+        "pathology-zoo-invariants",
+    }
+
+    assert expected <= set(REINDEX_ACCEPTANCE_CHECKS) | set(REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
+    assert REINDEX_CANARY_ACCEPTANCE_CHECKS == ("pathology-zoo-invariants",)
 
 
 def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path: Path) -> None:
