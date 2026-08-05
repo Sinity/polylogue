@@ -7,6 +7,7 @@ import logging
 import os
 import socket
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -17,6 +18,9 @@ from typing import Literal
 from polylogue.version import VERSION_INFO
 
 logger = logging.getLogger(__name__)
+
+_LOCAL_ARCHIVE_OWNERS_LOCK = threading.RLock()
+_LOCAL_ARCHIVE_OWNERS: dict[Path, tuple[int, int, str]] = {}
 
 ArchiveTierName = Literal["source", "index", "embeddings", "user", "ops", "audit"]
 TIER_FILENAMES: tuple[tuple[ArchiveTierName, str], ...] = (
@@ -339,7 +343,13 @@ class OwnedArchiveLocation:
         self._fd: int | None = None
 
     @classmethod
-    def acquire(cls, location: ArchiveLocation, *, owner_id: str | None = None) -> OwnedArchiveLocation:
+    def acquire(
+        cls,
+        location: ArchiveLocation,
+        *,
+        owner_id: str | None = None,
+        allow_reentrant: bool = False,
+    ) -> OwnedArchiveLocation:
         """Claim exclusive ownership of ``location`` for a maintenance/campaign writer.
 
         Raises :class:`ArchiveOwnershipError` immediately -- before any
@@ -350,14 +360,31 @@ class OwnedArchiveLocation:
         """
         owner = owner_id or f"pid={os.getpid()} host={socket.gethostname()} token={uuid.uuid4().hex}"
         instance = cls(location)
-        instance._fd = _acquire_ownership_lock_fd(instance.lock_path, owner=owner)
-        instance.owner_id = owner
+        with _LOCAL_ARCHIVE_OWNERS_LOCK:
+            existing = _LOCAL_ARCHIVE_OWNERS.get(instance.lock_path)
+            if existing is None or not allow_reentrant:
+                fd = _acquire_ownership_lock_fd(instance.lock_path, owner=owner)
+                _LOCAL_ARCHIVE_OWNERS[instance.lock_path] = (fd, 1, owner)
+                instance.owner_id = owner
+            else:
+                fd, references, existing_owner = existing
+                _LOCAL_ARCHIVE_OWNERS[instance.lock_path] = (fd, references + 1, existing_owner)
+                instance.owner_id = existing_owner
+            instance._fd = fd
         return instance
 
     def release(self) -> None:
         if self._fd is not None:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
-            os.close(self._fd)
+            with _LOCAL_ARCHIVE_OWNERS_LOCK:
+                existing = _LOCAL_ARCHIVE_OWNERS.get(self.lock_path)
+                if existing is not None and existing[0] == self._fd:
+                    fd, references, owner = existing
+                    if references <= 1:
+                        _LOCAL_ARCHIVE_OWNERS.pop(self.lock_path, None)
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                        os.close(fd)
+                    else:
+                        _LOCAL_ARCHIVE_OWNERS[self.lock_path] = (fd, references - 1, owner)
             self._fd = None
 
     def __enter__(self) -> OwnedArchiveLocation:

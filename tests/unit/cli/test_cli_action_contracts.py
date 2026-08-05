@@ -124,65 +124,40 @@ def test_virtual_find_counterpart_is_query_parser_keyword() -> None:
     assert explicit_query
 
 
-def test_post_verb_json_alias_is_owned_by_verb_format_option() -> None:
-    """`read REF --json` is accepted as a verb-local output alias."""
-    click_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(
-        cli,
-        ["read", "chatgpt-export:conv-123", "--json"],
-    )
-
-    assert click_args == ["read", "chatgpt-export:conv-123", "--json"]
-    assert query_terms == ()
-    assert has_subcommand
-    assert not explicit_query
-
-
 @pytest.mark.parametrize(
-    ("argv", "expected"),
+    "argv",
     [
-        (
-            ["find", "needle", "then", "read", "--json"],
-            ["read", "--json"],
-        ),
-        (
-            ["find", "needle", "then", "continue", "--json"],
-            ["continue", "--json"],
-        ),
-        (
-            ["find", "needle", "then", "delete", "--dry-run", "--json"],
-            ["delete", "--dry-run", "--json"],
-        ),
-        (
-            ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--json"],
-            ["mark", "--tag-add", "reviewed", "--json"],
-        ),
-        (
-            ["find", "needle", "then", "mark", "candidates", "list", "--json"],
-            ["mark", "candidates", "list", "--json"],
-        ),
-        (
-            ["analyze", "usage", "--json"],
-            ["analyze", "usage", "--json"],
-        ),
-        (
-            ["analyze", "insights", "profiles", "--json"],
-            ["analyze", "insights", "profiles", "--json"],
-        ),
+        ["read", "chatgpt-export:conv-123", "--json"],
+        ["find", "needle", "then", "read", "--json"],
+        ["find", "needle", "then", "continue", "--json"],
+        ["find", "needle", "then", "delete", "--dry-run", "--json"],
+        ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--json"],
+        ["find", "needle", "then", "mark", "candidates", "list", "--json"],
+        ["analyze", "usage", "--json"],
+        ["analyze", "insights", "profiles", "--json"],
     ],
 )
-def test_post_verb_json_alias_is_local_for_all_format_actions(
-    argv: list[str],
-    expected: list[str],
-) -> None:
-    """Post-verb ``--json`` is a local alias for every action with ``--format json``."""
-    click_args, _, has_subcommand, _ = _split_query_mode_args(cli, argv)
+def test_post_verb_json_alias_is_rejected_for_format_actions(argv: list[str]) -> None:
+    """Post-verb ``--json`` is not an alias for an action's ``--format`` option."""
+    with pytest.raises(click.UsageError, match=r"Move --json before `(?:read|continue|delete|mark|analyze)`"):
+        _split_query_mode_args(cli, argv)
 
-    assert click_args == expected
+
+def test_post_verb_format_json_remains_supported() -> None:
+    """The explicit action format remains available after alias removal."""
+    click_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(
+        cli,
+        ["find", "needle", "then", "read", "--format", "json"],
+    )
+
+    assert click_args == ["read", "--format", "json"]
+    assert query_terms == ("needle",)
     assert has_subcommand
+    assert explicit_query
 
 
 def test_post_verb_root_filters_remain_rejected() -> None:
-    """Output shorthands can be local aliases; source/query filters still precede the verb."""
+    """Source/query filters still precede the verb."""
     with pytest.raises(click.UsageError, match="Move --origin before `read`"):
         _split_query_mode_args(cli, ["read", "chatgpt-export:conv-123", "--origin", "chatgpt-export"])
 

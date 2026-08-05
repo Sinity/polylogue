@@ -69,7 +69,7 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "reindex-canary",
         "_reindex_canary",
         "reindex_canary_command",
-        "Replay a representative inactive canary and persist its reviewed diff report.",
+        "Replay an inactive canary, persist observed or reviewed diff evidence, and validate reports.",
     ),
     (
         "raw-authority-frontier",
@@ -120,6 +120,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "_blob_integrity",
         "blob_reference_liveness_command",
         "Classify source-tier orphan refs; apply only with backup and receipt.",
+    ),
+    (
+        "blob-reference-closure",
+        "_blob_reference_closure",
+        "blob_reference_closure_command",
+        "Repair deterministic raw and acquired-attachment reference gaps; dry-run by default.",
     ),
     (
         "hook-payload-ref-reconcile",

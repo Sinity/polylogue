@@ -410,6 +410,21 @@ def _classify_list(
             reason="Beads interaction-history stream",
         )
 
+    if provider is Provider.CODEX:
+        from polylogue.sources.parsers.codex import is_supported_session_stream
+
+        if is_supported_session_stream(payload):
+            subagent = is_subagent_path(source_path)
+            kind = ArtifactKind.AGENT_TRANSCRIPT if subagent else ArtifactKind.SESSION_RECORD_STREAM
+            return ArtifactClassification(
+                provider=provider,
+                kind=kind,
+                parse_as_session=True,
+                schema_eligible=True,
+                default_priority=90 if subagent else 120,
+                reason="parser-supported Codex session record stream",
+            )
+
     # A Codex rollout can be truncated to repeated bare session headers while
     # still remaining a JSONL record stream.  A single bare ``type`` is too
     # weak to admit generically, but multiple exact Codex session-meta records
@@ -429,6 +444,15 @@ def _classify_list(
             schema_eligible=True,
             default_priority=120,
             reason="repeated bare Codex session-meta record stream",
+        )
+    if provider is Provider.CODEX and dict_items and any(looks_like_record_entry(item) for item in dict_items):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.UNKNOWN,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason="Codex record stream contains unsupported session records",
         )
 
     if dict_items and looks_like_record_stream(dict_items):
@@ -516,6 +540,7 @@ def _classify_dict(
 ) -> ArtifactClassification:
     # Keep this deferred to avoid the artifact-taxonomy/sources bootstrap
     # cycle described below. List streams import the same pair locally.
+    from polylogue.sources.parsers.grok import looks_like_export as looks_like_grok_export
     from polylogue.sources.parsers.hermes_spans import looks_like_atif_payload
 
     if provider is Provider.CHATGPT:
@@ -547,6 +572,16 @@ def _classify_dict(
             schema_eligible=False,
             default_priority=120,
             reason="Beads interaction-history record",
+        )
+
+    if provider is Provider.GROK and looks_like_grok_export(payload):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=120,
+            reason="Grok account-data export document",
         )
 
     if provider is Provider.ANTIGRAVITY and _is_antigravity_markdown_export(payload):

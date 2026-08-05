@@ -472,7 +472,7 @@ class CursorStore:
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
                     """
-                    SELECT attempts, next_retry_at, last_error
+                    SELECT attempts, next_retry_at, last_error, status
                     FROM convergence_debt
                     WHERE stage = ? AND target_type = ? AND target_id = ?
                     """,
@@ -488,19 +488,33 @@ class CursorStore:
                     archive_root=self._db_path.parent,
                 )
                 if row is not None and same_pending_convergence_debt(
-                    row[1], row[2], error=error, now=now, retry_at=retry_at
+                    row[1],
+                    row[2],
+                    status=row[3],
+                    error=error,
+                    deferred=deferred,
+                    now=now,
+                    retry_at=retry_at,
                 ):
                     return
-                attempts_delta = 0 if row is not None and retry_is_future(row[1], now=now) and row[2] == error else 1
-                failure_count = existing_attempts + attempts_delta
-                retry_at = convergence_debt_retry_at(
-                    conn,
-                    failure_count=max(failure_count, 1),
-                    error=error,
-                    subject_type=subject_type,
-                    subject_id=subject_id,
-                    archive_root=self._db_path.parent,
+                expected_status = "deferred" if deferred else "failed"
+                status_only_transition = row is not None and row[2] == error and row[3] != expected_status
+                attempts_delta = (
+                    0
+                    if status_only_transition
+                    or (row is not None and retry_is_future(row[1], now=now) and row[2] == error)
+                    else 1
                 )
+                failure_count = existing_attempts + attempts_delta
+                if not status_only_transition:
+                    retry_at = convergence_debt_retry_at(
+                        conn,
+                        failure_count=max(failure_count, 1),
+                        error=error,
+                        subject_type=subject_type,
+                        subject_id=subject_id,
+                        archive_root=self._db_path.parent,
+                    )
                 add_archive_convergence_debt(
                     conn,
                     stage=stage,
@@ -514,7 +528,7 @@ class CursorStore:
                     ),
                     attempts=attempts_delta,
                     last_error=error,
-                    next_retry_at=retry_at.isoformat(),
+                    next_retry_at=row[1] if status_only_transition else retry_at.isoformat(),
                     materializer_version=materializer_version,
                     created_at_ms=now_ms,
                     updated_at_ms=now_ms,

@@ -19,9 +19,18 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from typing_extensions import TypedDict
 
-from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind, classify_artifact
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactClassification,
+    ArtifactKind,
+    classify_artifact,
+    classify_artifact_path,
+)
 from polylogue.archive.artifact_taxonomy.support import is_subagent_path
-from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
+from polylogue.archive.raw_payload.decode import (
+    RawPayloadEnvelope,
+    _sample_jsonl_payload_with_detail,
+    jsonl_session_artifact,
+)
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
 from polylogue.logging import get_logger
@@ -310,7 +319,6 @@ def _build_stream_parse_plan(
     *,
     payload_provider: str | None,
 ) -> _ParsePlan | None:
-    from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
     from polylogue.sources.dispatch import detect_provider
 
     stream_name = context.raw_record.source_path or context.raw_record.raw_id
@@ -346,10 +354,21 @@ def _build_stream_parse_plan(
             return None
         runtime_provider = detected_provider
 
-    artifact = classify_artifact(
+    decoded_artifact = classify_artifact(
         sample_payloads,
         provider=runtime_provider,
-        source_path=context.raw_record.source_path,
+    )
+    path_artifact = classify_artifact_path(
+        context.raw_record.source_path,
+        provider=runtime_provider,
+    )
+    session_artifact = (
+        jsonl_session_artifact(context.raw_source, provider=runtime_provider, jsonl_dict_only=True)
+        if path_artifact is not None and not path_artifact.parse_as_session
+        else None
+    )
+    artifact = session_artifact or (
+        decoded_artifact if decoded_artifact.parse_as_session else path_artifact or decoded_artifact
     )
     return _build_parse_plan(
         provider=runtime_provider,
@@ -373,6 +392,58 @@ def _build_fast_stream_parse_plan(
     runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
     if runtime_provider not in STREAM_RECORD_PROVIDERS:
         return None
+
+    # The validation-off shortcut still has to honor path-declared fact and
+    # raw-only artifacts. Without this check, a workflow journal's JSONL path
+    # is replaced by the generic session classification below before the
+    # payload is decoded, so session-shaped journal records materialize as
+    # conversations even though the same path is classified as evidence by
+    # the ordinary envelope route.
+    path_artifact = classify_artifact_path(
+        context.raw_record.source_path,
+        provider=runtime_provider,
+    )
+    if path_artifact is not None and not path_artifact.parse_as_session:
+        try:
+            sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
+                context.raw_source,
+                max_samples=64,
+                jsonl_dict_only=True,
+                scan_full=False,
+            )
+        except Exception:
+            logger.exception(
+                "JSONL sample probe failed for %s; retaining path-declared artifact",
+                context.raw_record.source_path or context.raw_record.raw_id,
+            )
+        else:
+            decoded_artifact = jsonl_session_artifact(
+                context.raw_source,
+                provider=runtime_provider,
+                jsonl_dict_only=True,
+            ) or classify_artifact(sample_payloads, provider=runtime_provider)
+            if decoded_artifact.parse_as_session:
+                return _build_parse_plan(
+                    provider=runtime_provider,
+                    payload_provider=str(runtime_provider),
+                    artifact=decoded_artifact,
+                    source_path=context.raw_record.source_path,
+                    mode="stream",
+                    payload=sample_payloads,
+                    schema_payload_source=sample_payloads,
+                    stream_name=context.raw_record.source_path or context.raw_record.raw_id,
+                    malformed_jsonl_lines=malformed_lines,
+                    malformed_jsonl_detail=malformed_detail,
+                )
+        return _build_parse_plan(
+            provider=runtime_provider,
+            payload_provider=str(runtime_provider),
+            artifact=path_artifact,
+            source_path=context.raw_record.source_path,
+            mode="stream",
+            schema_payload_source=None,
+            stream_name=context.raw_record.source_path or context.raw_record.raw_id,
+        )
 
     kind = (
         ArtifactKind.AGENT_TRANSCRIPT

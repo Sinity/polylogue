@@ -119,12 +119,6 @@ async def periodic_embedding_orphan_reconcile_check(
 
 def reconcile_embedding_orphans_once(db_path: Path) -> EmbeddingOrphanReconcileReport | None:
     """Run one bounded daemon orphan-reconciliation pass, or ``None`` if inapplicable."""
-
-    from polylogue.daemon.convergence_stages import _embedding_config_enabled
-
-    if not _embedding_config_enabled():
-        return None
-
     index_db = _active_archive_index_path(db_path)
     if index_db is None:
         return None

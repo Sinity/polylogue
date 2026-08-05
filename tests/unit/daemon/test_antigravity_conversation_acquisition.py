@@ -102,6 +102,12 @@ def test_acquires_real_pb_conversations_not_yet_in_raw_sessions(
 ) -> None:
     antigravity_root = tmp_path / "antigravity"
     _touch_conversation_pb(antigravity_root, "cascade-0", "cascade-1")
+    sidecar = antigravity_root / "brain" / "work-session" / "plan.md.metadata.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        '{"artifactType":"ARTIFACT_TYPE_OTHER","summary":"Plan","updatedAt":"2026-08-04T08:00:00Z"}',
+        encoding="utf-8",
+    )
     monkeypatch.setattr("polylogue.paths.antigravity_path", lambda: antigravity_root)
 
     archive_root = workspace_env["archive_root"]
@@ -118,6 +124,7 @@ def test_acquires_real_pb_conversations_not_yet_in_raw_sessions(
     assert {
         source_path: blob_store.read_all(blob_hash) for source_path, blob_hash in raw_blobs.items()
     } == expected_payloads
+    assert str(sidecar) not in raw_blobs
 
 
 def test_rerun_after_full_acquisition_is_a_noop(

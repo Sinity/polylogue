@@ -436,7 +436,7 @@ def test_drain_convergence_debt_retries_global_messages_fts_surface(
         return True
 
     monkeypatch.setattr(
-        "polylogue.daemon.convergence_stages.repair_fts_surface",
+        "polylogue.daemon.convergence_stages.repair_fts_surface_result",
         fake_repair_fts_surface,
     )
 
@@ -472,7 +472,7 @@ def test_drain_convergence_debt_retries_optional_fts_surface(
         return True
 
     monkeypatch.setattr(
-        "polylogue.daemon.convergence_stages.repair_fts_surface",
+        "polylogue.daemon.convergence_stages.repair_fts_surface_result",
         fake_repair_fts_surface,
     )
 
@@ -576,6 +576,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         fake_restore_direct_blob_reference_debt,
@@ -617,6 +618,61 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "frontier_limit": 8,
         "max_pass_seconds": daemon_cli._RAW_MATERIALIZATION_MAX_PASS_SECONDS,
     }
+
+
+def test_drain_raw_materialization_once_blocks_unsafe_cursor_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "archive"
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr(
+        "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
+        lambda _root: "1 ingest cursor row committed past accepted raw material",
+    )
+
+    with pytest.raises(RuntimeError, match="source-selection gate blocked"):
+        daemon_cli._drain_raw_materialization_once()
+
+    assert not archive.exists()
+
+
+@pytest.mark.parametrize("authority_state", ["violated", "unknown"])
+def test_whale_writer_route_blocks_unproven_cursor_authority(
+    authority_state: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The real whale writer callback must not mutate under unproven authority."""
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "archive"
+    mutations: list[str] = []
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr(
+        "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
+        lambda _root: f"{authority_state} cursor authority",
+    )
+
+    def fake_repair(*_args: object, **_kwargs: object) -> object:
+        mutations.append("repair_materialization")
+        (archive / "writer-mutated").write_text("unsafe", encoding="utf-8")
+        return SimpleNamespace(success=True, repaired_count=1, detail="unexpected writer call")
+
+    monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", fake_repair)
+    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path: None)
+    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
+
+    with pytest.raises(RuntimeError, match="source-selection gate blocked"):
+        daemon_cli._run_raw_materialization_whale_pass_once(
+            raw_artifact_id="whale-seed-raw-id",
+            max_payload_bytes=daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+        )
+    assert mutations == []
+    assert not (archive / "writer-mutated").exists()
 
 
 def test_maybe_recommend_bulk_rebuild_silent_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -940,6 +996,7 @@ def test_raw_materialization_closes_fts_on_cancellation(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         lambda *_args, **_kwargs: FakeRestoreResult(),
@@ -3354,6 +3411,70 @@ def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: p
             )
         )
 
+    assert not (tmp_path / "daemon.pid").exists()
+
+
+def test_daemon_startup_reconciles_trains_before_schema_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
+
+    events: list[str] = []
+
+    class Coordinator:
+        async def run_sync(self, actor: str, _function: object, /, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            if actor == "daemon.lifecycle.start":
+                raise RuntimeError("startup stopped")
+            return None
+
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 5.0
+            return True
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: tmp_path / "index.db"
+    )
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
+
+    def reconcile(root: Path) -> tuple[Path, ...]:
+        events.append(f"reconcile:{root}")
+        return (tmp_path / "recovered.json",)
+
+    def schema_ok() -> HealthAlert:
+        events.append("schema")
+        return HealthAlert(
+            check_name="schema_version",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.OK,
+            message="ok",
+            checked_at="now",
+        )
+
+    monkeypatch.setattr(
+        "polylogue.operations.durable_change_train.reconcile_durable_change_trains_on_startup", reconcile
+    )
+    monkeypatch.setattr(
+        daemon_cli,
+        "_check_schema_version_fast",
+        schema_ok,
+    )
+
+    with pytest.raises(RuntimeError, match="startup stopped"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert events == [f"reconcile:{tmp_path}", "schema"]
+    assert (tmp_path / ".archive-ownership.lock").exists()
     assert not (tmp_path / "daemon.pid").exists()
 
 

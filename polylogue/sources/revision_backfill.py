@@ -21,6 +21,7 @@ from types import TracebackType
 from typing import BinaryIO, Final, Literal, cast
 
 from polylogue import logging as _polylogue_logging
+from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -51,7 +52,7 @@ from polylogue.sources.dispatch import (
     require_positive_conversational_evidence,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.raw_authority import (
@@ -2454,13 +2455,13 @@ class _ParsedSessionSpill:
         return sessions, payload_bytes
 
 
-def _is_declared_non_session_artifact(
+def _declared_non_session_artifact_classification(
     provider: Provider,
     source_path: str,
     *,
     sample: Sequence[object] = (),
-) -> bool:
-    """Return whether this raw revision must not be session-parsed on replay.
+) -> ArtifactClassification | None:
+    """Classify a declared non-session raw revision before session admission.
 
     polylogue-b508: retained raw revisions include OriginSpec-declared fact
     artifacts (``agent-*.meta.json`` sidecars, ``workflows/*.json`` run
@@ -2497,12 +2498,15 @@ def _is_declared_non_session_artifact(
     behavior exactly, so every existing caller is unaffected until it opts
     in.
     """
-    rule = artifact_rule_for_path(provider, source_path)
-    if rule is not None:
-        return rule.parse_policy != "session"
-    if not sample:
-        return False
     from polylogue.archive.artifact_taxonomy import classify_artifact
+
+    rule = artifact_rule_for_path(provider, source_path)
+    if rule is not None and rule.parse_policy != "session":
+        classification = classify_artifact([], provider=provider, source_path=source_path)
+        if not classification.parse_as_session:
+            return classification
+    if not sample:
+        return None
     from polylogue.core.json import JSONValue
 
     # ``sample`` records come from ``_iter_json_stream`` (this module's own
@@ -2512,7 +2516,27 @@ def _is_declared_non_session_artifact(
     # same decoded-JSON shape ijson/json.loads ever produce, so the cast is
     # a type-identity bridge, not a real behavior narrowing.
     classification = classify_artifact(cast(list[JSONValue], list(sample)), provider=provider, source_path=source_path)
-    return not classification.parse_as_session
+    # ``UNKNOWN`` means the taxonomy cannot decide, not that the payload is
+    # a proved sidecar.  Codex append deltas intentionally omit the
+    # session_meta header and become materializable only after the live
+    # revision layer supplies its recorded native-id hint.  Treating that
+    # undecided partial stream as an artifact skips revision binding and
+    # silently loses its append frontier.  Keep the raw evidence on the
+    # normal parser path, which either uses the hint or records a typed parse
+    # failure; only a positive non-session cohort may bypass session parsing.
+    if classification.kind is ArtifactKind.UNKNOWN:
+        return None
+    return classification if not classification.parse_as_session else None
+
+
+def _is_declared_non_session_artifact(
+    provider: Provider,
+    source_path: str,
+    *,
+    sample: Sequence[object] = (),
+) -> bool:
+    """Return whether this raw revision must not be session-parsed on replay."""
+    return _declared_non_session_artifact_classification(provider, source_path, sample=sample) is not None
 
 
 def _parse_one(
@@ -2553,6 +2577,21 @@ def _parse_one_raw(
     archive_root: Path | None = None,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
+    if provider is Provider.ANTIGRAVITY and Path(source_path).suffix.lower() == ".pb":
+        trajectory_path = Path(source_path)
+        root = trajectory_path.parent.parent
+        if trajectory_path.parent.name != "conversations" or not trajectory_path.is_file():
+            raise RuntimeError(
+                f"Antigravity raw replay requires its original conversations/<cascade_id>.pb trajectory: {source_path}"
+            )
+        cascade_id = trajectory_path.stem
+        sessions = list(antigravity.iter_language_server_exports(root, only_cascade_ids=frozenset({cascade_id})))
+        if len(sessions) != 1 or sessions[0].provider_session_id != cascade_id:
+            raise RuntimeError(
+                "Antigravity raw replay did not reproduce exactly one requested trajectory "
+                f"{cascade_id!r} from {source_path}"
+            )
+        return sessions
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
     if is_stream_record_provider(source_path, str(provider)):

@@ -110,6 +110,17 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN`, and bounded backfills.
   Destructive durable-tier changes require a copy-forward design and explicit
   operator consent.
+- **Durable change trains** make that migration window machine-readable.
+  Every source migration above v26 and every user migration above v10 must
+  ship beside the SQL resource as `migrations/{source,user}/NNN.train.json`.
+  The frozen manifest binds the tier, shipped and target versions, slot,
+  exact SQL filename and SHA-256, owner, schema/runtime riders, behavior
+  proofs, ordering, row-count exceptions, restart convergence proof, and
+  drop policy. Package-resource discovery rejects missing, malformed,
+  stale, noncontiguous, hash-mismatched, or orphaned sidecars before SQL
+  runs. The lifecycle is declare, admit, reserve, authorize, apply, prove,
+  and release. It uses the existing migration transaction and verified backup
+  receipt, with no train state database and no second migration engine.
 - **Derived tiers** (`index.db`, `embeddings.db`) do not have in-place migration
   chains. They are rebuildable products over durable source/user evidence:
   schema mismatches are handled by rebuilding or blue-green replacing the
@@ -138,6 +149,18 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `messages_fts_identity` declaration existed but had no consumer: a freshly
   promoted v42 archive could not be opened by v43 code at all before this
   executor existed.
+- **Index transition ownership map** (polylogue-9rw0 / polylogue-b5l.3):
+  `storage/sqlite/lifecycle.py` owns version declarations and generated
+  operations; `storage/sqlite/archive_tiers/index_fast_forward_executor.py`
+  owns generic operation execution; `devtools/index_fast_forward.py` owns
+  stopped-root clone, retained-raw sample replay, receipt, and atomic
+  promotion. The actuator has no per-version branch. Every eligible plan
+  records raw and session sample IDs, parser/lowering/materializer
+  fingerprints, structural hashes, canonical replay hashes, mismatch details,
+  and an equivalent verdict. Activation refuses absent proof, changed source,
+  changed fingerprints, changed schema, or changed clone bytes. The old
+  former version-specific actuator was the only surviving duplicate and was
+  removed after its v37 cleanup became a declared lifecycle operation.
 - **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
   helpers for daemon telemetry because the tier is disposable.
 - **Index-tier benign-DDL convergence** (polylogue-jc1b): a registered set of

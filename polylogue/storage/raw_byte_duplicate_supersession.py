@@ -113,6 +113,7 @@ def plan_byte_duplicate_supersession(
             FROM raw_sessions
             WHERE revision_authority = 'quarantined'
               AND logical_source_key IS NULL
+              AND parse_error IS NULL
             ORDER BY raw_id
         """
         params: tuple[object, ...] = ()

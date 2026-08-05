@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from devtools import render_demo_corpus_datasheet
@@ -54,8 +55,36 @@ def test_build_document_is_generated_from_families_and_measurements() -> None:
     assert "| Sessions | 2 |" in rendered
     assert "| Blocks | 6 |" in rendered
     assert "`agent-lineage-matrix`" in rendered
-    assert "Compaction events (`compaction_events`) | 1 | 1 | `ok`" in rendered
+    assert "Compaction events (`compaction_events`) | >= 1 | `ok`" in rendered
     assert "fork-vs-resume" in rendered
+
+
+def test_build_document_ignores_volatile_observed_counts() -> None:
+    baseline = _seed_result()
+    changed_observed = replace(
+        baseline,
+        construct_coverage=tuple(
+            DemoConstructCoverage(
+                row.construct_id,
+                row.label,
+                row.observed + 40 if row.construct_id == "compaction_events" else row.observed,
+                row.minimum,
+                row.ok,
+            )
+            for row in baseline.construct_coverage
+        ),
+    )
+    measurement = render_demo_corpus_datasheet.DemoCorpusMeasurement(
+        blocks=6,
+        origins=("chatgpt-export", "codex-session"),
+        run_rows=2,
+        observed_event_rows=3,
+        context_snapshot_rows=2,
+    )
+
+    assert render_demo_corpus_datasheet.build_document(baseline, _verify_result(), measurement) == (
+        render_demo_corpus_datasheet.build_document(changed_observed, _verify_result(), measurement)
+    )
 
 
 def test_main_check_reports_out_of_sync(tmp_path: Path) -> None:

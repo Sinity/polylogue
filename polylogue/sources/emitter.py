@@ -81,6 +81,7 @@ class _SessionEmitter:
         *,
         pre_read_bytes: bytes | None = None,
         precomputed_raw: RawSessionData | None = None,
+        session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         """Parse a stream and yield ``(raw, conv)`` tuples.
 
@@ -100,6 +101,7 @@ class _SessionEmitter:
                 stream_name,
                 pre_read_bytes,
                 precomputed_raw=precomputed_raw,
+                session_artifact=session_artifact,
             )
             return
 
@@ -112,7 +114,12 @@ class _SessionEmitter:
             )
             return
 
-        yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
+        yield from self._emit_individual(
+            handle,
+            stream_name,
+            pre_read_bytes=pre_read_bytes,
+            session_artifact=session_artifact,
+        )
 
     def _emit_grouped(
         self,
@@ -122,6 +129,7 @@ class _SessionEmitter:
         *,
         precomputed_raw: RawSessionData | None = None,
         precomputed_payloads: list[JsonValue] | None = None,
+        session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         """Grouped JSONL: entire file = one session."""
         if precomputed_raw is not None:
@@ -142,6 +150,12 @@ class _SessionEmitter:
 
         raw_data = precomputed_raw or (self._make_raw(raw_bytes) if raw_bytes else None)
         resolved = self._resolve_payload(payloads)
+        if session_artifact is not None:
+            resolved = _ResolvedPayload(
+                provider=resolved.provider,
+                artifact=session_artifact,
+                schema_resolution=resolved.schema_resolution,
+            )
         if not resolved.artifact.parse_as_session:
             return
         for conv in parse_payload(
@@ -159,6 +173,7 @@ class _SessionEmitter:
         stream_name: str,
         *,
         pre_read_bytes: bytes | None = None,
+        session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         """Individual items: each payload = one session."""
         unpack = not (stream_name.lower().endswith(".json") and self._ctx.should_group)
@@ -171,6 +186,7 @@ class _SessionEmitter:
             _iter_json_stream(handle, stream_name, unpack_lists=unpack),
             stream_name=stream_name,
             whole_file_raw=whole_file_raw,
+            session_artifact=session_artifact,
         )
 
     def _emit_individual_payloads(
@@ -179,11 +195,18 @@ class _SessionEmitter:
         *,
         stream_name: str,
         whole_file_raw: RawSessionData | None = None,
+        session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         source_index = 0
         for payload in payloads:
             try:
                 resolved = self._resolve_payload(payload)
+                if session_artifact is not None:
+                    resolved = _ResolvedPayload(
+                        provider=resolved.provider,
+                        artifact=session_artifact,
+                        schema_resolution=resolved.schema_resolution,
+                    )
                 if not resolved.artifact.parse_as_session:
                     continue
 
@@ -380,11 +403,13 @@ class _SessionEmitter:
 
     def _resolve_payload(self, payload: JsonValue) -> _ResolvedPayload:
         provider = detect_provider(payload) or self._ctx.provider_hint
-        artifact = classify_artifact(
-            payload,
-            provider=provider,
-            source_path=self._ctx.source_path_str,
-        )
+        artifact = classify_artifact(payload, provider=provider)
+        if not artifact.parse_as_session:
+            artifact = classify_artifact(
+                payload,
+                provider=provider,
+                source_path=self._ctx.source_path_str,
+            )
         return _ResolvedPayload(
             provider=provider,
             artifact=artifact,

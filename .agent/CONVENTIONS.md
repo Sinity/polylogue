@@ -103,10 +103,14 @@ bead's cited facts against master before coding.
   trusting anything the lane reports — a 2026-08-01 dispatch silently ran in
   the main checkout and left ~1700 uncommitted lines in the live tree. The
   same check warns when the worktree's frozen `.beads/issues.jsonl` has gone
-  stale relative to the main checkout. Hook auto-import is disabled because it
-  would blindly upsert that snapshot into shared live state. Lanes still make
-  no bd writes; coordinators audit and re-apply their Beads writes at
-  merge-train boundaries before exporting state (polylogue-2ara).
+  stale relative to the main checkout. All ordinary `bd` invocations must
+  resolve to the deployed common-checkout `scripts/bd` through the devshell or
+  Git's shared absolute `core.hooksPath`. That wrapper compares rows with live
+  Dolt state, imports only new/strictly newer rows, and disables Beads' blind
+  automatic import for the delegated command. Do not bypass it with the
+  absolute Nix-store binary. Lanes still make no bd
+  writes; coordinators audit and re-apply explicit Beads writes at merge-train
+  boundaries before exporting state (polylogue-2ara).
 - **Serial heavy, parallel light.** Serialize anything sharing the pytest
   temp DBs (`/realm/tmp/polylogue-pytest`) or the archive DB; parallel tool
   calls are for reads/searches only.
@@ -134,6 +138,10 @@ beads, gotchas → `bd remember`. `.agent/demos/` is a curated shelf, not a
 dump. The tracked `.agent` surface stays small (this file, README, scripts,
 demos, reports, task-history, tools, archive); everything else is ignored
 live state. New tracked files get a deliberate `.gitignore` allowlist entry.
+
+## Pathology Zoo Growth Rule
+
+Every production incident adds its smallest production-ingested reproduction to `tests/infra/pathology_zoo.py` in the fix PR. Add the pathology label and motivating bead id to the queryable manifest with the fixture, rather than leaving the incident represented only by a comment or a parser-local example.
 
 ## Fixture Identifier Hygiene
 

@@ -18,25 +18,25 @@
 
 Map the demo lineage base context.
 
-`codex-session:demo-lineage-parent:parent-u0`
+`codex-session:demo-lineage-parent:n:parent-u0`
 
 ### 2026-07-04T10:00:02+00:00 - assistant / message
 
 I have the base context and can branch the analysis.
 
-`codex-session:demo-lineage-parent:parent-a1`
+`codex-session:demo-lineage-parent:n:parent-a1`
 
 ### 2026-07-04T10:01:03+00:00 - user / message
 
 Now take the forked branch and audit construct validity.
 
-`codex-session:demo-lineage-fork:fork-u2`
+`codex-session:demo-lineage-fork:n:fork-u2`
 
 ### 2026-07-04T10:01:04+00:00 - assistant / message
 
 The fork diverges into demo corpus construct checks.
 
-`codex-session:demo-lineage-fork:fork-a3`
+`codex-session:demo-lineage-fork:n:fork-a3`
 
 ### Last Messages
 

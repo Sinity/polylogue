@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root
+from devtools.command_catalog import control_plane_argv
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +101,7 @@ def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
             [
                 sys.executable,
                 "-m",
-                "devtools.verify_backlog_hygiene",
+                *control_plane_argv("lab policy backlog-hygiene"),
                 "--checks",
                 "D1,D2",
                 ".beads/issues.jsonl",

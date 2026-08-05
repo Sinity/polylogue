@@ -6,6 +6,38 @@ This guide is for operators choosing between
 daemon will catch up." It also collects runbook recipes for the most
 common operational incidents.
 
+## Applying a durable schema change train
+
+Durable schema changes are an offline release operation. Before applying a
+`source.db` or `user.db` migration above its adoption floor, confirm that the
+release contains the matching `migrations/{source,user}/NNN.train.json`
+sidecar. The sidecar reserves the exact slot and SQL hash and records the
+runtime and restart evidence needed for the change.
+
+Stop `polylogued`, create a fresh verified backup with the normal
+`backup_archive(..., verify=True)` route, then invoke the existing maintenance
+command with that manifest:
+
+```bash
+polylogue ops maintenance migrate-tier source \
+  --backup-manifest /path/to/verified-source-backup/manifest.json \
+  --output-format json
+```
+
+The command acquires the daemon startup exclusion and archive ownership before
+opening SQLite. It refuses when a live daemon or another archive writer holds
+either authority. The migration runner then validates the package sidecar,
+revalidates the backup against the current database, and performs the numbered
+SQL step in the existing transaction. It verifies row and schema parity,
+SQLite integrity, foreign keys, and canonical DDL parity before commit. A
+failed transaction is rolled back and may be retried after the cause is
+repaired.
+
+The JSON output reports the migration receipt and stopped-daemon authority.
+Restart health and runtime-consumer convergence are the final lifecycle proof
+and are recorded by the durable train lifecycle API, not inferred from this
+command's migration result alone.
+
 For the conceptual model behind derived insights and the FTS / blob
 substrate, see [architecture.md](architecture.md) and
 [internals.md](internals.md). For daemon ownership of the inline
@@ -123,6 +155,9 @@ not classify orphaned canonical blobs and never runs GC.
 
 ```bash
 polylogue ops maintenance blob-namespace-quarantine --output-format json
+polylogue ops maintenance blob-namespace-quarantine --plan \
+  --backup-manifest /path/to/verified-source-backup/manifest.json \
+  --output-format json
 polylogue ops maintenance blob-namespace-quarantine --apply \
   --backup-manifest /path/to/verified-source-backup/manifest.json \
   --receipt-dir /path/to/new/namespace-quarantine-receipt \
@@ -130,6 +165,18 @@ polylogue ops maintenance blob-namespace-quarantine --apply \
 polylogue ops maintenance blob-namespace-quarantine --recover \
   --receipt-dir /path/to/existing/namespace-quarantine-receipt
 ```
+
+`--plan` is the backup-gated operator audit. It authenticates the supplied
+source-tier backup against an immutable read of `source.db`, then emits a
+typed census of canonical blobs, SQLite `-wal`/`-shm` sidecars, `.blob.*`
+temporary files, and other invalid entries. It does not create receipts,
+checkpoint SQLite, move files, delete files, or change archive rows. Run this
+plan before any later offline quarantine decision.
+
+This plan is an offline safety prerequisite, not a production cleanup receipt
+or a complete bead-closure claim. The full-hash pristine receipt required by
+`r9xsj` remains a separate residual dependency, and production cleanup remains
+a separate operator-authorized residual dependency. No receipt is claimed here.
 
 Apply requires the daemon stopped, no archive writer lease, the archive-wide
 exclusive maintenance lease, a successful attested source-tier backup manifest
@@ -179,6 +226,31 @@ new receipt path that does not already exist. It revalidates the backup and
 reclassifies under `BEGIN IMMEDIATE` before fsyncing the prepared receipt and
 deleting the exact candidate set. Review the receipt's final `committed` line
 before treating the pass as complete.
+
+### `polylogue ops maintenance blob-reference-closure` - acquired reference closure
+
+Read-only by default. It checks that each `raw_sessions` row has exactly one
+matching `raw_payload` ref and that each acquired index attachment is reachable
+through `attachment_refs`. Raw gaps are repaired from the retained raw row's
+exact hash, path, size, and acquisition timestamp. Attachment gaps are repaired
+only when a complete reparse of authoritative `source.db` bytes reproduces the
+attachment identity and its owning message still exists. Other rows are
+reported as typed blockers and remain untouched.
+
+```bash
+polylogue ops maintenance blob-reference-closure --output-format json
+polylogue ops maintenance blob-reference-closure --apply \
+  --backup-manifest /path/to/verified-full-evidence-manifest.json \
+  --receipt-file /path/to/new/blob-reference-closure.jsonl \
+  --output-format json
+```
+
+Apply requires the daemon to be offline, a verified backup manifest covering
+both `source.db` and `index.db`, and a new receipt path. It inserts exact refs
+only, never deletes or replaces existing refs. The source and index commits are
+recorded separately in the receipt so a retry can safely continue an additive
+repair. Reindex acceptance runs the same closure check against the candidate
+index before promotion.
 
 ### `polylogue ops maintenance hook-payload-ref-reconcile` - legacy hook-ref repair
 
@@ -290,15 +362,35 @@ polylogue ops maintenance blob-reference-prune-orphans \
 
 ### `polylogue ops maintenance reindex-canary` — inactive-generation semantic diff
 
-Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`, writes a durable report, and refuses a report with unclassified differences. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
+Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`. A run with observed differences writes an unreviewed durable report and exits non-zero. Re-run with `--review-manifest` to persist one classification per difference, then use `--consume-report` to validate the reviewed report and approve its evidence. Approval never authorizes promotion. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
 
 ```bash
 polylogue ops maintenance reindex-canary \
-  --input /realm/db/polylogue/index.db \
+  --archive-root /realm/tmp/polylogue-canary-archive \
+  --input /realm/tmp/polylogue-canary-archive/index.db \
+  --schema-inference-receipt /realm/tmp/schema-inference-gate-receipt.json \
   --sample 100 \
   --report /realm/tmp/polylogue-reindex-canary.json \
   --no-promote \
   --output-format json
+```
+
+After reviewing the observed identities printed by the failed run, persist the classifications and validate the report. Consumption acquires the same archive ownership and rebuild lease as the rebuild path, verifies referenced raw-payload bytes through `BlobStore`, and revalidates the source closure, candidate generation, receipt, and comparison immediately before approval. Membership rows and logical-source-key expansion are part of the receipt, so drift fails closed:
+
+```bash
+polylogue ops maintenance reindex-canary \
+  --archive-root /realm/tmp/polylogue-canary-archive \
+  --input /realm/tmp/polylogue-canary-archive/index.db \
+  --sample 100 \
+  --report /realm/tmp/polylogue-reindex-canary.json \
+  --review-manifest /realm/tmp/polylogue-reindex-reviews.json \
+  --no-promote
+
+polylogue ops maintenance reindex-canary \
+  --archive-root /realm/tmp/polylogue-canary-archive \
+  --report /realm/tmp/polylogue-reindex-canary.json \
+  --consume-report \
+  --no-promote
 ```
 
 ### `polylogue ops maintenance verify-archive` — coherence gate
@@ -476,6 +568,22 @@ The runbooks below assume:
 strings. `polylogue ops doctor` reports a `messages_fts` discrepancy.
 `polylogue ops diagnostics workload`
 shows non-empty `fts_trigger_state.missing` or `regressed` triggers.
+
+For a deployment-bound, read-only gate that checks schema versions, exact FTS
+debt, raw frontier integrity, replay candidates, cursor failures, and
+convergence debt, add `--preflight`:
+
+```bash
+polylogue ops diagnostics workload --preflight --json > preflight.json
+jq '.preflight_ledger | {state, blocking_checks, warning_checks}' preflight.json
+```
+
+The preflight reports quarantined raw bytes and missing
+`raw_membership_census` rows by origin. Quarantine is authority-pending
+evidence, not an automatic failure. Missing census is `coverage_unknown` and
+blocks the gate until a verdict exists. Only source rows with present,
+non-terminal census evidence are classified as actionable parse/validation
+debt.
 
 **Root cause.** `messages_fts` is a contentless FTS5 table
 (`content=''`, `contentless_delete=1`) indexing `blocks.search_text`,
@@ -719,6 +827,14 @@ polylogue ops maintenance migrate-tier user \
 systemctl --user start polylogued.service
 polylogue ops doctor
 ```
+
+The daemon and `migrate-tier` command share the stable
+`<archive-root>/.archive-ownership.lock` archive lease. `daemon.pid` is process
+metadata only and is never reclaimed by unlinking it as a lock. A crash during
+the train apply phase leaves a checksummed manifest under
+`.maintenance-state/durable-change-trains/`; the next daemon startup acquires
+the same archive lease, reconciles the interrupted version, and persists the
+recovery evidence before opening normal archive components.
 
 Never hand-edit a tier or use a plain manifest as migration authority. A
 durable migration requires a successful scratch-restore receipt authenticated

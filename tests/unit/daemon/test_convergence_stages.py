@@ -15,6 +15,7 @@ import pytest
 
 import polylogue.daemon.convergence_stages as stages
 from polylogue.archive.message.roles import Role
+from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.convergence import StageExecutionResult
 from polylogue.daemon.convergence_stages import (
@@ -22,6 +23,7 @@ from polylogue.daemon.convergence_stages import (
     make_embed_stage,
     make_fts_stage,
     make_insights_stage,
+    make_raw_authority_verdict_cache_stage,
 )
 from polylogue.scenarios import (
     WorkloadPhaseObservation,
@@ -33,7 +35,8 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.insights.session import storage as session_storage
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
@@ -67,6 +70,75 @@ def test_default_convergence_stages_retry_bounded_false_results(tmp_path: Path) 
     assert stages_by_name["fts"].false_means_pending is True
     assert stages_by_name["embed"].false_means_pending is True
     assert stages_by_name["insights"].false_means_pending is True
+
+
+def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_readiness(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(stages._DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS + 1):
+            raw_id = f"full-{index}"
+            written_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f"payload-{index}".encode(),
+                source_path="session.jsonl",
+                acquired_at_ms=1,
+                raw_id=raw_id,
+            )
+            archive.bind_raw_revision(
+                written_id,
+                RawRevisionEnvelope(f"codex:full-{index}", RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+            )
+        append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"append-payload",
+            source_path="session.jsonl",
+            acquired_at_ms=1,
+            raw_id="append-only",
+        )
+        archive.bind_raw_revision(
+            append_id,
+            RawRevisionEnvelope(
+                "codex:append",
+                RawRevisionKind.APPEND,
+                "revision-append",
+                0,
+                predecessor_source_revision="revision-base",
+                predecessor_raw_id="base",
+                baseline_raw_id="base",
+                append_start_offset=0,
+                append_end_offset=1,
+            ),
+        )
+
+    stage = make_raw_authority_verdict_cache_stage(tmp_path / "index.db")
+    assert stage.check_many is not None
+    assert stage.execute_many is not None
+    assert stage.false_means_pending is True
+    path = tmp_path / "source.jsonl"
+    with caplog.at_level("INFO"):
+        assert stage.check(path) is True
+        assert stage.execute_many((path,)) is False
+        assert stage.check(path) is True
+        assert stage.execute_many((path,)) is True
+        assert stage.check(path) is False
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        cached_cohorts = {
+            str(row[0]) for row in conn.execute("SELECT DISTINCT logical_source_key FROM raw_authority_verdicts")
+        }
+    assert len(cached_cohorts) == stages._DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS + 1
+    assert "codex:append" not in cached_cohorts
+    assert "skipped append cohorts=1" in caplog.text
+
+    import polylogue.storage.raw_authority_verdict_cache as cache_module
+
+    def _fail_projection(*args: object, **kwargs: object) -> dict[str, object]:
+        raise AssertionError("warm cache was recomputed")
+
+    monkeypatch.setattr(cache_module, "project_raw_authority_verdicts", _fail_projection)
+    assert stage.execute_many((path,)) is True
 
 
 def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
@@ -475,6 +547,41 @@ def test_archive_fts_global_repair_defers_sqlite_lock(
     assert stages.repair_messages_fts_surface(archive_db) is False
 
 
+def test_archive_fts_global_repair_scopes_bounded_mmap_to_main_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real archive repair route must not map its attached sibling tiers."""
+    from polylogue.storage.fts import dangling_repair
+    from polylogue.storage.sqlite.connection_profile import (
+        BOUNDED_REPAIR_MMAP_SIZE_BYTES,
+    )
+
+    archive_db = tmp_path / "index.db"
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+    for tier_name in ("user.db", "embeddings.db", "ops.db"):
+        sqlite3.connect(tmp_path / tier_name).close()
+
+    observed: dict[str, int] = {}
+    real_configure = dangling_repair.configure_bounded_repair_connection
+
+    def configure_and_capture(conn: sqlite3.Connection) -> None:
+        real_configure(conn)
+        for schema_name in ("main", "source_tier", "user_tier", "embeddings", "ops_tier"):
+            observed[schema_name] = int(conn.execute(f"PRAGMA {schema_name}.mmap_size").fetchone()[0])
+
+    monkeypatch.setattr(dangling_repair, "configure_bounded_repair_connection", configure_and_capture)
+
+    assert stages.repair_messages_fts_surface(archive_db) is True
+    assert observed == {
+        "main": BOUNDED_REPAIR_MMAP_SIZE_BYTES,
+        "source_tier": 0,
+        "user_tier": 0,
+        "embeddings": 0,
+        "ops_tier": 0,
+    }
+
+
 def test_archive_fts_optional_surface_repair_uses_stale_surface_repair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -545,23 +652,14 @@ def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: 
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
-def test_archive_fts_global_repair_does_not_run_full_exact_snapshot(tmp_path: Path) -> None:
-    """Daemon global FTS convergence should not end with a full exact scan."""
-    from unittest import mock
-
-    import polylogue.storage.fts.fts_lifecycle as fts_lc
-
+def test_archive_fts_global_repair_records_exact_parity(tmp_path: Path) -> None:
+    """Global repair must not publish ready until the exact invariant is clean."""
     archive_db = tmp_path / "index.db"
     archive_db.touch()
     source_path = tmp_path / "codex.jsonl"
     _seed_minimal_archive(archive_db, source_path)
 
-    with mock.patch.object(
-        fts_lc,
-        "fts_invariant_snapshot_sync",
-        side_effect=AssertionError("full exact FTS snapshot should stay out of daemon convergence"),
-    ):
-        assert stages.repair_messages_fts_surface(archive_db) is True
+    assert stages.repair_messages_fts_surface(archive_db) is True
 
     with sqlite3.connect(archive_db) as conn:
         row = conn.execute(
@@ -629,6 +727,85 @@ def test_archive_fts_global_repair_records_real_counts_status_and_query_agree(tm
         assert query_readiness["ready"] is True
         # Must not raise -- the query path agrees with the status surface.
         check_fts_readiness(query_readiness)
+
+
+def test_fts_surface_debt_retries_after_real_sqlite_backpressure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A locked repair remains deferred, red, and restartable until parity is restored."""
+    from polylogue.core.outcomes import OutcomeStatus
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.fts_status import fts_readiness_info
+    from polylogue.maintenance.archive_verification import verify_archive
+    from polylogue.sources.live.cursor import CursorStore
+
+    archive_db = tmp_path / "index.db"
+    with sqlite3.connect(archive_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        for index in range(3):
+            _seed_index_session(conn, session_id=f"codex-session:retry-{index}", text=f"retry needle {index}")
+        conn.execute("DELETE FROM messages_fts")
+        conn.commit()
+
+    cursor = CursorStore(archive_db)
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="messages_fts",
+        error="global FTS repair pending",
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+
+    blocker = sqlite3.connect(archive_db, timeout=0.01)
+    try:
+        blocker.execute("BEGIN EXCLUSIVE")
+        monkeypatch.setattr(stages, "_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS", 1)
+        assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    deferred = [
+        debt for debt in cursor.list_convergence_debt() if debt.stage == "fts" and debt.subject_id == "messages_fts"
+    ]
+    assert len(deferred) == 1
+    assert deferred[0].status == "deferred"
+    assert fts_readiness_info(archive_db, exact=False)["messages_ready"] is False
+    red = verify_archive(tmp_path, checks=("fts-parity",))
+    assert red.checks[0].status is OutcomeStatus.ERROR
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+    assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
+    assert not [debt for debt in cursor.list_convergence_debt() if debt.subject_id == "messages_fts"]
+    assert fts_readiness_info(archive_db, exact=False)["messages_ready"] is True
+    green = verify_archive(tmp_path, checks=("fts-parity",))
+    assert green.checks[0].status is OutcomeStatus.OK
+
+    retired = stages.repair_fts_surface_result(archive_db, "threads_fts")
+    assert retired.success is False
+    assert retired.deferred is False
+
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="messages_fts",
+        error="global FTS repair pending after malformed shadow table",
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+    with sqlite3.connect(archive_db) as conn:
+        conn.execute("DROP TABLE messages_fts_docsize")
+        conn.commit()
+
+    assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
+    failed = [debt for debt in cursor.list_convergence_debt() if debt.subject_id == "messages_fts"]
+    assert len(failed) == 1
+    assert failed[0].status == "failed"
 
 
 def test_archive_fts_global_repair_deletes_excess_rows_without_reset(tmp_path: Path) -> None:
@@ -1048,6 +1225,7 @@ def test_default_convergence_stages_always_register_embed_stage(
 
     assert stage_names == [
         "raw_parse_recovery",
+        "raw_authority_verdict_cache",
         "fts",
         "embed",
         "claude_workflow",

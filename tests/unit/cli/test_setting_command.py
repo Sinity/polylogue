@@ -6,13 +6,16 @@ import json
 from pathlib import Path
 from typing import cast
 
+import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
+from polylogue.cli.commands.setting import setting_command
 
 
 def _run(args: list[str]) -> dict[str, object] | list[object]:
     result = CliRunner().invoke(cli, ["--plain", "setting", *args], catch_exceptions=False)
+
     assert result.exit_code == 0, result.output
     return cast("dict[str, object] | list[object]", json.loads(result.output))
 
@@ -47,3 +50,12 @@ def test_setting_set_rejects_invalid_tier_value(cli_workspace: dict[str, Path]) 
     result = CliRunner().invoke(cli, ["--plain", "setting", "set", "subscription_tier", "not-a-tier"])
     assert result.exit_code != 0
     assert "subscription_tier must be one of" in result.output
+
+
+@pytest.mark.parametrize("subcommand", ("get", "set", "list"))
+def test_setting_subcommands_expose_standard_format_alias(subcommand: str) -> None:
+    """Every settings read/write route accepts the CLI-wide ``-f`` shorthand."""
+    result = CliRunner().invoke(setting_command, [subcommand, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "-f, --format" in result.output

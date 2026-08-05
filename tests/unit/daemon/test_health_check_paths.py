@@ -496,6 +496,59 @@ def test_raw_failures_ok_degraded_and_recovery(
     assert good.message == "no raw failures"
 
 
+def test_raw_failures_marks_deferred_work_retryable_not_unexplained(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import polylogue.daemon.status as status_module
+
+    monkeypatch.setattr(
+        status_module,
+        "_raw_failure_info",
+        lambda: {
+            "parse_failures": 4,
+            "validation_failures": 0,
+            "quarantined": 4,
+            "maintenance_failures": 0,
+            "deferred_failures": 4,
+            "terminal_rejections": 0,
+            "unexplained_failures": 0,
+        },
+    )
+
+    alert = _check_raw_failures_medium()
+
+    assert alert.severity == HealthSeverity.WARNING
+    assert alert.message == "4 deferred retryable raw capture(s); daemon work remains pending"
+
+
+def test_raw_failures_warning_names_deferred_and_terminal_states(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import polylogue.daemon.status as status_module
+
+    monkeypatch.setattr(
+        status_module,
+        "_raw_failure_info",
+        lambda: {
+            "parse_failures": 5,
+            "validation_failures": 0,
+            "quarantined": 5,
+            "maintenance_failures": 0,
+            "deferred_failures": 3,
+            "terminal_rejections": 2,
+            "unexplained_failures": 0,
+        },
+    )
+
+    alert = _check_raw_failures_medium()
+
+    assert alert.severity == HealthSeverity.WARNING
+    assert "3 deferred" in alert.message
+    assert "2 terminal" in alert.message
+
+
 # ---------------------------------------------------------------------------
 # MEDIUM: stale_ingest_attempts
 # ---------------------------------------------------------------------------
@@ -739,6 +792,8 @@ def test_archive_verification_registry_only_schedules_liveness_and_freshness_cla
         "planner_stats",
         "convergence_freshness",
         "user_tier_refs",
+        "excluded_cursor_vocabulary_honesty",
+        "stalled_append_cursor_freshness",
     }
 
 

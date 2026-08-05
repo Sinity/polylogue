@@ -18,7 +18,7 @@ from polylogue.archive.models import Message, Session, SessionSummary
 from polylogue.archive.query.search_hits import bound_display_title
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.assertions import AssertionContextTrustClass
-from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+from polylogue.core.enums import ActionResultState, AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import delegation_edge_object_id, normalize_object_ref_text, normalize_public_ref_text
 from polylogue.surfaces.action_affordances import (
@@ -1642,6 +1642,7 @@ class ActionQueryRowPayload(SurfacePayloadModel):
     output_text: str | None = None
     is_error: int | None = None
     exit_code: int | None = None
+    result_state: ActionResultState
     followup_class: str | None = None
     followup_message_ref: str | None = None
 

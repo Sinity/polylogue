@@ -248,15 +248,14 @@ async def _apply_session_insight_session_update_async(
     ).fetchone()
     if str(session_id) in await _rebuild._heavy_session_ids_async(conn, [session_id]):
         # Heavy sessions must never be hydrated on the incremental path: use
-        # the same bounded/degraded bundle as rebuild, with the same
-        # logical_session_id=session_id argument, so the stored profile is
-        # byte-identical whichever materializer last touched the session
-        # (polylogue-61zb: refresh/rebuild profile flip-flop).
+        # the same bounded/degraded bundle as rebuild. Use the topology root
+        # for logical identity, so degraded profiles remain byte-identical
+        # with the ordinary rebuild path.
         thread_root_id = await thread_root_id_async(conn, session_id)
         record_bundle = await _rebuild.build_large_session_insight_record_bundle_async(
             conn,
             session_id,
-            logical_session_id=session_id,
+            logical_session_id=thread_root_id,
         )
         await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
         await replace_session_latency_profile(conn, record_bundle.latency_profile_record, transaction_depth)
@@ -538,7 +537,7 @@ async def _apply_session_insight_session_updates_async(
             record_bundle = await _rebuild.build_large_session_insight_record_bundle_async(
                 conn,
                 session_id,
-                logical_session_id=session_id,
+                logical_session_id=root_ids_by_session.get(session_id),
             )
             record_bundles.append(record_bundle)
             counts.add(profiles=1)

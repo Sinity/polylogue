@@ -2,11 +2,46 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
+from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
+
 JsonObject: TypeAlias = dict[str, object]
 JsonObjectList: TypeAlias = list[JsonObject]
+
+
+@dataclass
+class SyntheticAntigravityLanguageServerClient:
+    """Test-only language-server boundary for real synthetic conversation files."""
+
+    root: Path
+
+    def start(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def search_sessions(self, *, limit: int = 10000, query: str = "") -> list[AntigravitySessionSummary]:
+        del limit, query
+        return [
+            AntigravitySessionSummary(
+                cascade_id=path.stem,
+                title=f"Synthetic Antigravity {path.stem}",
+                last_modified_time="2026-01-01T00:00:00Z",
+            )
+            for path in sorted((self.root / "conversations").glob("*.pb"))
+        ]
+
+    def export_markdown(self, cascade_id: str) -> str:
+        return (
+            "### User Input\n\n"
+            f"Synthetic prompt for {cascade_id}\n\n"
+            "### Planner Response\n\n"
+            f"Synthetic response for {cascade_id}\n"
+        )
 
 
 def make_chatgpt_node(

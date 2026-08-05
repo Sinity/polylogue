@@ -933,9 +933,20 @@ async def _daemon_bulk_rebuild_transaction_in_flight() -> bool:
     Checking survives a daemon restart via a durable transaction record.
     """
     from polylogue.daemon.bulk_rebuild import has_resumable_daemon_bulk_rebuild_transaction
+    from polylogue.maintenance.schema_inference_gate import (
+        SchemaInferenceGateError,
+        resolve_schema_inference_receipt_reference,
+        validate_schema_inference_receipt,
+    )
     from polylogue.paths import archive_root
 
-    return await asyncio.to_thread(has_resumable_daemon_bulk_rebuild_transaction, archive_root())
+    root = archive_root()
+    try:
+        receipt_path = resolve_schema_inference_receipt_reference(root)
+        await asyncio.to_thread(validate_schema_inference_receipt, root, receipt_path)
+    except (SchemaInferenceGateError, RuntimeError, OSError, ValueError):
+        return False
+    return await asyncio.to_thread(has_resumable_daemon_bulk_rebuild_transaction, root)
 
 
 async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> bool:
@@ -971,15 +982,12 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
     from polylogue.config import Config
     from polylogue.daemon.bulk_rebuild import (
         DAEMON_BULK_REBUILD_OPERATION_ID,
-        has_resumable_daemon_bulk_rebuild_transaction,
         run_daemon_bulk_rebuild_pass,
     )
     from polylogue.paths import archive_root, render_root
 
     root = archive_root()
-    if not _bulk_scale_raw_materialization_backlog(counts) and not await asyncio.to_thread(
-        has_resumable_daemon_bulk_rebuild_transaction, root
-    ):
+    if not _bulk_scale_raw_materialization_backlog(counts) and not await _daemon_bulk_rebuild_transaction_in_flight():
         return False
     config = Config(archive_root=root, render_root=render_root(), sources=[])
     try:
@@ -1241,8 +1249,14 @@ def _drain_raw_materialization_once(
     function is ever scheduled onto the writer hold; passing ``None``
     (the flag-off default) reproduces the exact unmodified in-hold parse.
     """
+    from polylogue.paths import archive_root
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+    if reason := raw_frontier_source_selection_block_reason(archive_root()):
+        raise RuntimeError(f"raw materialization source-selection gate blocked: {reason}")
+
     from polylogue.config import Config
-    from polylogue.paths import archive_root, render_root
+    from polylogue.paths import render_root
     from polylogue.product import raw_authority
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
 
@@ -1336,8 +1350,14 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
     specific to this one escalated component, and the ordinary pass already
     runs them on its own cadence.
     """
+    from polylogue.paths import archive_root
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+    if reason := raw_frontier_source_selection_block_reason(archive_root()):
+        raise RuntimeError(f"raw whale materialization source-selection gate blocked: {reason}")
+
     from polylogue.config import Config
-    from polylogue.paths import archive_root, render_root
+    from polylogue.paths import render_root
     from polylogue.product import raw_authority
 
     archive = archive_root()
@@ -1732,7 +1752,8 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     for debt in due_debt:
         retried += 1
         if debt.subject_type == "fts_surface":
-            if fts_surface_results.get(debt.subject_id) is True:
+            result = fts_surface_results.get(debt.subject_id)
+            if bool(getattr(result, "success", result)):
                 cursor.clear_convergence_debt(
                     stage=debt.stage,
                     subject_type=debt.subject_type,
@@ -1745,6 +1766,7 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
                 subject_id=debt.subject_id,
                 error="FTS freshness convergence did not converge",
                 materializer_version=debt.materializer_version,
+                deferred=bool(getattr(result, "deferred", False)),
             )
             continue
 
@@ -1802,14 +1824,14 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     return retried
 
 
-def _drain_fts_surface_debt(db: Path, surfaces: tuple[str, ...]) -> dict[str, bool]:
+def _drain_fts_surface_debt(db: Path, surfaces: tuple[str, ...]) -> dict[str, object]:
     if not surfaces:
         return {}
-    from polylogue.daemon.convergence_stages import repair_fts_surface
+    from polylogue.daemon.convergence_stages import repair_fts_surface_result
 
-    results: dict[str, bool] = {}
+    results: dict[str, object] = {}
     for surface in surfaces:
-        results[surface] = repair_fts_surface(db, surface)
+        results[surface] = repair_fts_surface_result(db, surface)
     return results
 
 
@@ -2036,12 +2058,15 @@ async def run_live_watcher(
     sources: tuple[WatchSource, ...],
     debounce_s: float,
 ) -> None:
+    from polylogue.daemon.events import emit_catch_up_cycle
+
     async with Polylogue() as polylogue:
         watcher = LiveWatcher(
             polylogue,
             sources,
             debounce_s=debounce_s,
             event_emitter=_emit_live_batch_event,
+            catch_up_event_emitter=emit_catch_up_cycle,
             write_coordinator=daemon_write_coordinator(),
         )
         try:
@@ -2144,10 +2169,35 @@ async def run_daemon_services(
 
     log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
 
+    # One stable archive ownership lock is shared with offline maintenance.
+    # The pidfile below remains process metadata only and is never the
+    # authority used to exclude a concurrent migration or startup.
+    from polylogue.operations.durable_change_train import (
+        acquire_durable_archive_ownership,
+        reconcile_durable_change_trains_on_startup,
+    )
+
+    archive_owner = acquire_durable_archive_ownership(archive_root_path, owner_id=f"daemon:{os.getpid()}")
+    try:
+        recovered_train_paths = reconcile_durable_change_trains_on_startup(archive_root_path)
+        if recovered_train_paths:
+            logger.warning(
+                "daemon: reconciled %d interrupted durable change train(s) during startup: %s",
+                len(recovered_train_paths),
+                ", ".join(str(path) for path in recovered_train_paths),
+            )
+    except BaseException:
+        archive_owner.release()
+        raise
+
     # Schema preflight runs FIRST, before any DB-touching startup task. A
     # mismatched runtime/db combination must not even open the DB for FTS or
     # heartbeat queries — that is the IO cost #1003 is meant to avoid.
-    schema_alert = _check_schema_version_fast()
+    try:
+        schema_alert = _check_schema_version_fast()
+    except BaseException:
+        archive_owner.release()
+        raise
     # polylogue-gbs02: "watcher_blocked" here means "the derived tier (or
     # worse) is stale, so materialize/index-writing maintenance loops must
     # stay parked" -- unchanged from before, still gates the loops/converger/
@@ -2215,13 +2265,16 @@ async def run_daemon_services(
 
     # Prevent concurrent daemon instances: verify existing pidfile, then
     # acquire an advisory flock.
-    if pidfile.exists():
-        if _verify_pidfile(pidfile):
+    try:
+        if pidfile.exists() and _verify_pidfile(pidfile):
             old_pid = pidfile.read_text().strip()
             raise RuntimeError(f"Daemon already running (PID {old_pid}). Stop it first or remove {pidfile}")
-        pidfile.unlink(missing_ok=True)
-
-    pidfile_fd = _acquire_pidfile(pidfile)
+        # A stale pidfile is overwritten in place after the stable archive
+        # lock is held. It is never unlinked as a lock-reclamation strategy.
+        pidfile_fd = _acquire_pidfile(pidfile)
+    except BaseException:
+        archive_owner.release()
+        raise
     # Only register the pidfile for atexit cleanup AFTER lock acquisition.
     # Setting _pidfile_path before _acquire_pidfile() means a failed lock
     # attempt by an ephemeral instance would still atexit-unlink the live
@@ -2244,31 +2297,45 @@ async def run_daemon_services(
                 await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
         writer_drained = await write_coordinator.shutdown(timeout=5.0)
         _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
+        if writer_drained:
+            archive_owner.release()
         _daemon_lifecycle = None
         raise
 
-    # Ensure all configured source roots exist so health checks don't flag
-    # never-yet-used sources (e.g. hooks sidecar dir) as missing.
-    for src in sources:
-        src.root.mkdir(parents=True, exist_ok=True)
+    try:
+        # Ensure all configured source roots exist so health checks don't flag
+        # never-yet-used sources (e.g. hooks sidecar dir) as missing.
+        for src in sources:
+            src.root.mkdir(parents=True, exist_ok=True)
 
-    if lifecycle_events_enabled:
-        await _emit_daemon_lifecycle_event(
-            "startup",
-            archive_root_path=archive_root_path,
-            status="starting",
-            payload={
-                "api_enabled": enable_api,
-                "api_host": api_host,
-                "api_port": api_port,
-                "browser_capture_enabled": enable_browser_capture,
-                "browser_capture_host": browser_capture_host,
-                "browser_capture_port": browser_capture_port,
-                "watch_enabled": enable_watch,
-                "source_catchup_enabled": enable_source_catchup,
-                "source_roots": [str(src.root) for src in sources],
-            },
-        )
+        if lifecycle_events_enabled:
+            await _emit_daemon_lifecycle_event(
+                "startup",
+                archive_root_path=archive_root_path,
+                status="starting",
+                payload={
+                    "api_enabled": enable_api,
+                    "api_host": api_host,
+                    "api_port": api_port,
+                    "browser_capture_enabled": enable_browser_capture,
+                    "browser_capture_host": browser_capture_host,
+                    "browser_capture_port": browser_capture_port,
+                    "watch_enabled": enable_watch,
+                    "source_catchup_enabled": enable_source_catchup,
+                    "source_roots": [str(src.root) for src in sources],
+                },
+            )
+    except BaseException:
+        lifecycle = _daemon_lifecycle
+        if lifecycle is not None:
+            with contextlib.suppress(Exception):
+                await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
+        writer_drained = await write_coordinator.shutdown(timeout=5.0)
+        _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
+        if writer_drained:
+            archive_owner.release()
+        _daemon_lifecycle = None
+        raise
 
     # Periodic maintenance tasks. If schema preflight blocks the watcher, do
     # not start any background loop that opens the archive: a mismatched
@@ -2311,6 +2378,7 @@ async def run_daemon_services(
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
     termination: BaseException | None = None
+    writer_drained = False
     try:
         if enable_browser_capture:
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
@@ -2466,6 +2534,8 @@ async def run_daemon_services(
         # convergence coupling (polylogue-gbs02).
         try:
             if enable_watch and not watcher_creation_blocked:
+                from polylogue.daemon.events import emit_catch_up_cycle
+
                 async with Polylogue() as polylogue:
                     watcher = LiveWatcher(
                         polylogue,
@@ -2473,6 +2543,7 @@ async def run_daemon_services(
                         debounce_s=debounce_s,
                         converger=converger,
                         event_emitter=_emit_live_batch_event,
+                        catch_up_event_emitter=emit_catch_up_cycle,
                         write_coordinator=write_coordinator,
                     )
                     watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
@@ -2629,6 +2700,8 @@ async def run_daemon_services(
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()
             restore_signal_handlers(previous_signal_handlers)
+            if writer_drained:
+                archive_owner.release()
             _daemon_lifecycle = None
 
     logger.info("daemon stopped")
@@ -2812,11 +2885,14 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
                 browser_capture_spool_path=spool_path,
                 include_browser_capture_spool_path=spool_path is not None,
             )
+    status_ok = payload.get("ok") is True
     if output_format == "json":
         click.echo(dumps(payload))
-        return
-    for line in format_daemon_status_lines(payload):
-        click.echo(line)
+    else:
+        for line in format_daemon_status_lines(payload):
+            click.echo(line)
+    if not status_ok:
+        raise SystemExit(1)
 
 
 @main.command("health", help="Run tiered daemon health checks.")

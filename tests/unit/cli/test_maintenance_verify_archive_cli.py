@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.maintenance.archive_verification import ARCHIVE_VERIFICATION_CHECK_NAMES
+from polylogue.storage.blob_store import BlobStore
 
 
 def test_verify_archive_cli_plain_exits_zero_on_empty_archive(
@@ -128,3 +129,67 @@ def test_verify_archive_cli_strict_fails_on_warning(
         ["--plain", "ops", "maintenance", "verify-archive", "--check", "planner-stats", "--strict"],
     )
     assert strict_result.exit_code == 1
+
+
+def test_verify_archive_cli_blocks_on_physical_blob_orphan(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    BlobStore(cli_workspace["archive_root"] / "blob").write_from_bytes(b"orphan physical bytes")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "verify-archive",
+            "--check",
+            "blob-integrity",
+            "--output-format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    check = payload["checks"][0]
+    assert check["status"] == "error"
+    assert payload["blocking"] is True
+
+
+def test_verify_archive_cli_strict_fails_on_required_skip(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    (cli_workspace["archive_root"] / "embeddings.db").unlink()
+
+    ordinary = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "verify-archive",
+            "--check",
+            "embeddings-refs-liveness",
+            "--output-format",
+            "json",
+        ],
+    )
+    assert ordinary.exit_code == 0, ordinary.output
+    assert json.loads(ordinary.stdout)["checks"][0]["status"] == "skip"
+
+    strict = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "verify-archive",
+            "--check",
+            "embeddings-refs-liveness",
+            "--strict",
+        ],
+    )
+    assert strict.exit_code == 1, strict.output

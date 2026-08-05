@@ -188,13 +188,13 @@ def build_small_session_material() -> SessionMaterial:
     fidelity_gaps = (
         FidelityGapInput(
             scope="attachment",
-            record_id="claude-code-session:demo-session-1:msg-2:attachment:0",
+            record_id="claude-code-session:demo-session-1:n:msg-2:attachment:0",
             gap_kind="unavailable_attachment_bytes",
             detail="attachment referenced by the provider export but bytes were never fetched",
         ),
         FidelityGapInput(
             scope="message",
-            record_id="claude-code-session:demo-session-1:msg-3",
+            record_id="claude-code-session:demo-session-1:n:msg-3",
             gap_kind="missing_timestamp",
             detail="provider omitted occurred_at; position ordinal is authoritative",
         ),

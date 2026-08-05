@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError
 from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.scenarios import (
@@ -535,13 +536,29 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
 
     try:
         with _connect(source_db) as conn:
-            row = conn.execute(
-                "SELECT raw_id, hex(blob_hash) AS blob_hash FROM raw_sessions WHERE origin = 'codex-session' AND native_id = ?",
-                (DEMO_CODEX_RECEIPTS_SESSION_ID.removeprefix("codex-session:"),),
-            ).fetchone()
-            if row is None:
+            provider_session_id = DEMO_CODEX_RECEIPTS_SESSION_ID.removeprefix("codex-session:")
+            rows = conn.execute(
+                """
+                SELECT DISTINCT r.raw_id, hex(r.blob_hash) AS blob_hash
+                FROM raw_sessions AS r
+                JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                WHERE r.origin = ?
+                  AND m.logical_source_key = ?
+                  AND m.provider_session_id = ?
+                ORDER BY r.raw_id
+                """,
+                (
+                    Origin.CODEX_SESSION.value,
+                    f"{Provider.CODEX.value}:{provider_session_id}",
+                    provider_session_id,
+                ),
+            ).fetchall()
+            if not rows:
                 problems.append("source material row for receipts session is missing")
+            elif len(rows) > 1:
+                problems.append("source material rows for receipts session are ambiguous")
             else:
+                row = rows[0]
                 raw_id = str(row["raw_id"])
                 raw_blob_sha256 = str(row["blob_hash"]).lower()
     except (OSError, sqlite3.Error) as exc:

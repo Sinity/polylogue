@@ -25,6 +25,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import Provider
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_raw_parse_recovery_stage
@@ -138,6 +140,27 @@ def test_raw_parse_recovery_stage_drains_a_stuck_raw_row(tmp_path: Path) -> None
     rows = _sessions_for_raw(tmp_path, raw_id)
     assert len(rows) == 1
     assert rows[0][0] == "conv-stuck"
+
+
+@pytest.mark.parametrize("authority_state", ["violated", "unknown"])
+def test_raw_parse_recovery_stage_blocks_unproven_cursor_authority(
+    authority_state: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "stuck.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
+    monkeypatch.setattr(
+        "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
+        lambda _root: f"{authority_state} cursor authority",
+    )
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+
+    assert stage.execute(path) is False
+    assert stage.check(path) is True
+    assert _sessions_for_raw(tmp_path, raw_id) == []
 
 
 def test_raw_parse_recovery_stage_is_false_means_pending() -> None:

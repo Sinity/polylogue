@@ -76,9 +76,13 @@ def audit_absences(
                 unattributable_sample.append(str(raw_id))
 
     absent: collections.Counter[tuple[str, str]] = collections.Counter()
+    documents_known_by_origin: collections.Counter[str] = collections.Counter()
+    documents_present_by_origin: collections.Counter[str] = collections.Counter()
     samples: dict[str, list[str]] = collections.defaultdict(list)
     for (origin, provider_session_id), decisions in by_document.items():
+        documents_known_by_origin[origin] += 1
         if f"{origin}:{provider_session_id}" in present_ids:
+            documents_present_by_origin[origin] += 1
             continue
         if decisions == {"<byte-revision>"}:
             cause = "byte-revision-governed"
@@ -95,6 +99,8 @@ def audit_absences(
     return {
         "documents_known": len(by_document),
         "documents_present": len(by_document) - sum(absent.values()),
+        "documents_known_by_origin": dict(sorted(documents_known_by_origin.items())),
+        "documents_present_by_origin": dict(sorted(documents_present_by_origin.items())),
         "absent_total": sum(absent.values()),
         "raws_without_attributable_identity": unattributable,
         "membershipless_non_session_artifacts_excluded": non_session_artifacts,

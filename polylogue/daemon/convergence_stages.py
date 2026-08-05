@@ -25,6 +25,11 @@ from polylogue.core.enums import Provider
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import get_logger
+from polylogue.operations.raw_authority_verdict_cache import (
+    RawAuthorityVerdictCacheWork,
+    find_raw_authority_verdict_cache_work,
+    warm_raw_authority_verdict_cache,
+)
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -49,6 +54,7 @@ _DAEMON_EMBED_MAX_MESSAGES = 2_500
 _DAEMON_EMBED_STOP_AFTER_SECONDS = 30
 _DAEMON_EMBED_MAX_ERRORS = 3
 _ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS = 120_000
+_DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS = 8
 
 
 def _is_transient_sqlite_lock(exc: BaseException) -> bool:
@@ -56,6 +62,24 @@ def _is_transient_sqlite_lock(exc: BaseException) -> bool:
         return False
     message = str(exc).lower()
     return "database is locked" in message or "database table is locked" in message or "database is busy" in message
+
+
+@dataclass(frozen=True, slots=True)
+class FtsSurfaceRepairResult:
+    """Outcome of one persisted FTS-surface repair attempt.
+
+    A busy SQLite writer is deliberate backpressure and remains retryable. A
+    repair exception or an exact-parity failure is a genuine failed attempt.
+    Keeping that distinction beside the FTS repair route prevents the debt
+    drain from reducing both outcomes to the same boolean.
+    """
+
+    success: bool
+    deferred: bool = False
+    detail: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.success
 
 
 def _open_archive_insight_write_connection(db_path: Path) -> sqlite3.Connection:
@@ -914,8 +938,16 @@ def make_raw_parse_recovery_stage(db_path: Path) -> ConvergenceStage:
     def execute(path: Path) -> StageExecuteReturn:
         from polylogue.config import Config
         from polylogue.product.raw_authority import repair_materialization
+        from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
 
         archive_root = db_path.parent
+        if reason := raw_frontier_source_selection_block_reason(archive_root):
+            logger.warning(
+                "raw_parse_recovery: source-selection gate blocked for %s: %s",
+                path,
+                reason,
+            )
+            return False
         config = Config(archive_root=archive_root, render_root=archive_root, sources=[])
         try:
             repair_materialization(
@@ -935,6 +967,75 @@ def make_raw_parse_recovery_stage(db_path: Path) -> ConvergenceStage:
         description="Requeue raw rows an interrupted ingest attempt never validated/parsed",
         check=check,
         execute=execute,
+        false_means_pending=True,
+    )
+
+
+def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
+    """Warm the content-keyed raw-authority verdict cache in bounded cohorts."""
+
+    def work() -> RawAuthorityVerdictCacheWork | None:
+        return find_raw_authority_verdict_cache_work(db_path.parent)
+
+    def log_skipped_append_cohorts(discovered: RawAuthorityVerdictCacheWork) -> None:
+        if discovered.skipped_append_cohorts:
+            logger.info(
+                "raw_authority_verdict_cache: skipped append cohorts=%d; append authority uses a separate proof",
+                discovered.skipped_append_cohorts,
+            )
+
+    def check(_path: Path) -> bool:
+        try:
+            discovered = work()
+        except Exception:
+            logger.warning("raw_authority_verdict_cache: readiness probe failed", exc_info=True)
+            return True
+        if discovered is None:
+            return False
+        log_skipped_append_cohorts(discovered)
+        return bool(discovered.pending_logical_source_keys)
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        if not paths:
+            return set()
+        try:
+            discovered = work()
+        except Exception:
+            logger.warning("raw_authority_verdict_cache: batch readiness probe failed", exc_info=True)
+            return set(paths)
+        if discovered is None:
+            return set()
+        log_skipped_append_cohorts(discovered)
+        return set(paths) if discovered.pending_logical_source_keys else set()
+
+    def execute(_path: Path) -> StageExecuteReturn:
+        return execute_many((_path,))
+
+    def execute_many(_paths: Sequence[Path]) -> StageExecuteReturn:
+        try:
+            outcome = warm_raw_authority_verdict_cache(
+                db_path.parent,
+                max_cohorts=_DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS,
+                now_ms=int(time.time() * 1000),
+            )
+        except Exception:
+            logger.warning("raw_authority_verdict_cache: bounded warmup failed", exc_info=True)
+            return False
+        logger.info(
+            "raw_authority_verdict_cache: warmed cohorts=%d skipped_append=%d pending=%s",
+            outcome.warmed_cohorts,
+            outcome.skipped_append_cohorts,
+            outcome.pending_cohorts,
+        )
+        return not outcome.pending_cohorts
+
+    return ConvergenceStage(
+        name="raw_authority_verdict_cache",
+        description="Warm content-keyed raw-authority verdicts for full/unknown cohorts",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
         false_means_pending=True,
     )
 
@@ -970,6 +1071,7 @@ def make_default_convergence_stages(
     stages.extend(
         (
             make_raw_parse_recovery_stage(db_path),
+            make_raw_authority_verdict_cache_stage(db_path),
             make_fts_stage(db_path),
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
@@ -1640,73 +1742,73 @@ def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> 
         return False
 
 
-def repair_messages_fts_surface(db_path: Path) -> bool:
+def repair_messages_fts_surface_result(db_path: Path) -> FtsSurfaceRepairResult:
     """Repair the whole archive ``messages_fts`` surface after global drift."""
     archive_db = _active_archive_index_path(db_path) or db_path
     try:
         conn = _open_archive_insight_write_connection(archive_db)
         try:
             from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
-            from polylogue.storage.fts.freshness import READY, record_fts_surface_state_sync
+            from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
             from polylogue.storage.fts.fts_lifecycle import (
+                fts_invariant_snapshot_sync,
                 reconcile_message_fts_rows_once_sync,
             )
-            from polylogue.storage.fts.sql import FTS_INDEX_DOC_COUNT_SQL, FTS_INDEXABLE_MESSAGE_COUNT_SQL
 
             configure_bounded_repair_connection(conn)
             inserted_total, deleted_total = reconcile_message_fts_rows_once_sync(conn)
-            # The exhaustive set-based insert/delete above (not a windowed
-            # partial pass -- the historical "bounded" naming refers only to
-            # avoiding the old repeated-join rowid-window loop) has just
-            # cleared every missing/excess row across the whole table, so the
-            # real post-repair cardinalities are two plain single-table
-            # COUNT(*) probes, not the anti-join missing/excess/identity-
-            # mismatch scan ``fts_invariant_snapshot_sync`` performs (that
-            # stays out of daemon convergence; see
-            # test_archive_fts_global_repair_does_not_run_full_exact_snapshot).
-            # Recording the true counts (polylogue-roax) instead of a
-            # fabricated 1/1 placeholder is what lets the status surface and
-            # the query-path fast readiness check trust this row without
-            # disagreeing with each other.
-            source_rows = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0] or 0)
-            indexed_rows = int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0)
+            surface = fts_invariant_snapshot_sync(conn).messages
             record_fts_surface_state_sync(
                 conn,
                 surface="messages_fts",
-                state=READY,
-                source_rows=source_rows,
-                indexed_rows=indexed_rows,
-                missing_rows=0,
-                excess_rows=0,
-                duplicate_rows=0,
+                state=READY if surface.ready else STALE,
+                source_rows=surface.source_rows,
+                indexed_rows=surface.indexed_rows,
+                missing_rows=surface.missing_rows,
+                excess_rows=surface.excess_rows,
+                duplicate_rows=surface.duplicate_rows,
+                identity_mismatch_rows=surface.identity_mismatch_rows,
+                detail=None if surface.ready else "exact message FTS parity failed after repair",
             )
             conn.commit()
             logger.info(
-                "fts: archive messages_fts surface repair marked ready inserted=%d deleted=%d "
-                "source_rows=%d indexed_rows=%d",
+                "fts: archive messages_fts surface repair complete ready=%s inserted=%d deleted=%d "
+                "source_rows=%d indexed_rows=%d missing=%d excess=%d identity_mismatch=%d",
+                surface.ready,
                 inserted_total,
                 deleted_total,
-                source_rows,
-                indexed_rows,
+                surface.source_rows,
+                surface.indexed_rows,
+                surface.missing_rows,
+                surface.excess_rows,
+                surface.identity_mismatch_rows,
             )
-            return True
+            return FtsSurfaceRepairResult(
+                success=surface.ready,
+                detail=None if surface.ready else "exact message FTS parity failed after repair",
+            )
         finally:
             conn.close()
     except Exception as exc:
         if _is_transient_sqlite_lock(exc):
             logger.info("fts: archive global messages_fts repair deferred because sqlite is busy: %s", exc)
-            return False
+            return FtsSurfaceRepairResult(success=False, deferred=True, detail="SQLite writer busy")
         logger.warning("fts: archive global messages_fts repair failed", exc_info=True)
-        return False
+        return FtsSurfaceRepairResult(success=False, detail=f"{type(exc).__name__}: {exc}")
 
 
-def repair_fts_surface(db_path: Path, surface: str) -> bool:
+def repair_messages_fts_surface(db_path: Path) -> bool:
+    """Compatibility boolean for callers that only need repair success."""
+    return bool(repair_messages_fts_surface_result(db_path))
+
+
+def repair_fts_surface_result(db_path: Path, surface: str) -> FtsSurfaceRepairResult:
     """Repair a named archive FTS surface from daemon convergence debt."""
     if surface == "messages_fts":
-        return repair_messages_fts_surface(db_path)
+        return repair_messages_fts_surface_result(db_path)
     if surface != "session_work_events_fts":
         logger.warning("fts: unsupported archive FTS surface debt surface=%s", surface)
-        return False
+        return FtsSurfaceRepairResult(success=False, detail=f"unsupported FTS surface: {surface}")
     archive_db = _active_archive_index_path(db_path) or db_path
     try:
         conn = _open_archive_insight_write_connection(archive_db)
@@ -1723,11 +1825,11 @@ def repair_fts_surface(db_path: Path, surface: str) -> bool:
                 logger.info(
                     "fts: archive derived FTS surface repair completed surface=%s detail=%s", surface, outcome.detail
                 )
-                return True
+                return FtsSurfaceRepairResult(success=True, detail=outcome.detail)
             logger.warning(
                 "fts: archive derived FTS surface repair incomplete surface=%s detail=%s", surface, outcome.detail
             )
-            return False
+            return FtsSurfaceRepairResult(success=False, detail=outcome.detail)
         finally:
             conn.close()
     except Exception as exc:
@@ -1735,9 +1837,14 @@ def repair_fts_surface(db_path: Path, surface: str) -> bool:
             logger.info(
                 "fts: archive derived FTS surface repair deferred surface=%s because sqlite is busy: %s", surface, exc
             )
-            return False
+            return FtsSurfaceRepairResult(success=False, deferred=True, detail="SQLite writer busy")
         logger.warning("fts: archive derived FTS surface repair failed surface=%s", surface, exc_info=True)
-        return False
+        return FtsSurfaceRepairResult(success=False, detail=f"{type(exc).__name__}: {exc}")
+
+
+def repair_fts_surface(db_path: Path, surface: str) -> bool:
+    """Compatibility boolean for named archive FTS-surface repair."""
+    return bool(repair_fts_surface_result(db_path, surface))
 
 
 def _archive_pending_embedding_session_ids(
@@ -2215,6 +2322,7 @@ __all__ = [
     "make_embed_stage",
     "make_fts_stage",
     "make_insights_stage",
+    "make_raw_authority_verdict_cache_stage",
     "make_raw_parse_recovery_stage",
     "make_sinex_publication_stage",
     "make_standing_query_stage",

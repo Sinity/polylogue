@@ -433,7 +433,18 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # `blocks_command_trigram` remains because `devtools/affordance_usage.py`'s
 # `_cli_action_rows` is a real consumer with a documented archive-scale
 # speedup. See the v63 declaration in lifecycle.py.
-INDEX_SCHEMA_VERSION = 63
+# polylogue-xselt: v64 adds parser/lowering semantic stamps consumed by the
+# reindex acceptance gate. They remain nullable only so pre-bootstrap index
+# generations can be opened long enough to undergo the semantic replay.
+# polylogue-cuxz.5: v65 adds the actions view-only ``result_state`` projection.
+# It is computed entirely from existing action_pairs outcome columns, so a
+# fast-forward only replaces the derived view. No raw session is reparsed and
+# no persisted source/blob value changes.
+# polylogue-fix-blob-reference-closure: v66 separates native message ids from
+# positional coordinates in the generated message_id expression. Existing
+# derived rows remain readable as opaque legacy ids, but new materialization
+# must replay raw sessions to regenerate message/block/reference identities.
+INDEX_SCHEMA_VERSION = 66
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -541,6 +552,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     parent_session_id       TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
     root_session_id         TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
     raw_id                  TEXT,
+    -- Written by the parsed-session chokepoint in the same transaction as
+    -- this row. Pre-v64 generations are intentionally nullable until replay.
+    parser_fingerprint      TEXT,
+    lowering_fingerprint    TEXT,
     branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)}),
     active_leaf_message_id  TEXT,
     title                   TEXT,
@@ -1018,7 +1033,14 @@ CREATE VIEW IF NOT EXISTS actions AS
 SELECT
     ap.session_id, ap.message_id, ap.tool_use_block_id, ap.tool_name, ap.semantic_type,
     ap.tool_command, ap.tool_path, tu.tool_input AS tool_input, tr.text AS output_text,
-    ap.is_error, ap.exit_code, ap.tool_result_block_id
+    ap.is_error, ap.exit_code, ap.tool_result_block_id,
+    CASE
+        WHEN ap.tool_result_block_id IS NULL THEN 'no_result'
+        WHEN ap.is_error IS NULL AND ap.exit_code IS NULL THEN 'outcome_unknown'
+        WHEN ap.exit_code IS NOT NULL AND ap.exit_code != 0 THEN 'outcome_error'
+        WHEN ap.exit_code IS NULL AND ap.is_error = 1 THEN 'outcome_error'
+        ELSE 'outcome_success'
+    END AS result_state
 FROM action_pairs ap
 JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
 LEFT JOIN blocks tr ON tr.block_id = ap.tool_result_block_id;

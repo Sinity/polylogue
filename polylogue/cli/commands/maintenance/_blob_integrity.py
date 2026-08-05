@@ -74,7 +74,7 @@ def _render_blob_reference_liveness_plain(report: BlobRefLivenessReconciliationR
     click.echo(f"Source DB:    {report.source_db}")
     click.echo(f"Mode:         {'apply' if report.applied else 'dry-run'}")
     click.echo(f"Scanned:      {report.classification.scanned_count:,} blob_refs row(s)")
-    click.echo(f"Orphans:      {len(report.classification.candidates):,} row(s)")
+    click.echo(f"Orphans:      {report.classification.orphaned_count:,} row(s)")
     click.echo(f"Deleted:      {report.deleted_count:,} row(s)")
     click.echo(f"Safe to apply: {'yes' if report.classification.safe_to_apply else 'no'}")
     if report.classification.rekeyable_hook_payload_count:

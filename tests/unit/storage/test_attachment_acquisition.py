@@ -216,6 +216,13 @@ def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeyp
     assert remote["acquisition_status"] == "unfetched"
     assert remote["blob_hash"] is None
     assert remote["byte_count"] == 1024
+    ref = conn.execute(
+        "SELECT attachment_id, session_id, message_id FROM attachment_refs WHERE attachment_id = "
+        "(SELECT attachment_id FROM attachments WHERE display_name = 'notes.md')"
+    ).fetchone()
+    assert ref is not None
+    assert ref[1] == "claude-ai-export:claude-attachment-session"
+    assert ref[2] == "claude-ai-export:claude-attachment-session:m0"
 
 
 @pytest.mark.parametrize("payload", [b"must be reserved first", b""], ids=["nonempty", "empty"])

@@ -7,6 +7,7 @@ import pytest
 
 from polylogue.core.enums import OperationStatus, Origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     ROUTE_OBSERVATION_ROW_CAP,
     ArchiveCursorLagSample,
@@ -93,6 +94,7 @@ def test_existing_ops_db_converges_old_status_checks_and_preserves_rows(tmp_path
             PRAGMA user_version = 1;
             """
         )
+
         conn.execute(
             "INSERT INTO ingest_attempts (attempt_id, status, started_at_ms) VALUES ('legacy-attempt', 'completed', 1)"
         )
@@ -130,6 +132,38 @@ def test_existing_ops_db_converges_old_status_checks_and_preserves_rows(tmp_path
         assert conn.execute("SELECT status FROM embedding_catchup_runs WHERE run_id = 'new-run'").fetchone() == (
             "interrupted",
         )
+
+
+def test_fresh_ops_schema_declares_daemon_event_lifecycle_indexes(tmp_path: Path) -> None:
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+
+    with sqlite3.connect(ops_db) as conn:
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list('daemon_events')")}
+
+    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle"} <= indexes
+
+
+def test_existing_ops_db_applies_daemon_event_index_convergence_plan(tmp_path: Path) -> None:
+    ops_db = tmp_path / "ops.db"
+    with sqlite3.connect(ops_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE daemon_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts_ms INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                operation_id TEXT,
+                payload_json TEXT NOT NULL DEFAULT '{}'
+            ) STRICT;
+            PRAGMA user_version = 1;
+            """
+        )
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list('daemon_events')")}
+
+    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle"} <= indexes
+    assert len(OPS_BENIGN_DDL_CONVERGENCE_PLAN) == 2
 
 
 def test_ops_upsert_ingest_cursor_updates_single_row(tmp_path: Path) -> None:

@@ -751,14 +751,14 @@ class TestCliMain:
     """CLI entry point behavior."""
 
     def test_cli_with_no_db(self, tmp_path: Path) -> None:
-        exit_code = cli_main(
-            [
-                "--provider",
-                "chatgpt",
-                "--output-dir",
-                str(tmp_path / "out"),
-                "--db-path",
-                str(tmp_path / "missing.db"),
-            ]
-        )
-        assert isinstance(exit_code, int)
+        with pytest.raises(SystemExit, match="2"):
+            cli_main(
+                [
+                    "--provider",
+                    "chatgpt",
+                    "--output-dir",
+                    str(tmp_path / "out"),
+                    "--db-path",
+                    str(tmp_path / "missing.db"),
+                ]
+            )

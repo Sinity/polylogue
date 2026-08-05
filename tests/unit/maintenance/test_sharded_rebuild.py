@@ -22,20 +22,50 @@ both drive the real rebuild engine end to end and are slower.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import threading
 from pathlib import Path
+from typing import Any, cast
 
+import pytest
+
+import polylogue.maintenance.rebuild_index as rebuild_index_module
+import polylogue.maintenance.sharded_rebuild as sharded_rebuild_module
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, BranchType, Provider
+from polylogue.maintenance.rebuild_index import (
+    RebuildIndexRequest,
+    RebuildProvenanceContext,
+    rebuild_index_from_source_sync,
+)
+from polylogue.maintenance.schema_inference_gate import (
+    rebuild_source_revision_snapshot,
+    validate_schema_inference_receipt,
+)
 from polylogue.maintenance.sharded_rebuild import (
     merge_shards_into_target,
     resolve_cross_shard_session_graph,
     shard_raw_ids,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+
+
+class _NoopProvenance:
+    def validate(self) -> None:
+        return
+
+    def validate_cleanup(self) -> None:
+        return
+
+
+_NOOP_PROVENANCE = _NoopProvenance()
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -44,6 +74,36 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
+
+
+def _raw_payload(native_id: str, text: str) -> bytes:
+    rows = [
+        {"type": "session_meta", "payload": {"id": native_id, "timestamp": "2026-08-05T10:00:00Z"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": f"{native_id}-m0",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            },
+        },
+    ]
+    return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
+
+
+def _seed_raw_archive(root: Path, count: int = 8) -> list[str]:
+    initialize_active_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for index in range(count):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_raw_payload(f"sharded-route-{index}", f"sharded route text {index}"),
+                source_path=f"current/{index}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+    with sqlite3.connect(root / "source.db") as conn:
+        return [str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id")]
 
 
 def test_shard_raw_ids_is_deterministic_exhaustive_and_disjoint(tmp_path: Path) -> None:
@@ -146,8 +206,8 @@ def test_cross_shard_parent_child_resolves_after_merge(tmp_path: Path) -> None:
     conn_target.commit()
     conn_target.close()
 
-    merge_shards_into_target(target, [shard_a, shard_b])
-    resolve_cross_shard_session_graph(target)
+    merge_shards_into_target(target, [shard_a, shard_b], provenance=cast(RebuildProvenanceContext, _NOOP_PROVENANCE))
+    resolve_cross_shard_session_graph(target, provenance=cast(RebuildProvenanceContext, _NOOP_PROVENANCE))
 
     with sqlite3.connect(target) as conn:
         conn.row_factory = sqlite3.Row
@@ -206,4 +266,161 @@ def test_merge_shards_into_target_raises_on_foreign_key_violation(tmp_path: Path
     conn_target.close()
 
     with pytest.raises(RuntimeError, match="foreign-key violations"):
-        merge_shards_into_target(target, [shard_a])
+        merge_shards_into_target(target, [shard_a], provenance=cast(RebuildProvenanceContext, _NOOP_PROVENANCE))
+
+
+def test_merge_revalidates_external_evidence_before_target_mutation(tmp_path: Path) -> None:
+    """A source-evidence change at the merge boundary leaves the target empty.
+
+    Anti-vacuity: this invokes the production ``merge_shards_into_target`` with
+    real index rows and a real receipt context. Removing its pre-insert
+    provenance validation lets the shard row reach ``target`` before the
+    caller can observe the drift.
+    """
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"receipt-source"}}\n',
+            source_path="receipt-source.jsonl",
+            acquired_at_ms=1,
+        )
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    evidence = validate_schema_inference_receipt(root, receipt_path)
+    provenance = RebuildProvenanceContext(
+        root=root,
+        receipt_path=receipt_path,
+        source_snapshot=rebuild_source_revision_snapshot(root),
+        consumed_evidence=evidence,
+    )
+
+    shard = tmp_path / "shard" / "index.db"
+    shard.parent.mkdir(parents=True)
+    conn = _connect(shard)
+    write_parsed_session_to_archive(conn, _parent_session(), bulk_fts=True, bulk_build=True)
+    conn.commit()
+    conn.close()
+    target = tmp_path / "target" / "index.db"
+    target.parent.mkdir(parents=True)
+    conn = _connect(target)
+    conn.commit()
+    conn.close()
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    origin = receipt["ground_truth_inputs"]["origins"]["codex-session"]
+    external_path = Path(origin["declared_roots"][0]) / origin["external_inventory"][0]["relative_path"]
+    external_path.write_bytes(b"drifted-before-merge")
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        merge_shards_into_target(target, [shard], provenance=provenance)
+
+    with sqlite3.connect(target) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("discard_failure", ["exception", "false"], ids=["discard-exception", "discard-false"])
+def test_sharded_route_cleans_every_sibling_after_post_graph_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, discard_failure: str
+) -> None:
+    """The real sharded route cleans every sibling after graph provenance fails.
+
+    Anti-vacuity: this drives ``rebuild_index_from_source_sync`` through
+    ``replay_selected_raw_ids_sharded`` with real source rows and real shard
+    replay. The real graph resolver completes before the receipt is expired;
+    the post-graph validation then fails. Removing sibling cleanup, the
+    independent-discard handling, or the primary-error preservation leaves
+    shard metadata behind, skips a sibling, or hides the graph failure.
+    """
+    root = tmp_path / "archive"
+    raw_ids = _seed_raw_archive(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    original_graph_resolution = sharded_rebuild_module.resolve_cross_shard_session_graph
+    original_create = IndexGenerationStore.create
+    original_discard = IndexGenerationStore.discard_if_inactive
+    created_generation_ids: list[str] = []
+    failed_shard_id: str | None = None
+    discard_calls: list[str] = []
+    repopulate_calls: list[Path] = []
+    insight_calls: list[object] = []
+    source_write_lock = threading.Lock()
+
+    from polylogue.sources import revision_backfill as revision_backfill_module
+
+    original_backfill = cast(Any, revision_backfill_module.backfill_historical_revision_evidence)
+
+    def serialize_backfill(*args: object, **kwargs: object) -> object:
+        with source_write_lock:
+            return original_backfill(*args, **kwargs)
+
+    monkeypatch.setattr(revision_backfill_module, "backfill_historical_revision_evidence", serialize_backfill)
+
+    def record_create(
+        store: IndexGenerationStore, *, owner_id: str | None = None, source_snapshot: str
+    ) -> IndexGeneration:
+        nonlocal failed_shard_id
+        generation = original_create(store, owner_id=owner_id, source_snapshot=source_snapshot)
+        created_generation_ids.append(generation.generation_id)
+        if len(created_generation_ids) == 2:
+            failed_shard_id = generation.generation_id
+        return generation
+
+    def fail_one_discard(generation_store: IndexGenerationStore, generation: IndexGeneration) -> bool:
+        generation_id = generation.generation_id
+        discard_calls.append(generation_id)
+        if generation_id == failed_shard_id:
+            if discard_failure == "exception":
+                raise OSError("synthetic shard cleanup failure")
+            return False
+        return original_discard(generation_store, generation)
+
+    def fail_after_graph(target_index_path: Path, *, provenance: RebuildProvenanceContext) -> float:
+        graph_elapsed_s = original_graph_resolution(target_index_path, provenance=provenance)
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["generated_at"] = "2000-01-01T00:00:00Z"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        provenance.validate()
+        return graph_elapsed_s
+
+    def unexpected_repopulate(index_path: Path) -> dict[str, float]:
+        repopulate_calls.append(index_path)
+        raise AssertionError("post-graph provenance failure reached derived-state repopulation")
+
+    def unexpected_insight_repair(*args: object, **kwargs: object) -> object:
+        insight_calls.append((args, kwargs))
+        raise AssertionError("post-graph provenance failure reached insight repair")
+
+    monkeypatch.setattr(sharded_rebuild_module, "resolve_cross_shard_session_graph", fail_after_graph)
+    monkeypatch.setattr(IndexGenerationStore, "create", record_create)
+    monkeypatch.setattr(IndexGenerationStore, "discard_if_inactive", fail_one_discard)
+    monkeypatch.setattr(rebuild_index_module, "_repopulate_bulk_build_derived_state", unexpected_repopulate)
+    monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", unexpected_insight_repair)
+
+    buckets = [bucket for bucket in shard_raw_ids(root, raw_ids, 2) if bucket]
+    assert len(buckets) == 2
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed") as raised:
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                shard_count=2,
+            )
+        )
+
+    assert failed_shard_id is not None
+    shard_ids = set(created_generation_ids[1:])
+    assert len(shard_ids) == len(buckets)
+    assert failed_shard_id in shard_ids
+    assert shard_ids <= set(discard_calls)
+    assert all(discard_calls.count(generation_id) == 1 for generation_id in shard_ids)
+    assert {path.name for path in (root / ".index-generations").glob("gen-*")} == {failed_shard_id}
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+    assert repopulate_calls == []
+    assert insight_calls == []
+    assert str(raised.value).startswith("rebuild schema-inference preflight gate failed")
+    notes = "\n".join(raised.value.__notes__ or ())
+    assert "shard cleanup also failed" in notes
+    assert failed_shard_id in notes
+    expected_detail = "synthetic shard cleanup failure" if discard_failure == "exception" else "was not discarded"
+    assert expected_detail in notes

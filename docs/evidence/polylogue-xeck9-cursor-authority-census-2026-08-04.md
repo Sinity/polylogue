@@ -44,7 +44,7 @@ The existing status DTO renders these separately from the proven violation: `cur
 
 ## Root-cause conclusion
 
-No demonstrated defect was found in the cursor write path, comparison predicate, or state model on the current branch. The comparison is strict `cursor_offset > accepted_frontier`, consumes the durable accepted head, and its regression coverage already exercises the real `raw_frontier_integrity_snapshot()` route. Reclassifying the true violation as incomparable or comparing against a non-accepted raw would contradict the current projection and its existing tests.
+No demonstrated defect was found in the cursor write path or comparison predicate on the current branch. The comparison is strict `cursor_offset > accepted_frontier`, consumes the durable accepted head, and its regression coverage already exercises the real `raw_frontier_integrity_snapshot()` route. The production defect was at the readiness consumers: raw convergence and reindex did not consume this proof before selecting source rows. Reclassifying the true violation as incomparable or comparing against a non-accepted raw would contradict the current projection and its existing tests.
 
 The live cursor is ahead of its accepted full-head frontier. That is production reconciliation work, not evidence for a code change. The 725 source-backed incomparables are deferred authority states that must remain visible. The 2 source-absent cursor paths likewise must remain explicit until their durable history is reconciled; this report does not authorize a cursor reset or source-row edit.
 

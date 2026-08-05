@@ -18,11 +18,15 @@ from polylogue.storage.fts.sql import (
     FTS_INDEXABLE_MESSAGE_COUNT_SQL,
 )
 from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.sqlite.connection_profile import (
+    BOUNDED_REPAIR_CACHE_SIZE_KIB,
+    BOUNDED_REPAIR_MMAP_SIZE_BYTES,
+)
 
 BOUNDED_REPAIR_PRAGMAS = (
     "PRAGMA temp_store = FILE",
-    "PRAGMA cache_size = -32768",
-    "PRAGMA mmap_size = 134217728",
+    f"PRAGMA cache_size = -{BOUNDED_REPAIR_CACHE_SIZE_KIB}",
+    f"PRAGMA main.mmap_size = {BOUNDED_REPAIR_MMAP_SIZE_BYTES}",
 )
 
 

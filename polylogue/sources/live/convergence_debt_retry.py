@@ -147,10 +147,15 @@ def same_pending_convergence_debt(
     next_retry_at: object,
     last_error: object,
     *,
+    status: object,
     error: str | None,
+    deferred: bool,
     now: str,
     retry_at: datetime,
 ) -> bool:
+    expected_status = "deferred" if deferred else "failed"
+    if status != expected_status:
+        return False
     if last_error != error:
         return False
     existing = parse_retry_datetime(next_retry_at)

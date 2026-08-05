@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from click.exceptions import Exit as ClickExit
 from click.testing import CliRunner
 
 from polylogue.api import Polylogue
@@ -22,6 +23,7 @@ from polylogue.cli.commands.status import (
     _archive_facade_route_status,
     _direct_claim_guard,
     _direct_status_ok,
+    _ops_workload_status,
     _render_raw_replay_backlog,
     _show_daemon_status,
     _show_direct_json,
@@ -31,8 +33,13 @@ from polylogue.cli.commands.status import (
     status_command,
 )
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.enums import ArtifactSupportStatus
+from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary
+from polylogue.maintenance.failure_routing import route_failure_sample
+from polylogue.maintenance.planner import FailureSample
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.frozen_clock import FrozenClock
@@ -142,14 +149,15 @@ def test_status_command_reads_a_real_daemon_http_status_route() -> None:
         env = _make_app_env()
         callback = getattr(status_command.callback, "__wrapped__", None)
         assert callable(callback)
-        callback(
-            env,
-            daemon_url=f"http://127.0.0.1:{server.server_port}",
-            output_format="json",
-            json_alias=False,
-            full_payload=False,
-            exact_archive_readiness=False,
-        )
+        with pytest.raises(ClickExit):
+            callback(
+                env,
+                daemon_url=f"http://127.0.0.1:{server.server_port}",
+                output_format="json",
+                json_alias=False,
+                full_payload=False,
+                exact_archive_readiness=False,
+            )
     finally:
         server.shutdown()
         worker.join()
@@ -189,14 +197,15 @@ def test_status_command_reports_live_daemon_with_unavailable_status_snapshot() -
         env = _make_app_env()
         callback = getattr(status_command.callback, "__wrapped__", None)
         assert callable(callback)
-        callback(
-            env,
-            daemon_url=f"http://127.0.0.1:{server.server_port}",
-            output_format="json",
-            json_alias=False,
-            full_payload=False,
-            exact_archive_readiness=False,
-        )
+        with pytest.raises(ClickExit):
+            callback(
+                env,
+                daemon_url=f"http://127.0.0.1:{server.server_port}",
+                output_format="json",
+                json_alias=False,
+                full_payload=False,
+                exact_archive_readiness=False,
+            )
     finally:
         server.shutdown()
         worker.join()
@@ -250,6 +259,14 @@ def test_archive_facade_route_catalog_covers_public_async_facade() -> None:
     assert routing["routes"]["health_check"]["route"] == "archive_routed"
     assert routing["routes"]["get_session"]["route"] == "archive_routed"
     assert routing["routes"]["search"]["route"] == "archive_routed"
+    assert routing["routes"]["search_similar_sessions"] == {
+        "route": "archive_routed",
+        "tier": "embeddings",
+        "detail": "ranks archived sessions through embeddings.db vectors",
+    }
+    for method in ("get_setting", "list_settings", "set_setting"):
+        assert routing["routes"][method]["route"] == "archive_routed"
+        assert routing["routes"][method]["tier"] == "user"
     assert routing["unsupported_methods"] == []
 
 
@@ -355,6 +372,48 @@ class TestNoArchiveStatus:
         assert "Sessions: 1" in combined
         assert "Messages: 2" in combined
         assert "Raw records: 1" in combined
+
+    def test_direct_status_counts_maintenance_raw_failures(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        source_db = tmp_path / "source.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+        with sqlite3.connect(source_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
+                INSERT INTO raw_sessions VALUES ('raw-1');
+                """
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.cli.commands.status._direct_raw_failure_status",
+                return_value={
+                    "raw_parse_failures": 0,
+                    "raw_validation_failures": 0,
+                    "raw_quarantined": 0,
+                    "raw_maintenance_failures": 3,
+                    "raw_deferred_failures": 0,
+                    "raw_terminal_rejections": 0,
+                    "raw_unexplained_failures": 0,
+                    "raw_failure_samples": [],
+                },
+            ),
+            patch("polylogue.cli.commands.status_diagnostics.diagnose_first_run"),
+        ):
+            _show_direct_status(env)
+
+        assert "Raw failures: 3 total" in _combined_calls(env)
 
     def test_direct_status_reports_sqlite_maintenance_state(self, tmp_path: Path) -> None:
         env = _make_app_env()
@@ -532,6 +591,77 @@ class TestNoArchiveStatus:
         assert payload["messages"] == 3
         assert payload["raw_records"] == 2
 
+    def test_direct_status_json_keeps_stopped_daemon_lifecycle_visible(self, tmp_path: Path) -> None:
+        """The direct fallback retains retryable and unexplained distinctions."""
+        env = _make_app_env()
+        index_db = tmp_path / "index.db"
+        source_db = tmp_path / "source.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        with sqlite3.connect(source_db) as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms, parse_error, detection_warnings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-deferred",
+                    "claude-code-session",
+                    "native-deferred",
+                    "/data/deferred.jsonl",
+                    bytes(32),
+                    32,
+                    1_770_000_000_000,
+                    "captured JSONL payload ends before a complete record boundary",
+                    "[]",
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-deferred",
+                ArchiveSourceArtifact(
+                    artifact_id="deferred-evidence",
+                    origin="claude-code-session",
+                    source_path="/data/deferred.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_hot_jsonl_capture",
+                    classification_reason="deferred_hot_jsonl_capture",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                ),
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "custom.sqlite"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["daemon_liveness"] is False
+        assert payload["raw_failures"] == {
+            "parse": 1,
+            "validation": 0,
+            "quarantined": 1,
+            "maintenance": 0,
+            "deferred_retryable": 1,
+            "terminal_rejections": 0,
+            "unexplained": 0,
+            "lifecycle_available": True,
+            "lifecycle_state": "degraded",
+            "lifecycle_reason": None,
+            "sample_count": 1,
+        }
+
     def test_direct_status_json_reports_sqlite_maintenance_state(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"
@@ -615,6 +745,36 @@ class TestNoArchiveStatus:
         assert payload["archive_tiers"]["index"]["table_counts"]["sessions"] == 1
         assert payload["archive_tiers"]["user"]["exists"] is False
         assert payload["raw_records"] == 1
+
+    def test_direct_status_json_reads_maintenance_failure_from_configured_root_with_external_index(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        env = _make_app_env()
+        configured_root = tmp_path / "archive"
+        generation = tmp_path / "generation"
+        configured_root.mkdir()
+        generation.mkdir()
+        index_db = generation / "index.db"
+        initialize_archive_database(configured_root / "source.db", ArchiveTier.SOURCE)
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        (configured_root / ".index-active-pointer").write_text(str(index_db), encoding="utf-8")
+        route_failure_sample(
+            FailureSample(kind="RuntimeError", locator="target:session_insights", message="root maintenance failure"),
+            operation_id="root-maintenance",
+            archive_root=configured_root,
+            target="session_insights",
+        )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=configured_root / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=configured_root),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["active_db_path"] == str(index_db)
+        assert payload["raw_failures"]["maintenance"] == 1
 
     def test_direct_status_reports_archive_surface_blockers(self, tmp_path: Path) -> None:
         env = _make_app_env()
@@ -1151,6 +1311,7 @@ class TestNoArchiveStatus:
 
         payload = json.loads(_combined_calls(env))
         claim_guard = payload["claim_guard"]
+        assert payload["convergence"]["available"] is True
         assert set(claim_guard) == {"openable", "converged", "search_ready", "perf_measurable"}
         assert claim_guard["openable"]["value"] is True
         assert claim_guard["converged"]["value"] is True
@@ -1360,6 +1521,7 @@ class TestNoArchiveStatus:
                 raw_frontier_integrity=raw_frontier_integrity,
                 component_readiness=component_readiness,
                 ingest_workload=unavailable_workload,
+                convergence=ConvergenceDebtSummary(),
             )
             assert guard["perf_measurable"]["value"] is False, unavailable_workload
             assert "unavailable" in guard["perf_measurable"]["reason"]
@@ -1374,13 +1536,112 @@ class TestNoArchiveStatus:
             raw_frontier_integrity=raw_frontier_integrity,
             component_readiness=component_readiness,
             ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
+            convergence=ConvergenceDebtSummary(),
         )
         assert idle_guard["perf_measurable"]["value"] is True
+
+    def test_ops_workload_status_requires_convergence_debt_table(self, tmp_path: Path) -> None:
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            conn.execute("DROP TABLE convergence_debt")
+            conn.commit()
+
+        workload = _ops_workload_status(tmp_path, now_ms=1_770_000_000_000)
+
+        assert workload == {"available": False, "reason": "missing_convergence_debt"}
+
+    def test_ops_workload_status_keeps_non_ledger_failure_separate(self, tmp_path: Path) -> None:
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            conn.execute("DROP TABLE ingest_attempts")
+            conn.execute("CREATE TABLE ingest_attempts (wrong_column TEXT)")
+            conn.commit()
+
+        workload = _ops_workload_status(tmp_path, now_ms=1_770_000_000_000)
+
+        assert workload == {
+            "available": False,
+            "reason": "ops workload status unavailable: no such column: phase",
+        }
+
+    def test_ops_workload_status_connection_failure_is_not_a_ledger_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ops_db = tmp_path / "ops.db"
+        ops_db.touch()
+        monkeypatch.setattr(
+            "polylogue.cli.commands.status.sqlite3.connect",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("simulated open failure")),
+        )
+
+        workload = _ops_workload_status(tmp_path, now_ms=1_770_000_000_000)
+
+        assert workload == {
+            "available": False,
+            "reason": "ops workload status unavailable: simulated open failure",
+        }
 
     def test_direct_status_requires_raw_frontier_component_presence(self) -> None:
         assert _direct_status_ok({}) is False
         assert _direct_status_ok({"raw_frontier_integrity": {"state": "unknown"}}) is False
         assert _direct_status_ok({"raw_frontier_integrity": {"state": "ready"}}) is True
+
+    @pytest.mark.parametrize("ledger_state", ["missing_table", "collector_error", "empty"])
+    def test_direct_status_claim_guard_uses_convergence_debt_ledger(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        ledger_state: str,
+    ) -> None:
+        """The direct production status route must retain debt authority state."""
+        env = _make_app_env()
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if ledger_state == "missing_table":
+            with sqlite3.connect(tmp_path / "ops.db") as conn:
+                conn.execute("DROP TABLE convergence_debt")
+                conn.commit()
+        elif ledger_state == "collector_error":
+            monkeypatch.setattr(
+                "polylogue.daemon.convergence_debt_status.open_readonly_connection",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("simulated collector failure")),
+            )
+
+        archive_readiness = {
+            "checked": True,
+            "counts": {"session_count": 0},
+            "surfaces": {"search": {"ready": True, "blockers": [], "evidence": {}}},
+        }
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
+            patch(
+                "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+                return_value=_completed_raw_materialization_readiness(),
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env, include_archive_readiness=True)
+
+        payload = json.loads(_combined_calls(env))
+        convergence = payload["convergence"]
+        claim_guard = payload["claim_guard"]
+        if ledger_state == "empty":
+            assert convergence["available"] is True
+            assert convergence["error"] is None
+            assert claim_guard["converged"]["value"] is True
+        else:
+            assert convergence["available"] is False
+            assert convergence["error"]
+            assert claim_guard["converged"]["value"] is False
+            assert "convergence debt" in claim_guard["converged"]["reason"]
 
     def test_direct_status_json_blocks_transforms_when_archive_readiness_fails(
         self,
@@ -1791,10 +2052,53 @@ class TestNoArchiveStatus:
         assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
 
     @pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+    @pytest.mark.parametrize(
+        ("lifecycle_available", "lifecycle_state", "unexplained", "expected_exit"),
+        [
+            (False, "unavailable", 0, 1),
+            (True, "blocked", 1, 1),
+            (True, "degraded", 0, 1),
+            (True, "healthy", 0, 0),
+        ],
+    )
+    def test_root_status_json_exit_matches_raw_failure_lifecycle(
+        self,
+        lifecycle_available: bool,
+        lifecycle_state: str,
+        unexplained: int,
+        expected_exit: int,
+        frozen_clock: FrozenClock,
+    ) -> None:
+        env = _make_app_env()
+        daemon_payload = {
+            "ok": True,
+            "daemon_liveness": True,
+            "status_snapshot": _fresh_status_snapshot(frozen_clock),
+            "raw_frontier_integrity": _healthy_raw_frontier_integrity(),
+            "raw_failure_lifecycle_available": lifecycle_available,
+            "raw_failure_lifecycle_state": lifecycle_state,
+            "raw_failure_lifecycle_reason": "source evidence test state",
+            "raw_parse_failures": 1 if lifecycle_state == "degraded" else 0,
+            "raw_validation_failures": 0,
+            "raw_unexplained_failures": unexplained,
+        }
+        with patch("polylogue.cli.commands.status.urlopen", return_value=_FakeDaemonResponse(daemon_payload)):
+            result = CliRunner().invoke(
+                status_command,
+                ["--daemon-url", "http://127.0.0.1:8765", "--json"],
+                obj=env,
+            )
+
+        assert result.exit_code == expected_exit
+        rendered = _combined_calls(env)
+        payload = json.loads(rendered)
+        assert payload["ok"] is (expected_exit == 0)
+
+    @pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
     def test_status_ok_requires_complete_fresh_frontier_authority(self, frozen_clock: FrozenClock) -> None:
         assert _status_ok({"ok": True, "daemon_liveness": True}) is False
         healthy = _healthy_raw_frontier_integrity()
-        assert _status_ok({"ok": True, "raw_frontier_integrity": healthy}) is True
+        assert _status_ok({"ok": True, "raw_frontier_integrity": healthy}) is False
         assert (
             _status_ok(
                 {"ok": True, "raw_frontier_integrity": healthy},
@@ -1808,6 +2112,11 @@ class TestNoArchiveStatus:
                     "ok": True,
                     "status_snapshot": _fresh_status_snapshot(frozen_clock),
                     "raw_frontier_integrity": healthy,
+                    "raw_failure_lifecycle_available": True,
+                    "raw_failure_lifecycle_state": "healthy",
+                    "raw_parse_failures": 0,
+                    "raw_validation_failures": 0,
+                    "raw_unexplained_failures": 0,
                 },
                 require_fresh_snapshot=True,
             )
@@ -1820,6 +2129,11 @@ class TestNoArchiveStatus:
                     "daemon_liveness": True,
                     "status_snapshot": {"state": "stale"},
                     "raw_frontier_integrity": healthy,
+                    "raw_failure_lifecycle_available": True,
+                    "raw_failure_lifecycle_state": "healthy",
+                    "raw_parse_failures": 0,
+                    "raw_validation_failures": 0,
+                    "raw_unexplained_failures": 0,
                 }
             )
             is False
@@ -1941,7 +2255,7 @@ class TestNoArchiveStatus:
                 obj=env,
             )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(_combined_calls(env))
         assert payload["daemon_liveness"] is True
         assert payload["live_cursor"] == full_payload["live_cursor"]
@@ -1965,7 +2279,7 @@ class TestNoArchiveStatus:
                 obj=env,
             )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(_combined_calls(env))
         assert payload["source"] == "daemon"
         assert "live_cursor" not in payload
@@ -1998,7 +2312,7 @@ class TestNoArchiveStatus:
                     obj=env,
                 )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert requested_urls == [
             "http://127.0.0.1:8766/api/status",
             "http://127.0.0.1:8786/api/status",
@@ -2061,6 +2375,121 @@ class TestStatusDiagnosticIntegration:
             "HOME": str(tmp_path),
             "POLYLOGUE_DAEMON_URL": "http://127.0.0.1:1",
         }
+
+    def _malformed_convergence_debt_archive(self, tmp_path: Path) -> Path:
+        archive_root = tmp_path / "polylogue"
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(archive_root / f"{tier.value}.db", tier)
+        with sqlite3.connect(archive_root / "ops.db") as conn:
+            conn.execute("DROP TABLE convergence_debt")
+            conn.execute("CREATE TABLE convergence_debt (wrong_column TEXT)")
+            conn.commit()
+        return archive_root
+
+    def _malformed_ingest_attempts_archive(self, tmp_path: Path) -> Path:
+        archive_root = tmp_path / "polylogue"
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(archive_root / f"{tier.value}.db", tier)
+        with sqlite3.connect(archive_root / "ops.db") as conn:
+            conn.execute("DROP TABLE ingest_attempts")
+            conn.execute("CREATE TABLE ingest_attempts (wrong_column TEXT)")
+            conn.commit()
+        return archive_root
+
+    def _malformed_archive_env(self, tmp_path: Path, archive_root: Path) -> dict[str, str]:
+        env = self._xdg_env(tmp_path)
+        env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
+        return env
+
+    @pytest.mark.integration
+    def test_status_subprocess_malformed_convergence_debt_json_is_explicitly_unavailable(self, tmp_path: Path) -> None:
+        """Malformed convergence debt must yield valid JSON and block convergence claims."""
+        from tests.infra.cli_subprocess import run_cli
+
+        archive_root = self._malformed_convergence_debt_archive(tmp_path)
+        result = run_cli(
+            ["--plain", "ops", "status", "--json", "--full"],
+            env=self._malformed_archive_env(tmp_path, archive_root),
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["ingest_workload"]["available"] is False
+        assert "convergence debt status unavailable" in payload["ingest_workload"]["reason"]
+        assert payload["convergence"]["available"] is False
+        assert "convergence debt status unavailable" in payload["convergence"]["error"]
+        assert payload["claim_guard"]["converged"]["value"] is False
+
+    @pytest.mark.integration
+    def test_status_subprocess_malformed_convergence_debt_human_is_explicitly_unavailable(self, tmp_path: Path) -> None:
+        """Malformed convergence debt must not collapse human status into generic unavailable output."""
+        from tests.infra.cli_subprocess import run_cli
+
+        archive_root = self._malformed_convergence_debt_archive(tmp_path)
+        result = run_cli(
+            ["--plain", "ops", "status"],
+            env=self._malformed_archive_env(tmp_path, archive_root),
+        )
+
+        output_lower = result.output.lower()
+        assert result.exit_code == 0, result.output
+        assert "convergence debt: unavailable" in output_lower
+        assert "convergence debt status unavailable" in output_lower
+        assert "could not be queried" not in output_lower
+        assert "traceback" not in output_lower
+
+    @pytest.mark.integration
+    def test_status_subprocess_malformed_ingest_attempts_json_keeps_convergence_healthy(self, tmp_path: Path) -> None:
+        """A malformed workload table must not mislabel the independent debt ledger."""
+        from tests.infra.cli_subprocess import run_cli
+
+        archive_root = self._malformed_ingest_attempts_archive(tmp_path)
+        result = run_cli(
+            ["--plain", "ops", "status", "--json", "--full"],
+            env=self._malformed_archive_env(tmp_path, archive_root),
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["ingest_workload"] == {
+            "available": False,
+            "reason": "ops workload status unavailable: no such column: phase",
+        }
+        assert payload["convergence"]["available"] is True
+        assert payload["convergence"]["error"] is None
+        assert payload["claim_guard"]["converged"]["reason"] == "ready"
+        assert payload["claim_guard"]["perf_measurable"]["value"] is False
+
+    @pytest.mark.integration
+    def test_status_subprocess_malformed_ingest_attempts_human_keeps_convergence_healthy(self, tmp_path: Path) -> None:
+        """Human status must keep the healthy ledger message for a workload-only failure."""
+        from tests.infra.cli_subprocess import run_cli
+
+        archive_root = self._malformed_ingest_attempts_archive(tmp_path)
+        result = run_cli(
+            ["--plain", "ops", "status"],
+            env=self._malformed_archive_env(tmp_path, archive_root),
+        )
+
+        output_lower = result.output.lower()
+        assert result.exit_code == 0, result.output
+        assert "convergence debt: none (ledger healthy)" in output_lower
+        assert "convergence debt status unavailable" not in output_lower
+        assert "ops workload status unavailable" not in output_lower
+        assert "could not be queried" not in output_lower
+        assert "traceback" not in output_lower
 
     @pytest.mark.integration
     def test_status_subprocess_schema_mismatch(self, tmp_path: Path) -> None:

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import os
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -30,7 +33,7 @@ from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_fac
 
 if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
-    from polylogue.storage.index_generation import IndexGeneration, IndexRebuildTransaction
+    from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore, IndexRebuildTransaction
 
 _PLANNER_STATS_ANALYSIS_LIMIT = 1000
 # A fresh generation begins with representative bootstrap statistics, but a
@@ -53,6 +56,240 @@ _PLANNER_STATS_ANALYZE_STATEMENTS = (
 )
 
 logger = get_logger(__name__)
+
+
+class RebuildProvenanceError(RuntimeError):
+    """Raised when rebuild evidence is no longer valid for a mutation."""
+
+
+class RebuildDerivedStateProvenanceError(RebuildProvenanceError):
+    """A derived-state stage was blocked by a failed provenance recheck."""
+
+
+@dataclass(frozen=True, slots=True)
+class RebuildProvenanceContext:
+    """Validated evidence shared by every mutation in one rebuild pass.
+
+    ``validate`` is the guard for operations that consume source evidence.
+    Cleanup has a narrower contract: it may remove only a generation that was
+    created under this already-validated context, and never reads or writes
+    source evidence.  Keeping that distinction lets a failed receipt still
+    clean up non-promotable scratch generations without treating the stale
+    receipt as authorization to continue replaying.
+    """
+
+    root: Path
+    receipt_path: Path | None
+    source_snapshot: str
+    consumed_evidence: dict[str, object]
+
+    def validate(self) -> None:
+        _validate_rebuild_provenance_receipt(self.root, self.receipt_path)
+        from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
+
+        if rebuild_source_revision_snapshot(self.root) != self.source_snapshot:
+            raise RebuildProvenanceError(
+                "rebuild schema-inference preflight gate failed: source evidence changed during replay"
+            )
+
+    def validate_cleanup(self) -> None:
+        """Authorize failure cleanup from the immutable pre-mutation proof."""
+        if not self.consumed_evidence or not self.source_snapshot:
+            raise RuntimeError("rebuild cleanup has no validated provenance context")
+
+
+def _validate_rebuild_provenance_receipt(root: Path, receipt_path: Path | None) -> dict[str, object]:
+    """Validate rebuild provenance at the current ownership boundary."""
+    from polylogue.maintenance.schema_inference_gate import (
+        SchemaInferenceGateError,
+        validate_schema_inference_receipt,
+    )
+
+    try:
+        return validate_schema_inference_receipt(root, receipt_path)
+    except SchemaInferenceGateError as exc:
+        raise RebuildProvenanceError(f"rebuild schema-inference preflight gate failed: {exc}") from exc
+
+
+def _validate_before_derived_state(provenance: RebuildProvenanceContext) -> None:
+    """Validate immediately before a derived-state mutation begins."""
+    try:
+        provenance.validate()
+    except Exception as exc:
+        raise RebuildDerivedStateProvenanceError(str(exc)) from exc
+
+
+def _discard_generation_after_provenance_failure(
+    generation_store: IndexGenerationStore, generation: IndexGeneration, provenance: RebuildProvenanceContext
+) -> list[BaseException]:
+    """Discard a fresh candidate without rereading mutable source evidence."""
+    errors: list[BaseException] = []
+    try:
+        provenance.validate_cleanup()
+        discarded = generation_store.discard_if_inactive(generation)
+        if not discarded:
+            errors.append(RuntimeError(f"candidate {generation.generation_id} was not discarded"))
+    except BaseException as exc:
+        errors.append(exc)
+    return errors
+
+
+def _discard_transaction_after_provenance_failure(
+    generation_store: IndexGenerationStore,
+    transaction: IndexRebuildTransaction,
+    provenance: RebuildProvenanceContext,
+) -> list[BaseException]:
+    """Discard a fresh candidate and transaction, attempting both independently."""
+    errors: list[BaseException] = []
+    try:
+        generation = generation_store.load(transaction.generation_id)
+    except FileNotFoundError:
+        generation = None
+    except BaseException as exc:
+        errors.append(exc)
+        generation = None
+    if generation is not None:
+        errors.extend(_discard_generation_after_provenance_failure(generation_store, generation, provenance))
+    try:
+        discarded = generation_store.discard_transaction(transaction.operation_id)
+        if not discarded:
+            errors.append(
+                RuntimeError(f"transaction {transaction.operation_id} was not discarded because its record was missing")
+            )
+    except BaseException as exc:
+        errors.append(exc)
+    return errors
+
+
+def _cleanup_transaction_after_provenance_failure(
+    generation_store: IndexGenerationStore,
+    transaction: IndexRebuildTransaction,
+    root: Path,
+    receipt_path: Path | None,
+    consumed_evidence: dict[str, object],
+    primary: BaseException,
+) -> None:
+    """Clean a fresh transaction and candidate while preserving its failure."""
+    cleanup_context = RebuildProvenanceContext(
+        root=root,
+        receipt_path=receipt_path,
+        source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
+        consumed_evidence=consumed_evidence,
+    )
+    try:
+        cleanup_errors = _discard_transaction_after_provenance_failure(generation_store, transaction, cleanup_context)
+    except BaseException as cleanup_error:
+        cleanup_errors = [cleanup_error]
+    _add_cleanup_failure_notes(primary, cleanup_errors, label="rebuild transaction")
+
+
+def _add_cleanup_failure_notes(primary: BaseException, errors: list[BaseException], *, label: str) -> None:
+    """Keep the primary exception while making cleanup failures visible."""
+    if errors:
+        detail = "; ".join(f"{type(error).__name__}: {error}" for error in errors)
+        primary.add_note(f"{label} cleanup also failed: {detail}")
+
+
+def _cleanup_nonresumable_generation_failure(
+    generation_store: IndexGenerationStore,
+    generation: IndexGeneration,
+    *,
+    root: Path,
+    receipt_path: Path | None,
+    consumed_evidence: dict[str, object],
+    primary: BaseException,
+) -> None:
+    """Retire a one-shot candidate and expose every discard outcome."""
+    cleanup_context = RebuildProvenanceContext(
+        root=root,
+        receipt_path=receipt_path,
+        source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
+        consumed_evidence=consumed_evidence,
+    )
+    try:
+        cleanup_errors = _discard_generation_after_provenance_failure(generation_store, generation, cleanup_context)
+    except BaseException as cleanup_error:
+        cleanup_errors = [cleanup_error]
+    _add_cleanup_failure_notes(primary, cleanup_errors, label="nonresumable rebuild")
+
+
+def _create_rebuild_transaction_after_receipt_validation(
+    generation_store: IndexGenerationStore,
+    request: RebuildIndexRequest,
+    root: Path,
+) -> IndexRebuildTransaction:
+    """Create the first candidate only after an ownership-bound validation."""
+    from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
+
+    consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+    source_snapshot = rebuild_source_evidence_snapshot(root)
+    transaction = generation_store.create_transaction(
+        source_snapshot=source_snapshot,
+        pass_byte_budget=(
+            int(request.pass_byte_budget_mb * 1024 * 1024) if request.pass_byte_budget_mb is not None else None
+        ),
+        pass_deadline_ms=(
+            int(request.pass_deadline_seconds * 1000) if request.pass_deadline_seconds is not None else None
+        ),
+    )
+    try:
+        _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+        if rebuild_source_evidence_snapshot(root) != source_snapshot:
+            raise RebuildProvenanceError(
+                "rebuild schema-inference preflight gate failed: source evidence changed during transaction creation"
+            )
+    except BaseException as exc:
+        _cleanup_transaction_after_provenance_failure(
+            generation_store,
+            transaction,
+            root,
+            request.schema_inference_receipt_path,
+            consumed_evidence,
+            exc,
+        )
+        raise
+    return transaction
+
+
+def _checkpoint_rebuild_transaction_after_receipt_validation(
+    generation_store: IndexGenerationStore,
+    transaction: IndexRebuildTransaction,
+    root: Path,
+    receipt_path: Path | None,
+    *,
+    status: str,
+    last_blob_hash_hex: str | None = None,
+    last_raw_id: str | None = None,
+    processed_raw_count: int | None = None,
+    processed_blob_bytes: int | None = None,
+    error: str | None = None,
+    derived_stores_cleared: bool | None = None,
+) -> IndexRebuildTransaction:
+    """Validate immediately before every persisted rebuild state transition."""
+    _validate_rebuild_provenance_receipt(root, receipt_path)
+    return generation_store.checkpoint_transaction(
+        transaction,
+        status=status,
+        last_blob_hash_hex=last_blob_hash_hex,
+        last_raw_id=last_raw_id,
+        processed_raw_count=processed_raw_count,
+        processed_blob_bytes=processed_blob_bytes,
+        error=error,
+        derived_stores_cleared=derived_stores_cleared,
+    )
+
+
+def _save_rebuild_pass_receipt_after_receipt_validation(
+    generation_store: IndexGenerationStore,
+    operation_id: str,
+    pass_receipt: RebuildIndexReceipt,
+    root: Path,
+    receipt_path: Path | None,
+) -> None:
+    """Validate before publishing a pass receipt tied to rebuild state."""
+    _validate_rebuild_provenance_receipt(root, receipt_path)
+    generation_store.save_pass_receipt(operation_id, pass_receipt.to_dict())
+
 
 #: Passed through to ``CensusParseStage.warm_raw_ids``'s ``max_payload_bytes``
 #: parameter for symmetry with the daemon's own call site
@@ -243,7 +480,9 @@ class RebuildIndexRequest:
     raw_ids: tuple[str, ...] = ()
     max_blob_mb: float | None = None
     promote: bool = True
+    candidate_acceptance_checks: tuple[str, ...] | None = None
     operation_id: str | None = None
+    schema_inference_receipt_path: Path | None = None
     raw_batch_size: int = 500
     pass_byte_budget_mb: float | None = None
     pass_deadline_seconds: float | None = None
@@ -329,6 +568,15 @@ class RebuildPassCost:
     #: held a single session, with nothing durable recording where that time
     #: went.
     selection_s: float = 0.0
+    #: Time spent classifying byte and membership authority cohorts. This is
+    #: a diagnostic rollup over the replay stage ledger, retained separately
+    #: from the parse/apply split for phase-level receipts.
+    cohort_s: float = 0.0
+    #: Terminal insight materialization time. Deferred/paused passes carry
+    #: the explicit zero because they have not reached terminal stages.
+    insight_s: float = 0.0
+    #: Sum of terminal stages after replay, excluding raw selection.
+    terminal_s: float = 0.0
 
     @property
     def mib_per_s(self) -> float:
@@ -353,9 +601,12 @@ class RebuildPassCost:
         eta = self.eta_s
         return {
             "selection_s": round(self.selection_s, 3),
+            "cohort_s": round(self.cohort_s, 3),
             "replay_s": round(self.replay_s, 3),
             "parse_s": round(self.parse_s, 3),
             "apply_s": round(self.apply_s, 3),
+            "insight_s": round(self.insight_s, 3),
+            "terminal_s": round(self.terminal_s, 3),
             "checkpoint_s": round(self.checkpoint_s, 3),
             "pass_s": round(self.pass_s, 3),
             "raws": self.raws,
@@ -371,6 +622,51 @@ class RebuildPassCost:
             "free_threaded": self.free_threaded,
             "parse_workers": self.parse_workers,
         }
+
+
+_COHORT_TIMING_PREFIXES = ("replay.classify_cohort", "replay.adoptable_check", "membership.")
+
+
+def _cohort_seconds(stage_timings_s: object) -> float:
+    """Roll up the durable replay timing keys that decide authority cohorts."""
+    if not isinstance(stage_timings_s, dict):
+        return 0.0
+    return sum(
+        float(value)
+        for key, value in stage_timings_s.items()
+        if isinstance(key, str)
+        and key.startswith(_COHORT_TIMING_PREFIXES)
+        and isinstance(value, int | float)
+        and not isinstance(value, bool)
+    )
+
+
+def _receipt_timings(
+    *,
+    selection_s: float,
+    replay: dict[str, object],
+    terminal_timings_s: dict[str, float],
+) -> dict[str, float]:
+    """Build one stable phase vocabulary plus existing granular timings."""
+    stage_timings_s = replay.get("stage_timings_s", {})
+    parse_s = replay.get("parse_s", 0.0)
+    apply_s = replay.get("apply_s", 0.0)
+    resolved_parse_s = float(parse_s) if isinstance(parse_s, int | float) else 0.0
+    resolved_apply_s = float(apply_s) if isinstance(apply_s, int | float) else 0.0
+    insight_s = float(terminal_timings_s.get("terminal.session_insights", 0.0))
+    terminal_s = sum(float(value) for key, value in terminal_timings_s.items() if key != "selection_s")
+    rollups = {
+        "selection_s": float(selection_s),
+        "cohort_s": _cohort_seconds(stage_timings_s),
+        "parse_s": resolved_parse_s,
+        "apply_s": resolved_apply_s,
+        "insight_s": insight_s,
+        "terminal_s": terminal_s,
+    }
+    return {
+        **{key: round(value, 3) for key, value in rollups.items()},
+        **{key: round(float(value), 3) for key, value in terminal_timings_s.items()},
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +689,17 @@ class RebuildIndexReceipt:
     # compatible full checkpoint payload; this compact view is the stable
     # operator contract for ownership, heartbeat, cursor, delta, and recovery.
     operation: dict[str, object] = field(default_factory=dict)
+    # Rebuild-owned evidence for the exact raw selection replayed into this
+    # candidate. The IDs themselves are deliberately not duplicated in every
+    # receipt; the stable commitment is enough for a verifier holding the
+    # requested IDs to prove the set, count, source snapshot, and candidate
+    # identity all agree.
+    selection_evidence: dict[str, object] = field(default_factory=dict)
+    # The immutable source-evidence hash taken after replay. This is separate
+    # from the generation's before-replay source_snapshot so report
+    # consumption can reject source drift without treating parser or
+    # governance state as part of the canary's identity.
+    source_evidence_after: str | None = None
     #: Wall-clock seconds per rebuild stage for THIS pass.
     #:
     #: Three full rebuilds ran without this, so the only cost breakdown
@@ -403,9 +710,11 @@ class RebuildIndexReceipt:
     #: not measured at all. Persisting it here makes the next optimisation
     #: evidence-based rather than a guess.
     timings_s: dict[str, float] = field(default_factory=dict)
+    consumed_evidence: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "receipt_schema_version": 4,
             "archive_root": self.archive_root,
             "raw_session_count": self.raw_session_count,
             "selected_raw_count": self.selected_raw_count,
@@ -417,9 +726,131 @@ class RebuildIndexReceipt:
             "readiness": self.readiness,
             "transaction": self.transaction,
             "operation": self.operation,
+            "selection_evidence": self.selection_evidence,
+            "source_evidence_after": self.source_evidence_after,
             "timings_s": self.timings_s,
+            "consumed_evidence": self.consumed_evidence,
             **self.replay,
         }
+
+
+def rebuild_selection_evidence(
+    raw_ids: list[str] | tuple[str, ...],
+    *,
+    archive_root: Path,
+    generation_id: str,
+    generation_owner_id: str,
+    candidate_index: Path,
+    source_snapshot: str,
+) -> dict[str, object]:
+    """Commit the requested and production-expanded replay closure.
+
+    The replay path can widen a raw-id hint after census discovers durable
+    membership and logical-source-key relationships.  Persisting only the
+    caller's hints would let a later source mutation change which raws and
+    cohorts the candidate actually represents without invalidating its
+    receipt.
+    """
+
+    replay_closure = _rebuild_replay_closure_evidence(archive_root, raw_ids)
+
+    canonical = {
+        "archive_root": str(archive_root.resolve()),
+        "candidate_generation_id": generation_id,
+        "candidate_index_path": str(candidate_index.resolve()),
+        "candidate_owner_id": generation_owner_id,
+        "raw_ids": sorted(raw_ids),
+        "replay_closure": replay_closure,
+        "source_snapshot": source_snapshot,
+    }
+    encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return {
+        "algorithm": "sha256-canonical-json-v1",
+        "raw_id_count": len(raw_ids),
+        "raw_ids_sha256": sha256(encoded).hexdigest(),
+        **{key: value for key, value in canonical.items() if key != "raw_ids"},
+    }
+
+
+def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tuple[str, ...]) -> dict[str, object]:
+    """Read the same durable closure primitive used by source replay.
+
+    Missing source tiers are tolerated for standalone structural tests that
+    exercise selection serialization without an archive. Real rebuilds always
+    have ``source.db`` and therefore record the full expanded closure and every
+    membership row participating in it.
+    """
+
+    source_db = archive_root / "source.db"
+    if not source_db.exists():
+        return {"raw_ids": sorted(raw_ids), "logical_source_keys": [], "raw_session_memberships": []}
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as connection:
+        expanded, logical_keys = ArchiveStore.expand_raw_membership_selection_sync(connection, list(raw_ids))
+        placeholders_raw = ",".join("?" for _ in expanded)
+        placeholders_key = ",".join("?" for _ in logical_keys)
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if expanded:
+            clauses.append(f"raw_id IN ({placeholders_raw})")
+            parameters.extend(expanded)
+        if logical_keys:
+            clauses.append(f"logical_source_key IN ({placeholders_key})")
+            parameters.extend(logical_keys)
+        rows: list[dict[str, object]] = []
+        if clauses:
+            selected = connection.execute(
+                "SELECT raw_id, logical_source_key, provider_session_id, source_revision, "
+                "normalized_content_hash, message_count, predecessor_raw_id, acquisition_generation, "
+                "revision_authority, decision, decided_at_ms "
+                "FROM raw_session_memberships WHERE " + " OR ".join(clauses) + " ORDER BY logical_source_key, raw_id",
+                parameters,
+            )
+            for row in selected:
+                rows.append(
+                    {
+                        "raw_id": str(row[0]),
+                        "logical_source_key": str(row[1]),
+                        "provider_session_id": str(row[2]),
+                        "source_revision": str(row[3]),
+                        "normalized_content_hash": bytes(row[4]).hex(),
+                        "message_count": int(row[5]),
+                        "predecessor_raw_id": None if row[6] is None else str(row[6]),
+                        "acquisition_generation": int(row[7]),
+                        "revision_authority": str(row[8]),
+                        "decision": None if row[9] is None else str(row[9]),
+                        "decided_at_ms": None if row[10] is None else int(row[10]),
+                    }
+                )
+    return {
+        "raw_ids": list(expanded),
+        "logical_source_keys": list(logical_keys),
+        "raw_session_memberships": rows,
+    }
+
+
+def _persist_candidate_receipt(generation: IndexGeneration, receipt: dict[str, object]) -> None:
+    """Atomically retain the completed rebuild receipt with its candidate."""
+
+    path = Path(generation.index_path).parent / "rebuild-receipt.json"
+    temporary = path.with_suffix(".json.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(receipt, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _operation_evidence(
@@ -435,12 +866,12 @@ def _operation_evidence(
     transaction checkpoint.  It adds no competing ownership mechanism and
     keeps the full checkpoint in ``transaction`` for callers that need it.
     """
-    from polylogue.storage.index_generation import rebuild_lease_status, source_revision_snapshot
+    from polylogue.storage.index_generation import rebuild_lease_status, rebuild_source_evidence_snapshot
 
     transaction_payload = asdict(transaction) if transaction is not None else {}
     generation_payload = asdict(generation) if generation is not None else {}
     source_snapshot = transaction_payload.get("source_snapshot") or generation_payload.get("source_snapshot")
-    current_snapshot = source_revision_snapshot(root) if (root / "source.db").exists() else None
+    current_snapshot = rebuild_source_evidence_snapshot(root) if (root / "source.db").exists() else None
     return {
         "owner": {
             "generation_owner_id": transaction_payload.get("generation_owner_id") or generation_payload.get("owner_id"),
@@ -469,6 +900,8 @@ def validate_rebuild_index_request(request: RebuildIndexRequest) -> None:
         raise ValueError("--raw-id cannot be combined with --only-missing")
     if (request.raw_ids or request.only_missing) and request.promote:
         raise ValueError("partial rebuild selections require --no-promote and can never replace the active index")
+    if request.promote and request.candidate_acceptance_checks is not None:
+        raise ValueError("caller-supplied candidate acceptance profiles require --no-promote")
     if request.max_blob_mb is not None and request.max_blob_mb <= 0:
         raise ValueError("max blob size must be positive")
     if request.max_blob_mb is not None and not request.raw_ids and not request.only_missing:
@@ -614,7 +1047,17 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
     validate_rebuild_index_request(request)
     root = request.archive_root
+    consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
     location = ArchiveLocation.resolve(root)
+    # The joined raw-frontier projection is rooted at the co-located active
+    # index. A split-root canary intentionally points that index elsewhere and
+    # validates the selected active generation through its own receipt-bound
+    # route below, so a missing root/index.db must not masquerade as raw debt.
+    if count_source_raw_sessions(root) and location.active_index_path.parent == root:
+        from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+        if reason := raw_frontier_source_selection_block_reason(root):
+            raise RuntimeError(f"reindex source preflight gate failed: raw frontier integrity: {reason}")
     active_config = Config(
         archive_root=root,
         render_root=render_root(),
@@ -623,9 +1066,9 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     )
     if reason := offline_maintenance_block_reason(active_config, active=True, dry_run=False):
         raise RuntimeError(reason)
-    from polylogue.maintenance.archive_verification import verify_archive
+    from polylogue.maintenance.archive_verification import REINDEX_SOURCE_PREFLIGHT_CHECKS, verify_archive
 
-    source_liveness = verify_archive(root, checks=("blob-refs-liveness",))
+    source_liveness = verify_archive(root, checks=REINDEX_SOURCE_PREFLIGHT_CHECKS)
     if source_liveness.blocking:
         failing = "; ".join(
             f"{check.name}: {check.summary}"
@@ -634,32 +1077,48 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         )
         raise RuntimeError(f"reindex source preflight gate failed: {failing}")
 
-    # This is deliberately outside archive-location acquisition and
-    # generation-store construction.  Those steps can create/rewrite archive
-    # bookkeeping, so a competing ArchiveStore writer must fail before the
-    # rebuild's first lifecycle mutation, not only during replay.
-    with RebuildLease(root):
-        owned = OwnedArchiveLocation.acquire(location)
-        try:
-            assert_owns_archive_location(owned, location)
-            return await _rebuild_index_from_source_owned(request, root=root, owned=owned)
-        finally:
-            owned.release()
+    # Ownership acquisition itself only claims the lock. Revalidate after it
+    # so receipt expiry/source/external-corpus drift between the cheap
+    # preflight and ownership acquisition cannot reach the rebuild lease or a
+    # candidate mutation.
+    owned = OwnedArchiveLocation.acquire(location)
+    try:
+        assert_owns_archive_location(owned, location)
+        consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+        # The lease is itself lifecycle state guarded by the provenance gate.
+        # Revalidate again under the lease immediately before the owned body
+        # can create or mutate a candidate/transaction.
+        with RebuildLease(root):
+            consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+            return await _rebuild_index_from_source_owned(
+                request, root=root, owned=owned, consumed_evidence=consumed_evidence
+            )
+    finally:
+        owned.release()
 
 
 async def _rebuild_index_from_source_owned(
-    request: RebuildIndexRequest, *, root: Path, owned: OwnedArchiveLocation
+    request: RebuildIndexRequest,
+    *,
+    root: Path,
+    owned: OwnedArchiveLocation,
+    consumed_evidence: dict[str, object],
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
-        CORPUS_FIDELITY_CHECKS,
         REINDEX_ACCEPTANCE_CHECKS,
+        REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        passes_strict_acceptance,
+        strict_acceptance_failures,
         verify_archive,
     )
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
     from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
     from polylogue.storage.archive_readiness import archive_readiness_status
-    from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+    from polylogue.storage.index_generation import (
+        IndexGenerationStore,
+        rebuild_source_evidence_snapshot,
+    )
     from polylogue.storage.repair import repair_session_insights
 
     generation_store = IndexGenerationStore(owned.location)
@@ -682,37 +1141,62 @@ async def _rebuild_index_from_source_owned(
                 readiness={},
                 replay={},
                 operation=_operation_evidence(root, generation=None, transaction=None, recovery_state="empty-source"),
+                consumed_evidence=consumed_evidence,
             )
         resumable_full_source = not request.raw_ids and not request.only_missing and request.max_blob_mb is None
         transaction = None
+        transaction_created_here = False
         page = None
         pass_started_at_ms = int(time.time() * 1000)
         if resumable_full_source:
-            transaction = (
-                generation_store.load_transaction(request.operation_id)
-                if request.operation_id is not None
-                else generation_store.create_transaction(
-                    source_snapshot=source_revision_snapshot(root),
-                    pass_byte_budget=(
-                        int(request.pass_byte_budget_mb * 1024 * 1024)
-                        if request.pass_byte_budget_mb is not None
-                        else None
-                    ),
-                    pass_deadline_ms=(
-                        int(request.pass_deadline_seconds * 1000) if request.pass_deadline_seconds is not None else None
-                    ),
+            if request.operation_id is not None:
+                transaction = generation_store.load_transaction(request.operation_id)
+            else:
+                transaction = _create_rebuild_transaction_after_receipt_validation(
+                    generation_store,
+                    request,
+                    root,
                 )
-            )
+                transaction_created_here = True
             if transaction.status in {"promoted", "stale"}:
                 raise RuntimeError(
                     f"rebuild operation {transaction.operation_id} is {transaction.status}; start a new operation"
                 )
-            if source_revision_snapshot(root) != transaction.source_snapshot:
-                generation_store.checkpoint_transaction(
-                    transaction,
-                    status="stale",
-                    error="source evidence changed since this rebuild was planned",
-                )
+            if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
+                if transaction_created_here:
+                    mismatch = RebuildProvenanceError(
+                        "rebuild schema-inference preflight gate failed: "
+                        "source evidence changed since this rebuild was planned"
+                    )
+                    _cleanup_transaction_after_provenance_failure(
+                        generation_store,
+                        transaction,
+                        root,
+                        request.schema_inference_receipt_path,
+                        consumed_evidence,
+                        mismatch,
+                    )
+                    raise mismatch
+                try:
+                    _checkpoint_rebuild_transaction_after_receipt_validation(
+                        generation_store,
+                        transaction,
+                        root,
+                        request.schema_inference_receipt_path,
+                        status="stale",
+                        error="source evidence changed since this rebuild was planned",
+                    )
+                except RebuildProvenanceError as exc:
+                    if transaction_created_here:
+                        _cleanup_transaction_after_provenance_failure(
+                            generation_store,
+                            transaction,
+                            root,
+                            request.schema_inference_receipt_path,
+                            consumed_evidence,
+                            exc,
+                        )
+                    raise
                 raise RuntimeError(
                     f"rebuild operation {transaction.operation_id} is stale because source evidence changed"
                 )
@@ -720,12 +1204,28 @@ async def _rebuild_index_from_source_owned(
             if generation.owner_id != transaction.generation_owner_id or generation.state != "inactive":
                 raise RuntimeError(f"rebuild operation {transaction.operation_id} lost its inactive candidate")
             if not transaction.derived_stores_cleared:
-                _clear_bulk_build_derived_stores(Path(generation.index_path))
-                transaction = generation_store.checkpoint_transaction(
-                    transaction,
-                    status=transaction.status,
-                    derived_stores_cleared=True,
-                )
+                try:
+                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+                    _clear_bulk_build_derived_stores(Path(generation.index_path))
+                    transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
+                        generation_store,
+                        transaction,
+                        root,
+                        request.schema_inference_receipt_path,
+                        status=transaction.status,
+                        derived_stores_cleared=True,
+                    )
+                except RebuildProvenanceError as exc:
+                    if transaction_created_here:
+                        _cleanup_transaction_after_provenance_failure(
+                            generation_store,
+                            transaction,
+                            root,
+                            request.schema_inference_receipt_path,
+                            consumed_evidence,
+                            exc,
+                        )
+                    raise
             # polylogue-6mvg: the pass's SELECTION phase -- which raws
             # replay THIS pass -- previously had no durable timing at all. A
             # live full rebuild spent ~86s of one CPU core on selection
@@ -743,9 +1243,44 @@ async def _rebuild_index_from_source_owned(
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
-            generation = generation_store.create(source_snapshot=source_revision_snapshot(root))
+            precreate_provenance = RebuildProvenanceContext(
+                root=root,
+                receipt_path=request.schema_inference_receipt_path,
+                source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
+                consumed_evidence=consumed_evidence,
+            )
+            precreate_provenance.validate()
+            generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
+        try:
+            selection_evidence = rebuild_selection_evidence(
+                selected_raw_ids,
+                archive_root=root,
+                generation_id=generation.generation_id,
+                generation_owner_id=generation.owner_id,
+                candidate_index=Path(generation.index_path),
+                source_snapshot=generation.source_snapshot,
+            )
+        except BaseException as exc:
+            if transaction is None:
+                _cleanup_nonresumable_generation_failure(
+                    generation_store,
+                    generation,
+                    root=root,
+                    receipt_path=request.schema_inference_receipt_path,
+                    consumed_evidence=consumed_evidence,
+                    primary=exc,
+                )
+            raise
+        provenance = RebuildProvenanceContext(
+            root=root,
+            receipt_path=request.schema_inference_receipt_path,
+            source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
+            consumed_evidence=consumed_evidence,
+        )
+        sharded_replay = request.shard_count > 1 and len(selected_raw_ids) >= request.shard_count
         source_drifted = False
         try:
+            provenance.validate()
             generation_root = Path(generation.index_path).parent
             config = Config(
                 archive_root=generation_root,
@@ -772,7 +1307,7 @@ async def _rebuild_index_from_source_owned(
                     _warm_offline_prefetch_cache, warm_config, selected_raw_ids
                 )
             pass_started_at_s = time.perf_counter()
-            if request.shard_count > 1 and len(selected_raw_ids) >= request.shard_count:
+            if sharded_replay:
                 # polylogue-pzxm: build request.shard_count owned-inactive
                 # generations in parallel and merge them into `generation`
                 # instead of replaying `selected_raw_ids` through the single
@@ -813,6 +1348,7 @@ async def _rebuild_index_from_source_owned(
                     raw_batch_size=request.raw_batch_size,
                     shard_count=request.shard_count,
                     prefetch_cache=effective_prefetch_cache,
+                    provenance=provenance,
                 )
             else:
                 # polylogue-uhgm: the pass deadline used to be checked only AFTER
@@ -877,8 +1413,24 @@ async def _rebuild_index_from_source_owned(
                     # a raw/cohort; it can only redo bounded work.
                     assert transaction is not None  # deadline_check is only wired when transaction is not None
                     pass_elapsed_s = time.perf_counter() - pass_started_at_s
-                    transaction = generation_store.checkpoint_transaction(
+                    if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
+                        transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
+                            generation_store,
+                            transaction,
+                            root,
+                            request.schema_inference_receipt_path,
+                            status="stale",
+                            error="source evidence changed during deadline-interrupted rebuild pass",
+                        )
+                        source_drifted = True
+                        raise RuntimeError(
+                            f"rebuild operation {transaction.operation_id} is stale because source evidence changed"
+                        ) from exc
+                    transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
+                        generation_store,
                         transaction,
+                        root,
+                        request.schema_inference_receipt_path,
                         status="deferred",
                         error=str(exc),
                     )
@@ -889,6 +1441,7 @@ async def _rebuild_index_from_source_owned(
 
                     pass_cost = RebuildPassCost(
                         selection_s=selection_elapsed_s,
+                        cohort_s=0.0,
                         replay_s=pass_elapsed_s,
                         checkpoint_s=0.0,
                         pass_s=time.perf_counter() - pass_started_at_s,
@@ -944,21 +1497,39 @@ async def _rebuild_index_from_source_owned(
                         operation=_operation_evidence(
                             root, generation=generation, transaction=transaction, recovery_state="deferred"
                         ),
+                        selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
+                        consumed_evidence=consumed_evidence,
                     )
-                    generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
+                    _save_rebuild_pass_receipt_after_receipt_validation(
+                        generation_store,
+                        transaction.operation_id,
+                        pass_receipt,
+                        root,
+                        request.schema_inference_receipt_path,
+                    )
                     return pass_receipt
             pass_elapsed_s = time.perf_counter() - pass_started_at_s
             processed_before = transaction.processed_raw_count if transaction is not None else None
+            _validate_before_derived_state(provenance)
             if selected_raw_ids and _should_refresh_generation_planner_statistics(
                 processed_before=processed_before,
                 processed_after=(processed_before or 0) + len(selected_raw_ids),
             ):
                 _refresh_generation_planner_statistics(Path(generation.index_path))
             if transaction is not None and selected_raw_ids:
-                if source_revision_snapshot(root) != transaction.source_snapshot:
-                    transaction = generation_store.checkpoint_transaction(
+                if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
+                    if transaction_created_here:
+                        raise RebuildProvenanceError(
+                            "rebuild schema-inference preflight gate failed: "
+                            "source evidence changed during this bounded rebuild pass"
+                        )
+                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+                    transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
+                        generation_store,
                         transaction,
+                        root,
+                        request.schema_inference_receipt_path,
                         status="stale",
                         error="source evidence changed during this bounded rebuild pass",
                     )
@@ -973,8 +1544,11 @@ async def _rebuild_index_from_source_owned(
                     transaction.pass_deadline_ms is not None and elapsed_ms >= transaction.pass_deadline_ms
                 )
                 status = "deferred" if page.deferred_reason == "byte-budget" or deadline_expired else "paused"
-                transaction = generation_store.checkpoint_transaction(
+                transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
+                    generation_store,
                     transaction,
+                    root,
+                    request.schema_inference_receipt_path,
                     status=status,
                     last_blob_hash_hex=last_blob_hash_hex,
                     last_raw_id=last_raw_id,
@@ -989,6 +1563,7 @@ async def _rebuild_index_from_source_owned(
 
                     pass_cost = RebuildPassCost(
                         selection_s=selection_elapsed_s,
+                        cohort_s=_cohort_seconds(replay.get("stage_timings_s", {})),
                         replay_s=pass_elapsed_s,
                         checkpoint_s=0.0,
                         pass_s=time.perf_counter() - pass_started_at_s,
@@ -1023,9 +1598,17 @@ async def _rebuild_index_from_source_owned(
                         operation=_operation_evidence(
                             root, generation=generation, transaction=transaction, recovery_state=status
                         ),
+                        selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
+                        consumed_evidence=consumed_evidence,
                     )
-                    generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
+                    _save_rebuild_pass_receipt_after_receipt_validation(
+                        generation_store,
+                        transaction.operation_id,
+                        pass_receipt,
+                        root,
+                        request.schema_inference_receipt_path,
+                    )
                     return pass_receipt
             # polylogue-o56w: terminal-stage costs used to survive only as log
             # lines; collect them here and persist them on the final receipt
@@ -1038,36 +1621,43 @@ async def _rebuild_index_from_source_owned(
             # not a parallel one, so every receipt shape (deferred, paused,
             # replayed) carries the identical key for this phase.
             terminal_timings_s: dict[str, float] = {"selection_s": selection_elapsed_s}
-            terminal_started_at = time.perf_counter()
-            insight_result = repair_session_insights(
-                config,
-                dry_run=False,
-                archive_root_override=generation_root,
-                owned_inactive_generation=(generation.generation_id, generation.owner_id),
-            )
-            terminal_timings_s["terminal.session_insights"] = time.perf_counter() - terminal_started_at
-            logger.info(
-                "rebuild_terminal_stage_complete",
+            # Census can create membership rows and logical-source keys while
+            # replay is running. Recompute the receipt commitment from the
+            # post-replay source tier so it names the closure the candidate
+            # actually consumed, not only the caller's raw-id hints.
+            selection_evidence = rebuild_selection_evidence(
+                selected_raw_ids,
+                archive_root=root,
                 generation_id=generation.generation_id,
-                stage="session_insights",
-                elapsed_s=round(terminal_timings_s["terminal.session_insights"], 3),
+                generation_owner_id=generation.owner_id,
+                candidate_index=Path(generation.index_path),
+                source_snapshot=generation.source_snapshot,
             )
-            if not insight_result.success:
-                raise RuntimeError(f"session insight materialization failed: {insight_result.detail}")
-            if source_revision_snapshot(root) != generation.source_snapshot:
+            if rebuild_source_evidence_snapshot(root) != generation.source_snapshot:
+                if transaction is not None and transaction_created_here:
+                    raise RebuildProvenanceError(
+                        "rebuild schema-inference preflight gate failed: "
+                        "source evidence changed before terminal readiness"
+                    )
                 if transaction is not None:
-                    transaction = generation_store.checkpoint_transaction(
+                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+                    transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
+                        generation_store,
                         transaction,
+                        root,
+                        request.schema_inference_receipt_path,
                         status="stale",
                         error="source evidence changed before terminal readiness",
                     )
                     source_drifted = True
                 raise RuntimeError(f"source evidence changed while rebuilding {generation.generation_id}")
+            source_evidence_after = rebuild_source_evidence_snapshot(root)
             # polylogue-v6i3: bulk-build replay (bulk_build=True above) left
             # messages_fts/blocks_command_trigram/action_pairs/delegation_facts
             # empty or stale for every session -- repopulate all four
             # archive-wide exactly once here, then prove exact parity before
             # readiness can observe (and silently accept) a mismatch.
+            _validate_before_derived_state(provenance)
             bulk_timings_s = _repopulate_bulk_build_derived_state(Path(generation.index_path))
             for stage, elapsed_s in bulk_timings_s.items():
                 terminal_timings_s[f"terminal.bulk_build.{stage}"] = elapsed_s
@@ -1092,7 +1682,11 @@ async def _rebuild_index_from_source_owned(
                 # source tier at the archive root before promotion.
                 verify_archive(
                     root,
-                    checks=CORPUS_FIDELITY_CHECKS,
+                    checks=(
+                        request.candidate_acceptance_checks
+                        if request.candidate_acceptance_checks is not None
+                        else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
+                    ),
                     index_path_override=Path(generation.index_path),
                 ),
             )
@@ -1103,16 +1697,44 @@ async def _rebuild_index_from_source_owned(
                 stage="reindex_acceptance",
                 elapsed_s=round(terminal_timings_s["terminal.reindex_acceptance"], 3),
             )
-            if any(report.blocking for report in acceptance_reports):
-                failing = "; ".join(
-                    f"{check.name}: {check.summary}"
-                    for report in acceptance_reports
-                    for check in report.checks
-                    if check.status.value == "error" and getattr(check, "waived_bead_id", None) is None
-                )
+            acceptance_requirements = (
+                REINDEX_ACCEPTANCE_CHECKS,
+                request.candidate_acceptance_checks
+                if request.candidate_acceptance_checks is not None
+                else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+            )
+            acceptance_failures = tuple(
+                failure
+                for report, required_checks in zip(acceptance_reports, acceptance_requirements, strict=True)
+                if not passes_strict_acceptance(report, required_checks=required_checks)
+                for failure in strict_acceptance_failures(report, required_checks=required_checks)
+            )
+            if acceptance_failures:
+                failing = "; ".join(acceptance_failures)
                 raise RuntimeError(
                     f"reindex acceptance gate failed for generation {generation.generation_id}: {failing}"
                 )
+            # Derived insight materialization assumes a coherent lineage graph.
+            # Reject a structurally invalid inactive candidate before invoking
+            # it, so the acceptance receipt names the actual bad invariant
+            # instead of reporting an incidental derived-model failure.
+            terminal_started_at = time.perf_counter()
+            _validate_before_derived_state(provenance)
+            insight_result = repair_session_insights(
+                config,
+                dry_run=False,
+                archive_root_override=generation_root,
+                owned_inactive_generation=(generation.generation_id, generation.owner_id),
+            )
+            terminal_timings_s["terminal.session_insights"] = time.perf_counter() - terminal_started_at
+            logger.info(
+                "rebuild_terminal_stage_complete",
+                generation_id=generation.generation_id,
+                stage="session_insights",
+                elapsed_s=round(terminal_timings_s["terminal.session_insights"], 3),
+            )
+            if not insight_result.success:
+                raise RuntimeError(f"session insight materialization failed: {insight_result.detail}")
             terminal_started_at = time.perf_counter()
             readiness = archive_readiness_status(generation_root)
             terminal_timings_s["terminal.readiness"] = time.perf_counter() - terminal_started_at
@@ -1135,7 +1757,13 @@ async def _rebuild_index_from_source_owned(
                 )
                 raise RuntimeError(f"inactive generation {generation.generation_id} is not exact-ready; {detail}")
             if transaction is not None:
-                transaction = generation_store.checkpoint_transaction(transaction, status="ready")
+                transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
+                    generation_store,
+                    transaction,
+                    root,
+                    request.schema_inference_receipt_path,
+                    status="ready",
+                )
             if request.promote:
                 # Re-prove ownership immediately before the activation swap:
                 # a long-running rebuild pass can outlast a concurrent
@@ -1143,6 +1771,7 @@ async def _rebuild_index_from_source_owned(
                 # caught before clobbering someone else's activation rather
                 # than after (polylogue-ovme.2 AC3).
                 assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
+                _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                 terminal_started_at = time.perf_counter()
                 generation = generation_store.promote(generation)
                 terminal_timings_s["terminal.promote"] = time.perf_counter() - terminal_started_at
@@ -1153,47 +1782,106 @@ async def _rebuild_index_from_source_owned(
                     elapsed_s=round(terminal_timings_s["terminal.promote"], 3),
                 )
                 if transaction is not None:
-                    transaction = generation_store.checkpoint_transaction(transaction, status="promoted")
-        except Exception:
-            if transaction is not None and not source_drifted:
-                with contextlib.suppress(Exception):
+                    transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
+                        generation_store,
+                        transaction,
+                        root,
+                        request.schema_inference_receipt_path,
+                        status="promoted",
+                    )
+        except Exception as exc:
+            fresh_provenance_failure = isinstance(exc, RebuildProvenanceError) and (
+                transaction_created_here or transaction is None or sharded_replay
+            )
+            if fresh_provenance_failure:
+                if transaction is not None:
+                    cleanup_errors = _discard_transaction_after_provenance_failure(
+                        generation_store, transaction, provenance
+                    )
+                else:
+                    cleanup_errors = _discard_generation_after_provenance_failure(
+                        generation_store, generation, provenance
+                    )
+                _add_cleanup_failure_notes(exc, cleanup_errors, label="rebuild provenance")
+            elif transaction is not None and not source_drifted:
+                try:
                     # A process can fail after ``checkpoint_transaction`` has
                     # atomically published the output batch but before this
                     # frame receives its returned replacement object.  Never
                     # let this stale local value rewind that committed cursor
                     # while recording recovery state.
                     transaction = generation_store.load_transaction(transaction.operation_id)
-                    generation_store.checkpoint_transaction(
+                    _checkpoint_rebuild_transaction_after_receipt_validation(
+                        generation_store,
                         transaction,
+                        root,
+                        request.schema_inference_receipt_path,
                         status="failed",
                         error="bounded rebuild pass failed; candidate retained for diagnosis or explicit recovery",
                     )
-            else:
-                with contextlib.suppress(Exception):
-                    generation_store.discard_if_inactive(generation)
+                except BaseException as checkpoint_error:
+                    exc.add_note(
+                        "resumable rebuild failure-state checkpoint also failed: "
+                        f"{type(checkpoint_error).__name__}: {checkpoint_error}"
+                    )
+            elif transaction is None:
+                _cleanup_nonresumable_generation_failure(
+                    generation_store,
+                    generation,
+                    root=root,
+                    receipt_path=request.schema_inference_receipt_path,
+                    consumed_evidence=consumed_evidence,
+                    primary=exc,
+                )
             raise
-    final_receipt = RebuildIndexReceipt(
-        archive_root=str(root),
-        raw_session_count=raw_count,
-        selected_raw_count=selected_raw_count,
-        skipped_by_blob_limit_count=skipped_by_blob_limit_count,
-        status="replayed",
-        materialized=True,
-        materialization=cast(dict[str, object], insight_result.to_dict()),
-        generation=cast(dict[str, object], asdict(generation)),
-        readiness=cast(dict[str, object], readiness),
-        replay=replay,
-        transaction=cast(dict[str, object], asdict(transaction)) if transaction is not None else None,
-        operation=_operation_evidence(
-            root,
-            generation=generation,
-            transaction=transaction,
-            recovery_state="promoted" if request.promote else "ready",
-        ),
-        timings_s={key: round(value, 3) for key, value in terminal_timings_s.items()},
-    )
-    if transaction is not None:
-        generation_store.save_pass_receipt(transaction.operation_id, final_receipt.to_dict())
+    try:
+        final_receipt = RebuildIndexReceipt(
+            archive_root=str(root),
+            raw_session_count=raw_count,
+            selected_raw_count=selected_raw_count,
+            skipped_by_blob_limit_count=skipped_by_blob_limit_count,
+            status="replayed",
+            materialized=True,
+            materialization=cast(dict[str, object], insight_result.to_dict()),
+            generation=cast(dict[str, object], asdict(generation)),
+            readiness=cast(dict[str, object], readiness),
+            replay=replay,
+            transaction=cast(dict[str, object], asdict(transaction)) if transaction is not None else None,
+            operation=_operation_evidence(
+                root,
+                generation=generation,
+                transaction=transaction,
+                recovery_state="promoted" if request.promote else "ready",
+            ),
+            selection_evidence=selection_evidence,
+            source_evidence_after=source_evidence_after,
+            timings_s=_receipt_timings(
+                selection_s=selection_elapsed_s,
+                replay=replay,
+                terminal_timings_s=terminal_timings_s,
+            ),
+            consumed_evidence=consumed_evidence,
+        )
+        _persist_candidate_receipt(generation, final_receipt.to_dict())
+        if transaction is not None:
+            _save_rebuild_pass_receipt_after_receipt_validation(
+                generation_store,
+                transaction.operation_id,
+                final_receipt,
+                root,
+                request.schema_inference_receipt_path,
+            )
+    except BaseException as exc:
+        if transaction is None:
+            _cleanup_nonresumable_generation_failure(
+                generation_store,
+                generation,
+                root=root,
+                receipt_path=request.schema_inference_receipt_path,
+                consumed_evidence=consumed_evidence,
+                primary=exc,
+            )
+        raise
     return final_receipt
 
 
@@ -1228,7 +1916,7 @@ def rebuild_status(
     from polylogue.storage.index_generation import (
         IndexGenerationStore,
         rebuild_lease_status,
-        source_revision_snapshot,
+        rebuild_source_evidence_snapshot,
     )
 
     location = ArchiveLocation.resolve(archive_root)
@@ -1274,7 +1962,9 @@ def rebuild_status(
             transaction = None
         if transaction is not None:
             transaction_payload = cast(dict[str, object], asdict(transaction))
-            current_snapshot = source_revision_snapshot(archive_root) if (archive_root / "source.db").exists() else None
+            current_snapshot = (
+                rebuild_source_evidence_snapshot(archive_root) if (archive_root / "source.db").exists() else None
+            )
             delta = {
                 "source_snapshot_matches": (
                     current_snapshot is not None and current_snapshot == transaction.source_snapshot

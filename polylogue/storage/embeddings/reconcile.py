@@ -270,39 +270,25 @@ def reconcile_embedding_orphans(
         scanned_vector_rows = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings")
         scanned_status_rows = _scalar(conn, "SELECT COUNT(*) FROM embedding_status")
 
-        message_rows = _orphan_message_rows(conn)
+        work_limit = None if max_count is None else max(0, max_count)
+        orphan_message_rows = _orphan_message_count(conn)
+        skipped_recent_message = _recent_orphan_message_count(conn, resolved_now_ms, quiet_window_ms)
+        limited_message = _orphan_message_rows(
+            conn,
+            now_ms=resolved_now_ms,
+            quiet_window_ms=quiet_window_ms,
+            limit=work_limit,
+        )
 
-        message_candidates: list[sqlite3.Row] = []
-        skipped_recent_message = 0
-        for row in message_rows:
-            if _is_recent(row["embedded_at_ms"], resolved_now_ms, quiet_window_ms):
-                skipped_recent_message += 1
-                continue
-            message_candidates.append(row)
-
-        limited_message = message_candidates if max_count is None else message_candidates[: max(0, max_count)]
-
-        status_rows = conn.execute(
-            """
-            SELECT session_id, last_embedded_at_ms
-            FROM embedding_status
-            WHERE NOT EXISTS (
-                SELECT 1 FROM idx.sessions AS ims WHERE ims.session_id = embedding_status.session_id
-            )
-            ORDER BY session_id
-            """
-        ).fetchall()
-
-        status_candidates: list[sqlite3.Row] = []
-        skipped_recent_status = 0
-        for row in status_rows:
-            if _is_recent(row["last_embedded_at_ms"], resolved_now_ms, quiet_window_ms):
-                skipped_recent_status += 1
-                continue
-            status_candidates.append(row)
-
-        status_budget = None if max_count is None else max(0, max_count - len(limited_message))
-        limited_status = status_candidates if status_budget is None else status_candidates[:status_budget]
+        status_budget = None if work_limit is None else max(0, work_limit - len(limited_message))
+        skipped_recent_status = _recent_orphan_status_count(conn, resolved_now_ms, quiet_window_ms)
+        orphan_status_rows = _orphan_status_count(conn)
+        limited_status = _orphan_status_rows(
+            conn,
+            now_ms=resolved_now_ms,
+            quiet_window_ms=quiet_window_ms,
+            limit=status_budget,
+        )
         candidate_message_rows = len(limited_message)
         candidate_message_meta_rows = sum(int(row["has_meta"]) for row in limited_message)
         candidate_vector_rows = sum(int(row["has_vector"]) for row in limited_message)
@@ -382,25 +368,13 @@ def reconcile_embedding_orphans(
             for row in limited_status[:remaining_sample_budget]
         )
 
-        orphan_message_rows = len(message_candidates) + skipped_recent_message
-        orphan_message_meta_rows = sum(int(row["has_meta"]) for row in message_rows)
-        orphan_vector_rows = sum(int(row["has_vector"]) for row in message_rows)
-        orphan_status_rows = len(status_candidates) + skipped_recent_status
+        orphan_message_meta_rows = orphan_message_rows
+        orphan_vector_rows = orphan_message_rows
         if dry_run:
             more_pending = orphan_message_rows > 0 or orphan_status_rows > 0
             conn.rollback()
         else:
-            more_pending = bool(_orphan_message_rows(conn)) or bool(
-                conn.execute(
-                    """
-                    SELECT 1 FROM embedding_status
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM idx.sessions WHERE idx.sessions.session_id = embedding_status.session_id
-                    )
-                    LIMIT 1
-                    """
-                ).fetchone()
-            )
+            more_pending = _has_orphan_message_rows(conn) or _has_orphan_status_rows(conn)
 
         return EmbeddingOrphanReconcileReport(
             index_db=str(index_path),
@@ -435,7 +409,13 @@ def reconcile_embedding_orphans(
         conn.close()
 
 
-def _orphan_message_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def _orphan_message_rows(
+    conn: sqlite3.Connection,
+    *,
+    now_ms: int,
+    quiet_window_ms: int,
+    limit: int | None,
+) -> list[sqlite3.Row]:
     """Return orphan ``message_embedding_refs`` rows.
 
     ``content_hash`` is reported as ``NULL`` -- refs carry no content-hash
@@ -444,8 +424,7 @@ def _orphan_message_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     since a ref only ever points at a hash that has both (write-once,
     atomic), even though this reconciler does not delete either.
     """
-    return conn.execute(
-        """
+    sql = """
         SELECT r.message_id AS message_id,
                r.session_id AS session_id,
                NULL AS content_hash,
@@ -454,11 +433,151 @@ def _orphan_message_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                1 AS has_vector
         FROM message_embedding_refs AS r
         WHERE NOT EXISTS (
-            SELECT 1 FROM idx.messages AS indexed WHERE indexed.message_id = r.message_id
+            SELECT 1
+            FROM idx.messages AS indexed
+            WHERE indexed.message_id = r.message_id
+              AND indexed.session_id = r.session_id
         )
+          AND (
+              r.embedded_at_ms IS NULL
+              OR (? - r.embedded_at_ms) >= ?
+          )
         ORDER BY r.message_id
+    """
+    params: list[object] = [now_ms, quiet_window_ms]
+    if limit == 0:
+        return []
+    if limit is not None:
+        sql += "\nLIMIT ?"
+        params.append(limit)
+    return conn.execute(sql, tuple(params)).fetchall()
+
+
+def _orphan_status_rows(
+    conn: sqlite3.Connection,
+    *,
+    now_ms: int,
+    quiet_window_ms: int,
+    limit: int | None,
+) -> list[sqlite3.Row]:
+    sql = """
+        SELECT session_id, last_embedded_at_ms
+        FROM embedding_status
+        WHERE NOT EXISTS (
+            SELECT 1 FROM idx.sessions AS ims WHERE ims.session_id = embedding_status.session_id
+        )
+          AND (
+              last_embedded_at_ms IS NULL
+              OR (? - last_embedded_at_ms) >= ?
+          )
+        ORDER BY session_id
+    """
+    params: list[object] = [now_ms, quiet_window_ms]
+    if limit is not None:
+        sql += "\nLIMIT ?"
+        params.append(limit)
+    if limit == 0:
+        return []
+    return conn.execute(sql, tuple(params)).fetchall()
+
+
+def _orphan_message_count(conn: sqlite3.Connection) -> int:
+    return _scalar(
+        conn,
         """
-    ).fetchall()
+        SELECT COUNT(*)
+        FROM message_embedding_refs AS r
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM idx.messages AS indexed
+            WHERE indexed.message_id = r.message_id
+              AND indexed.session_id = r.session_id
+        )
+        """,
+    )
+
+
+def _recent_orphan_message_count(conn: sqlite3.Connection, now_ms: int, quiet_window_ms: int) -> int:
+    return _scalar(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM message_embedding_refs AS r
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM idx.messages AS indexed
+            WHERE indexed.message_id = r.message_id
+              AND indexed.session_id = r.session_id
+        )
+          AND r.embedded_at_ms IS NOT NULL
+          AND (? - r.embedded_at_ms) < ?
+        """,
+        (now_ms, quiet_window_ms),
+    )
+
+
+def _orphan_status_count(conn: sqlite3.Connection) -> int:
+    return _scalar(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM embedding_status
+        WHERE NOT EXISTS (
+            SELECT 1 FROM idx.sessions AS ims WHERE ims.session_id = embedding_status.session_id
+        )
+        """,
+    )
+
+
+def _recent_orphan_status_count(conn: sqlite3.Connection, now_ms: int, quiet_window_ms: int) -> int:
+    return _scalar(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM embedding_status
+        WHERE NOT EXISTS (
+            SELECT 1 FROM idx.sessions AS ims WHERE ims.session_id = embedding_status.session_id
+        )
+          AND last_embedded_at_ms IS NOT NULL
+          AND (? - last_embedded_at_ms) < ?
+        """,
+        (now_ms, quiet_window_ms),
+    )
+
+
+def _has_orphan_message_rows(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute(
+            """
+            SELECT 1
+            FROM message_embedding_refs AS r
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM idx.messages AS indexed
+                WHERE indexed.message_id = r.message_id
+                  AND indexed.session_id = r.session_id
+            )
+            LIMIT 1
+            """
+        ).fetchone()
+        is not None
+    )
+
+
+def _has_orphan_status_rows(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute(
+            """
+            SELECT 1
+            FROM embedding_status
+            WHERE NOT EXISTS (
+                SELECT 1 FROM idx.sessions WHERE idx.sessions.session_id = embedding_status.session_id
+            )
+            LIMIT 1
+            """
+        ).fetchone()
+        is not None
+    )
 
 
 def _delete_if_still_orphan_ref(conn: sqlite3.Connection, message_id: str) -> int:
@@ -467,7 +586,10 @@ def _delete_if_still_orphan_ref(conn: sqlite3.Connection, message_id: str) -> in
         DELETE FROM message_embedding_refs
         WHERE message_id = ?
           AND NOT EXISTS (
-              SELECT 1 FROM idx.messages WHERE idx.messages.message_id = message_embedding_refs.message_id
+              SELECT 1
+              FROM idx.messages
+              WHERE idx.messages.message_id = message_embedding_refs.message_id
+                AND idx.messages.session_id = message_embedding_refs.session_id
           )
         """,
         (message_id,),
@@ -540,12 +662,6 @@ def _assert_active_index_generation(index_path: Path) -> None:
                 return
             raise RuntimeError("embedding orphan reconciliation requires an active source-snapshotted index generation")
     raise RuntimeError("embedding orphan reconciliation active index is missing generation readiness evidence")
-
-
-def _is_recent(timestamp_ms: int | None, now_ms: int, quiet_window_ms: int) -> bool:
-    if timestamp_ms is None:
-        return False
-    return (now_ms - int(timestamp_ms)) < quiet_window_ms
 
 
 def _scalar(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:

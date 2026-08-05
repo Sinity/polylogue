@@ -61,6 +61,20 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "embedding-status-query-loop",
         "retrieval-band-readiness-loop",
         "source-acquisition-loop",
+        "tag-mutation-loop",
+        "metadata-mutation-loop",
+        "mark-mutation-loop",
+        "annotation-mutation-loop",
+        "blackboard-post-loop",
+        "assertion-candidate-capture-loop",
+        "raw-authority-blocker-resolution-loop",
+        "saved-view-mutation-loop",
+        "recall-pack-mutation-loop",
+        "workspace-mutation-loop",
+        "correction-mutation-loop",
+        "session-delete-loop",
+        "session-excision-loop",
+        "identity-reset-loop",
     }
 
 

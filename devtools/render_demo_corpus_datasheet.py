@@ -96,12 +96,12 @@ def _render_family_table() -> list[str]:
 
 def _render_construct_table(seed: DemoSeedResult) -> list[str]:
     lines = [
-        "| Construct | Observed | Minimum | Status |",
-        "| --- | ---: | ---: | --- |",
+        "| Construct | Required coverage | Status |",
+        "| --- | ---: | --- |",
     ]
     for row in seed.construct_coverage:
         status = "ok" if row.ok else "missing"
-        lines.append(f"| {row.label} (`{row.construct_id}`) | {row.observed} | {row.minimum} | `{status}` |")
+        lines.append(f"| {row.label} (`{row.construct_id}`) | >= {row.minimum} | `{status}` |")
     return lines
 
 
