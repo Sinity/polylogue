@@ -219,8 +219,7 @@ def test_unsupported_json_schema_construct_is_keyed_and_receiptable() -> None:
     assert target.unsupported is not None
     assert target.unsupported.reason == "unsupported_json_schema_construct"
     assert target.unsupported.details == ("enum", "required")
-    assert target.key.construct_support[-1].construct == "type"
-    assert target.key.construct_support[-1].state == "supported"
+    assert ("type", "supported") in {(item.construct, item.state) for item in target.key.construct_support}
     assert manifest.package_receipt == receipt
     assert manifest.receipt_state == "package_receipt_attached"
     assert manifest.to_payload()["package_receipt"] == receipt
@@ -296,3 +295,82 @@ def test_convergence_handoff_rejects_an_omitted_supported_spec() -> None:
 
     with pytest.raises(AssertionError, match="omitted or substituted"):
         assert_inferred_corpus_convergence_handoff_complete(manifest, incomplete)
+
+
+def _first_supported_catalog_entry(registry: SchemaRegistry) -> tuple[str, str, str]:
+    manifest = compile_inferred_corpus_manifest(registry=registry)
+    entry = next(entry for entry in manifest.entries if entry.spec is not None)
+    return entry.key.provider, entry.key.package_version, entry.key.element_kind
+
+
+def _schema_with_annotation(
+    registry: SchemaRegistry,
+    *,
+    provider: str,
+    package_version: str,
+    element_kind: str,
+    annotation: str,
+) -> dict[str, JSONValue]:
+    schema = registry.get_element_schema(provider, version=package_version, element_kind=element_kind)
+    assert isinstance(schema, dict)
+    mutated: dict[str, JSONValue] = dict(schema)
+    raw_properties = mutated.get("properties")
+    assert isinstance(raw_properties, dict)
+    properties: dict[str, JSONValue] = dict(raw_properties)
+    properties["annotation_probe"] = {"type": "string", annotation: "uuid"}
+    mutated["properties"] = properties
+    return mutated
+
+
+def test_known_generator_annotation_remains_supported_and_is_keyed() -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    provider, package_version, element_kind = _first_supported_catalog_entry(registry)
+    proxy.schema_overrides[(provider, package_version, element_kind)] = _schema_with_annotation(
+        registry,
+        provider=provider,
+        package_version=package_version,
+        element_kind=element_kind,
+        annotation="x-polylogue-format",
+    )
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy)  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (provider, package_version, element_kind)
+    )
+
+    assert target.spec is not None
+    assert ("x-polylogue-format", "supported") in {
+        (item.construct, item.state) for item in target.key.construct_support
+    }
+
+
+@pytest.mark.parametrize("annotation", ["x-polylogue-unknown-constraint", "x-third-party-constraint"])
+def test_unknown_x_annotation_becomes_a_typed_unsupported_record(annotation: str) -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    provider, package_version, element_kind = _first_supported_catalog_entry(registry)
+    proxy.schema_overrides[(provider, package_version, element_kind)] = _schema_with_annotation(
+        registry,
+        provider=provider,
+        package_version=package_version,
+        element_kind=element_kind,
+        annotation=annotation,
+    )
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy)  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (provider, package_version, element_kind)
+    )
+
+    assert target.spec is None
+    assert target.unsupported is not None
+    assert target.unsupported.reason == "unsupported_json_schema_construct"
+    assert annotation in target.unsupported.details
+    assert (annotation, "unsupported") in {(item.construct, item.state) for item in target.key.construct_support}

@@ -152,6 +152,59 @@ _SCHEMA_MAPPING_KEYWORDS = frozenset(
 )
 _SCHEMA_ARRAY_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
 
+# These annotations are read by the production synthetic runtime, semantic
+# value generator, or relation solver. Their support verdict means the
+# corresponding generator path consumes the annotation, rather than merely
+# tolerating its namespace.
+_SUPPORTED_SYNTHETIC_ANNOTATIONS = frozenset(
+    {
+        "x-polylogue-array-lengths",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-format",
+        "x-polylogue-frequency",
+        "x-polylogue-multiline",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-range",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths",
+        "x-polylogue-time-deltas",
+        "x-polylogue-values",
+    }
+)
+
+# These package annotations are consumed by registry/profile loading or retain
+# provenance only. They do not constrain an emitted instance, so recognizing
+# them cannot claim synthetic schema conformance. Shape-affecting annotations
+# without a synthetic consumer, such as ``x-polylogue-ref`` and dynamic-key
+# markers, are deliberately absent and fail closed below.
+_SUPPORTED_CATALOG_METADATA_ANNOTATIONS = frozenset(
+    {
+        "x-polylogue-anchor-profile-family-id",
+        "x-polylogue-artifact-kind",
+        "x-polylogue-element-bundle-scope-count",
+        "x-polylogue-element-first-seen",
+        "x-polylogue-element-kind",
+        "x-polylogue-element-last-seen",
+        "x-polylogue-evidence",
+        "x-polylogue-evidence-confidence",
+        "x-polylogue-exact-structure-ids",
+        "x-polylogue-generated-at",
+        "x-polylogue-generator",
+        "x-polylogue-observed-artifact-count",
+        "x-polylogue-package-profile-family-ids",
+        "x-polylogue-package-version",
+        "x-polylogue-profile-family-ids",
+        "x-polylogue-profile-tokens",
+        "x-polylogue-promoted-at",
+        "x-polylogue-registered-at",
+        "x-polylogue-sample-count",
+        "x-polylogue-sample-granularity",
+        "x-polylogue-score",
+        "x-polylogue-version",
+    }
+)
+
 
 @dataclass(frozen=True, order=True)
 class ConstructSupport:
@@ -292,8 +345,18 @@ def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
             if not isinstance(key, str):
                 continue
             if key.startswith("x-"):
+                found[key] = (
+                    "supported"
+                    if key in _SUPPORTED_SYNTHETIC_ANNOTATIONS | _SUPPORTED_CATALOG_METADATA_ANNOTATIONS
+                    else "unsupported"
+                )
                 continue
-            found[key] = "supported" if key in _SUPPORTED_SCHEMA_CONSTRUCTS else "unsupported"
+            if key in _SUPPORTED_SCHEMA_CONSTRUCTS:
+                found[key] = "supported"
+            elif key in _STANDARD_SCHEMA_KEYWORDS:
+                found[key] = "unsupported"
+            else:
+                found[key] = "unsupported"
 
             if key in _SCHEMA_MAPPING_KEYWORDS and isinstance(value, Mapping):
                 if key in {"$defs", "dependentSchemas", "dependencies", "patternProperties", "properties"}:
