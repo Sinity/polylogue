@@ -3689,6 +3689,12 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_fts_merge", lambda: fake_loop("fts-merge")))
         stack.enter_context(
+            patch(
+                "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
+                lambda **_kwargs: fake_loop("blob-publication-reconciliation"),
+            )
+        )
+        stack.enter_context(
             patch.object(
                 daemon_cli,
                 "_periodic_raw_materialization_convergence",
@@ -3744,6 +3750,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("lineage") < events.index("watcher")
     assert events.index("lineage") < events.index("blob-publications") < events.index("watcher")
+    assert "blob-publication-reconciliation" in events
     # Drive catch-up is background work: it must never gate the watcher or
     # the local convergence loops on serial network I/O.
     assert "drive-once" not in events
@@ -3990,6 +3997,10 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
         patch.object(daemon_cli, "_run_drive_source_catchup_safely", no_drive_changes),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", wait_forever),
         patch.object(daemon_cli, "_periodic_fts_merge", wait_forever),
+        patch(
+            "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
+            lambda **_kwargs: wait_forever(),
+        ),
         patch.object(daemon_cli, "_periodic_heartbeat", wait_forever),
         patch.object(daemon_cli, "_periodic_drive_source_catchup", wait_forever),
         patch.object(daemon_cli, "_periodic_health_check", wait_forever),

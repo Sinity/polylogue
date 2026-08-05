@@ -14,12 +14,16 @@ the reclaim rather than a bypassed direct call.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+from polylogue.daemon import blob_gc_periodic
 from polylogue.daemon.blob_gc_periodic import run_blob_gc_once
-from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.storage.blob_store import BlobStore
 
 
@@ -120,3 +124,80 @@ def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:
     assert result.deleted_count == 1  # type: ignore[attr-defined]
     assert coordinator.snapshot().active_actor is None
     assert not blob_store.blob_path(blob_hash).exists()
+
+
+def _make_publication_reconciliation_fixture(tmp_path: Path) -> tuple[Path, str]:
+    from polylogue.core.enums import Origin
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
+    store = BlobStore(archive_root / "blob")
+    publisher = ArchiveBlobPublisher(source_db, store.root)
+    missing_hash, _ = publisher.write_from_bytes(b"periodic-missing-terminal")
+    referenced_hash, referenced_size = publisher.write_from_bytes(b"periodic-referenced-terminal")
+    unresolved_hash, _ = publisher.write_from_bytes(b"periodic-unresolved")
+    publisher.flush()
+    store.blob_path(missing_hash).unlink()
+    with sqlite3.connect(source_db) as conn:
+        write_source_raw_session_blob_ref(
+            conn,
+            origin=Origin.CHATGPT_EXPORT,
+            source_path="periodic-referenced.json",
+            source_index=0,
+            blob_hash=bytes.fromhex(referenced_hash),
+            blob_size=referenced_size,
+            acquired_at_ms=1,
+            raw_id="periodic-referenced-raw",
+        )
+    return archive_root, unresolved_hash
+
+
+def test_periodic_publication_reconciliation_repeats_safe_cleanup_and_retains_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The scheduled production route clears terminal rows on every tick only."""
+    archive_root, unresolved_hash = _make_publication_reconciliation_fixture(tmp_path)
+    source_db = archive_root / "source.db"
+    coordinator_events: list[str] = []
+    second_tick = asyncio.Event()
+
+    def observe(event: DaemonWriteEvent) -> None:
+        if event.phase == "acquired":
+            coordinator_events.append(event.actor)
+            if len(coordinator_events) == 2:
+                second_tick.set()
+
+    coordinator = DaemonWriteCoordinator(observer=observe)
+    monkeypatch.setattr(blob_gc_periodic, "BLOB_PUBLICATION_RECONCILIATION_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root)
+    monkeypatch.setattr("polylogue.paths.source_db_path", lambda: source_db)
+    monkeypatch.setattr("polylogue.daemon.cli.daemon_write_coordinator", lambda: coordinator)
+
+    async def exercise() -> None:
+        task = asyncio.create_task(blob_gc_periodic.periodic_blob_publication_reconciliation_check())
+        try:
+            await asyncio.wait_for(second_tick.wait(), timeout=2.0)
+        finally:
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            assert await coordinator.shutdown(timeout=1.0)
+
+    asyncio.run(exercise())
+
+    assert coordinator_events == [
+        "maintenance.blob_publication_reconciliation",
+        "maintenance.blob_publication_reconciliation",
+    ]
+    assert coordinator.snapshot().active_actor is None
+    with sqlite3.connect(source_db) as conn:
+        remaining = conn.execute(
+            "SELECT blob_hash FROM blob_publication_reservations ORDER BY publication_id"
+        ).fetchall()
+    assert [bytes(row[0]).hex() for row in remaining] == [unresolved_hash]

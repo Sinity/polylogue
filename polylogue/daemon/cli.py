@@ -330,6 +330,7 @@ _SCHEMA_BLOCKED_MAINTENANCE_LOOP_NAMES: tuple[str, ...] = (
     "fts identity drift recompute",
     "fts orphan audit",
     "blob gc check",
+    "blob publication reconciliation",
     "secret scan sweep",
 )
 _SCHEMA_BLOCKED_OPTIONAL_DRIVE_CATCHUP_LOOP_NAME = "drive source catch-up"
@@ -1190,19 +1191,19 @@ async def _bridge_catch_up_complete(
     target.set()
 
 
-async def _reconcile_blob_publications() -> None:
+async def _reconcile_blob_publications(*, actor: str = "startup.blob_publications") -> Any:
     """Classify crash-left publication reservations before source catch-up."""
     from polylogue.paths import archive_root
     from polylogue.storage.blob_publication import reconcile_blob_publication_reservations_under_exclusion
 
     root = archive_root()
     if not (root / "source.db").exists():
-        return
+        return None
     # Reconciliation only clears rows under a live ArchiveWriterExclusion; the
     # `_under_exclusion` entry point acquires it itself so this startup call
     # cannot silently regress into a no-op reconciliation (polylogue-qs0a).
     outcome = await daemon_write_coordinator().run_sync(
-        "startup.blob_publications",
+        actor,
         reconcile_blob_publication_reservations_under_exclusion,
         root / "source.db",
         root / "blob",
@@ -1230,6 +1231,7 @@ async def _reconcile_blob_publications() -> None:
             "blob publications: retained %d receipt(s) for inspection or explicit abandonment",
             retained,
         )
+    return outcome
 
 
 def _drain_raw_materialization_once(
@@ -2450,7 +2452,10 @@ async def run_daemon_services(
             from polylogue.daemon.antigravity_conversation_acquisition import (
                 periodic_antigravity_conversation_acquisition_check,
             )
-            from polylogue.daemon.blob_gc_periodic import periodic_blob_gc_check
+            from polylogue.daemon.blob_gc_periodic import (
+                periodic_blob_gc_check,
+                periodic_blob_publication_reconciliation_check,
+            )
             from polylogue.daemon.convergence import DaemonConverger
             from polylogue.daemon.convergence_stages import make_default_convergence_stages
             from polylogue.daemon.embedding_backlog import (
@@ -2499,6 +2504,7 @@ async def run_daemon_services(
                 periodic_fts_identity_drift_recompute(catch_up_complete=catch_up_complete_gate),
                 periodic_fts_orphan_audit(catch_up_complete=catch_up_complete_gate),
                 periodic_blob_gc_check(catch_up_complete=catch_up_complete_gate),
+                periodic_blob_publication_reconciliation_check(catch_up_complete=catch_up_complete_gate),
                 periodic_secret_scan_sweep(catch_up_complete=catch_up_complete_gate),
                 periodic_antigravity_conversation_acquisition_check(catch_up_complete=catch_up_complete_gate),
             ]
