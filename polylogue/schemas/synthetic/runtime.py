@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from polylogue.archive.raw_payload.decode import JSONValue
+from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
 from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator, _text_for_role
 from polylogue.schemas.synthetic.wire_formats import WireFormat
@@ -19,8 +20,24 @@ if TYPE_CHECKING:
 
 SyntheticRecord: TypeAlias = dict[str, JSONValue]
 
+# The receipt reads this registry and the recursive generator gates dispatch on
+# it. Removing a construct handler therefore changes both generated behavior
+# and the support receipt instead of becoming a silent ``None`` fallback.
+SCHEMA_CONSTRUCT_HANDLERS: dict[str, str] = {
+    "anyOf": "schema-union",
+    "array": "_generate_array",
+    "boolean": "boolean",
+    "integer": "_generate_number",
+    "null": "null",
+    "number": "_generate_number",
+    "object": "_generate_object",
+    "oneOf": "schema-union",
+    "string": "_generate_string",
+}
+
 
 class _SyntheticRuntimeContext(Protocol):
+    provider: str
     wire_format: WireFormat
     _semantic_gen: SemanticValueGenerator | None
     _relation_solver: RelationConstraintSolver
@@ -174,6 +191,8 @@ def _generate_from_schema(
     for keyword in ("anyOf", "oneOf"):
         variants = _schema_records(schema.get(keyword))
         if variants:
+            if keyword not in SCHEMA_CONSTRUCT_HANDLERS:
+                return None
             non_null = [variant for variant in variants if variant.get("type") != "null"]
             candidates = non_null if non_null else variants
 
@@ -201,6 +220,8 @@ def _generate_from_schema(
             )
 
     schema_type = _schema_type(schema, rng)
+    if schema_type is not None and schema_type not in SCHEMA_CONSTRUCT_HANDLERS:
+        return None
     freq_value = schema.get("x-polylogue-frequency")
     freq = float(freq_value) if isinstance(freq_value, (int, float)) else 1.0
     if depth > 0 and freq < 1.0 and rng.random() > freq:
@@ -234,6 +255,8 @@ def _generate_from_schema(
         case "null":
             return None
         case _:
+            if "object" not in SCHEMA_CONSTRUCT_HANDLERS:
+                return None
             if "properties" in schema:
                 return self._generate_object(
                     schema,
@@ -418,6 +441,7 @@ def _generate_array(
 
 
 def _serialize(self: _SyntheticRuntimeContext, data: JSONValue) -> bytes:
+    validate_wire_payload(self.provider, data)
     if self.wire_format.encoding == "jsonl":
         if not isinstance(data, list):
             raise ValueError("JSONL wire format requires a list payload")
@@ -427,6 +451,7 @@ def _serialize(self: _SyntheticRuntimeContext, data: JSONValue) -> bytes:
 
 
 __all__ = [
+    "SCHEMA_CONSTRUCT_HANDLERS",
     "_generate_array",
     "_generate_from_schema",
     "_generate_number",

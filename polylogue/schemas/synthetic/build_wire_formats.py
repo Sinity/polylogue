@@ -104,6 +104,26 @@ def _ensure_wire_format(
             self._ensure_wire_codex(data, role, rng, ts, index=index, theme=theme)
         case "gemini":
             self._ensure_wire_gemini(data, role, rng, index=index, theme=theme)
+        case _:
+            raise ValueError(f"No executable synthetic wire adapter for provider {self.provider!r}")
+
+
+def validate_wire_payload(provider: str, data: JSONValue) -> None:
+    """Reject provider-wire combinations the production parser does not own."""
+
+    if provider != "codex" or not isinstance(data, list):
+        return
+    has_flat_message = any(
+        isinstance(record, dict) and (record.get("type") == "message" or isinstance(record.get("role"), str))
+        for record in data
+    )
+    has_envelope_message = any(
+        isinstance(record, dict)
+        and record.get("type") in {"response_item", "event_msg", "turn_context", "session_meta"}
+        for record in data
+    )
+    if has_flat_message and has_envelope_message:
+        raise ValueError("Codex synthetic payload cannot mix flat records with envelope records")
 
 
 def _ensure_wire_chatgpt(
@@ -327,4 +347,5 @@ __all__ = [
     "_ensure_wire_codex",
     "_ensure_wire_format",
     "_ensure_wire_gemini",
+    "validate_wire_payload",
 ]
