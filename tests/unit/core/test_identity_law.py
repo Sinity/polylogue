@@ -31,7 +31,7 @@ def test_native_message_id_ignores_position_fallback(
     variant_index: int,
 ) -> None:
     sid = session_id("codex", parent)
-    assert message_id(sid, native_id, position=position, variant_index=variant_index) == f"{sid}:{native_id.strip()}"
+    assert message_id(sid, native_id, position=position, variant_index=variant_index) == f"{sid}:n:{native_id.strip()}"
 
 
 @given(parent=_TOKEN, position=_POSITION, left_variant=_POSITION, right_variant=_POSITION)
@@ -44,8 +44,8 @@ def test_no_native_message_id_uses_variant_index_for_collision_avoidance(
     sid = session_id("codex", parent)
     left = message_id(sid, None, position=position, variant_index=left_variant)
     right = message_id(sid, None, position=position, variant_index=right_variant)
-    assert left == f"{sid}:{position}.{left_variant}"
-    assert right == f"{sid}:{position}.{right_variant}"
+    assert left == f"{sid}:p:{position}.{left_variant}"
+    assert right == f"{sid}:p:{position}.{right_variant}"
     assert (left == right) is (left_variant == right_variant)
 
 
@@ -60,7 +60,13 @@ def test_native_ids_are_opaque_and_may_contain_colons() -> None:
     mid = message_id(sid, "cascade:0:planner_response", position=0)
 
     assert sid == "antigravity-session:cascade:with:colon"
-    assert mid == "antigravity-session:cascade:with:colon:cascade:0:planner_response"
+    assert mid == "antigravity-session:cascade:with:colon:n:cascade:0:planner_response"
+
+
+def test_native_and_positional_message_ids_are_disjoint() -> None:
+    sid = session_id("codex", "collision")
+
+    assert message_id(sid, "0.0", position=99) != message_id(sid, None, position=0, variant_index=0)
 
 
 @pytest.mark.parametrize(

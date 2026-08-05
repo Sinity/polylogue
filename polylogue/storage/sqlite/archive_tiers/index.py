@@ -436,7 +436,11 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-xselt: v64 adds parser/lowering semantic stamps consumed by the
 # reindex acceptance gate. They remain nullable only so pre-bootstrap index
 # generations can be opened long enough to undergo the semantic replay.
-INDEX_SCHEMA_VERSION = 64
+# polylogue-fix-blob-reference-closure: v65 separates native message ids from
+# positional coordinates in the generated message_id expression. Existing
+# derived rows remain readable as opaque legacy ids, but new materialization
+# must replay raw sessions to regenerate message/block/reference identities.
+INDEX_SCHEMA_VERSION = 65
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

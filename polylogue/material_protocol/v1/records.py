@@ -8,6 +8,7 @@ once it has settled the full ordered record list for a revision (see
 
 from __future__ import annotations
 
+from polylogue.core.identity_law import message_local_id
 from polylogue.core.json import JSONValue
 from polylogue.material_protocol.v1.input_model import (
     AttachmentInput,
@@ -21,8 +22,8 @@ from polylogue.material_protocol.v1.input_model import (
 
 
 def message_native_component(message: MessageInput) -> str:
-    """The COALESCE(native_id, position||'.'||variant_index) component."""
-    return message.native_id if message.native_id is not None else f"{message.position}.{message.variant_index}"
+    """The tagged native-id or position/variant message-id component."""
+    return message_local_id(message.native_id, position=message.position, variant_index=message.variant_index)
 
 
 def message_id_for(session_id: str, message: MessageInput) -> str:
@@ -107,7 +108,11 @@ def usage_record(session_id: str, usage: UsageInput) -> dict[str, JSONValue]:
 
 def message_record(session_id: str, message: MessageInput) -> dict[str, JSONValue]:
     message_id = message_id_for(session_id, message)
-    parent_message_id = f"{session_id}:{message.parent_native_id}" if message.parent_native_id is not None else None
+    parent_message_id = (
+        f"{session_id}:{message_local_id(message.parent_native_id, position=0)}"
+        if message.parent_native_id is not None
+        else None
+    )
     return {
         "kind": "message",
         "record_id": message_id,

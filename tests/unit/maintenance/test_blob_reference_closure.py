@@ -26,7 +26,11 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import (
+    _attachment_id,
+    _attachment_position,
+    write_parsed_session_to_archive,
+)
 from polylogue.storage.sqlite.queries.attachment_records import search_attachment_identity_evidence_hits
 
 _PAYLOAD = {
@@ -210,6 +214,86 @@ def _apply_mapping_fixture(
     )
 
 
+def _legacy_collision_fixture(
+    tmp_path: Path,
+) -> tuple[Path, str, str, str, RawSessionParser]:
+    root = tmp_path
+    blob_store = BlobStore(root / "blob")
+    source = _conn(root / "source.db", ArchiveTier.SOURCE)
+    index = _conn(root / "index.db", ArchiveTier.INDEX)
+    raw_bytes = b"legacy collision raw fixture"
+    raw_hash, raw_size = blob_store.write_from_bytes(raw_bytes)
+    source.execute(
+        "INSERT INTO raw_sessions (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms) "
+        "VALUES ('raw-collision', 'claude-ai-export', 'collision.json', 0, ?, ?, 100)",
+        (bytes.fromhex(raw_hash), raw_size),
+    )
+    source.commit()
+    attachments = [
+        ParsedAttachment(
+            provider_attachment_id="cert-collision-50449",
+            message_provider_id="m1",
+            name="first.txt",
+            mime_type="text/plain",
+            inline_bytes=b"first",
+        ),
+        ParsedAttachment(
+            provider_attachment_id="cert-collision-111329",
+            message_provider_id="m1",
+            name="second.txt",
+            mime_type="text/plain",
+            inline_bytes=b"second",
+        ),
+    ]
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="legacy-collision",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="files", position=0)],
+        attachments=attachments,
+    )
+    preacquired: dict[int, tuple[bytes | None, int, str]] = {}
+    for attachment in attachments:
+        blob_hash, blob_size = blob_store.write_from_bytes(attachment.inline_bytes or b"")
+        preacquired[id(attachment)] = (bytes.fromhex(blob_hash), blob_size, "acquired")
+    session_id = write_parsed_session_to_archive(
+        index,
+        session,
+        raw_id="raw-collision",
+        preacquired_attachment_blobs=preacquired,
+    )
+    base_position = _attachment_position(attachments[0])
+    kept = index.execute(
+        "SELECT attachment_id FROM attachment_refs WHERE message_id = ? AND position = ?",
+        (f"{session_id}:n:m1", base_position),
+    ).fetchone()
+    assert kept is not None
+    orphan = next(
+        _attachment_id(session_id, attachment)
+        for attachment in attachments
+        if _attachment_id(session_id, attachment) != kept[0]
+    )
+    index.execute("DELETE FROM attachment_refs WHERE attachment_id = ?", (orphan,))
+    index.execute("UPDATE attachments SET ref_count = 0 WHERE attachment_id = ?", (orphan,))
+    index.commit()
+    source.close()
+    index.close()
+
+    def parse(_raw_record: RawSessionRecord) -> IngestRecordResult:
+        return IngestRecordResult(
+            raw_id="raw-collision",
+            sessions=[
+                SessionWritePayload(
+                    session_id=session_id,
+                    content_hash="legacy-collision",
+                    parsed_session=session,
+                    append_only=False,
+                )
+            ],
+        )
+
+    return root, session_id, kept[0], orphan, parse
+
+
 def test_closure_repairs_idless_attachment_by_authoritative_message_position(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -232,7 +316,7 @@ def test_closure_repairs_idless_attachment_by_authoritative_message_position(
 
     dry = reconcile_blob_reference_closure(root, raw_session_parser=parser)
     assert dry.applied is False
-    assert dry.plan.attachment_candidates[0].message_id == f"{session_id}:second"
+    assert dry.plan.attachment_candidates[0].message_id == f"{session_id}:n:second"
     with sqlite3.connect(root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
 
@@ -241,7 +325,27 @@ def test_closure_repairs_idless_attachment_by_authoritative_message_position(
         ref = conn.execute(
             "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
         ).fetchone()
-    assert ref == (f"{session_id}:second",)
+    assert ref == (f"{session_id}:n:second",)
+
+
+def test_closure_recovers_legacy_attachment_position_collision_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, session_id, kept_id, orphan_id, parser = _legacy_collision_fixture(tmp_path)
+
+    plan = plan_blob_reference_closure(root, raw_session_parser=parser)
+    candidate = next(item for item in plan.attachment_candidates if item.attachment_id == orphan_id)
+    assert candidate.message_id == f"{session_id}:n:m1"
+    assert candidate.position != _attachment_position(ParsedAttachment(provider_attachment_id="cert-collision-50449"))
+
+    _apply_mapping_fixture(monkeypatch, root, parser)
+    with sqlite3.connect(root / "index.db") as conn:
+        rows = conn.execute(
+            "SELECT attachment_id, position FROM attachment_refs WHERE message_id = ? ORDER BY position",
+            (f"{session_id}:n:m1",),
+        ).fetchall()
+    assert {row[0] for row in rows} == {kept_id, orphan_id}
+    assert len({row[1] for row in rows}) == 2
 
 
 @pytest.mark.asyncio
@@ -319,13 +423,13 @@ def test_production_append_attaches_idless_message_at_max_position_plus_one(tmp_
             (session_id,),
         ).fetchall()
         assert messages == [
-            (f"{session_id}:0.0", None, 0),
-            (f"{session_id}:1.0", None, 1),
+            (f"{session_id}:p:0.0", None, 0),
+            (f"{session_id}:p:1.0", None, 1),
         ]
         ref = conn.execute(
             "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
         ).fetchone()
-    assert ref == (f"{session_id}:1.0",)
+    assert ref == (f"{session_id}:p:1.0",)
 
 
 def test_closure_relinks_idless_append_attachment_to_existing_tail(
@@ -356,14 +460,14 @@ def test_closure_relinks_idless_append_attachment_to_existing_tail(
 
     plan = plan_blob_reference_closure(root, raw_session_parser=parser)
     assert plan.attachment_candidates[0].attachment_id == attachment_id
-    assert plan.attachment_candidates[0].message_id == f"{session_id}:1.0"
+    assert plan.attachment_candidates[0].message_id == f"{session_id}:p:1.0"
 
     _apply_mapping_fixture(monkeypatch, root, parser)
     with sqlite3.connect(root / "index.db") as conn:
         ref = conn.execute(
             "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
         ).fetchone()
-    assert ref == (f"{session_id}:1.0",)
+    assert ref == (f"{session_id}:p:1.0",)
 
 
 def test_closure_fails_closed_for_whitespace_duplicate_native_id(
@@ -478,6 +582,86 @@ def test_apply_writes_only_exact_canonical_refs_and_is_receipted(
     assert receipt.exists()
     source.close()
     index.close()
+
+
+def test_apply_rolls_back_source_when_index_reference_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, source, index, _attachment_id = _fixture(tmp_path)
+    index.execute(
+        """
+        CREATE TRIGGER fail_closure_attachment_insert
+        BEFORE INSERT ON attachment_refs
+        BEGIN
+            SELECT RAISE(ABORT, 'forced closure index failure');
+        END
+        """
+    )
+    index.commit()
+    source.close()
+    index.close()
+    manifest = tmp_path / "verified-backup" / "manifest.json"
+    receipt = tmp_path / "receipts" / "closure-rollback.jsonl"
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_reference_closure.validate_migration_backup_manifest", _accept_backup
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_reference_closure.validate_backup_manifest_covers_derived_tier", _accept_backup
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced closure index failure"):
+        reconcile_blob_reference_closure(
+            root,
+            backup_manifest=manifest,
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    with sqlite3.connect(root / "source.db") as source_after, sqlite3.connect(root / "index.db") as index_after:
+        assert source_after.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
+        assert index_after.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
+    phases = [json.loads(line)["phase"] for line in receipt.read_text().splitlines()]
+    assert phases[-1] == "aborted"
+
+
+def test_closure_relink_sanitizes_unpaired_surrogate_native_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attachment = ParsedAttachment(
+        provider_attachment_id="closure-surrogate-\ud800",
+        provider_file_id="closure-file-\udfff",
+        message_provider_id="m1",
+        name="surrogate.txt",
+        mime_type="text/plain",
+        size_bytes=8,
+        inline_bytes=b"surrogate",
+    )
+    root, _session_id, attachment_id, parser = _mapping_fixture(
+        tmp_path,
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="surrogate", position=0)],
+        attachment=attachment,
+    )
+    plan = plan_blob_reference_closure(root, raw_session_parser=parser)
+    assert plan.attachment_candidates[0].native_ids == (
+        ("attachment", "closure-surrogate-�"),
+        ("file", "closure-file-�"),
+    )
+
+    _apply_mapping_fixture(monkeypatch, root, parser)
+    with sqlite3.connect(root / "index.db") as conn:
+        native_ids = {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT ani.native_id
+                FROM attachment_native_ids ani
+                JOIN attachment_refs ar ON ar.ref_id = ani.ref_id
+                WHERE ar.attachment_id = ?
+                """,
+                (attachment_id,),
+            ).fetchall()
+        }
+    assert native_ids == {"closure-surrogate-�", "closure-file-�"}
 
 
 def test_integrity_check_fails_when_exact_raw_reference_is_tampered(tmp_path: Path) -> None:

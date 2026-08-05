@@ -16,9 +16,11 @@ from polylogue.config import Config
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
 from polylogue.storage.attachment_relink import (
+    MAX_ATTACHMENT_SAMPLE_LIMIT,
     OrphanedAttachmentRelinkPlan,
     RawSessionParser,
     RelinkableAttachment,
+    UnrecoverableAttachmentReason,
     plan_orphaned_attachment_relink,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -79,6 +81,7 @@ class BlobReferenceClosurePlan:
     raw_rows_scanned: int
     raw_rows_total: int
     attachment_orphan_count: int
+    attachment_blockers_sampled: bool = False
 
     @property
     def candidate_count(self) -> int:
@@ -92,6 +95,7 @@ class BlobReferenceClosurePlan:
             "raw_rows_scanned": self.raw_rows_scanned,
             "raw_rows_total": self.raw_rows_total,
             "attachment_orphan_count": self.attachment_orphan_count,
+            "attachment_blockers_sampled": self.attachment_blockers_sampled,
             "blocker_count": len(self.blockers),
             "blockers": [blocker.to_dict() for blocker in self.blockers],
         }
@@ -129,24 +133,37 @@ def _open_ro(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
 
+def raw_reference_closure_predicate(raw_alias: str = "r", ref_alias: str = "b") -> str:
+    """Return the canonical exact-one raw-payload reference predicate."""
+    return f"""
+        (
+            SELECT COUNT(*) FROM blob_refs {ref_alias}
+            WHERE {ref_alias}.ref_type = 'raw_payload'
+              AND {ref_alias}.ref_id = {raw_alias}.raw_id
+              AND {ref_alias}.blob_hash = {raw_alias}.blob_hash
+        ) != 1
+        OR (
+            SELECT COUNT(*) FROM blob_refs {ref_alias}
+            WHERE {ref_alias}.ref_type = 'raw_payload'
+              AND {ref_alias}.ref_id = {raw_alias}.raw_id
+        ) != 1
+    """
+
+
 def _raw_candidates_and_blockers(
     conn: sqlite3.Connection,
 ) -> tuple[list[RawBlobReferenceCandidate], list[BlobReferenceClosureBlocker], int]:
     rows = conn.execute(
-        """
-        WITH ref_counts AS (
-            SELECT r.raw_id, r.blob_hash, r.source_path, r.blob_size, r.acquired_at_ms,
-                   COUNT(b.ref_id) AS ref_count,
-                   SUM(CASE WHEN b.blob_hash = r.blob_hash THEN 1 ELSE 0 END) AS exact_count
-            FROM raw_sessions r
-            LEFT JOIN blob_refs b
-              ON b.ref_type = 'raw_payload' AND b.ref_id = r.raw_id
-            GROUP BY r.raw_id
-        )
-        SELECT raw_id, blob_hash, source_path, blob_size, acquired_at_ms, ref_count, exact_count
-        FROM ref_counts
-        WHERE exact_count != 1 OR ref_count != 1
-        ORDER BY raw_id
+        f"""
+        SELECT r.raw_id, r.blob_hash, r.source_path, r.blob_size, r.acquired_at_ms,
+               (SELECT COUNT(*) FROM blob_refs b
+                WHERE b.ref_type = 'raw_payload' AND b.ref_id = r.raw_id) AS ref_count,
+               (SELECT COUNT(*) FROM blob_refs b
+                WHERE b.ref_type = 'raw_payload' AND b.ref_id = r.raw_id
+                  AND b.blob_hash = r.blob_hash) AS exact_count
+        FROM raw_sessions r
+        WHERE {raw_reference_closure_predicate()}
+        ORDER BY r.raw_id
         """
     ).fetchall()
     candidates: list[RawBlobReferenceCandidate] = []
@@ -184,8 +201,8 @@ def _raw_candidates_and_blockers(
 
 def _attachment_blockers(plan: OrphanedAttachmentRelinkPlan) -> list[BlobReferenceClosureBlocker]:
     blockers: list[BlobReferenceClosureBlocker] = []
-    for item in plan.unrecoverable_samples:
-        if "owning message" in item.reason:
+    for item in plan.unrecoverable_samples[:MAX_ATTACHMENT_SAMPLE_LIMIT]:
+        if item.reason_kind is UnrecoverableAttachmentReason.MESSAGE_MISSING:
             kind = BlobReferenceBlockerKind.ATTACHMENT_MESSAGE_MISSING
         else:
             kind = BlobReferenceBlockerKind.ATTACHMENT_NO_AUTHORITATIVE_RAW
@@ -221,7 +238,7 @@ def _plan_connections(
         archive_root=archive_root,
         blob_root=archive_root / "blob",
         raw_row_limit=None,
-        sample_limit=max(sample_limit, 1_000_000),
+        sample_limit=MAX_ATTACHMENT_SAMPLE_LIMIT,
         raw_session_parser=raw_session_parser,
     )
     return BlobReferenceClosurePlan(
@@ -240,6 +257,7 @@ def _plan_connections(
         raw_rows_scanned=attachment_plan.raw_rows_scanned,
         raw_rows_total=raw_total,
         attachment_orphan_count=len(acquired_attachment_ids),
+        attachment_blockers_sampled=attachment_plan.unrecoverable_samples_truncated,
     )
 
 
@@ -314,6 +332,7 @@ def _write_receipt(path: Path, *, archive_root: Path, plan: BlobReferenceClosure
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
+    _fsync_receipt_directory(path)
 
 
 def _append_receipt(path: Path, phase: str, **extra: object) -> None:
@@ -322,6 +341,16 @@ def _append_receipt(path: Path, phase: str, **extra: object) -> None:
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
+    _fsync_receipt_directory(path)
+
+
+def _fsync_receipt_directory(path: Path) -> None:
+    """Durably publish a newly created or extended receipt directory entry."""
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _validate_backups(backup_manifest: Path, source_conn: sqlite3.Connection, index_conn: sqlite3.Connection) -> None:
@@ -366,15 +395,18 @@ def reconcile_blob_reference_closure(
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
     source_conn = sqlite3.connect(source_db)
-    index_conn = sqlite3.connect(index_db)
+    index_conn: sqlite3.Connection | None = sqlite3.connect(index_db)
+    assert index_conn is not None
     source_conn.execute("PRAGMA foreign_keys = ON")
     index_conn.execute("PRAGMA foreign_keys = ON")
     plan: BlobReferenceClosurePlan | None = None
     source_repaired = 0
     attachment_repaired = 0
     prepared = False
+    attached_index = False
     try:
         try:
+            assert index_conn is not None
             _validate_backups(backup_manifest, source_conn, index_conn)
             plan = _plan_connections(
                 index_conn,
@@ -386,6 +418,14 @@ def reconcile_blob_reference_closure(
             _write_receipt(receipt_path, archive_root=archive_root, plan=plan, backup_manifest=backup_manifest)
             prepared = True
 
+            # A single connection and attached index database give SQLite one
+            # transaction boundary for both tiers. Planning and backup checks
+            # happen before ATTACH, so every conflict is known before either
+            # tier is mutated.
+            index_conn.close()
+            index_conn = None
+            source_conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+            attached_index = True
             source_conn.execute("BEGIN IMMEDIATE")
             for candidate in plan.raw_candidates:
                 source_conn.execute(
@@ -413,14 +453,10 @@ def reconcile_blob_reference_closure(
                 if exact != 1:
                     raise BlobReferenceClosureError(f"raw exact-match check failed after insert: {candidate.raw_id}")
                 source_repaired += 1
-            source_conn.commit()
-            _append_receipt(receipt_path, "source_committed", repaired_count=source_repaired)
-
-            index_conn.execute("BEGIN IMMEDIATE")
             for attachment_candidate in plan.attachment_candidates:
-                index_conn.execute(
+                source_conn.execute(
                     """
-                    INSERT INTO attachment_refs (
+                    INSERT INTO index_tier.attachment_refs (
                         attachment_id, session_id, message_id, position, upload_origin, source_url, caption
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -434,20 +470,21 @@ def reconcile_blob_reference_closure(
                         attachment_candidate.caption,
                     ),
                 )
-                index_conn.execute(
+                source_conn.execute(
                     """
-                    UPDATE attachments
+                    UPDATE index_tier.attachments
                     SET ref_count = (
-                        SELECT COUNT(*) FROM attachment_refs WHERE attachment_refs.attachment_id = attachments.attachment_id
+                        SELECT COUNT(*) FROM index_tier.attachment_refs
+                        WHERE index_tier.attachment_refs.attachment_id = index_tier.attachments.attachment_id
                     )
                     WHERE attachment_id = ?
                     """,
                     (attachment_candidate.attachment_id,),
                 )
                 for id_kind, native_id in attachment_candidate.native_ids:
-                    index_conn.execute(
+                    source_conn.execute(
                         """
-                        INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
+                        INSERT OR IGNORE INTO index_tier.attachment_native_ids (ref_id, id_kind, native_id)
                         VALUES (?, ?, ?)
                         """,
                         (
@@ -456,8 +493,8 @@ def reconcile_blob_reference_closure(
                             native_id,
                         ),
                     )
-                exact = index_conn.execute(
-                    "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?",
+                exact = source_conn.execute(
+                    "SELECT COUNT(*) FROM index_tier.attachment_refs WHERE attachment_id = ?",
                     (attachment_candidate.attachment_id,),
                 ).fetchone()[0]
                 if exact < 1:
@@ -465,7 +502,8 @@ def reconcile_blob_reference_closure(
                         f"attachment reference check failed after insert: {attachment_candidate.attachment_id}"
                     )
                 attachment_repaired += 1
-            index_conn.commit()
+            source_conn.commit()
+            _append_receipt(receipt_path, "source_committed", repaired_count=source_repaired)
             _append_receipt(receipt_path, "index_committed", repaired_count=attachment_repaired)
             _append_receipt(
                 receipt_path,
@@ -476,14 +514,16 @@ def reconcile_blob_reference_closure(
         except Exception as exc:
             if source_conn.in_transaction:
                 source_conn.rollback()
-            if index_conn.in_transaction:
-                index_conn.rollback()
             if prepared:
                 with suppress(OSError):
                     _append_receipt(receipt_path, "aborted", error=str(exc))
             raise
     finally:
-        index_conn.close()
+        if attached_index:
+            with suppress(sqlite3.Error):
+                source_conn.execute("DETACH DATABASE index_tier")
+        if index_conn is not None:
+            index_conn.close()
         source_conn.close()
 
     assert plan is not None
@@ -503,16 +543,9 @@ def closure_counts(source_conn: sqlite3.Connection, index_conn: sqlite3.Connecti
     """Return exact structural closure counts without parsing or mutation."""
     raw_missing = int(
         source_conn.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM raw_sessions r
-            WHERE (
-                SELECT COUNT(*) FROM blob_refs b
-                WHERE b.ref_type = 'raw_payload' AND b.ref_id = r.raw_id AND b.blob_hash = r.blob_hash
-            ) != 1
-               OR (
-                   SELECT COUNT(*) FROM blob_refs b
-                   WHERE b.ref_type = 'raw_payload' AND b.ref_id = r.raw_id
-               ) != 1
+            WHERE {raw_reference_closure_predicate()}
             """
         ).fetchone()[0]
     )
@@ -537,5 +570,6 @@ __all__ = [
     "RawBlobReferenceCandidate",
     "closure_counts",
     "plan_blob_reference_closure",
+    "raw_reference_closure_predicate",
     "reconcile_blob_reference_closure",
 ]

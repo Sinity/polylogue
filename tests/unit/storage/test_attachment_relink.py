@@ -18,6 +18,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.storage.attachment_relink import (
+    UnrecoverableAttachmentReason,
     plan_orphaned_attachment_relink,
     relink_orphaned_attachments,
 )
@@ -257,6 +258,7 @@ def test_orphan_with_no_matching_raw_is_reported_unrecoverable_not_guessed(tmp_p
     assert sum(plan.unrecoverable_reason_counts.values()) == 1
     assert plan.unrecoverable_samples[0].attachment_id == "ghost-attachment-id"
     assert "no raw session" in plan.unrecoverable_samples[0].reason
+    assert plan.unrecoverable_samples[0].reason_kind is UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW
 
     exec_result = relink_orphaned_attachments(
         index_conn, source_conn, archive_root=tmp_path, blob_root=blob_store.root, dry_run=False

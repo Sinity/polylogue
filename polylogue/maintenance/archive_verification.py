@@ -1008,26 +1008,26 @@ def _check_blob_reference_closure_for_index(
         return _skip_check("blob-reference-closure", "source.db or index.db not present")
     try:
         source_conn = _open_ro(source_path)
-        index_conn = _open_ro(index_path)
     except sqlite3.Error as exc:
         return _error_check("blob-reference-closure", f"could not open source/index tiers: {exc}", exc=exc)
     try:
-        from polylogue.maintenance.blob_reference_closure import closure_counts
+        index_conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        source_conn.close()
+        return _error_check("blob-reference-closure", f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        from polylogue.maintenance.blob_reference_closure import (
+            closure_counts,
+            raw_reference_closure_predicate,
+        )
 
         counts = closure_counts(source_conn, index_conn)
         raw_sample = [
             str(row[0])
             for row in source_conn.execute(
-                """
+                f"""
                 SELECT r.raw_id FROM raw_sessions r
-                WHERE (
-                    SELECT COUNT(*) FROM blob_refs b
-                    WHERE b.ref_type = 'raw_payload' AND b.ref_id = r.raw_id AND b.blob_hash = r.blob_hash
-                ) != 1
-                   OR (
-                       SELECT COUNT(*) FROM blob_refs b
-                       WHERE b.ref_type = 'raw_payload' AND b.ref_id = r.raw_id
-                   ) != 1
+                WHERE {raw_reference_closure_predicate()}
                 ORDER BY r.raw_id LIMIT ?
                 """,
                 (sample_limit,),

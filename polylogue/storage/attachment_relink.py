@@ -36,11 +36,12 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload, ingest_record
-from polylogue.sources.parsers.base import ParsedMessage
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.write import (
     _attachment_caption,
@@ -61,6 +62,7 @@ logger = get_logger(__name__)
 # Raw parsing is real work (decode + provider dispatch + normalize); bound how
 # many raw_sessions rows one plan pass inspects unless the caller overrides it.
 DEFAULT_RAW_ROW_LIMIT = 5_000
+MAX_ATTACHMENT_SAMPLE_LIMIT = 1_000_000
 
 _NO_RAW_MATCH_REASON = "no raw session in source.db reproduces this attachment's identity"
 _MESSAGE_MISSING_REASON = (
@@ -84,10 +86,16 @@ class RelinkableAttachment:
     native_ids: tuple[tuple[str, str], ...]
 
 
+class UnrecoverableAttachmentReason(StrEnum):
+    NO_AUTHORITATIVE_RAW = "no_authoritative_raw"
+    MESSAGE_MISSING = "message_missing"
+
+
 @dataclass(frozen=True, slots=True)
 class UnrecoverableAttachment:
     attachment_id: str
     reason: str
+    reason_kind: UnrecoverableAttachmentReason = UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +116,7 @@ class OrphanedAttachmentRelinkPlan:
     unrecoverable_samples: tuple[UnrecoverableAttachment, ...]
     raw_rows_scanned: int
     raw_rows_total: int
+    unrecoverable_samples_truncated: bool = False
 
 
 RawSessionParser = Callable[[RawSessionRecord], IngestRecordResult]
@@ -256,11 +265,12 @@ def plan_orphaned_attachment_relink(
             unrecoverable_samples=(),
             raw_rows_scanned=0,
             raw_rows_total=0,
+            unrecoverable_samples_truncated=False,
         )
 
     pending: set[str] = set(orphan_ids)
     recovered: dict[str, RelinkableAttachment] = {}
-    ineligible_reasons: dict[str, str] = {}
+    ineligible_reasons: dict[str, tuple[UnrecoverableAttachmentReason, str]] = {}
 
     parser = raw_session_parser or _default_raw_session_parser(archive_root, blob_root)
 
@@ -289,14 +299,20 @@ def plan_orphaned_attachment_relink(
             _match_session_payload(payload, pending, recovered, ineligible_reasons, index_conn, raw_record.raw_id)
 
     reason_counts: dict[str, int] = {}
+    effective_sample_limit = min(max(sample_limit, 0), MAX_ATTACHMENT_SAMPLE_LIMIT)
     samples: list[UnrecoverableAttachment] = []
+    unrecoverable_count = 0
     for attachment_id in orphan_ids:
         if attachment_id in recovered:
             continue
-        reason = ineligible_reasons.get(attachment_id, _NO_RAW_MATCH_REASON)
+        reason_kind, reason = ineligible_reasons.get(
+            attachment_id,
+            (UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW, _NO_RAW_MATCH_REASON),
+        )
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
-        if len(samples) < sample_limit:
-            samples.append(UnrecoverableAttachment(attachment_id=attachment_id, reason=reason))
+        unrecoverable_count += 1
+        if len(samples) < effective_sample_limit:
+            samples.append(UnrecoverableAttachment(attachment_id=attachment_id, reason=reason, reason_kind=reason_kind))
 
     return OrphanedAttachmentRelinkPlan(
         orphan_count=orphan_count,
@@ -305,6 +321,7 @@ def plan_orphaned_attachment_relink(
         unrecoverable_samples=tuple(samples),
         raw_rows_scanned=scanned,
         raw_rows_total=raw_rows_total,
+        unrecoverable_samples_truncated=unrecoverable_count > len(samples),
     )
 
 
@@ -312,7 +329,7 @@ def _match_session_payload(
     payload: SessionWritePayload,
     pending: set[str],
     recovered: dict[str, RelinkableAttachment],
-    ineligible_reasons: dict[str, str],
+    ineligible_reasons: dict[str, tuple[UnrecoverableAttachmentReason, str]],
     index_conn: sqlite3.Connection,
     raw_id: str,
 ) -> None:
@@ -337,21 +354,46 @@ def _match_session_payload(
     # Attachments are session-level (``ParsedSession.attachments``), each
     # linked to its owning message via ``message_provider_id`` -- mirroring
     # exactly how ``_write_attachments`` consumes them (write.py:_attachment_message_id_maps).
-    attachment_positions = _attachment_reference_positions(payload.parsed_session.attachments)
+    resolved_message_ids: dict[int, str] = {}
+    attachments_by_message: dict[str, list[ParsedAttachment]] = {}
     for attachment in payload.parsed_session.attachments:
         attachment_id = _attachment_id(session_id, attachment)
-        if attachment_id not in pending:
-            continue
         message_id = (
             by_native_message_id.get(attachment.message_provider_id) if attachment.message_provider_id else None
         )
         if message_id is None and attachment.message_position is not None:
             message_id = by_message_position.get(attachment.message_position)
         if message_id is None:
-            ineligible_reasons.setdefault(attachment_id, _NO_RAW_MATCH_REASON)
+            if attachment_id in pending:
+                ineligible_reasons.setdefault(
+                    attachment_id,
+                    (UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW, _NO_RAW_MATCH_REASON),
+                )
             continue
         if not _message_exists(index_conn, message_id):
-            ineligible_reasons.setdefault(attachment_id, _MESSAGE_MISSING_REASON)
+            if attachment_id in pending:
+                ineligible_reasons.setdefault(
+                    attachment_id,
+                    (UnrecoverableAttachmentReason.MESSAGE_MISSING, _MESSAGE_MISSING_REASON),
+                )
+            continue
+        resolved_message_ids[id(attachment)] = message_id
+        attachments_by_message.setdefault(message_id, []).append(attachment)
+
+    attachment_positions: dict[int, int] = {}
+    for message_id, message_group in attachments_by_message.items():
+        rows = index_conn.execute(
+            "SELECT position, attachment_id FROM attachment_refs WHERE message_id = ?",
+            (message_id,),
+        ).fetchall()
+        occupied = {int(row[0]) for row in rows if str(row[1]) not in pending}
+        attachment_positions.update(_attachment_reference_positions(message_group, occupied_positions=occupied))
+    for attachment in payload.parsed_session.attachments:
+        attachment_id = _attachment_id(session_id, attachment)
+        if attachment_id not in pending:
+            continue
+        message_id = resolved_message_ids.get(id(attachment))
+        if message_id is None:
             continue
         recovered[attachment_id] = RelinkableAttachment(
             attachment_id=attachment_id,
@@ -395,10 +437,11 @@ def relink_orphaned_attachments(
     ``attachment_refs`` row per eligible orphan (mirroring the exact INSERT
     ``_write_attachments`` uses) and refreshes that attachment's ``ref_count``
     -- it never touches an attachment this plan did not mark eligible, and it
-    is safe to call repeatedly (``INSERT OR REPLACE`` + a ref_count recompute,
-    both idempotent). ``index_conn`` must be a writable index-tier connection
-    when ``dry_run=False``; this function does not commit -- the caller owns
-    transaction/commit scope.
+    is safe to call repeatedly (the same reference identity is idempotent).
+    ``index_conn`` must be a writable index-tier connection when
+    ``dry_run=False``; this function does not commit -- the caller owns
+    transaction/commit scope. Any write error is propagated so callers cannot
+    accidentally commit a partial relink.
     """
     plan = plan_orphaned_attachment_relink(
         index_conn,
@@ -449,11 +492,8 @@ def relink_orphaned_attachments(
                     (item.attachment_id,),
                 )
                 relinked += 1
-            except sqlite3.Error as exc:
-                logger.warning(
-                    "attachment relink: failed to write ref for attachment_id=%s: %s", item.attachment_id, exc
-                )
-                errors.append(f"{item.attachment_id}: {exc}")
+            except sqlite3.Error:
+                raise
 
     return OrphanedAttachmentRelinkResult(
         orphan_count=plan.orphan_count,
@@ -466,10 +506,12 @@ def relink_orphaned_attachments(
 
 
 __all__ = [
+    "MAX_ATTACHMENT_SAMPLE_LIMIT",
     "OrphanedAttachmentRelinkPlan",
     "OrphanedAttachmentRelinkResult",
     "RelinkableAttachment",
     "UnrecoverableAttachment",
+    "UnrecoverableAttachmentReason",
     "plan_orphaned_attachment_relink",
     "relink_orphaned_attachments",
 ]
