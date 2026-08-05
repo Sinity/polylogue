@@ -158,8 +158,8 @@ class RawAuthorityFrontierItem:
         # with an executable state. polylogue-u19l was precisely a
         # violation of this: REFINE_QUARANTINE (a dispatched actuator) was
         # being assigned to UNRESOLVED_PROVENANCE (a non-executable state),
-        # so the daemon and the operator break-glass path could never
-        # select it -- 4,147 blockers accumulated behind an actuator that
+        # so daemon convergence could never select it -- 4,147 blockers
+        # accumulated behind an actuator that
         # was structurally unreachable through every path that exists. This
         # makes that exact shape impossible to construct, not merely
         # undocumented.
@@ -167,7 +167,7 @@ class RawAuthorityFrontierItem:
             raise ValueError(
                 f"raw-authority frontier item is unreachable: actuator {self.actuator.value!r} has an apply() "
                 f"dispatch branch but state {self.state.value!r} is not in the executability gate "
-                "(_EXECUTABLE_STATES) -- no path (daemon or operator) would ever select this item for apply "
+                "(_EXECUTABLE_STATES) -- daemon convergence would never select this item for apply "
                 "(polylogue-u19l/polylogue-w32w)"
             )
 
