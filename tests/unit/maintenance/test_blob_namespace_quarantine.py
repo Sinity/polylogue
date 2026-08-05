@@ -6,14 +6,19 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from polylogue.cli.click_app import cli
 from polylogue.config import Source
 from polylogue.maintenance.blob_namespace_quarantine import (
+    BlobNamespaceCleanupPlan,
     BlobNamespaceQuarantineError,
     classify_blob_namespace_quarantine_recovery,
+    plan_blob_namespace_cleanup,
     quarantine_blob_namespace,
 )
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
@@ -56,6 +61,25 @@ def _inject_invalid_entries(blob_root: Path) -> dict[str, bytes]:
     return entries
 
 
+def _filesystem_snapshot(root: Path) -> tuple[tuple[str, int, int, str | None, str | None], ...]:
+    snapshot: list[tuple[str, int, int, str | None, str | None]] = []
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        directory_path = Path(directory)
+        names = sorted((*dirnames, *filenames))
+        for name in names:
+            path = directory_path / name
+            details = os.lstat(path)
+            mode = stat.S_IFMT(details.st_mode)
+            digest: str | None = None
+            link_target: str | None = None
+            if stat.S_ISREG(details.st_mode):
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif stat.S_ISLNK(details.st_mode):
+                link_target = os.readlink(path)
+            snapshot.append((path.relative_to(root).as_posix(), mode, details.st_size, digest, link_target))
+    return tuple(snapshot)
+
+
 def test_dry_run_classifies_mixed_namespace_without_mutating(tmp_path: Path) -> None:
     archive_root = _archive(tmp_path)
     store = BlobStore(archive_root / "blob")
@@ -75,6 +99,100 @@ def test_dry_run_classifies_mixed_namespace_without_mutating(tmp_path: Path) -> 
     assert store.blob_path(canonical_hash).read_bytes() == b"canonical payload"
     assert all((store.root / relative).exists() for relative in invalid)
     assert (store.root / "cd" / "link").is_symlink()
+
+
+def test_backup_gated_cleanup_plan_is_typed_and_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _archive(tmp_path)
+    store = BlobStore(archive_root / "blob")
+    canonical_hash, _ = store.write_from_bytes(b"canonical payload")
+    invalid = _inject_invalid_entries(store.root)
+    source_before = hashlib.sha256((archive_root / "source.db").read_bytes()).hexdigest()
+    manifest = _verified_source_backup(archive_root, tmp_path, monkeypatch)
+    before = _filesystem_snapshot(archive_root)
+
+    plan = plan_blob_namespace_cleanup(archive_root, backup_manifest=manifest)
+
+    assert isinstance(plan, BlobNamespaceCleanupPlan)
+    assert plan.census.safe_to_apply
+    assert plan.deletes_files is False
+    assert plan.moves_files is False
+    assert plan.mutates_sqlite is False
+    assert [entry.hash_hex for entry in plan.census.canonical] == [canonical_hash]
+    assert {entry.relative_path for entry in plan.census.candidates} == {
+        *invalid,
+        "cd/link",
+        "cd/nested",
+    }
+    assert hashlib.sha256((archive_root / "source.db").read_bytes()).hexdigest() == source_before
+    assert _filesystem_snapshot(archive_root) == before
+    assert not (archive_root / "blob-namespace-quarantine").exists()
+    assert all((store.root / relative).exists() for relative in invalid)
+    assert (store.root / "cd" / "link").is_symlink()
+
+
+def test_cleanup_plan_requires_backup_without_touching_namespace(tmp_path: Path) -> None:
+    archive_root = _archive(tmp_path)
+    store = BlobStore(archive_root / "blob")
+    store.write_from_bytes(b"canonical payload")
+    invalid = _inject_invalid_entries(store.root)
+
+    with pytest.raises(BlobNamespaceQuarantineError, match="verified source backup manifest"):
+        plan_blob_namespace_cleanup(archive_root, backup_manifest=None)
+
+    assert all((store.root / relative).exists() for relative in invalid)
+
+
+def test_cleanup_plan_refuses_online_archive_without_touching_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _archive(tmp_path)
+    store = BlobStore(archive_root / "blob")
+    store.write_from_bytes(b"canonical payload")
+    invalid = _inject_invalid_entries(store.root)
+    manifest = _verified_source_backup(archive_root, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_namespace_quarantine.running_daemon_pid",
+        lambda _config: 4242,
+    )
+
+    with pytest.raises(BlobNamespaceQuarantineError, match="PID 4242"):
+        plan_blob_namespace_cleanup(archive_root, backup_manifest=manifest)
+
+    assert all((store.root / relative).exists() for relative in invalid)
+    assert not (archive_root / "blob-namespace-quarantine").exists()
+
+
+def test_cleanup_plan_cli_emits_typed_non_mutation_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _archive(tmp_path)
+    store = BlobStore(archive_root / "blob")
+    store.write_from_bytes(b"canonical payload")
+    _inject_invalid_entries(store.root)
+    manifest = _verified_source_backup(archive_root, tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-namespace-quarantine",
+            "--plan",
+            "--backup-manifest",
+            str(manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout or result.stderr, repr(result)
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "blob_namespace_cleanup_plan"
+    assert payload["deletes_files"] is False
+    assert payload["moves_files"] is False
+    assert payload["mutates_sqlite"] is False
+    assert payload["invalid_namespace_entries"] == 6
 
 
 def test_apply_moves_only_invalid_entries_and_writes_immutable_receipts(

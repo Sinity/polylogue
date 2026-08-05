@@ -109,6 +109,38 @@ class BlobNamespaceCensus:
 
 
 @dataclass(frozen=True, slots=True)
+class BlobNamespaceCleanupPlan:
+    """Backup-attested, read-only plan for invalid namespace entries.
+
+    The plan is deliberately separate from the quarantine report. Producing
+    it never creates a receipt, moves a filesystem entry, checkpoints SQLite,
+    or changes an archive row. The later quarantine actuator may consume the
+    same census only after its own offline and lock-held revalidation.
+    """
+
+    archive_root: Path
+    blob_root: Path
+    backup_manifest: Path
+    backup_verification_receipt: Path
+    census: BlobNamespaceCensus
+    deletes_files: bool = False
+    moves_files: bool = False
+    mutates_sqlite: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "archive_root": str(self.archive_root),
+            "blob_root": str(self.blob_root),
+            "backup_manifest": str(self.backup_manifest),
+            "backup_verification_receipt": str(self.backup_verification_receipt),
+            "deletes_files": self.deletes_files,
+            "moves_files": self.moves_files,
+            "mutates_sqlite": self.mutates_sqlite,
+            **self.census.to_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class BlobNamespaceQuarantineReport:
     """Dry-run or applied namespace-quarantine outcome."""
 
@@ -436,6 +468,52 @@ def _census(blob_root: Path, *, quarantine_root: Path) -> BlobNamespaceCensus:
     canonical.sort(key=lambda item: item.relative_path)
     candidates.sort(key=lambda item: item.relative_path)
     return BlobNamespaceCensus(canonical=tuple(canonical), candidates=tuple(candidates), blockers=tuple(blockers))
+
+
+def plan_blob_namespace_cleanup(
+    archive_root: Path,
+    *,
+    backup_manifest: Path | None,
+) -> BlobNamespaceCleanupPlan:
+    """Build a backup-gated, non-mutating plan for invalid blob entries.
+
+    This command is intentionally usable before any cleanup decision. The
+    backup manifest is authenticated against an immutable source-tier read,
+    and the namespace census records existing sidecars, ``.blob.*`` temps,
+    malformed shards, and other invalid entries without deleting or moving
+    them.
+    """
+    if backup_manifest is None:
+        raise BlobNamespaceQuarantineError(
+            "planning blob namespace cleanup requires a verified source backup manifest (--backup-manifest)"
+        )
+
+    archive_root = _absolute(archive_root)
+    backup_manifest = _absolute(backup_manifest)
+    _require_offline(archive_root)
+    source_db = archive_root / "source.db"
+    try:
+        source_uri = source_db.resolve().as_uri() + "?mode=ro&immutable=1"
+        with sqlite3.connect(source_uri, uri=True) as source_conn:
+            verification_receipt = validate_migration_backup_manifest(
+                backup_manifest,
+                ArchiveTier.SOURCE,
+                connection=source_conn,
+            )
+    except Exception as exc:
+        raise BlobNamespaceQuarantineError(f"backup manifest validation failed: {exc}") from exc
+
+    census = _census(
+        archive_root / "blob",
+        quarantine_root=archive_root / _QUARANTINE_DIRNAME / "plan",
+    )
+    return BlobNamespaceCleanupPlan(
+        archive_root=archive_root,
+        blob_root=archive_root / "blob",
+        backup_manifest=backup_manifest,
+        backup_verification_receipt=verification_receipt,
+        census=census,
+    )
 
 
 def _same_census(left: BlobNamespaceCensus, right: BlobNamespaceCensus) -> bool:
@@ -816,10 +894,12 @@ __all__ = [
     "TOOL_VERSION",
     "BlobNamespaceCanonicalEntry",
     "BlobNamespaceCensus",
+    "BlobNamespaceCleanupPlan",
     "BlobNamespaceQuarantineEntry",
     "BlobNamespaceQuarantineError",
     "BlobNamespaceQuarantineReport",
     "BlobNamespaceRecoveryReport",
     "classify_blob_namespace_quarantine_recovery",
+    "plan_blob_namespace_cleanup",
     "quarantine_blob_namespace",
 ]
