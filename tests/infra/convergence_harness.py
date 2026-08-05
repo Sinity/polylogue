@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import shutil
 import sqlite3
 from collections.abc import Sequence
@@ -248,12 +249,12 @@ def convergence_max_examples() -> int:
 
 def convergence_stateful_max_examples() -> int:
     """Keep the interruption machine fast while expanding it in the lab profile."""
-    return 6 if convergence_max_examples() > 3 else 2
+    return 6 if convergence_max_examples() > 3 else 1
 
 
 def convergence_stateful_step_count() -> int:
     """Give the lab machine more interruption and resume boundaries to explore."""
-    return 8 if convergence_max_examples() > 3 else 3
+    return 8 if convergence_max_examples() > 3 else 2
 
 
 def build_converged_archive(
@@ -493,12 +494,13 @@ def archive_snapshot(root: Path) -> ArchiveSnapshot:
         phases = conn.execute(
             "SELECT session_id, position, start_index, end_index, duration_ms, tool_counts_json, word_count, evidence_json, inference_json, search_text FROM session_phases ORDER BY session_id, position"
         ).fetchall()
-        fts_terms = [
-            str(row[0])
-            for row in conn.execute(
-                "SELECT DISTINCT lower(trim(text)) FROM blocks WHERE NULLIF(trim(text), '') IS NOT NULL ORDER BY 1"
-            ).fetchall()
-        ]
+        fts_terms: list[str] = []
+        for (search_text,) in conn.execute(
+            "SELECT search_text FROM blocks WHERE NULLIF(trim(search_text), '') IS NOT NULL ORDER BY block_id"
+        ):
+            terms = re.findall(r"\w{2,}", str(search_text).casefold())
+            if terms:
+                fts_terms.append(terms[0])
         fts_queries = tuple(
             (
                 term,
@@ -509,7 +511,7 @@ def archive_snapshot(root: Path) -> ArchiveSnapshot:
                     ).fetchall()
                 ),
             )
-            for term in fts_terms
+            for term in dict.fromkeys(fts_terms)
         )
     return ArchiveSnapshot(
         raw=_fact_rows(raw),
