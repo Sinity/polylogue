@@ -171,7 +171,9 @@ def test_preflight_fails_closed_on_missing_census_relation(tmp_path: Path) -> No
     assert source["state"] == "unknown"
     assert report["ok"] is False
     assert "source" in _list(report["blocking_checks"])
-    assert "raw_membership_census" in source["reason"]
+    reason = source["reason"]
+    assert isinstance(reason, str)
+    assert "raw_membership_census" in reason
 
 
 def test_preflight_exposes_schema_and_convergence_failures_without_writing(tmp_path: Path) -> None:
