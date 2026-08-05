@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import os
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -451,6 +454,17 @@ class RebuildIndexReceipt:
     # compatible full checkpoint payload; this compact view is the stable
     # operator contract for ownership, heartbeat, cursor, delta, and recovery.
     operation: dict[str, object] = field(default_factory=dict)
+    # Rebuild-owned evidence for the exact raw selection replayed into this
+    # candidate. The IDs themselves are deliberately not duplicated in every
+    # receipt; the stable commitment is enough for a verifier holding the
+    # requested IDs to prove the set, count, source snapshot, and candidate
+    # identity all agree.
+    selection_evidence: dict[str, object] = field(default_factory=dict)
+    # The immutable source-evidence hash taken after replay. This is separate
+    # from the generation's before-replay source_snapshot so report
+    # consumption can reject source drift without treating parser or
+    # governance state as part of the canary's identity.
+    source_evidence_after: str | None = None
     #: Wall-clock seconds per rebuild stage for THIS pass.
     #:
     #: Three full rebuilds ran without this, so the only cost breakdown
@@ -464,6 +478,7 @@ class RebuildIndexReceipt:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "receipt_schema_version": 4,
             "archive_root": self.archive_root,
             "raw_session_count": self.raw_session_count,
             "selected_raw_count": self.selected_raw_count,
@@ -475,9 +490,130 @@ class RebuildIndexReceipt:
             "readiness": self.readiness,
             "transaction": self.transaction,
             "operation": self.operation,
+            "selection_evidence": self.selection_evidence,
+            "source_evidence_after": self.source_evidence_after,
             "timings_s": self.timings_s,
             **self.replay,
         }
+
+
+def rebuild_selection_evidence(
+    raw_ids: list[str] | tuple[str, ...],
+    *,
+    archive_root: Path,
+    generation_id: str,
+    generation_owner_id: str,
+    candidate_index: Path,
+    source_snapshot: str,
+) -> dict[str, object]:
+    """Commit the requested and production-expanded replay closure.
+
+    The replay path can widen a raw-id hint after census discovers durable
+    membership and logical-source-key relationships.  Persisting only the
+    caller's hints would let a later source mutation change which raws and
+    cohorts the candidate actually represents without invalidating its
+    receipt.
+    """
+
+    replay_closure = _rebuild_replay_closure_evidence(archive_root, raw_ids)
+
+    canonical = {
+        "archive_root": str(archive_root.resolve()),
+        "candidate_generation_id": generation_id,
+        "candidate_index_path": str(candidate_index.resolve()),
+        "candidate_owner_id": generation_owner_id,
+        "raw_ids": sorted(raw_ids),
+        "replay_closure": replay_closure,
+        "source_snapshot": source_snapshot,
+    }
+    encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return {
+        "algorithm": "sha256-canonical-json-v1",
+        "raw_id_count": len(raw_ids),
+        "raw_ids_sha256": sha256(encoded).hexdigest(),
+        **{key: value for key, value in canonical.items() if key != "raw_ids"},
+    }
+
+
+def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tuple[str, ...]) -> dict[str, object]:
+    """Read the same durable closure primitive used by source replay.
+
+    Missing source tiers are tolerated for standalone structural tests that
+    exercise selection serialization without an archive. Real rebuilds always
+    have ``source.db`` and therefore record the full expanded closure and every
+    membership row participating in it.
+    """
+
+    source_db = archive_root / "source.db"
+    if not source_db.exists():
+        return {"raw_ids": sorted(raw_ids), "logical_source_keys": [], "raw_session_memberships": []}
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as connection:
+        expanded, logical_keys = ArchiveStore.expand_raw_membership_selection_sync(connection, list(raw_ids))
+        placeholders_raw = ",".join("?" for _ in expanded)
+        placeholders_key = ",".join("?" for _ in logical_keys)
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if expanded:
+            clauses.append(f"raw_id IN ({placeholders_raw})")
+            parameters.extend(expanded)
+        if logical_keys:
+            clauses.append(f"logical_source_key IN ({placeholders_key})")
+            parameters.extend(logical_keys)
+        rows: list[dict[str, object]] = []
+        if clauses:
+            selected = connection.execute(
+                "SELECT raw_id, logical_source_key, provider_session_id, source_revision, "
+                "normalized_content_hash, message_count, predecessor_raw_id, acquisition_generation, "
+                "revision_authority, decision, decided_at_ms "
+                "FROM raw_session_memberships WHERE " + " OR ".join(clauses) + " ORDER BY logical_source_key, raw_id",
+                parameters,
+            )
+            for row in selected:
+                rows.append(
+                    {
+                        "raw_id": str(row[0]),
+                        "logical_source_key": str(row[1]),
+                        "provider_session_id": str(row[2]),
+                        "source_revision": str(row[3]),
+                        "normalized_content_hash": bytes(row[4]).hex(),
+                        "message_count": int(row[5]),
+                        "predecessor_raw_id": None if row[6] is None else str(row[6]),
+                        "acquisition_generation": int(row[7]),
+                        "revision_authority": str(row[8]),
+                        "decision": None if row[9] is None else str(row[9]),
+                        "decided_at_ms": None if row[10] is None else int(row[10]),
+                    }
+                )
+    return {
+        "raw_ids": list(expanded),
+        "logical_source_keys": list(logical_keys),
+        "raw_session_memberships": rows,
+    }
+
+
+def _persist_candidate_receipt(generation: IndexGeneration, receipt: dict[str, object]) -> None:
+    """Atomically retain the completed rebuild receipt with its candidate."""
+
+    path = Path(generation.index_path).parent / "rebuild-receipt.json"
+    temporary = path.with_suffix(".json.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(receipt, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _operation_evidence(
@@ -493,12 +629,12 @@ def _operation_evidence(
     transaction checkpoint.  It adds no competing ownership mechanism and
     keeps the full checkpoint in ``transaction`` for callers that need it.
     """
-    from polylogue.storage.index_generation import rebuild_lease_status, source_revision_snapshot
+    from polylogue.storage.index_generation import rebuild_lease_status, rebuild_source_evidence_snapshot
 
     transaction_payload = asdict(transaction) if transaction is not None else {}
     generation_payload = asdict(generation) if generation is not None else {}
     source_snapshot = transaction_payload.get("source_snapshot") or generation_payload.get("source_snapshot")
-    current_snapshot = source_revision_snapshot(root) if (root / "source.db").exists() else None
+    current_snapshot = rebuild_source_evidence_snapshot(root) if (root / "source.db").exists() else None
     return {
         "owner": {
             "generation_owner_id": transaction_payload.get("generation_owner_id") or generation_payload.get("owner_id"),
@@ -717,7 +853,10 @@ async def _rebuild_index_from_source_owned(
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
     from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
     from polylogue.storage.archive_readiness import archive_readiness_status
-    from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+    from polylogue.storage.index_generation import (
+        IndexGenerationStore,
+        rebuild_source_evidence_snapshot,
+    )
     from polylogue.storage.repair import repair_session_insights
 
     generation_store = IndexGenerationStore(owned.location)
@@ -750,7 +889,7 @@ async def _rebuild_index_from_source_owned(
                 generation_store.load_transaction(request.operation_id)
                 if request.operation_id is not None
                 else generation_store.create_transaction(
-                    source_snapshot=source_revision_snapshot(root),
+                    source_snapshot=rebuild_source_evidence_snapshot(root),
                     pass_byte_budget=(
                         int(request.pass_byte_budget_mb * 1024 * 1024)
                         if request.pass_byte_budget_mb is not None
@@ -765,7 +904,7 @@ async def _rebuild_index_from_source_owned(
                 raise RuntimeError(
                     f"rebuild operation {transaction.operation_id} is {transaction.status}; start a new operation"
                 )
-            if source_revision_snapshot(root) != transaction.source_snapshot:
+            if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
                 generation_store.checkpoint_transaction(
                     transaction,
                     status="stale",
@@ -801,7 +940,15 @@ async def _rebuild_index_from_source_owned(
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
-            generation = generation_store.create(source_snapshot=source_revision_snapshot(root))
+            generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
+        selection_evidence = rebuild_selection_evidence(
+            selected_raw_ids,
+            archive_root=root,
+            generation_id=generation.generation_id,
+            generation_owner_id=generation.owner_id,
+            candidate_index=Path(generation.index_path),
+            source_snapshot=generation.source_snapshot,
+        )
         source_drifted = False
         try:
             generation_root = Path(generation.index_path).parent
@@ -935,6 +1082,16 @@ async def _rebuild_index_from_source_owned(
                     # a raw/cohort; it can only redo bounded work.
                     assert transaction is not None  # deadline_check is only wired when transaction is not None
                     pass_elapsed_s = time.perf_counter() - pass_started_at_s
+                    if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
+                        generation_store.checkpoint_transaction(
+                            transaction,
+                            status="stale",
+                            error="source evidence changed during deadline-interrupted rebuild pass",
+                        )
+                        source_drifted = True
+                        raise RuntimeError(
+                            f"rebuild operation {transaction.operation_id} is stale because source evidence changed"
+                        ) from exc
                     transaction = generation_store.checkpoint_transaction(
                         transaction,
                         status="deferred",
@@ -1003,6 +1160,7 @@ async def _rebuild_index_from_source_owned(
                         operation=_operation_evidence(
                             root, generation=generation, transaction=transaction, recovery_state="deferred"
                         ),
+                        selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
@@ -1015,7 +1173,7 @@ async def _rebuild_index_from_source_owned(
             ):
                 _refresh_generation_planner_statistics(Path(generation.index_path))
             if transaction is not None and selected_raw_ids:
-                if source_revision_snapshot(root) != transaction.source_snapshot:
+                if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
                     transaction = generation_store.checkpoint_transaction(
                         transaction,
                         status="stale",
@@ -1083,6 +1241,7 @@ async def _rebuild_index_from_source_owned(
                         operation=_operation_evidence(
                             root, generation=generation, transaction=transaction, recovery_state=status
                         ),
+                        selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
@@ -1098,7 +1257,19 @@ async def _rebuild_index_from_source_owned(
             # not a parallel one, so every receipt shape (deferred, paused,
             # replayed) carries the identical key for this phase.
             terminal_timings_s: dict[str, float] = {"selection_s": selection_elapsed_s}
-            if source_revision_snapshot(root) != generation.source_snapshot:
+            # Census can create membership rows and logical-source keys while
+            # replay is running. Recompute the receipt commitment from the
+            # post-replay source tier so it names the closure the candidate
+            # actually consumed, not only the caller's raw-id hints.
+            selection_evidence = rebuild_selection_evidence(
+                selected_raw_ids,
+                archive_root=root,
+                generation_id=generation.generation_id,
+                generation_owner_id=generation.owner_id,
+                candidate_index=Path(generation.index_path),
+                source_snapshot=generation.source_snapshot,
+            )
+            if rebuild_source_evidence_snapshot(root) != generation.source_snapshot:
                 if transaction is not None:
                     transaction = generation_store.checkpoint_transaction(
                         transaction,
@@ -1107,6 +1278,7 @@ async def _rebuild_index_from_source_owned(
                     )
                     source_drifted = True
                 raise RuntimeError(f"source evidence changed while rebuilding {generation.generation_id}")
+            source_evidence_after = rebuild_source_evidence_snapshot(root)
             # polylogue-v6i3: bulk-build replay (bulk_build=True above) left
             # messages_fts/blocks_command_trigram/action_pairs/delegation_facts
             # empty or stale for every session -- repopulate all four
@@ -1258,12 +1430,15 @@ async def _rebuild_index_from_source_owned(
             transaction=transaction,
             recovery_state="promoted" if request.promote else "ready",
         ),
+        selection_evidence=selection_evidence,
+        source_evidence_after=source_evidence_after,
         timings_s=_receipt_timings(
             selection_s=selection_elapsed_s,
             replay=replay,
             terminal_timings_s=terminal_timings_s,
         ),
     )
+    _persist_candidate_receipt(generation, final_receipt.to_dict())
     if transaction is not None:
         generation_store.save_pass_receipt(transaction.operation_id, final_receipt.to_dict())
     return final_receipt
@@ -1300,7 +1475,7 @@ def rebuild_status(
     from polylogue.storage.index_generation import (
         IndexGenerationStore,
         rebuild_lease_status,
-        source_revision_snapshot,
+        rebuild_source_evidence_snapshot,
     )
 
     location = ArchiveLocation.resolve(archive_root)
@@ -1346,7 +1521,9 @@ def rebuild_status(
             transaction = None
         if transaction is not None:
             transaction_payload = cast(dict[str, object], asdict(transaction))
-            current_snapshot = source_revision_snapshot(archive_root) if (archive_root / "source.db").exists() else None
+            current_snapshot = (
+                rebuild_source_evidence_snapshot(archive_root) if (archive_root / "source.db").exists() else None
+            )
             delta = {
                 "source_snapshot_matches": (
                     current_snapshot is not None and current_snapshot == transaction.source_snapshot
