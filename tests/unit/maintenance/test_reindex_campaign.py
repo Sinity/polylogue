@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -26,18 +27,24 @@ from polylogue.sources.live.convergence_debt import convergence_debt_from_states
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.raw_byte_duplicate_supersession import plan_byte_duplicate_supersession
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.convergence_harness import (
     debt_ledger_row,
     make_messages_fts_stale,
     set_debt_retry_at,
 )
-from tests.infra.reindex_campaign import ReindexCampaignCorpus, build_reindex_campaign_corpus
+from tests.infra.reindex_campaign import (
+    REINDEX_CAMPAIGN_REQUIRED_ORIGINS,
+    ReindexCampaignCorpus,
+    build_reindex_campaign_corpus,
+)
 from tests.infra.reindex_differential import (
     DerivedModelSnapshot,
     assert_derived_model_ready,
     assert_derived_models_equivalent,
     snapshot_derived_model,
 )
+from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 
 
 def _digest(path: Path) -> str:
@@ -109,6 +116,9 @@ def test_reindex_campaign_manifest_has_positive_denominators(tmp_path: Path) -> 
 
     corpus = build_reindex_campaign_corpus(tmp_path / "campaign")
     corpus.manifest.assert_positive()
+    assert {
+        origin for origin, count in corpus.manifest.origin_session_counts if count > 0
+    } == REINDEX_CAMPAIGN_REQUIRED_ORIGINS
     assert corpus.manifest.lineage_session_ids
     assert corpus.manifest.attachment_session_ids
     assert corpus.manifest.parser_failure_raw_ids
@@ -128,11 +138,19 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
 
     corpus = build_reindex_campaign_corpus(tmp_path / "campaign")
     root = corpus.root
-    baseline = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    with patch(
+        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+        SyntheticAntigravityLanguageServerClient,
+    ):
+        baseline = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
     assert baseline.status == "replayed"
     active_before = _digest(root / "index.db")
 
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=False))
+    with patch(
+        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+        SyntheticAntigravityLanguageServerClient,
+    ):
+        receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=False))
     assert receipt.status == "replayed"
     assert receipt.generation["state"] == "inactive"
     assert receipt.generation["index_path"] != str((root / "index.db").resolve())
@@ -168,13 +186,38 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
         {candidate.raw_id for candidate in duplicate_plan.duplicates} & set(corpus.manifest.parser_failure_raw_ids)
     )
 
-    canary = run_reindex_canary(root, sessions_per_origin=100, no_promote=True)
+    with patch(
+        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+        SyntheticAntigravityLanguageServerClient,
+    ):
+        canary = run_reindex_canary(root, sessions_per_origin=100, no_promote=True)
     assert canary.comparison.unexpected_count > 0
     assert set(canary.comparison.counts_by_table) == {"raw_revision_applications", "raw_revision_heads"}
     canary_generation = canary.rebuild_receipt["generation"]
     assert isinstance(canary_generation, dict) and canary_generation["state"] == "inactive"
     assert _digest(root / "index.db") == active_before
     assert canary.selection.selected_session_ids
+
+
+def test_antigravity_raw_replay_refuses_missing_authoritative_trajectory(tmp_path: Path) -> None:
+    """A protobuf raw is replayed through its original language-server source.
+
+    Mutation killed: falling through to generic JSON parsing, which used to
+    erase the raw membership census and leave a false-clean candidate index.
+    """
+
+    corpus = build_reindex_campaign_corpus(tmp_path / "campaign")
+    with sqlite3.connect(corpus.root / "source.db") as source_conn:
+        raw_id, source_path = source_conn.execute(
+            "SELECT raw_id, source_path FROM raw_sessions WHERE origin = 'antigravity-session'"
+        ).fetchone()
+    Path(str(source_path)).unlink()
+
+    with ArchiveStore.open_existing(corpus.root, read_only=False) as archive:
+        with pytest.raises(RuntimeError, match="requires its original conversations"):
+            from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+
+            parse_retained_raw_sessions(archive, str(raw_id))
 
 
 @pytest.mark.uses_real_clock("the restart differential deliberately controls source mtimes around the quiet window")

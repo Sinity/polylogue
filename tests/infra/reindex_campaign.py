@@ -13,6 +13,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from polylogue.config import Source
 from polylogue.core.enums import Provider
@@ -23,6 +24,21 @@ from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
+
+REINDEX_CAMPAIGN_REQUIRED_ORIGINS = frozenset(
+    {
+        "aistudio-drive",
+        "antigravity-session",
+        "chatgpt-export",
+        "claude-ai-export",
+        "claude-code-session",
+        "codex-session",
+        "gemini-cli-session",
+        "grok-export",
+        "hermes-session",
+    }
+)
 
 REINDEX_CAMPAIGN_MINIMUMS: dict[str, int] = {
     "lineage_edges": 1,
@@ -50,6 +66,7 @@ class ReindexCampaignManifest:
     parser_failure_raw_ids: tuple[str, ...]
     duplicate_raw_ids: tuple[str, ...]
     fts_queries: tuple[str, ...]
+    origin_session_counts: tuple[tuple[str, int], ...]
     denominators: tuple[tuple[str, int], ...]
 
     def denominator(self, name: str) -> int:
@@ -63,6 +80,11 @@ class ReindexCampaignManifest:
             actual = self.denominator(name)
             if actual < minimum:
                 raise AssertionError(f"campaign denominator {name!r} is {actual}, expected at least {minimum}")
+        actual_origins = {origin for origin, count in self.origin_session_counts if count > 0}
+        if actual_origins != REINDEX_CAMPAIGN_REQUIRED_ORIGINS:
+            missing = sorted(REINDEX_CAMPAIGN_REQUIRED_ORIGINS - actual_origins)
+            unexpected = sorted(actual_origins - REINDEX_CAMPAIGN_REQUIRED_ORIGINS)
+            raise AssertionError(f"campaign origin coverage mismatch: missing={missing}, unexpected={unexpected}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +97,28 @@ def reindex_campaign_corpus_specs() -> tuple[CorpusSpec, ...]:
     """Return authored provider specs used by the campaign corpus."""
 
     return (
+        CorpusSpec.for_provider(
+            "chatgpt",
+            count=2,
+            messages_min=4,
+            messages_max=4,
+            seed=800,
+            style="tool-heavy",
+            session_native_ids=("campaign-chatgpt-a", "campaign-chatgpt-b"),
+            origin="test.reindex-campaign",
+            tags=("reindex", "campaign", "chatgpt-tool-results"),
+        ),
+        CorpusSpec.for_provider(
+            "claude-ai",
+            count=2,
+            messages_min=4,
+            messages_max=4,
+            seed=801,
+            style="tool-heavy",
+            session_native_ids=("campaign-claude-ai-a", "campaign-claude-ai-b"),
+            origin="test.reindex-campaign",
+            tags=("reindex", "campaign", "claude-ai-tool-results"),
+        ),
         CorpusSpec.for_provider(
             "codex",
             count=3,
@@ -144,6 +188,83 @@ def _write_jsonl(path: Path, records: tuple[dict[str, object], ...]) -> Path:
     return path
 
 
+def _write_json(path: Path, payload: object) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _gemini_cli_payload() -> dict[str, object]:
+    return {
+        "sessionId": "campaign-gemini-cli",
+        "projectHash": "campaign-project",
+        "startTime": "2026-08-05T00:00:00.000Z",
+        "lastUpdated": "2026-08-05T00:01:00.000Z",
+        "kind": "chat",
+        "summary": "Campaign Gemini CLI witness",
+        "messages": [
+            {"id": "u1", "timestamp": "2026-08-05T00:00:01.000Z", "type": "user", "content": ["inspect archive"]},
+            {
+                "id": "a1",
+                "timestamp": "2026-08-05T00:00:02.000Z",
+                "type": "gemini",
+                "content": "I will inspect the archive.",
+                "thoughts": [{"text": "Need a native checkpoint witness."}],
+                "toolCalls": [{"id": "read-1", "name": "read_file", "arguments": {"path": "source.db"}}],
+            },
+        ],
+    }
+
+
+def _hermes_payload() -> dict[str, object]:
+    return {
+        "session_id": "campaign-hermes",
+        "model": "hermes-campaign",
+        "platform": "linux",
+        "session_start": "2026-08-05T00:00:00.000000",
+        "last_updated": "2026-08-05T00:01:00.000000",
+        "messages": [
+            {"role": "user", "content": "run integrity checks"},
+            {
+                "role": "assistant",
+                "content": "Running integrity checks.",
+                "reasoning_content": "Use the native local-agent tool shape.",
+                "tool_calls": [{"id": "integrity-1", "function": {"name": "shell", "arguments": '{"cmd": "check"}'}}],
+            },
+            {"role": "tool", "tool_call_id": "integrity-1", "content": "0 anomalies"},
+        ],
+    }
+
+
+def _grok_payload() -> dict[str, object]:
+    return {
+        "conversation": {
+            "title": "Campaign Grok witness",
+            "create_time": {"$date": {"$numberLong": "1754352000000"}},
+        },
+        "responses": [
+            {
+                "response": {
+                    "sender": "human",
+                    "message": "Summarize the archive state.",
+                    "create_time": {"$date": {"$numberLong": "1754352001000"}},
+                }
+            },
+            {
+                "response": {
+                    "sender": "assistant",
+                    "message": "The archive is being reindexed.",
+                    "create_time": {"$date": {"$numberLong": "1754352002000"}},
+                }
+            },
+        ],
+    }
+
+
+def _grok_export_payload() -> dict[str, object]:
+    return {"conversations": [_grok_payload()]}
+
+
 def _campaign_session_ids(root: Path) -> tuple[str, ...]:
     with sqlite3.connect(root / "index.db") as conn:
         return tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
@@ -195,6 +316,12 @@ def _campaign_manifest(
                 "SELECT session_id FROM sessions WHERE origin = 'claude-code-session' ORDER BY session_id LIMIT 1"
             )
         )
+        origin_session_counts = tuple(
+            (str(origin), int(count))
+            for origin, count in index_conn.execute(
+                "SELECT origin, COUNT(*) FROM sessions GROUP BY origin ORDER BY origin"
+            )
+        )
     with sqlite3.connect(root / "source.db") as source_conn:
         attachment_blob_refs = int(
             source_conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0]
@@ -235,6 +362,7 @@ def _campaign_manifest(
         parser_failure_raw_ids=parser_failure_raw_ids,
         duplicate_raw_ids=duplicate_raw_ids,
         fts_queries=("generated", "fixture", "failed"),
+        origin_session_counts=origin_session_counts,
         denominators=denominators,
     )
     manifest.assert_positive()
@@ -256,9 +384,22 @@ def build_reindex_campaign_corpus(root: Path) -> ReindexCampaignCorpus:
     first_payload: bytes | None = None
     for index, spec in enumerate(specs):
         written = SyntheticCorpus.write_spec_artifacts(spec, wire_root / spec.provider, prefix=f"campaign-{index:02d}")
-        if first_payload is None:
+        if spec.provider == "codex":
             first_payload = written.files[0].read_bytes()
         sources.extend(Source(name=spec.provider, path=path) for path in written.files)
+
+    native_dir = wire_root / "native"
+    sources.extend(
+        (
+            Source(name="gemini-cli", path=_write_json(native_dir / "gemini-cli.json", _gemini_cli_payload())),
+            Source(name="hermes", path=_write_json(native_dir / "hermes.json", _hermes_payload())),
+            Source(name="grok", path=_write_json(native_dir / "grok.json", _grok_export_payload())),
+        )
+    )
+    antigravity_path = native_dir / "antigravity" / "conversations" / "campaign-antigravity.pb"
+    antigravity_path.parent.mkdir(parents=True, exist_ok=True)
+    antigravity_path.write_bytes(b"campaign-antigravity-protobuf")
+    sources.append(Source(name="antigravity", path=antigravity_path.parent.parent))
 
     lineage_dir = wire_root / "lineage"
     sources.append(
@@ -284,7 +425,11 @@ def build_reindex_campaign_corpus(root: Path) -> ReindexCampaignCorpus:
         )
     )
     assert first_payload is not None
-    parse_result = asyncio.run(parse_sources_archive(root, sources, parse_workers=1))
+    with patch(
+        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+        SyntheticAntigravityLanguageServerClient,
+    ):
+        parse_result = asyncio.run(parse_sources_archive(root, sources, parse_workers=1))
     if parse_result.parse_failures != 0:
         raise AssertionError(f"campaign provider ingest unexpectedly failed: {parse_result.parse_failures}")
 
@@ -363,6 +508,7 @@ def build_reindex_campaign_corpus(root: Path) -> ReindexCampaignCorpus:
 
 __all__ = [
     "REINDEX_CAMPAIGN_MINIMUMS",
+    "REINDEX_CAMPAIGN_REQUIRED_ORIGINS",
     "ReindexCampaignCorpus",
     "ReindexCampaignManifest",
     "build_reindex_campaign_corpus",

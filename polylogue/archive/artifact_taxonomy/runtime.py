@@ -519,6 +519,7 @@ def _classify_dict(
 ) -> ArtifactClassification:
     # Keep this deferred to avoid the artifact-taxonomy/sources bootstrap
     # cycle described below. List streams import the same pair locally.
+    from polylogue.sources.parsers.grok import looks_like_export as looks_like_grok_export
     from polylogue.sources.parsers.hermes_spans import looks_like_atif_payload
 
     if provider is Provider.CHATGPT:
@@ -550,6 +551,16 @@ def _classify_dict(
             schema_eligible=False,
             default_priority=120,
             reason="Beads interaction-history record",
+        )
+
+    if provider is Provider.GROK and looks_like_grok_export(payload):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=120,
+            reason="Grok account-data export document",
         )
 
     if provider is Provider.ANTIGRAVITY and _is_antigravity_markdown_export(payload):
