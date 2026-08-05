@@ -1342,8 +1342,14 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
     specific to this one escalated component, and the ordinary pass already
     runs them on its own cadence.
     """
+    from polylogue.paths import archive_root
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+    if reason := raw_frontier_source_selection_block_reason(archive_root()):
+        raise RuntimeError(f"raw whale materialization source-selection gate blocked: {reason}")
+
     from polylogue.config import Config
-    from polylogue.paths import archive_root, render_root
+    from polylogue.paths import render_root
     from polylogue.product import raw_authority
 
     archive = archive_root()
