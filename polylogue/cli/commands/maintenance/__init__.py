@@ -75,7 +75,7 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "raw-authority-frontier",
         "_raw_identity",
         "raw_authority_frontier_command",
-        "Inspect the complete raw-authority frontier; apply is break-glass only.",
+        "Inspect and record the raw-authority frontier; plan application is daemon-owned.",
     ),
     (
         "raw-authority-census",

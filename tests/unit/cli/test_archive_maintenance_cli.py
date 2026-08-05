@@ -1830,6 +1830,7 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
         assert removed not in result.output
 
 
+<<<<<<< HEAD
 def test_cursor_authority_reconcile_cli_exposes_only_scoped_inputs(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(
         cli,
@@ -1910,9 +1911,15 @@ def test_cursor_authority_reconcile_cli_rejects_mixed_or_missing_mode_options(
     assert "requires" in result.output or "accepts only" in result.output
 
 
-def test_raw_authority_frontier_cli_replaces_incident_specific_commands(
+@pytest.mark.parametrize(
+    ("option", "value"),
+    (("--apply-plan", "raw-authority-frontier:" + "a" * 64), ("--preview-census", "census"), ("--yes", None)),
+)
+def test_raw_authority_frontier_cli_inspects_without_applying_plans(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
+    option: str,
+    value: str | None,
 ) -> None:
     result = cli_runner.invoke(
         cli,
@@ -1948,21 +1955,29 @@ def test_raw_authority_frontier_cli_replaces_incident_specific_commands(
     ):
         assert removed not in help_result.output
 
-    apply_without_confirmation = cli_runner.invoke(
+    frontier_help = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "raw-authority-frontier", "--help"],
+        catch_exceptions=False,
+    )
+    assert frontier_help.exit_code == 0
+    assert "Inspect and record the raw-authority frontier without applying plans." in frontier_help.output
+    for removed in ("--apply-plan", "--preview-census", "--yes"):
+        assert removed not in frontier_help.output
+
+    rejected = cli_runner.invoke(
         cli,
         [
             "--plain",
             "ops",
             "maintenance",
             "raw-authority-frontier",
-            "--apply-plan",
-            "raw-authority-frontier:" + "a" * 64,
-            "--preview-census",
-            payload["census_id"],
+            option,
+            *([value] if value is not None else []),
         ],
     )
-    assert apply_without_confirmation.exit_code == 1
-    assert "without --yes" in apply_without_confirmation.output
+    assert rejected.exit_code == 2
+    assert f"No such option {option!r}." in rejected.output
 
 
 def test_raw_authority_frontier_cli_refuses_durable_census_while_daemon_runs(
