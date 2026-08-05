@@ -129,6 +129,13 @@ class RawAuthorityArtifactCensus:
             "raw_ids_by_bucket": raw_ids_by_bucket,
             "entries": [entry.to_receipt_dict() for entry in self.entries],
             "observations_written": observations_written,
+            "scope": {
+                "logical_database_operations": (["upsert raw_artifacts observations"] if mode == "apply" else []),
+                "physical_database_operations": (
+                    ["PRAGMA wal_checkpoint(TRUNCATE) on source.db before backup validation"] if mode == "apply" else []
+                ),
+                "unchanged": ["raw_sessions rows", "revision authority", "index.db rows", "blob store"],
+            },
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         payload["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
@@ -263,7 +270,7 @@ def scan_quarantined_raw_authority(
                 continue
 
             twin = indexed_twin_by_hash.get(bytes(row["blob_hash"]))
-            if twin is not None and twin[0] != raw_id:
+            if row["logical_source_key"] is None and twin is not None and twin[0] != raw_id:
                 entries.append(
                     RawAuthorityCensusEntry(
                         raw_id=raw_id,

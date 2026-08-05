@@ -26,7 +26,7 @@ from polylogue.storage.artifacts.raw_authority_census import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from polylogue.storage.sqlite.migration_runner import MigrationError, validate_migration_backup_manifest
 
 DEFAULT_APPLY_LIMIT = 500
 
@@ -63,6 +63,13 @@ def _checkpoint_source_tier(conn: sqlite3.Connection) -> None:
         raise RawAuthorityArtifactCensusError("could not checkpoint source.db before backup validation") from exc
     if row is None or int(row[0]) != 0:
         raise RawAuthorityArtifactCensusError("source.db WAL checkpoint was blocked; retry when the tier is idle")
+
+
+def _validate_source_backup(path: Path, conn: sqlite3.Connection) -> None:
+    try:
+        validate_migration_backup_manifest(path, ArchiveTier.SOURCE, connection=conn)
+    except MigrationError as exc:
+        raise RawAuthorityArtifactCensusError(str(exc)) from exc
 
 
 def _write_immutable_receipt(path: Path, payload: dict[str, object]) -> None:
@@ -136,9 +143,12 @@ def run_raw_authority_artifact_census(
 ) -> RawAuthorityArtifactCensusReport:
     """Run one census, optionally persisting only artifact observations.
 
-    Dry-run is a full read-only census by default. Apply is bounded to 500
-    rows by default and never updates ``raw_sessions``, ``index.db``, or blob
-    storage. A verified source-tier backup manifest is required for apply.
+    Dry-run is a full read-only census and requires an immutable receipt. Apply
+    is bounded to 500 rows by default and logically upserts only ``raw_artifacts``.
+    It also performs the established ``source.db`` WAL checkpoint required by
+    backup validation, which can change SQLite's physical main/WAL layout. It
+    never changes ``raw_sessions`` rows, revision authority, index rows, or
+    blob storage. A verified source-tier backup manifest is required for apply.
     """
     if limit is not None and limit < 0:
         raise RawAuthorityArtifactCensusError("--limit must be non-negative")
@@ -185,10 +195,10 @@ def run_raw_authority_artifact_census(
             index_conn = _open_readonly(index_db)
             try:
                 _checkpoint_source_tier(source_conn)
-                validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=source_conn)
+                _validate_source_backup(backup_manifest, source_conn)
                 source_conn.execute("BEGIN IMMEDIATE")
                 try:
-                    validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=source_conn)
+                    _validate_source_backup(backup_manifest, source_conn)
                     census = scan_quarantined_raw_authority(
                         source_conn,
                         index_conn,

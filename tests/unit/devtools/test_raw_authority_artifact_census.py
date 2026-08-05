@@ -15,6 +15,7 @@ from devtools.command_catalog import COMMANDS
 from devtools.raw_authority_artifact_census import main
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind, classify_artifact
 from polylogue.core.enums import Provider
+from polylogue.daemon import backup as backup_module
 from polylogue.maintenance.raw_authority_artifact_census import run_raw_authority_artifact_census
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.storage.artifacts.raw_authority_census import RawAuthorityBucket
@@ -80,6 +81,14 @@ def _write_artifact(archive: Path) -> None:
         store.commit()
 
 
+def _real_backup_manifest(archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(backup_module, "archive_root", lambda: archive)
+    result = backup_module.backup_archive(output_dir=tmp_path / "backups", verify=True)
+    assert result.ok
+    assert result.output_path is not None
+    return Path(result.output_path) / "manifest.json"
+
+
 def test_census_is_catalogued_and_dry_run_receipt_is_immutable(archive: Path) -> None:
     _write_artifact(archive)
     receipt_path = archive.parent / "raw-authority-census.json"
@@ -92,6 +101,7 @@ def test_census_is_catalogued_and_dry_run_receipt_is_immutable(archive: Path) ->
     assert main(["--archive-root", str(archive), "--json", "--receipt", str(receipt_path)], stdout=output) == 0
     payload = json.loads(output.getvalue())
     assert payload["receipt"]["mode"] == "dry_run"
+    assert payload["receipt"]["scope"]["physical_database_operations"] == []
     assert payload["receipt"]["counts"]["artifact"] == 1
     assert payload["receipt"]["counts"]["novel_materialization_candidate"] == 0
     assert "source_path" not in receipt_path.read_text(encoding="utf-8")
@@ -145,6 +155,10 @@ def test_apply_requires_backup_and_writes_only_artifact_observation(
     )
     payload = json.loads(output.getvalue())
     assert payload["observations_written"] == 1
+    assert payload["receipt"]["scope"]["logical_database_operations"] == ["upsert raw_artifacts observations"]
+    assert payload["receipt"]["scope"]["physical_database_operations"] == [
+        "PRAGMA wal_checkpoint(TRUNCATE) on source.db before backup validation"
+    ]
     with sqlite3.connect(archive / "source.db") as conn:
         assert (
             conn.execute(
@@ -196,6 +210,55 @@ def test_apply_rejects_receipt_option_before_mutating_source(archive: Path, monk
         == 1
     )
     assert "dry-run" in output.getvalue()
+    with sqlite3.connect(archive / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+
+
+def test_apply_rejects_missing_invalid_and_unattested_real_backups(
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_artifact(archive)
+    import polylogue.maintenance.raw_authority_artifact_census as maintenance
+
+    monkeypatch.setattr(maintenance, "offline_maintenance_block_reason", lambda *_args, **_kwargs: None)
+    output = io.StringIO()
+    missing = tmp_path / "missing-manifest.json"
+    assert (
+        main(
+            ["--archive-root", str(archive), "--apply", "--backup-manifest", str(missing), "--json"],
+            stdout=output,
+        )
+        == 1
+    )
+    assert "backup" in output.getvalue().lower()
+
+    invalid = tmp_path / "invalid-manifest.json"
+    invalid.write_text("{}\n", encoding="utf-8")
+    output = io.StringIO()
+    assert (
+        main(
+            ["--archive-root", str(archive), "--apply", "--backup-manifest", str(invalid), "--json"],
+            stdout=output,
+        )
+        == 1
+    )
+    assert "backup" in output.getvalue().lower()
+
+    manifest = _real_backup_manifest(archive, tmp_path, monkeypatch)
+    verification_receipt = manifest.parent / "verification-receipt.json"
+    receipt_payload = json.loads(verification_receipt.read_text(encoding="utf-8"))
+    receipt_payload["attestations"] = []
+    verification_receipt.write_text(json.dumps(receipt_payload, sort_keys=True), encoding="utf-8")
+    output = io.StringIO()
+    assert (
+        main(
+            ["--archive-root", str(archive), "--apply", "--backup-manifest", str(manifest), "--json"],
+            stdout=output,
+        )
+        == 1
+    )
+    assert "attestation" in output.getvalue().lower()
+
     with sqlite3.connect(archive / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
 
