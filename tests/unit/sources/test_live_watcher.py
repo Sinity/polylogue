@@ -248,6 +248,81 @@ async def test_live_watcher_refuses_ahead_cursor_before_append_or_full_write(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("force_full_fallback", [False, True], ids=["append-route", "full-fallback-route"])
+async def test_live_watcher_catch_up_refuses_ahead_cursor_before_cursor_planning(
+    tmp_path: Path,
+    force_full_fallback: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch-up must stop before initialize or planning can mutate cursor state."""
+    _processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
+        tmp_path,
+        force_full_fallback=force_full_fallback,
+    )
+    candidates = watcher._scan_catch_up_candidates([source_path.parent])
+    before = _live_archive_snapshot(tmp_path)
+    initialize_calls = 0
+    plan_calls = 0
+
+    def track_initialize() -> None:
+        nonlocal initialize_calls
+        initialize_calls += 1
+
+    def track_plan(_candidates: tuple[live_watcher.CandidateSourceFile, ...]) -> live_watcher.CatchUpPlan:
+        nonlocal plan_calls
+        plan_calls += 1
+        raise AssertionError("cursor authority must gate catch-up before planning")
+
+    monkeypatch.setattr(cursor, "initialize", track_initialize)
+    monkeypatch.setattr(watcher, "_plan_catch_up", track_plan)
+
+    await watcher._catch_up_candidates(candidates)
+
+    assert initialize_calls == 0
+    assert plan_calls == 0
+    assert _live_archive_snapshot(tmp_path) == before
+    watcher.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_full_fallback", [False, True], ids=["append-route", "full-fallback-route"])
+async def test_live_watcher_flush_refuses_ahead_cursor_before_cursor_filtering(
+    tmp_path: Path,
+    force_full_fallback: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flush must stop before initialize or cursor lifecycle decisions can run."""
+    _processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
+        tmp_path,
+        force_full_fallback=force_full_fallback,
+    )
+    watcher._pending_paths.add(source_path)
+    before = _live_archive_snapshot(tmp_path)
+    initialize_calls = 0
+    filter_calls = 0
+
+    def track_initialize() -> None:
+        nonlocal initialize_calls
+        initialize_calls += 1
+
+    def fail_filter(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        nonlocal filter_calls
+        filter_calls += 1
+        raise AssertionError("cursor authority must gate flush before cursor filtering")
+
+    monkeypatch.setattr(cursor, "initialize", track_initialize)
+    monkeypatch.setattr(watcher, "_needs_work_from_state", fail_filter)
+
+    assert await watcher._flush_pending() is True
+
+    assert initialize_calls == 0
+    assert filter_calls == 0
+    assert _live_archive_snapshot(tmp_path) == before
+    watcher.stop()
+
+
+@pytest.mark.asyncio
 async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Path) -> None:
     """An exact accepted frontier retains the real append success path."""
     processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(

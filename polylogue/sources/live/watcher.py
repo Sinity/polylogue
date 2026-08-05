@@ -436,11 +436,21 @@ class LiveWatcher:
         plan_holder: list[CatchUpPlan] = []
 
         async def prepare_catch_up() -> None:
+            # The preflight must precede both cursor initialization and the
+            # planning pass. ``_plan_catch_up`` can reconcile missing cursors
+            # and rebase matching filesystem observations before ingestion has
+            # a chance to apply its own gate.
+            self._batch_processor.require_cursor_authority()
             await self._run_writer_sync("watcher.catch_up.cursor_initialize", self._cursor.initialize)
+            self._batch_processor.require_cursor_authority()
             logger.info("live.watcher: catch-up scan over %d file(s)", len(candidates))
             plan_holder.append(self._plan_catch_up(candidates))
 
-        await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
+        try:
+            await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
+        except CursorAuthorityBlockedError as exc:
+            logger.warning("live.watcher: catch-up planning refused by cursor authority: %s", exc)
+            return
         plan = plan_holder[0]
         if not plan.needed:
             return
@@ -802,7 +812,12 @@ class LiveWatcher:
             self._pending_paths.clear()
 
         async def flush_batch() -> None:
+            # Filtering a changed-file batch invokes cursor reconciliation and
+            # lifecycle actuators, so the source-selection proof must be
+            # consumed before initialization or any stateful decision.
+            self._batch_processor.require_cursor_authority()
             await self._run_writer_sync("watcher.live_batch.cursor_initialize", self._cursor.initialize)
+            self._batch_processor.require_cursor_authority()
             # Filter to files that actually need work.
             cursor_records = self._cursor.get_records(paths)
             needed = []
