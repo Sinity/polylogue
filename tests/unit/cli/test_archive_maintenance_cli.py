@@ -6,6 +6,8 @@ import itertools
 import json
 import os
 import sqlite3
+import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1420,6 +1422,173 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='context_deliveries'"
         ).fetchone()
+
+
+def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite import migration_runner
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.migration_runner import (
+        DurableChangeRider,
+        DurableRuntimeConsumer,
+        declare_durable_change_train,
+        durable_change_train_to_payload,
+        durable_migration_claim_for_sql,
+    )
+
+    package_root = tmp_path / "fixture_migrations_cli"
+    source_package = package_root / "source"
+    source_package.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (source_package / "__init__.py").write_text("", encoding="utf-8")
+    sql = "-- migration-safety: additive-no-backup\nCREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;\n"
+    (source_package / "002_future_items.sql").write_text(sql, encoding="utf-8")
+    claim = durable_migration_claim_for_sql(
+        ArchiveTier.SOURCE,
+        "002_future_items.sql",
+        sql,
+        owner_ref="owner:cli-source",
+    )
+    rider = DurableChangeRider(
+        rider_id="rider:cli",
+        owner_ref="owner:cli-rider",
+        schema_objects=("table:future_items",),
+        runtime_consumers=(
+            DurableRuntimeConsumer(
+                "bootstrap",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+                "proof:bootstrap",
+                ("write",),
+            ),
+            DurableRuntimeConsumer(
+                "daemon-health",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                "proof:daemon-health",
+                ("read",),
+            ),
+        ),
+        behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
+    )
+    declared = declare_durable_change_train(
+        train_id="train:source:cli-v2",
+        tier=ArchiveTier.SOURCE,
+        current_version=1,
+        target_version=2,
+        slot=2,
+        owner_ref="owner:cli-source",
+        migration=claim,
+        riders=(rider,),
+        declared_at_ms=1,
+    )
+    (source_package / "002.train.json").write_text(
+        json.dumps(durable_change_train_to_payload(declared)), encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(migration_runner, "_migration_package", lambda _tier: "fixture_migrations_cli.source")
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda _tier: "fixture_migrations_cli.source",
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train.DURABLE_MIGRATION_ADOPTION_FLOORS",
+        {ArchiveTier.SOURCE: 1, ArchiveTier.USER: 1},
+    )
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = 2
+    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
+    ddl = dict(ARCHIVE_DDL_BY_TIER)
+    ddl[ArchiveTier.SOURCE] = (
+        "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT; "
+        "CREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;"
+    )
+    monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
+    source_db = cli_workspace["archive_root"] / "source.db"
+    source_db.unlink()
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "migrate-tier", "source", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["train_state"] == "released"
+    assert payload["applied_versions"] == [2]
+    manifest = Path(payload["train_manifest"])
+    assert manifest.exists()
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='future_items'").fetchone() == ("future_items",)
+
+
+def test_migrate_tier_cli_refuses_live_daemon_before_sql(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    user_db = cli_workspace["archive_root"] / "user.db"
+    _create_user_v3(user_db)
+    daemon = subprocess.Popen(
+        ["bash", "-c", "exec -a polylogued python3 -c 'import time; time.sleep(30)'"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        (cli_workspace["archive_root"] / "daemon.pid").write_text(f"{daemon.pid}\n", encoding="utf-8")
+        time.sleep(0.1)
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "migrate-tier", "user", "--output-format", "json"],
+            catch_exceptions=False,
+        )
+    finally:
+        daemon.terminate()
+        daemon.wait(timeout=5)
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "daemon to be stopped" in payload["error"]
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+
+
+def test_migrate_tier_cli_uses_shared_stable_archive_lock(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+
+    user_db = cli_workspace["archive_root"] / "user.db"
+    _create_user_v3(user_db)
+    with OwnedArchiveLocation.acquire(
+        ArchiveLocation.resolve(cli_workspace["archive_root"]),
+        owner_id="test:daemon-owner",
+    ):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "migrate-tier", "user", "--output-format", "json"],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "archive location already owned" in payload["error"]
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
 
 
 def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(

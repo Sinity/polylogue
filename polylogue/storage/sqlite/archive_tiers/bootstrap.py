@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Literal
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS, migrate_archive_tier
+from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 DurabilityClass = Literal["irreplaceable", "rebuildable", "expensive_rebuild", "human", "disposable"]
@@ -219,12 +220,19 @@ def _ensure_ops_cursor_lag_sample_columns(conn: sqlite3.Connection) -> None:
     )
 
 
-def initialize_archive_database(
-    path: Path, tier: ArchiveTier, *, migration_backup_manifest: Path | None = None
-) -> None:
+def initialize_archive_database(path: Path, tier: ArchiveTier, *, allow_create: bool = True) -> None:
     """Create or initialize one archive tier database file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    if allow_create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+    else:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"durable tier is missing; refusing runtime initialization: {path}") from exc
+        if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
+            raise RuntimeError(f"durable tier is not a safe existing file; refusing runtime initialization: {path}")
+        conn = sqlite3.connect(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         expected_version = archive_tier_spec(tier).version
@@ -246,14 +254,6 @@ def initialize_archive_database(
                 # archive converges without touching INDEX_SCHEMA_VERSION.
                 apply_index_benign_ddl_convergence(conn)
                 conn.commit()
-            return
-        if (
-            current_version != 0
-            and current_version < expected_version
-            and tier in DURABLE_MIGRATION_TIERS
-            and migration_backup_manifest is not None
-        ):
-            migrate_archive_tier(conn, tier, backup_manifest=migration_backup_manifest)
             return
         if current_version != 0:
             if current_version < expected_version and tier in DURABLE_MIGRATION_TIERS:
@@ -296,8 +296,23 @@ def initialize_archive_database(
 
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
-    for spec in ARCHIVE_TIER_SPECS.values():
-        initialize_archive_database(root / spec.filename, spec.tier)
+    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+
+    with OwnedArchiveLocation.acquire(
+        ArchiveLocation.resolve(root),
+        owner_id=f"bootstrap:{os.getpid()}",
+        allow_reentrant=True,
+    ):
+        reconcile_durable_change_trains_on_startup(root)
+        for spec in ARCHIVE_TIER_SPECS.values():
+            initialize_archive_database(root / spec.filename, spec.tier)
+
+
+def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
+    """Reconcile persisted durable trains without executing migration SQL."""
+    from polylogue.storage.sqlite.durable_change_train import reconcile_durable_change_train_startup
+
+    return reconcile_durable_change_train_startup(root)
 
 
 __all__ = [
@@ -307,5 +322,6 @@ __all__ = [
     "initialize_active_archive_root",
     "initialize_archive_database",
     "initialize_archive_tier",
+    "reconcile_durable_change_trains_on_startup",
     "archive_tier_spec",
 ]

@@ -1973,20 +1973,14 @@ def test_initialize_database_refuses_old_durable_tier_without_manifest(tmp_path:
         initialize_archive_database(db_path, ArchiveTier.USER)
 
 
-def test_initialize_database_can_apply_explicit_user_migration(
-    workspace_env: dict[str, Path],
-    tmp_path: Path,
-) -> None:
-    db_path = workspace_env["archive_root"] / "user.db"
+def test_initialize_database_does_not_apply_explicit_user_migration(tmp_path: Path) -> None:
+    db_path = tmp_path / "user.db"
     _create_user_v3(db_path)
-    manifest = _verified_backup_manifest(tmp_path / "backup", profile="user_overlays")
-
-    initialize_archive_database(db_path, ArchiveTier.USER, migration_backup_manifest=manifest)
-
+    with pytest.raises(RuntimeError, match="explicit durable-tier migration"):
+        initialize_archive_database(db_path, ArchiveTier.USER)
     conn = sqlite3.connect(db_path)
     try:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
-        assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
     finally:
         conn.close()
 

@@ -6,6 +6,38 @@ This guide is for operators choosing between
 daemon will catch up." It also collects runbook recipes for the most
 common operational incidents.
 
+## Applying a durable schema change train
+
+Durable schema changes are an offline release operation. Before applying a
+`source.db` or `user.db` migration above its adoption floor, confirm that the
+release contains the matching `migrations/{source,user}/NNN.train.json`
+sidecar. The sidecar reserves the exact slot and SQL hash and records the
+runtime and restart evidence needed for the change.
+
+Stop `polylogued`, create a fresh verified backup with the normal
+`backup_archive(..., verify=True)` route, then invoke the existing maintenance
+command with that manifest:
+
+```bash
+polylogue ops maintenance migrate-tier source \
+  --backup-manifest /path/to/verified-source-backup/manifest.json \
+  --output-format json
+```
+
+The command acquires the daemon startup exclusion and archive ownership before
+opening SQLite. It refuses when a live daemon or another archive writer holds
+either authority. The migration runner then validates the package sidecar,
+revalidates the backup against the current database, and performs the numbered
+SQL step in the existing transaction. It verifies row and schema parity,
+SQLite integrity, foreign keys, and canonical DDL parity before commit. A
+failed transaction is rolled back and may be retried after the cause is
+repaired.
+
+The JSON output reports the migration receipt and stopped-daemon authority.
+Restart health and runtime-consumer convergence are the final lifecycle proof
+and are recorded by the durable train lifecycle API, not inferred from this
+command's migration result alone.
+
 For the conceptual model behind derived insights and the FTS / blob
 substrate, see [architecture.md](architecture.md) and
 [internals.md](internals.md). For daemon ownership of the inline
@@ -720,6 +752,14 @@ polylogue ops maintenance migrate-tier user \
 systemctl --user start polylogued.service
 polylogue ops doctor
 ```
+
+The daemon and `migrate-tier` command share the stable
+`<archive-root>/.archive-ownership.lock` archive lease. `daemon.pid` is process
+metadata only and is never reclaimed by unlinking it as a lock. A crash during
+the train apply phase leaves a checksummed manifest under
+`.maintenance-state/durable-change-trains/`; the next daemon startup acquires
+the same archive lease, reconciles the interrupted version, and persists the
+recovery evidence before opening normal archive components.
 
 Never hand-edit a tier or use a plain manifest as migration authority. A
 durable migration requires a successful scratch-restore receipt authenticated
