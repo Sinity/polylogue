@@ -184,6 +184,74 @@ def test_parse_and_validate_jsonl_rejects_malicious_or_invalid_payload(text: str
         guard.parse_and_validate_jsonl(text)
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["import"],
+        ["import", "-"],
+        ["import", "--"],
+        ["import", "--input"],
+        ["import", "--input", "-"],
+        ["import", "--input=--"],
+        ["import", "--allow-stale"],
+    ],
+)
+def test_import_payload_paths_rejects_implicit_and_missing_payloads(tmp_path: Path, args: list[str]) -> None:
+    with pytest.raises(guard.InvalidJsonlError, match="refusing bd import"):
+        guard._import_payload_paths(args, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["import", "candidate.jsonl"],
+        ["import", "--input", "candidate.jsonl"],
+        ["import", "--input=candidate.jsonl"],
+        ["import", "-i", "candidate.jsonl"],
+        ["import", "-i=candidate.jsonl"],
+    ],
+)
+def test_import_payload_paths_extracts_explicit_forms(tmp_path: Path, args: list[str]) -> None:
+    assert guard._import_payload_paths(args, tmp_path) == [(tmp_path / "candidate.jsonl").resolve()]
+
+
+def test_preflight_explicit_import_rejects_checkout_snapshot_alias_and_accepts_safe_input(tmp_path: Path) -> None:
+    candidate = tmp_path / ".beads" / "issues.jsonl"
+    candidate.parent.mkdir()
+    candidate.write_text('{"id":"polylogue-candidate"}\n')
+    safe = tmp_path / "independent.jsonl"
+    safe.write_text('{"id":"polylogue-safe","updated_at":"2026-07-15T10:00:00Z"}\n')
+
+    with pytest.raises(guard.InvalidJsonlError, match="checkout snapshot"):
+        guard._preflight_explicit_import(
+            ["import", "--input=./.beads/issues.jsonl"],
+            candidate_path=candidate,
+            cwd=tmp_path,
+        )
+
+    guard._preflight_explicit_import(
+        ["import", "--input", str(safe)],
+        candidate_path=candidate,
+        cwd=tmp_path,
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not-json\n",
+        '{"id":"polylogue-a","id":"polylogue-b"}\n',
+        '{"id":"polylogue-a","priority":NaN}\n',
+    ],
+)
+def test_preflight_explicit_import_rejects_invalid_independent_input(tmp_path: Path, payload: str) -> None:
+    path = tmp_path / "invalid.jsonl"
+    path.write_text(payload)
+
+    with pytest.raises(guard.InvalidJsonlError, match="explicit import payload"):
+        guard._preflight_explicit_import(["import", str(path)], candidate_path=None, cwd=tmp_path)
+
+
 def test_atomic_write_jsonl_writes_valid_rows(tmp_path: Path) -> None:
     target = tmp_path / "issues.jsonl"
     rows = {"polylogue-a": {"id": "polylogue-a", "updated_at": "2026-07-15T10:00:00Z"}}

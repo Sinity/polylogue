@@ -710,20 +710,81 @@ def _find_candidate_jsonl(start: Path | None = None) -> Path | None:
     return None
 
 
-def _imports_candidate_snapshot(bd_args: list[str], candidate_path: Path | None, cwd: Path) -> bool:
-    """Identify explicit ``bd import`` of the checkout's stale snapshot."""
-    if candidate_path is None or not bd_args or bd_args[0] != "import":
-        return False
-    after_separator = False
-    for arg in bd_args[1:]:
-        if arg == "--":
-            after_separator = True
-            continue
-        if not after_separator and arg.startswith("-"):
-            continue
-        if (cwd / arg).resolve() == candidate_path.resolve():
-            return True
-    return False
+def _import_payload_paths(bd_args: list[str], cwd: Path) -> list[Path] | None:
+    """Extract concrete ``bd import`` payloads, refusing implicit sources.
+
+    Beads accepts the checkout snapshot through its default path and can also
+    read stdin. Neither source has a concrete payload for this guard to
+    validate, so both are rejected before delegation. The only option that
+    carries a payload is parsed here so ``--input PATH`` cannot hide the
+    snapshot from the guard.
+    """
+    if not bd_args or bd_args[0] != "import":
+        return None
+
+    paths: list[Path] = []
+    index = 1
+    while index < len(bd_args):
+        arg = bd_args[index]
+        if arg in ("-", "--"):
+            raise InvalidJsonlError("refusing bd import from an implicit or stdin payload")
+
+        option_value: str | None = None
+        if arg in ("--input", "-i"):
+            index += 1
+            if index >= len(bd_args):
+                raise InvalidJsonlError(f"refusing bd import: {arg} requires an explicit JSONL path")
+            option_value = bd_args[index]
+        elif arg.startswith("--input="):
+            option_value = arg.removeprefix("--input=")
+        elif arg.startswith("-i="):
+            option_value = arg.removeprefix("-i=")
+
+        if option_value is not None:
+            if not option_value or option_value in ("-", "--"):
+                raise InvalidJsonlError("refusing bd import from an implicit or stdin payload")
+            paths.append((cwd / option_value).expanduser().resolve())
+        elif not arg.startswith("-"):
+            paths.append((cwd / arg).expanduser().resolve())
+        index += 1
+
+    if not paths:
+        raise InvalidJsonlError("refusing bd import without a concrete JSONL path")
+    return paths
+
+
+def _read_validated_jsonl(path: Path, *, context: str) -> dict[str, dict[str, Any]]:
+    """Read one import payload with strict UTF-8 and JSONL validation."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise InvalidJsonlError(f"{context} is not valid UTF-8: {exc}") from exc
+    except OSError as exc:
+        raise InvalidJsonlError(f"{context} cannot be read: {exc}") from exc
+    try:
+        return parse_and_validate_jsonl(text)
+    except InvalidJsonlError as exc:
+        raise InvalidJsonlError(f"{context} failed validation: {exc}") from exc
+
+
+def _preflight_explicit_import(
+    bd_args: list[str],
+    *,
+    candidate_path: Path | None,
+    cwd: Path,
+) -> None:
+    """Validate explicit import payloads before the real bd process starts."""
+    payload_paths = _import_payload_paths(bd_args, cwd)
+    if payload_paths is None:
+        return
+
+    candidate_resolved = candidate_path.resolve() if candidate_path is not None else None
+    for payload_path in payload_paths:
+        if candidate_resolved is not None and payload_path == candidate_resolved:
+            raise InvalidJsonlError(
+                "refusing explicit import of the checkout snapshot; candidate-only rows lack durable new-row proof"
+            )
+        _read_validated_jsonl(payload_path, context=f"explicit import payload {payload_path}")
 
 
 def _preflight_invocation(
@@ -794,11 +855,10 @@ def cmd_invoke(args: list[str]) -> int:
         return 126
     invocation_dir = _invocation_directory(bd_args)
     candidate_path = _find_candidate_jsonl(invocation_dir)
-    if _imports_candidate_snapshot(bd_args, candidate_path, invocation_dir):
-        print(
-            "bd guard: refusing explicit import of the checkout snapshot; candidate-only rows lack durable new-row proof",
-            file=sys.stderr,
-        )
+    try:
+        _preflight_explicit_import(bd_args, candidate_path=candidate_path, cwd=invocation_dir)
+    except InvalidJsonlError as exc:
+        print(f"bd guard: refusing explicit import: {exc}", file=sys.stderr)
         return 125
     lock = _acquire_invocation_lock(invocation_dir)
     try:

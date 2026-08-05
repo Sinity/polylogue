@@ -546,3 +546,125 @@ def test_bd_wrapper_does_not_resurrect_deleted_candidate_only_row(tmp_path: Path
     snapshot = tmp_path / "live.jsonl"
     _run([bd, "export", "-o", str(snapshot)], lane, safe_env)
     assert candidate_id not in snapshot.read_text()
+
+
+@pytest.mark.parametrize(
+    ("label", "import_args"),
+    [
+        ("default", ["import"]),
+        ("stdin-short", ["import", "-"]),
+        ("stdin-long", ["import", "--"]),
+        ("input-equals", ["import", "--input=.beads/issues.jsonl"]),
+        ("input-separate", ["import", "--input", ".beads/issues.jsonl"]),
+        ("positional", ["import", ".beads/issues.jsonl"]),
+    ],
+)
+def test_bd_wrapper_rejects_every_checkout_snapshot_import_form(
+    tmp_path: Path, label: str, import_args: list[str]
+) -> None:
+    """No launcher spelling can delegate the checked-out snapshot to Beads."""
+    env, repo, lane, _common_dir = _setup_guard_linked_worktree(tmp_path)
+    wrapper = repo / "scripts" / "bd"
+    bd = _installed_bd()
+    if bd is None:
+        pytest.skip("bd is not installed")
+    _run([bd, "init", "--prefix", "guard", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents"], lane, env)
+    candidate_id = f"guard-{label}"
+    (lane / ".beads").mkdir(exist_ok=True)
+    (lane / ".beads" / "issues.jsonl").write_text(
+        json.dumps(
+            {
+                "_type": "issue",
+                "id": candidate_id,
+                "title": "checkout snapshot candidate",
+                "description": "",
+                "status": "open",
+                "priority": 1,
+                "issue_type": "bug",
+                "owner": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "created_by": "test",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "labels": [],
+                "comment_count": 0,
+                "dependency_count": 0,
+                "dependent_count": 0,
+            }
+        )
+        + "\n"
+    )
+    env["POLYLOGUE_BD_REAL"] = bd
+
+    result = subprocess.run(
+        [str(wrapper), *import_args],
+        cwd=lane,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 125, result.stderr
+    assert "refusing explicit import" in result.stderr
+    safe_env = env | {"BD_IMPORT_AUTO": "false"}
+    snapshot = tmp_path / "live.jsonl"
+    _run([bd, "export", "-o", str(snapshot)], lane, safe_env)
+    assert candidate_id not in snapshot.read_text()
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        ("malformed", "not-json\n"),
+        ("duplicate-key", '{"id":"guard-a","id":"guard-b"}\n'),
+        ("non-finite", '{"id":"guard-a","priority":NaN}\n'),
+    ],
+)
+def test_bd_wrapper_rejects_invalid_explicit_import_payloads(tmp_path: Path, label: str, payload: str) -> None:
+    """The process boundary validates independently supplied JSONL too."""
+    env, repo, lane, _common_dir = _setup_guard_linked_worktree(tmp_path)
+    wrapper = repo / "scripts" / "bd"
+    bd = _installed_bd()
+    if bd is None:
+        pytest.skip("bd is not installed")
+    payload_path = tmp_path / f"{label}.jsonl"
+    payload_path.write_text(payload)
+    env["POLYLOGUE_BD_REAL"] = bd
+
+    result = subprocess.run(
+        [str(wrapper), "import", "--input", str(payload_path)],
+        cwd=lane,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 125, result.stderr
+    assert "explicit import" in result.stderr
+    assert label in result.stderr
+
+
+def test_bd_wrapper_preserves_valid_independent_explicit_import(tmp_path: Path) -> None:
+    """A strict, independently supplied snapshot still reaches real Beads."""
+    env, repo, lane, _common_dir = _setup_guard_linked_worktree(tmp_path)
+    wrapper = repo / "scripts" / "bd"
+    bd = _installed_bd()
+    if bd is None:
+        pytest.skip("bd is not installed")
+    _run([bd, "init", "--prefix", "guard", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents"], lane, env)
+    _run([bd, "create", "independent import", "--type", "bug"], lane, env)
+    safe_payload = tmp_path / "independent-safe.jsonl"
+    _run([bd, "export", "-o", str(safe_payload)], lane, env | {"BD_IMPORT_AUTO": "false"})
+    env["POLYLOGUE_BD_REAL"] = bd
+
+    result = subprocess.run(
+        [str(wrapper), "import", f"--input={safe_payload}"],
+        cwd=lane,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
