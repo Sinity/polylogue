@@ -44,9 +44,9 @@ from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.write import (
     _attachment_caption,
     _attachment_id,
+    _attachment_message_id_maps,
     _attachment_position,
     _attachment_source_url,
-    _message_id,
 )
 from polylogue.storage.sqlite.queries.mappers_archive import _row_to_raw_session
 
@@ -243,14 +243,10 @@ def _match_session_payload(
         return
     session_id = payload.session_id
     messages = payload.parsed_session.messages
-    by_native_message_id = {
-        message.provider_message_id: _message_id(session_id, message, fallback_position)
-        for fallback_position, message in enumerate(messages)
-        if message.provider_message_id
-    }
+    by_native_message_id, by_message_position = _attachment_message_id_maps(session_id, messages)
     # Attachments are session-level (``ParsedSession.attachments``), each
     # linked to its owning message via ``message_provider_id`` -- mirroring
-    # exactly how ``_write_attachments`` consumes them (write.py:3288-3318).
+    # exactly how ``_write_attachments`` consumes them (write.py:_attachment_message_id_maps).
     for attachment in payload.parsed_session.attachments:
         attachment_id = _attachment_id(session_id, attachment)
         if attachment_id not in pending:
@@ -258,6 +254,8 @@ def _match_session_payload(
         message_id = (
             by_native_message_id.get(attachment.message_provider_id) if attachment.message_provider_id else None
         )
+        if message_id is None and attachment.message_position is not None:
+            message_id = by_message_position.get(attachment.message_position)
         if message_id is None:
             ineligible_reasons.setdefault(attachment_id, _NO_RAW_MATCH_REASON)
             continue

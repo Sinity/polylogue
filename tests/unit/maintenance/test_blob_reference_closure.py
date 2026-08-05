@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import ArchiveVerificationCheck
@@ -17,7 +18,9 @@ from polylogue.maintenance.blob_reference_closure import (
     plan_blob_reference_closure,
     reconcile_blob_reference_closure,
 )
-from polylogue.pipeline.services.ingest_worker import ingest_record
+from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload, ingest_record
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.storage.attachment_relink import RawSessionParser
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -92,6 +95,156 @@ def _fixture(tmp_path: Path) -> tuple[Path, sqlite3.Connection, sqlite3.Connecti
     index.execute("UPDATE attachments SET ref_count = 0 WHERE attachment_id = ?", (attachment_id,))
     index.commit()
     return root, source, index, attachment_id
+
+
+def _mapping_fixture(
+    tmp_path: Path,
+    *,
+    messages: list[ParsedMessage],
+    attachment: ParsedAttachment,
+) -> tuple[Path, str, str, RawSessionParser]:
+    """Build a real closure archive with a parser result for one session."""
+    root = tmp_path
+    blob_store = BlobStore(root / "blob")
+    source = _conn(root / "source.db", ArchiveTier.SOURCE)
+    index = _conn(root / "index.db", ArchiveTier.INDEX)
+    raw_bytes = b"closure mapping raw fixture"
+    raw_hash, raw_size = blob_store.write_from_bytes(raw_bytes)
+    source.execute(
+        "INSERT INTO raw_sessions (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms) "
+        "VALUES ('raw-mapping', 'claude-ai-export', 'mapping.json', 0, ?, ?, 100)",
+        (bytes.fromhex(raw_hash), raw_size),
+    )
+    source.commit()
+
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="closure-mapping",
+        title="Closure mapping",
+        messages=messages,
+        attachments=[attachment],
+    )
+    attachment_hash, attachment_size = blob_store.write_from_bytes(attachment.inline_bytes or b"")
+    session_id = write_parsed_session_to_archive(
+        index,
+        session,
+        raw_id="raw-mapping",
+        preacquired_attachment_blobs={id(attachment): (bytes.fromhex(attachment_hash), attachment_size, "acquired")},
+    )
+    attachment_id = str(index.execute("SELECT attachment_id FROM attachments").fetchone()[0])
+    index.execute("DELETE FROM attachment_refs WHERE attachment_id = ?", (attachment_id,))
+    index.execute("UPDATE attachments SET ref_count = 0 WHERE attachment_id = ?", (attachment_id,))
+    index.commit()
+    source.close()
+    index.close()
+
+    def parse(_raw_record: RawSessionRecord) -> IngestRecordResult:
+        return IngestRecordResult(
+            raw_id="raw-mapping",
+            sessions=[
+                SessionWritePayload(
+                    session_id=session_id,
+                    content_hash="mapping-fixture",
+                    parsed_session=session,
+                )
+            ],
+        )
+
+    return root, session_id, attachment_id, parse
+
+
+def _accept_backup(manifest: Path, _tier: ArchiveTier, *, connection: sqlite3.Connection) -> Path:
+    assert connection.execute("SELECT 1").fetchone() == (1,)
+    return manifest
+
+
+def _apply_mapping_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    parser: RawSessionParser,
+) -> None:
+    manifest = root / "verified-backup" / "manifest.json"
+    receipt = root / "receipts" / "closure.jsonl"
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_reference_closure.validate_migration_backup_manifest", _accept_backup
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_reference_closure.validate_backup_manifest_covers_derived_tier", _accept_backup
+    )
+    reconcile_blob_reference_closure(
+        root,
+        backup_manifest=manifest,
+        receipt_path=receipt,
+        dry_run=False,
+        raw_session_parser=parser,
+    )
+
+
+def test_closure_repairs_idless_attachment_by_authoritative_message_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attachment = ParsedAttachment(
+        provider_attachment_id="idless-position",
+        message_position=1,
+        name="position.txt",
+        mime_type="text/plain",
+        size_bytes=8,
+        inline_bytes=b"position",
+    )
+    root, session_id, attachment_id, parser = _mapping_fixture(
+        tmp_path,
+        messages=[
+            ParsedMessage(provider_message_id="first", role=Role.USER, text="first", position=0),
+            ParsedMessage(provider_message_id="second", role=Role.ASSISTANT, text="second", position=1),
+        ],
+        attachment=attachment,
+    )
+
+    dry = reconcile_blob_reference_closure(root, raw_session_parser=parser)
+    assert dry.applied is False
+    assert dry.plan.attachment_candidates[0].message_id == f"{session_id}:second"
+    with sqlite3.connect(root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
+
+    _apply_mapping_fixture(monkeypatch, root, parser)
+    with sqlite3.connect(root / "index.db") as conn:
+        ref = conn.execute(
+            "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
+        ).fetchone()
+    assert ref == (f"{session_id}:second",)
+
+
+def test_closure_does_not_use_duplicate_native_id_for_attachment_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attachment = ParsedAttachment(
+        provider_attachment_id="duplicate-native-position",
+        message_provider_id="duplicate",
+        message_position=0,
+        name="duplicate.txt",
+        mime_type="text/plain",
+        size_bytes=9,
+        inline_bytes=b"duplicate",
+    )
+    root, session_id, attachment_id, parser = _mapping_fixture(
+        tmp_path,
+        messages=[
+            ParsedMessage(provider_message_id="duplicate", role=Role.USER, text="first", position=0),
+            ParsedMessage(provider_message_id="duplicate", role=Role.ASSISTANT, text="second", position=1),
+        ],
+        attachment=attachment,
+    )
+
+    plan = plan_blob_reference_closure(root, raw_session_parser=parser)
+    assert plan.attachment_candidates[0].message_id == f"{session_id}:0.0"
+    assert not plan.blockers
+
+    _apply_mapping_fixture(monkeypatch, root, parser)
+    with sqlite3.connect(root / "index.db") as conn:
+        ref = conn.execute(
+            "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
+        ).fetchone()
+    assert ref == (f"{session_id}:0.0",)
 
 
 def test_plan_is_complete_and_typed_for_deterministic_and_irreparable_rows(tmp_path: Path) -> None:

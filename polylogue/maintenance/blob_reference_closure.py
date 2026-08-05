@@ -17,6 +17,7 @@ from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
 from polylogue.storage.attachment_relink import (
     OrphanedAttachmentRelinkPlan,
+    RawSessionParser,
     RelinkableAttachment,
     plan_orphaned_attachment_relink,
 )
@@ -210,6 +211,7 @@ def _plan_connections(
     *,
     archive_root: Path,
     sample_limit: int,
+    raw_session_parser: RawSessionParser | None = None,
 ) -> BlobReferenceClosurePlan:
     raw_candidates, raw_blockers, raw_total = _raw_candidates_and_blockers(source_conn)
     acquired_attachment_ids = _acquired_attachment_ids(index_conn)
@@ -220,6 +222,7 @@ def _plan_connections(
         blob_root=archive_root / "blob",
         raw_row_limit=None,
         sample_limit=max(sample_limit, 1_000_000),
+        raw_session_parser=raw_session_parser,
     )
     return BlobReferenceClosurePlan(
         raw_candidates=tuple(raw_candidates),
@@ -240,7 +243,12 @@ def _plan_connections(
     )
 
 
-def plan_blob_reference_closure(archive_root: Path, *, sample_limit: int = 30) -> BlobReferenceClosurePlan:
+def plan_blob_reference_closure(
+    archive_root: Path,
+    *,
+    sample_limit: int = 30,
+    raw_session_parser: RawSessionParser | None = None,
+) -> BlobReferenceClosurePlan:
     """Build a complete, read-only plan from durable source and index evidence."""
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
@@ -249,7 +257,13 @@ def plan_blob_reference_closure(archive_root: Path, *, sample_limit: int = 30) -
     source_conn = _open_ro(source_db)
     index_conn = _open_ro(index_db)
     try:
-        return _plan_connections(index_conn, source_conn, archive_root=archive_root, sample_limit=sample_limit)
+        return _plan_connections(
+            index_conn,
+            source_conn,
+            archive_root=archive_root,
+            sample_limit=sample_limit,
+            raw_session_parser=raw_session_parser,
+        )
     finally:
         index_conn.close()
         source_conn.close()
@@ -321,6 +335,7 @@ def reconcile_blob_reference_closure(
     receipt_path: Path | None = None,
     dry_run: bool = True,
     sample_limit: int = 30,
+    raw_session_parser: RawSessionParser | None = None,
 ) -> BlobReferenceClosureReport:
     """Plan closure repair, or add only deterministic exact references.
 
@@ -334,7 +349,11 @@ def reconcile_blob_reference_closure(
             archive_root=str(archive_root),
             dry_run=True,
             applied=False,
-            plan=plan_blob_reference_closure(archive_root, sample_limit=sample_limit),
+            plan=plan_blob_reference_closure(
+                archive_root,
+                sample_limit=sample_limit,
+                raw_session_parser=raw_session_parser,
+            ),
         )
     if backup_manifest is None:
         raise BlobReferenceClosureError("apply requires a verified backup manifest covering source.db and index.db")
@@ -356,7 +375,13 @@ def reconcile_blob_reference_closure(
     try:
         try:
             _validate_backups(backup_manifest, source_conn, index_conn)
-            plan = _plan_connections(index_conn, source_conn, archive_root=archive_root, sample_limit=sample_limit)
+            plan = _plan_connections(
+                index_conn,
+                source_conn,
+                archive_root=archive_root,
+                sample_limit=sample_limit,
+                raw_session_parser=raw_session_parser,
+            )
             _write_receipt(receipt_path, archive_root=archive_root, plan=plan, backup_manifest=backup_manifest)
             prepared = True
 

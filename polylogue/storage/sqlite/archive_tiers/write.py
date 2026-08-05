@@ -3326,6 +3326,47 @@ def _increment_session_counts_for_append(
     )
 
 
+def _attachment_message_id_maps(
+    session_id: str,
+    messages: list[ParsedMessage],
+    *,
+    position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] | None = None,
+) -> tuple[dict[str, str], dict[int, str]]:
+    """Build the authoritative attachment-owner lookup maps.
+
+    Native message ids are usable only when unique after the same SQLite
+    normalization used by the writer. Message positions remain the fallback
+    for id-less attachments and for attachments whose native id is ambiguous.
+    Keep this shared with repair/relink paths so they cannot invent a weaker
+    ownership rule than the production write.
+    """
+    duplicates = duplicate_native_ids if duplicate_native_ids is not None else _duplicate_message_native_ids(messages)
+    by_native_message_id = {
+        message.provider_message_id: _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicates,
+        )
+        for fallback_position, message in enumerate(messages)
+        if message.provider_message_id and message.provider_message_id not in duplicates
+    }
+    by_message_position = {
+        message.position: _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicates,
+        )
+        for fallback_position, message in enumerate(messages)
+        if message.position is not None
+    }
+    return by_native_message_id, by_message_position
+
+
 def _write_attachments(
     conn: sqlite3.Connection,
     session_id: str,
@@ -3337,28 +3378,12 @@ def _write_attachments(
     refresh_attachment_ids: set[str] | None = None,
     preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
 ) -> None:
-    by_native_message_id = {
-        message.provider_message_id: _message_id(
-            session_id,
-            message,
-            fallback_position,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        for fallback_position, message in enumerate(messages)
-        if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
-    }
-    by_message_position = {
-        message.position: _message_id(
-            session_id,
-            message,
-            fallback_position,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        for fallback_position, message in enumerate(messages)
-        if message.position is not None
-    }
+    by_native_message_id, by_message_position = _attachment_message_id_maps(
+        session_id,
+        messages,
+        position_offset=position_offset,
+        duplicate_native_ids=duplicate_native_ids,
+    )
     touched_attachment_ids: set[str] = set()
     for attachment in attachments:
         attachment_id = _attachment_id(session_id, attachment)
