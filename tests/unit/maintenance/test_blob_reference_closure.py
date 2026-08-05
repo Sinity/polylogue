@@ -25,7 +25,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
 
 _PAYLOAD = {
     "uuid": "closure-session-1",
@@ -104,6 +104,7 @@ def _mapping_fixture(
     attachment: ParsedAttachment,
     append_only: bool = False,
     existing_messages: list[ParsedMessage] | None = None,
+    orphan_attachment: bool = True,
 ) -> tuple[Path, str, str, RawSessionParser]:
     """Build a real closure archive with a parser result for one session."""
     root = tmp_path
@@ -142,9 +143,24 @@ def _mapping_fixture(
         merge_append=append_only,
         preacquired_attachment_blobs={id(attachment): (bytes.fromhex(attachment_hash), attachment_size, "acquired")},
     )
-    attachment_id = str(index.execute("SELECT attachment_id FROM attachments").fetchone()[0])
-    index.execute("DELETE FROM attachment_refs WHERE attachment_id = ?", (attachment_id,))
-    index.execute("UPDATE attachments SET ref_count = 0 WHERE attachment_id = ?", (attachment_id,))
+    attachment_id = _attachment_id(session_id, attachment)
+    index.execute(
+        """
+        INSERT OR IGNORE INTO attachments (
+            attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count
+        ) VALUES (?, ?, ?, ?, ?, 'acquired', 0)
+        """,
+        (
+            attachment_id,
+            attachment.name,
+            attachment.mime_type,
+            attachment_size,
+            bytes.fromhex(attachment_hash),
+        ),
+    )
+    if orphan_attachment:
+        index.execute("DELETE FROM attachment_refs WHERE attachment_id = ?", (attachment_id,))
+        index.execute("UPDATE attachments SET ref_count = 0 WHERE attachment_id = ?", (attachment_id,))
     index.commit()
     source.close()
     index.close()
@@ -226,9 +242,7 @@ def test_closure_repairs_idless_attachment_by_authoritative_message_position(
     assert ref == (f"{session_id}:second",)
 
 
-def test_closure_repairs_idless_append_attachment_with_production_position_offset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_production_append_attaches_idless_message_at_max_position_plus_one(tmp_path: Path) -> None:
     attachment = ParsedAttachment(
         provider_attachment_id="append-position",
         message_position=0,
@@ -237,34 +251,37 @@ def test_closure_repairs_idless_append_attachment_with_production_position_offse
         size_bytes=6,
         inline_bytes=b"append",
     )
-    root, session_id, attachment_id, parser = _mapping_fixture(
+    root, session_id, attachment_id, _parser = _mapping_fixture(
         tmp_path,
-        messages=[ParsedMessage(provider_message_id="appended", role=Role.ASSISTANT, text="appended", position=0)],
-        existing_messages=[ParsedMessage(provider_message_id="older", role=Role.USER, text="older", position=0)],
+        messages=[ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="appended", position=0)],
+        existing_messages=[ParsedMessage(provider_message_id="", role=Role.USER, text="older", position=0)],
         attachment=attachment,
         append_only=True,
+        orphan_attachment=False,
     )
 
-    dry = reconcile_blob_reference_closure(root, raw_session_parser=parser)
-    assert dry.plan.attachment_candidates[0].message_id == f"{session_id}:appended"
-    assert dry.plan.attachment_candidates[0].message_id != f"{session_id}:older"
-
-    _apply_mapping_fixture(monkeypatch, root, parser)
     with sqlite3.connect(root / "index.db") as conn:
+        messages = conn.execute(
+            "SELECT message_id, native_id, position FROM messages WHERE session_id = ? ORDER BY position",
+            (session_id,),
+        ).fetchall()
+        assert messages == [
+            (f"{session_id}:0.0", None, 0),
+            (f"{session_id}:1.0", None, 1),
+        ]
         ref = conn.execute(
             "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
         ).fetchone()
-    assert ref == (f"{session_id}:appended",)
-    assert ref != (f"{session_id}:older",)
+    assert ref == (f"{session_id}:1.0",)
 
 
-def test_closure_does_not_use_whitespace_duplicate_native_id_for_attachment_owner(
+def test_closure_fails_closed_for_whitespace_duplicate_native_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     attachment = ParsedAttachment(
         provider_attachment_id="duplicate-native-position",
-        message_provider_id="duplicate",
-        message_position=1,
+        message_provider_id=" duplicate ",
+        message_position=None,
         name="duplicate.txt",
         mime_type="text/plain",
         size_bytes=9,
@@ -280,17 +297,15 @@ def test_closure_does_not_use_whitespace_duplicate_native_id_for_attachment_owne
     )
 
     plan = plan_blob_reference_closure(root, raw_session_parser=parser)
-    assert plan.attachment_candidates[0].message_id == f"{session_id}:1.0"
-    assert plan.attachment_candidates[0].message_id != f"{session_id}:0.0"
-    assert not plan.blockers
+    assert not plan.attachment_candidates
+    assert any(blocker.object_id == attachment_id for blocker in plan.blockers)
 
     _apply_mapping_fixture(monkeypatch, root, parser)
     with sqlite3.connect(root / "index.db") as conn:
         ref = conn.execute(
             "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
         ).fetchone()
-    assert ref == (f"{session_id}:1.0",)
-    assert ref != (f"{session_id}:0.0",)
+    assert ref is None
 
 
 def test_plan_is_complete_and_typed_for_deterministic_and_irreparable_rows(tmp_path: Path) -> None:

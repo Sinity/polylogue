@@ -3347,7 +3347,7 @@ def _attachment_message_id_maps(
             duplicate_native_ids=duplicates,
         )
         for fallback_position, message in enumerate(messages)
-        if message.provider_message_id and message.provider_message_id not in duplicates
+        if message.provider_message_id and _normalized_message_native_id(message) not in duplicates
     }
     by_message_position = {
         message.position: _message_id(
@@ -3556,7 +3556,7 @@ def _write_parent_links(
             duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
-        if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
+        if message.provider_message_id and _normalized_message_native_id(message) not in duplicate_native_ids
     }
     by_message_position = {
         message.position: _message_id(
@@ -4298,8 +4298,8 @@ def _write_session_events(
         )
         for fallback_position, message in enumerate(messages)
         if message.provider_message_id
-        and message.provider_message_id not in duplicate_native_ids
-        and message.provider_message_id not in ambiguous_source_provider_ids
+        and _normalized_message_native_id(message) not in duplicate_native_ids
+        and _normalized_message_native_id(message) not in ambiguous_source_provider_ids
     }
     wrote_provider_usage_events = False
     position = event_position_offset
@@ -6368,7 +6368,7 @@ def _extract_prefix_tail(
     inherited_refs: dict[str, str] = {}
     for index, message in enumerate(messages[:k]):
         provider_id = message.provider_message_id
-        if provider_id and provider_id not in duplicate_native_ids:
+        if provider_id and _normalized_message_native_id(message) not in duplicate_native_ids:
             inherited_refs[provider_id] = parent_composed[index][0]
     return (branch_point_message_id, "prefix-sharing", messages[k:], inherited_refs)
 
