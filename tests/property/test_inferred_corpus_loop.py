@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 from pathlib import Path
 
@@ -19,7 +20,6 @@ from tests.infra.inferred_corpus import (
     build_inferred_corpus_convergence_handoff,
     compile_inferred_corpus_manifest,
     read_inferred_corpus_manifest,
-    representative_inferred_corpus_registry,
     write_inferred_corpus_manifest,
 )
 
@@ -28,16 +28,31 @@ def test_actual_catalog_manifest_remains_fail_closed() -> None:
     manifest = compile_inferred_corpus_manifest(registry=SchemaRegistry(storage_root=SCHEMA_DIR))
     handoff = build_inferred_corpus_convergence_handoff(manifest)
     assert_inferred_corpus_convergence_handoff_complete(manifest, handoff)
-    assert handoff.specs == manifest.supported_specs == ()
-    assert handoff.selections == ()
+    assert handoff.specs == manifest.supported_specs
+    assert any(spec.provider == "codex" for spec in handoff.specs)
+    assert handoff.selections
+    assert any(selection.provider == "codex" for selection in handoff.selections)
     assert manifest.unsupported_records
 
 
-def test_persisted_representative_manifest_reaches_real_ingest_and_convergence(
+def _assert_fts_match(conn: sqlite3.Connection, token: str) -> None:
+    rows = conn.execute(
+        """
+        SELECT b.block_id
+        FROM messages_fts
+        JOIN blocks AS b ON b.rowid = messages_fts.rowid
+        WHERE messages_fts MATCH ?
+        """,
+        (token,),
+    ).fetchall()
+    assert rows, f"FTS MATCH returned no blocks for generated token {token!r}"
+
+
+def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry = representative_inferred_corpus_registry(SchemaRegistry(storage_root=SCHEMA_DIR))
+    registry = SchemaRegistry(storage_root=SCHEMA_DIR)
     manifest = compile_inferred_corpus_manifest(registry=registry)
     manifest_path = tmp_path / "manifest.json"
     write_inferred_corpus_manifest(manifest, manifest_path)
@@ -89,9 +104,44 @@ def test_persisted_representative_manifest_reaches_real_ingest_and_convergence(
             conn.execute("SELECT COUNT(*) FROM blocks WHERE NULLIF(search_text, '') IS NOT NULL").fetchone()[0]
         )
         fts_index_count = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0])
+        searchable_texts = tuple(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT search_text FROM blocks WHERE NULLIF(search_text, '') IS NOT NULL ORDER BY rowid"
+            ).fetchall()
+        )
 
     assert session_count > 0 and message_count > 0
     assert profile_count == session_count
     assert profile_message_count == message_count
     assert materialized_profiles == session_count
     assert fts_source_count == fts_index_count
+    assert searchable_texts and all(text.strip() for text in searchable_texts)
+
+    generated_text = written.batch.raw_items[0].decode("utf-8")
+    generated_tokens = tuple(dict.fromkeys(re.findall(r"[A-Za-z][A-Za-z0-9_]{4,}", generated_text.lower())))
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        search_token = next(
+            (
+                token
+                for token in generated_tokens
+                if conn.execute("SELECT 1 FROM messages_fts WHERE messages_fts MATCH ? LIMIT 1", (token,)).fetchone()
+                is not None
+            ),
+            None,
+        )
+        assert search_token is not None, "generated Codex content produced no searchable FTS token"
+        _assert_fts_match(conn, search_token)
+
+        conn.execute(
+            "UPDATE blocks SET text = '', tool_name = '', tool_input = NULL WHERE session_id IN ({})".format(
+                ",".join("?" for _ in session_ids)
+            ),
+            session_ids,
+        )
+        cleared_count = int(
+            conn.execute("SELECT COUNT(*) FROM blocks WHERE NULLIF(search_text, '') IS NOT NULL").fetchone()[0]
+        )
+        assert cleared_count == 0
+        with pytest.raises(AssertionError, match="FTS MATCH returned no blocks"):
+            _assert_fts_match(conn, search_token)

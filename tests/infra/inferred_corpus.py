@@ -181,45 +181,33 @@ _SUPPORTED_FORMAT_VALUES = frozenset(
 )
 _SUPPORTED_SEMANTIC_ROLE_VALUES = frozenset({"message_role", "message_body", "message_timestamp", "session_title"})
 
-REPRESENTATIVE_PROVIDER = "codex"
-REPRESENTATIVE_PACKAGE_VERSION = "v1"
-REPRESENTATIVE_ELEMENT_KIND = "session_record_stream"
-_REPRESENTATIVE_SCHEMA: SchemaRecord = {
-    "$id": "https://example.test/polylogue/inferred-corpus/codex-v1-session-record-stream",
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-        "type": {"type": "string", "x-polylogue-values": ["message"]},
-        "role": {
-            "type": "string",
-            "x-polylogue-semantic-role": "message_role",
-            "x-polylogue-values": ["user", "assistant"],
-        },
-        "content": {
-            "type": "array",
-            "x-polylogue-array-lengths": [1, 1],
-            "items": {
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string", "x-polylogue-values": ["input_text", "output_text"]},
-                    "text": {
-                        "type": "string",
-                        "x-polylogue-semantic-role": "message_body",
-                        "x-polylogue-multiline": True,
-                    },
-                },
-            },
-        },
-        "id": {"type": "string", "x-polylogue-format": "uuid4"},
-        "timestamp": {
-            "type": "string",
-            "x-polylogue-semantic-role": "message_timestamp",
-            "x-polylogue-format": "iso8601",
-        },
-        "sequence": {"type": "integer", "x-polylogue-range": [0, 1000]},
-    },
-    "x-polylogue-string-lengths": [{"path": "$.role", "min": 1, "max": 24, "avg": 8.0, "stddev": 2.0}],
-}
+_PERSISTED_SCHEMA_METADATA_ANNOTATIONS = frozenset(
+    {
+        "x-polylogue-anchor-profile-family-id",
+        "x-polylogue-artifact-kind",
+        "x-polylogue-element-bundle-scope-count",
+        "x-polylogue-element-first-seen",
+        "x-polylogue-element-kind",
+        "x-polylogue-element-last-seen",
+        "x-polylogue-evidence",
+        "x-polylogue-evidence-confidence",
+        "x-polylogue-exact-structure-ids",
+        "x-polylogue-generated-at",
+        "x-polylogue-generator",
+        "x-polylogue-high-cardinality-keys",
+        "x-polylogue-observed-artifact-count",
+        "x-polylogue-package-profile-family-ids",
+        "x-polylogue-package-version",
+        "x-polylogue-profile-family-ids",
+        "x-polylogue-profile-tokens",
+        "x-polylogue-promoted-at",
+        "x-polylogue-registered-at",
+        "x-polylogue-sample-count",
+        "x-polylogue-sample-granularity",
+        "x-polylogue-score",
+        "x-polylogue-version",
+    }
+)
 
 
 @dataclass(frozen=True, order=True)
@@ -726,9 +714,15 @@ def _schema_nodes_at_path(schema: SchemaRecord, path: object) -> tuple[SchemaRec
                 if not isinstance(child, dict):
                     continue
                 if wants_items:
-                    items = child.get("items")
-                    if isinstance(items, dict):
-                        next_nodes.append(items)
+                    child_variants = [child]
+                    for child_branch_key in ("anyOf", "oneOf"):
+                        child_branches = child.get(child_branch_key)
+                        if isinstance(child_branches, list):
+                            child_variants.extend(branch for branch in child_branches if isinstance(branch, dict))
+                    for child_variant in child_variants:
+                        items = child_variant.get("items")
+                        if isinstance(items, dict):
+                            next_nodes.append(items)
                 else:
                     next_nodes.append(child)
         nodes = tuple(next_nodes)
@@ -738,7 +732,7 @@ def _schema_nodes_at_path(schema: SchemaRecord, path: object) -> tuple[SchemaRec
 
 
 def _schema_nodes_have_type(nodes: tuple[SchemaRecord, ...], allowed: set[str]) -> bool:
-    return bool(nodes) and all(_schema_type(node) in allowed for node in nodes)
+    return bool(nodes) and all(bool(types := _schema_types(node)) and types <= allowed for node in nodes)
 
 
 def _schema_type_family(nodes: tuple[SchemaRecord, ...]) -> str | None:
@@ -772,36 +766,29 @@ def _relation_annotation_paths_are_enforced(
         # The solver parses these records, but no production generation path
         # calls get_time_delta yet. Keep them fail-closed until it does.
         return False
-    if key == "x-polylogue-time-deltas":
-        return all(
-            _schema_nodes_have_type(_schema_nodes_at_path(root_schema, record["source"]), {"string"})
-            and _schema_nodes_have_type(_schema_nodes_at_path(root_schema, record["target"]), {"string"})
-            for record in records
-        )
-    if key == "x-polylogue-time-deltas":
-        return all(
-            (field_a_family := _schema_type_family(_schema_nodes_at_path(root_schema, record["field_a"]))) is not None
-            and field_a_family == _schema_type_family(_schema_nodes_at_path(root_schema, record["field_b"]))
-            for record in records
-        )
+    if key == "x-polylogue-mutually-exclusive":
+        for record in records:
+            fields = record.get("fields")
+            if not isinstance(fields, list) or not all(isinstance(field, str) for field in fields):
+                return False
+            if not all(
+                _schema_nodes_have_type(
+                    _schema_nodes_at_path(root_schema, f"{record['parent']}.{field}"),
+                    {"string", "number", "integer", "boolean", "array", "object", "null"},
+                )
+                for field in fields
+            ):
+                return False
+        return True
     if key == "x-polylogue-string-lengths":
         return all(
-            _schema_nodes_have_type(_schema_nodes_at_path(root_schema, record["path"]), {"string"})
+            bool(
+                _schema_nodes_at_path(root_schema, record["path"])
+                and any("string" in _schema_types(node) for node in _schema_nodes_at_path(root_schema, record["path"]))
+            )
             for record in records
         )
-    return all(
-        _schema_nodes_have_type(_schema_nodes_at_path(root_schema, record["parent"]), {"object"})
-        and isinstance(fields := record.get("fields"), list)
-        and all(
-            isinstance(field, str)
-            and _schema_nodes_have_type(
-                _schema_nodes_at_path(root_schema, f"{record['parent']}.{field}"),
-                {"string", "number", "integer", "boolean", "array", "object"},
-            )
-            for field in fields
-        )
-        for record in records
-    )
+    return False
 
 
 def _synthetic_annotation_is_enforced(key: str, value: object) -> bool:
@@ -878,6 +865,22 @@ def _schema_type(node: Mapping[str, object]) -> str | None:
     return None
 
 
+def _schema_types(node: Mapping[str, object]) -> set[str]:
+    schema_type = node.get("type")
+    if isinstance(schema_type, str):
+        return {schema_type}
+    if isinstance(schema_type, list):
+        return {item for item in schema_type if isinstance(item, str)}
+    types: set[str] = set()
+    for keyword in ("anyOf", "oneOf"):
+        variants = node.get(keyword)
+        if isinstance(variants, list):
+            for variant in variants:
+                if isinstance(variant, Mapping):
+                    types.update(_schema_types(variant))
+    return types
+
+
 def _annotation_is_enforced_at_node(
     key: str,
     value: object,
@@ -886,6 +889,8 @@ def _annotation_is_enforced_at_node(
     root_schema: SchemaRecord,
 ) -> bool:
     schema_type = _schema_type(node)
+    schema_types = _schema_types(node)
+    union_path = ".anyOf[" in path or ".oneOf[" in path
     if key in {
         "x-polylogue-foreign-keys",
         "x-polylogue-time-deltas",
@@ -901,7 +906,9 @@ def _annotation_is_enforced_at_node(
         return path != "$" and _synthetic_annotation_is_enforced(key, value)
     if key in {"x-polylogue-array-lengths", "x-polylogue-observed-distribution"}:
         if key == "x-polylogue-array-lengths":
-            return schema_type == "array" and _synthetic_annotation_is_enforced(key, value)
+            return _synthetic_annotation_is_enforced(key, value) and (
+                schema_type == "array" or "array" in schema_types or union_path
+            )
         if schema_type not in {"array", "number", "integer"} or not isinstance(value, Mapping):
             return False
         expected_distribution = "array_length" if schema_type == "array" else "numeric"
@@ -911,15 +918,19 @@ def _annotation_is_enforced_at_node(
     if key in {"x-polylogue-format", "x-polylogue-values", "x-polylogue-multiline"}:
         if key == "x-polylogue-format" and schema_type in {"number", "integer"}:
             return value == "unix-epoch"
-        return schema_type == "string" and _synthetic_annotation_is_enforced(key, value)
+        return _synthetic_annotation_is_enforced(key, value) and (
+            schema_type == "string" or "string" in schema_types or union_path
+        )
     if key == "x-polylogue-semantic-role":
         role = value if isinstance(value, str) else None
         if role == "message_timestamp":
-            return schema_type in {"string", "number", "integer"} and _synthetic_annotation_is_enforced(key, value)
+            return bool(schema_types & {"string", "number", "integer"}) and _synthetic_annotation_is_enforced(
+                key, value
+            )
         if role == "message_container":
-            return False
+            return schema_type == "object"
         return schema_type == "string" and _synthetic_annotation_is_enforced(key, value)
-    return False
+    return key in _PERSISTED_SCHEMA_METADATA_ANNOTATIONS
 
 
 def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
@@ -940,6 +951,8 @@ def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
             if not isinstance(key, str):
                 continue
             if key.startswith("x-"):
+                if key in _PERSISTED_SCHEMA_METADATA_ANNOTATIONS:
+                    continue
                 record_support(
                     key,
                     "supported"
@@ -1050,39 +1063,6 @@ def _catalog_entries(
             for element in sorted(package.elements, key=lambda item: item.element_kind):
                 result.append((provider, catalog, package, element))
     return tuple(result)
-
-
-class _RepresentativeRegistry:
-    """Keep the live package catalog while exposing one executable schema route."""
-
-    def __init__(self, base: RuntimeSchemaRegistryLike) -> None:
-        self._base = base
-
-    def get_element_schema(
-        self,
-        provider: str,
-        *,
-        version: str = "default",
-        element_kind: str | None = None,
-    ) -> SchemaRecord | JSONDocument | None:
-        package = self._base.get_package(provider, version=version)
-        resolved_version = package.version if package is not None else version
-        if (
-            provider == REPRESENTATIVE_PROVIDER
-            and resolved_version == REPRESENTATIVE_PACKAGE_VERSION
-            and element_kind == REPRESENTATIVE_ELEMENT_KIND
-        ):
-            return _REPRESENTATIVE_SCHEMA
-        return self._base.get_element_schema(provider, version=version, element_kind=element_kind)
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._base, name)
-
-
-def representative_inferred_corpus_registry(base: RuntimeSchemaRegistryLike) -> RuntimeSchemaRegistryLike:
-    """Return a catalog-backed registry with one real provider/package route admitted."""
-
-    return _RepresentativeRegistry(base)  # type: ignore[return-value]
 
 
 def _unsupported_reason(
@@ -1222,15 +1202,11 @@ __all__ = [
     "InferredCorpusManifest",
     "InferredCorpusManifestEntry",
     "PackageReceipt",
-    "REPRESENTATIVE_ELEMENT_KIND",
-    "REPRESENTATIVE_PACKAGE_VERSION",
-    "REPRESENTATIVE_PROVIDER",
     "UnsupportedCorpusRecord",
     "assert_inferred_corpus_convergence_handoff_complete",
     "assert_inferred_corpus_manifest_complete",
     "build_inferred_corpus_convergence_handoff",
     "compile_inferred_corpus_manifest",
     "read_inferred_corpus_manifest",
-    "representative_inferred_corpus_registry",
     "write_inferred_corpus_manifest",
 ]

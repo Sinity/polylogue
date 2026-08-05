@@ -19,7 +19,6 @@ from tests.infra.inferred_corpus import (
     build_inferred_corpus_convergence_handoff,
     compile_inferred_corpus_manifest,
     read_inferred_corpus_manifest,
-    representative_inferred_corpus_registry,
     write_inferred_corpus_manifest,
 )
 
@@ -142,7 +141,7 @@ def test_persisted_manifest_rejects_unhashed_extra_fields(tmp_path: Path) -> Non
 
 
 def test_persisted_manifest_rejects_spec_identity_tampering(tmp_path: Path) -> None:
-    manifest = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
     path = tmp_path / "inferred-manifest.json"
     write_inferred_corpus_manifest(manifest, path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -155,7 +154,7 @@ def test_persisted_manifest_rejects_spec_identity_tampering(tmp_path: Path) -> N
 
 
 def test_persisted_selection_preserves_workload_profile(tmp_path: Path) -> None:
-    base = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+    base = compile_inferred_corpus_manifest(registry=_registry())
     supported = next(entry for entry in base.entries if entry.spec is not None)
     profile: SchemaRecord = {"elements": {supported.key.element_kind: {"structural_variants": []}}}
     profiled = InferredCorpusManifest(
@@ -176,7 +175,7 @@ def test_persisted_selection_preserves_workload_profile(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("extra_field", ["workload_profile", "spec"])
 def test_persisted_manifest_rejects_noncanonical_optional_entry_fields(tmp_path: Path, extra_field: str) -> None:
-    manifest = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
     path = tmp_path / "noncanonical-manifest.json"
     write_inferred_corpus_manifest(manifest, path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -597,7 +596,11 @@ def test_time_delta_paths_must_have_compatible_types() -> None:
 def test_convergence_handoff_rejects_an_omitted_supported_spec() -> None:
     manifest = compile_inferred_corpus_manifest(registry=_registry())
     handoff = build_inferred_corpus_convergence_handoff(manifest)
-    assert handoff.specs == ()
+    assert handoff.specs == manifest.supported_specs
+    assert handoff.specs
+    omitted = replace(handoff, specs=())
+    with pytest.raises(AssertionError, match="omitted or substituted"):
+        assert_inferred_corpus_convergence_handoff_complete(manifest, omitted)
     assert_inferred_corpus_convergence_handoff_complete(manifest, handoff)
 
 
@@ -612,20 +615,25 @@ def _first_wired_catalog_entry(registry: SchemaRegistry) -> tuple[str, str, str]
     raise AssertionError("expected a persisted provider with a wire format")
 
 
-def test_representative_package_route_is_nonempty_and_uses_persisted_selection() -> None:
-    manifest = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+def test_persisted_codex_package_route_is_nonempty_and_uses_catalog_artifact() -> None:
+    schema_path = SCHEMA_DIR / "codex" / "versions" / "v1" / "elements" / "session_record_stream.schema.json.gz"
+    assert schema_path.is_file()
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
 
     assert manifest.supported_specs
-    entry = next(entry for entry in manifest.entries if entry.spec is not None)
+    entry = next(entry for entry in manifest.entries if entry.key.provider == "codex")
     assert (entry.key.provider, entry.key.package_version, entry.key.element_kind) == (
         "codex",
         "v1",
         "session_record_stream",
     )
     assert entry.generator_schema is not None
+    assert entry.generator_schema == _registry().get_element_schema(
+        "codex", version="v1", element_kind="session_record_stream"
+    )
     handoff = build_inferred_corpus_convergence_handoff(manifest)
-    assert handoff.selections
-    assert handoff.selections[0].schema == entry.generator_schema
+    codex_selection = next(selection for selection in handoff.selections if selection.provider == "codex")
+    assert codex_selection.schema == entry.generator_schema
 
 
 def _schema_with_annotation(
@@ -728,11 +736,6 @@ def test_unenforced_annotation_values_are_typed_unsupported_records(annotation: 
 @pytest.mark.parametrize(
     "annotation",
     [
-        "x-polylogue-score",
-        "x-polylogue-evidence",
-        "x-polylogue-generated-at",
-        "x-polylogue-artifact-kind",
-        "x-polylogue-package-version",
         "x-polylogue-unknown-constraint",
         "x-third-party-constraint",
     ],
@@ -764,7 +767,7 @@ def test_unenforced_x_annotation_becomes_a_typed_unsupported_record(annotation: 
     assert (annotation, "unsupported") in {(item.construct, item.state) for item in target.key.construct_support}
 
 
-def test_live_catalog_provenance_annotations_are_censused_as_unsupported() -> None:
+def test_live_catalog_provenance_annotations_are_not_generator_constraints() -> None:
     manifest = compile_inferred_corpus_manifest(registry=_registry())
 
     score_entries = [
@@ -772,9 +775,5 @@ def test_live_catalog_provenance_annotations_are_censused_as_unsupported() -> No
         for entry in manifest.entries
         if any(item.construct == "x-polylogue-score" for item in entry.key.construct_support)
     ]
-    assert score_entries
-    assert all(
-        ("x-polylogue-score", "unsupported") in {(item.construct, item.state) for item in entry.key.construct_support}
-        for entry in score_entries
-    )
-    assert not manifest.supported_specs
+    assert not score_entries
+    assert any(spec.provider == "codex" for spec in manifest.supported_specs)
