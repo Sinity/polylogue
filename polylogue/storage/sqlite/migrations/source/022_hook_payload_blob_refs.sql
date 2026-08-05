@@ -38,7 +38,12 @@
 
 CREATE TABLE IF NOT EXISTS raw_hook_events (
     hook_event_id      TEXT PRIMARY KEY,
-    origin             TEXT NOT NULL,
+    origin             TEXT NOT NULL CHECK(origin IN (
+        'claude-code-session', 'codex-session', 'gemini-cli-session',
+        'hermes-session', 'antigravity-session', 'beads-issue', 'grok-export',
+        'chatgpt-export', 'claude-ai-export', 'claude-design-session',
+        'aistudio-drive', 'unknown-export'
+    )),
     native_id          TEXT,
     session_native_id  TEXT,
     source_path        TEXT NOT NULL,
@@ -51,7 +56,12 @@ ALTER TABLE raw_hook_events RENAME TO raw_hook_events_v21;
 
 CREATE TABLE raw_hook_events (
     hook_event_id   TEXT PRIMARY KEY,
-    origin          TEXT NOT NULL,
+    origin          TEXT NOT NULL CHECK(origin IN (
+        'claude-code-session', 'codex-session', 'gemini-cli-session',
+        'hermes-session', 'antigravity-session', 'beads-issue', 'grok-export',
+        'chatgpt-export', 'claude-ai-export', 'claude-design-session',
+        'aistudio-drive', 'unknown-export'
+    )),
     native_id       TEXT,
     session_native_id TEXT,
     source_path     TEXT NOT NULL,
