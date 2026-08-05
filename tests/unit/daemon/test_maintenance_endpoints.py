@@ -162,7 +162,15 @@ class TestMaintenanceAPIRoutes:
         from polylogue.maintenance.rebuild_index import RebuildIndexReceipt
 
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-        handler = _make_handler("/api/maintenance/rebuild-index", body={"promote": False, "raw_ids": ["raw-1"]})
+        receipt_path = tmp_path / "receipt.json"
+        handler = _make_handler(
+            "/api/maintenance/rebuild-index",
+            body={
+                "promote": False,
+                "raw_ids": ["raw-1"],
+                "schema_inference_receipt_path": str(receipt_path),
+            },
+        )
         receipt = RebuildIndexReceipt(
             archive_root=str(tmp_path),
             raw_session_count=1,
@@ -191,6 +199,7 @@ class TestMaintenanceAPIRoutes:
         request = rebuild.call_args.args[0]
         assert request.raw_ids == ("raw-1",)
         assert request.promote is False
+        assert request.schema_inference_receipt_path == receipt_path
         assert send.call_args.args == (HTTPStatus.OK, receipt.to_dict())
 
     def test_rebuild_index_fails_closed_without_a_write_bridge(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

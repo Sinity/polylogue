@@ -58,6 +58,7 @@ from polylogue.daemon.parse_prefetch import DaemonParseStage
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _RAW_COUNT = 150
 _BULK_BATCH_SIZE = 8  # forces >= 10 bounded passes over the fixture corpus
@@ -200,6 +201,8 @@ def test_small_writer_actors_stay_responsive_during_bulk_rebuild_drain(
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     _seed_corpus(tmp_path)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path / "receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
     events: list[DaemonWriteEvent] = []
     coordinator = DaemonWriteCoordinator(observer=events.append)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from http import HTTPStatus
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -101,6 +102,7 @@ def test_rebuild_index_handler_forwards_resumable_pass_options_through_writer_br
                 "pass_byte_budget_mb": 12.5,
                 "pass_deadline_seconds": 45,
                 "promote": False,
+                "schema_inference_receipt_path": "/tmp/schema-inference-receipt.json",
             }
         ).encode(),
         server=bridge,
@@ -118,6 +120,7 @@ def test_rebuild_index_handler_forwards_resumable_pass_options_through_writer_br
     assert request.pass_byte_budget_mb == 12.5
     assert request.pass_deadline_seconds == 45.0
     assert request.promote is False
+    assert request.schema_inference_receipt_path == Path("/tmp/schema-inference-receipt.json")
     send_json.assert_called_once_with(HTTPStatus.OK, receipt.to_dict())
 
 

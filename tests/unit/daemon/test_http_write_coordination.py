@@ -133,7 +133,14 @@ def test_rebuild_index_route_uses_the_bridge_run_sync_with_timeout_writer_path(m
     timeline: list[str] = []
     handler = _handler(["api", "maintenance", "rebuild-index"], timeline)
     handler.server.write_bridge = _RecordingRebuildBridge(timeline)  # type: ignore[assignment]
-    body = json.dumps({"promote": False, "raw_ids": ["raw-1"]}).encode("utf-8")
+    receipt_path = tmp_path / "receipt.json"
+    body = json.dumps(
+        {
+            "promote": False,
+            "raw_ids": ["raw-1"],
+            "schema_inference_receipt_path": str(receipt_path),
+        }
+    ).encode("utf-8")
     handler.headers = {"Content-Length": str(len(body))}  # type: ignore[assignment]
     handler.rfile = BytesIO(body)
 
@@ -157,6 +164,7 @@ def test_rebuild_index_route_uses_the_bridge_run_sync_with_timeout_writer_path(m
     request = rebuild.call_args.args[0]
     assert request.raw_ids == ("raw-1",)
     assert request.promote is False
+    assert request.schema_inference_receipt_path == receipt_path
     assert send_json.call_args.args == (HTTPStatus.OK, receipt.to_dict())
 
 

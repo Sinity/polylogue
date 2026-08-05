@@ -23,6 +23,7 @@ from polylogue.daemon.bulk_rebuild import resolve_or_start_daemon_bulk_rebuild_t
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _init_empty_source(root: Path) -> None:
@@ -39,11 +40,12 @@ def test_daemon_bulk_rebuild_refuses_when_archive_location_already_owned(tmp_pat
     """
     root = tmp_path / "archive"
     _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
     location = ArchiveLocation.resolve(root)
     owned = OwnedArchiveLocation.acquire(location, owner_id="concurrent-campaign")
     try:
         with pytest.raises(ArchiveOwnershipError):
-            resolve_or_start_daemon_bulk_rebuild_transaction(root)
+            resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt_path)
         # Failure happened before any generation/transaction bookkeeping was created.
         assert not (root / ".index-generations").exists()
         assert not (root / ".index-rebuild-transactions").exists()
@@ -51,7 +53,7 @@ def test_daemon_bulk_rebuild_refuses_when_archive_location_already_owned(tmp_pat
         owned.release()
 
     # Releasing the concurrent holder's ownership lets the daemon proceed.
-    transaction = resolve_or_start_daemon_bulk_rebuild_transaction(root)
+    transaction = resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt_path)
     assert transaction.status == "running"
 
 
@@ -62,8 +64,9 @@ def test_daemon_bulk_rebuild_releases_ownership_lock_after_resolving(tmp_path: P
     """
     root = tmp_path / "archive"
     _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
-    resolve_or_start_daemon_bulk_rebuild_transaction(root)
+    resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt_path)
 
     location = ArchiveLocation.resolve(root)
     owned = OwnedArchiveLocation.acquire(location, owner_id="post-resolve-probe")

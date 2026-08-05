@@ -82,7 +82,9 @@ DAEMON_BULK_REBUILD_BATCH_SIZE = 500
 _TERMINAL_NOT_RESUMABLE = frozenset({"promoted", "stale", "failed"})
 
 
-def resolve_or_start_daemon_bulk_rebuild_transaction(root: Path) -> IndexRebuildTransaction:
+def resolve_or_start_daemon_bulk_rebuild_transaction(
+    root: Path, *, schema_inference_receipt_path: Path | None = None
+) -> IndexRebuildTransaction:
     """Load the daemon's resumable bulk-rebuild transaction, starting one if needed.
 
     Read-only fast path when a resumable transaction already exists (a
@@ -100,6 +102,15 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(root: Path) -> IndexRebuild
     generation directory, so both must fail closed against a foreign/rotated
     archive location before touching disk, not just the eventual write pass.
     """
+    from polylogue.maintenance.schema_inference_gate import (
+        SchemaInferenceGateError,
+        validate_schema_inference_receipt,
+    )
+
+    try:
+        validate_schema_inference_receipt(root, schema_inference_receipt_path)
+    except SchemaInferenceGateError as exc:
+        raise RuntimeError(f"daemon bulk rebuild schema-inference preflight gate failed: {exc}") from exc
     location = ArchiveLocation.resolve(root)
     store = IndexGenerationStore(location)
     transaction: IndexRebuildTransaction | None
@@ -186,9 +197,15 @@ async def run_daemon_bulk_rebuild_pass(
     """
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
     from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+    from polylogue.maintenance.schema_inference_gate import resolve_schema_inference_receipt_reference
 
     root = Path(config.archive_root)
-    transaction = await asyncio.to_thread(resolve_or_start_daemon_bulk_rebuild_transaction, root)
+    receipt_path = resolve_schema_inference_receipt_reference(root)
+    transaction = await asyncio.to_thread(
+        resolve_or_start_daemon_bulk_rebuild_transaction,
+        root,
+        schema_inference_receipt_path=receipt_path,
+    )
     if transaction.status == "promoted":
         return None
 
@@ -213,6 +230,7 @@ async def run_daemon_bulk_rebuild_pass(
         archive_root=root,
         promote=True,
         operation_id=transaction.operation_id,
+        schema_inference_receipt_path=receipt_path,
         raw_batch_size=batch_size,
         prefetch_cache=parse_stage.cache,
     )

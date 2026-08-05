@@ -492,6 +492,29 @@ operation that already advanced past target *N* will not redo target
 
 ---
 
+### Rebuilding the derived index from source
+
+`polylogue ops maintenance rebuild-index` and the daemon bulk-rebuild route
+require a fresh schema-inference PASS receipt before they acquire the rebuild
+lease or create an inactive candidate. Pass `--schema-inference-receipt PATH`
+or set `POLYLOGUE_SCHEMA_INFERENCE_RECEIPT` in the policy environment. The
+same reference must be supplied when resuming an operation.
+
+Receipts are valid for 24 hours after `generated_at`. The validator allows a
+fixed five-minute clock-skew window for both future timestamps and expiry.
+It binds the receipt to the requested archive root, durable source and user
+tier identities, the current source revision snapshot, and a canonical
+external-ground-truth digest. That digest includes the complete external file
+inventory and a deterministic mapping for every raw row: raw ID, recorded
+`source_path`, selected external relative path, content hash, size, and
+disposition. A stale source path or changed mapping invalidates reuse even when
+aggregate counts and hashes remain unchanged.
+
+The rebuild result includes the receipt path, validation time, source snapshot,
+durable identity, and consumed external-ground-truth digest. A missing,
+malformed, stale, future, wrong-archive, wrong-source, changed-snapshot, or
+changed-corpus receipt fails before any candidate or active-index mutation.
+
 ## Runbooks
 
 The runbooks below assume:

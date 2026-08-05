@@ -22,6 +22,7 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 class InjectedInterruptError(RuntimeError):
@@ -102,6 +103,7 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
     clean_root = tmp_path / "clean"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     _seed(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
     original_checkpoint = IndexGenerationStore.checkpoint_transaction
     interrupted = False
@@ -117,7 +119,9 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
     with monkeypatch.context() as scoped:
         scoped.setattr(IndexGenerationStore, "checkpoint_transaction", interrupt_after_committed_page)
         with pytest.raises(InjectedInterruptError, match="after committed page"):
-            rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, raw_batch_size=1))
+            rebuild_index_from_source_sync(
+                RebuildIndexRequest(archive_root=root, raw_batch_size=1, schema_inference_receipt_path=receipt_path)
+            )
 
     store = IndexGenerationStore.for_archive_root(root)
     operation_id = next(path.stem for path in store.transactions_root.glob("*.json"))
@@ -142,7 +146,12 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
     monkeypatch.setattr(replay_module, "rebuild_index_from_source", recording_replay)
     while True:
         receipt = rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=root, operation_id=operation_id, raw_batch_size=1)
+            RebuildIndexRequest(
+                archive_root=root,
+                operation_id=operation_id,
+                raw_batch_size=1,
+                schema_inference_receipt_path=receipt_path,
+            )
         )
         if receipt.status == "replayed":
             break
@@ -156,14 +165,24 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clean_root))
     _seed(clean_root)
-    clean = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=clean_root, raw_batch_size=1))
+    clean_receipt_path = write_valid_rebuild_receipt(
+        clean_root, tmp_path / "clean-receipt" / "schema-inference-gate-receipt.json"
+    )
+    clean = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=clean_root, raw_batch_size=1, schema_inference_receipt_path=clean_receipt_path)
+    )
     assert clean.status == "paused"
     assert clean.transaction is not None
     clean_operation = clean.transaction["operation_id"]
     assert isinstance(clean_operation, str)
     while clean.status != "replayed":
         clean = rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=clean_root, operation_id=clean_operation, raw_batch_size=1)
+            RebuildIndexRequest(
+                archive_root=clean_root,
+                operation_id=clean_operation,
+                raw_batch_size=1,
+                schema_inference_receipt_path=clean_receipt_path,
+            )
         )
 
     resumed_snapshot = _semantic_snapshot(root)

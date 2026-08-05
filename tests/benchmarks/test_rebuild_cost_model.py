@@ -41,6 +41,7 @@ from tests.infra.rebuild_cost_model import (
     run_cost_model,
     stage_proportions,
 )
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def test_default_sample_n_scales_inversely_with_size() -> None:
@@ -89,8 +90,16 @@ def test_structural_corpus_exercises_cohort_arbitration(tmp_path: Path) -> None:
     prior = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
     os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
     try:
+        receipt_path = write_valid_rebuild_receipt(
+            archive_root, archive_root.parent / "schema-inference-gate-receipt.json"
+        )
         receipt = rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=archive_root, promote=True, raw_batch_size=12)
+            RebuildIndexRequest(
+                archive_root=archive_root,
+                promote=True,
+                raw_batch_size=12,
+                schema_inference_receipt_path=receipt_path,
+            )
         )
     finally:
         if prior is None:

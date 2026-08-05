@@ -53,6 +53,7 @@ from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 # ---------------------------------------------------------------------------
 # Population strata
@@ -788,9 +789,17 @@ def _run_one_rebuild_pass(
     prior_env = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
     os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
     try:
+        receipt_path = write_valid_rebuild_receipt(
+            archive_root, archive_root.parent / "schema-inference-gate-receipt.json"
+        )
         started = time.perf_counter()
         receipt = rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=archive_root, promote=True, raw_batch_size=max(n, 1))
+            RebuildIndexRequest(
+                archive_root=archive_root,
+                promote=True,
+                raw_batch_size=max(n, 1),
+                schema_inference_receipt_path=receipt_path,
+            )
         )
         wall_s = time.perf_counter() - started
     finally:

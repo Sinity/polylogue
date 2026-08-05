@@ -16,6 +16,7 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _codex_session(native_id: str, text: str) -> bytes:
@@ -60,8 +61,11 @@ def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_activ
     initialize_active_archive_root(root)
     _seed_raw(root, "active-session", "active generation remains exact")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
-    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    initial = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=receipt_path)
+    )
     assert initial.status == "replayed"
 
     store = IndexGenerationStore.for_archive_root(root)
@@ -69,6 +73,7 @@ def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_activ
     snapshot_before = _active_snapshot(root)
 
     _seed_raw(root, "candidate-session", "candidate must never become active")
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
     original_writer = cast(Callable[..., str], revision_governance.__dict__["write_parsed_session_to_archive"])
     corruption_calls = 0
 
@@ -82,7 +87,9 @@ def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_activ
     monkeypatch.setattr(revision_governance, "write_parsed_session_to_archive", bypass_stamps)
 
     with pytest.raises(RuntimeError, match="reindex acceptance gate failed.*session-fingerprint-stamps"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=receipt_path)
+        )
 
     assert corruption_calls > 0
     assert store.active_pointer.resolve(strict=True) == active_before

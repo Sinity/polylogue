@@ -27,6 +27,7 @@ from polylogue.storage.index_generation import IndexGenerationStore, source_revi
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _DEFINITELY_DEAD_PID = 2**31 - 1
 
@@ -111,7 +112,10 @@ def test_reports_active_generation_and_schema_version_after_a_rebuild(
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     _seed_one_real_codex_session(root)
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+    )
     assert receipt.status == "replayed"
 
     status = rebuild_status(root, operation_id="none", include_daemon_bulk_rebuild=False)
@@ -192,7 +196,8 @@ def test_falls_back_to_the_daemon_well_known_operation_id_by_default(tmp_path: P
 
     root = tmp_path / "archive"
     _init_empty_source(root)
-    resolve_or_start_daemon_bulk_rebuild_transaction(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt_path)
 
     status = rebuild_status(root)
 

@@ -37,6 +37,7 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 from polylogue.sources import revision_backfill
 from polylogue.sources.census_parse_stage import CensusParseStage
 from polylogue.sources.revision_backfill import split_parse_and_apply_seconds
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
 
 
@@ -79,12 +80,14 @@ def test_rebuild_records_parse_apply_split_summing_to_stage_total(
     # tests/unit/storage/test_rebuild_paging_content_order.py for the same
     # requirement on the same code path).
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
     receipt = rebuild_index_from_source_sync(
         RebuildIndexRequest(
             archive_root=root,
             promote=True,
             raw_batch_size=500,  # single page: whole corpus fits in one pass
+            schema_inference_receipt_path=receipt_path,
         )
     )
 
@@ -136,6 +139,7 @@ def test_rebuild_index_from_source_sync_warms_prefetch_cache_when_caller_omits_o
     root = tmp_path / "archive"
     raw_ids = build_independent_raw_corpus(root, raw_count=6, avg_payload_bytes=20_000)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
     warmed_raw_id_batches: list[tuple[str, ...]] = []
     real_warm_raw_ids = CensusParseStage.warm_raw_ids
@@ -151,6 +155,7 @@ def test_rebuild_index_from_source_sync_warms_prefetch_cache_when_caller_omits_o
             archive_root=root,
             promote=True,
             raw_batch_size=500,  # single page: whole corpus fits in one pass
+            schema_inference_receipt_path=receipt_path,
         )
     )
 
@@ -223,12 +228,14 @@ def test_rebuild_index_from_source_sync_auto_engages_pipelined_decode(
     cohort_count = revision_backfill._PIPELINE_DECODE_MIN_COHORTS + 4
     raw_ids = build_independent_raw_corpus(root, raw_count=cohort_count, avg_payload_bytes=20_000)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
     receipt = rebuild_index_from_source_sync(
         RebuildIndexRequest(
             archive_root=root,
             promote=True,
             raw_batch_size=500,  # single page: whole corpus fits in one pass
+            schema_inference_receipt_path=receipt_path,
         )
     )
 

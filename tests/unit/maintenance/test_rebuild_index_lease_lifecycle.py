@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from polylogue.storage.repair import RepairResult
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _codex_session(native_id: str) -> bytes:
@@ -76,6 +77,7 @@ def test_rebuild_lease_blocks_a_concurrent_writer_deep_inside_the_pass(
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     _seed_one_codex_session(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
     probe_result: dict[str, object] = {"attempted": False, "blocked": False}
 
@@ -117,7 +119,9 @@ def test_rebuild_lease_blocks_a_concurrent_writer_deep_inside_the_pass(
 
     monkeypatch.setattr(repair_module, "repair_session_insights", probing_repair_session_insights)
 
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+    )
 
     assert receipt.status == "replayed"
     assert probe_result["attempted"] is True, "the probe never ran; the test setup itself is broken"

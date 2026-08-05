@@ -51,6 +51,7 @@ from polylogue.sources.revision_backfill import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -152,6 +153,7 @@ def test_rebuild_index_deadline_stops_mid_page_and_resumes_without_omission_or_d
     # lookups 404 against the wrong (default XDG) location.
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     _seed_distinct_codex_sessions(root, 3)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
     call_state = {"first": True}
 
@@ -164,7 +166,12 @@ def test_rebuild_index_deadline_stops_mid_page_and_resumes_without_omission_or_d
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("polylogue.maintenance.rebuild_index.time.time", fake_time)
         first_pass = rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=root, raw_batch_size=10, pass_deadline_seconds=30.0)
+            RebuildIndexRequest(
+                archive_root=root,
+                raw_batch_size=10,
+                pass_deadline_seconds=30.0,
+                schema_inference_receipt_path=receipt_path,
+            )
         )
 
     assert first_pass.status == "deferred"
@@ -186,7 +193,9 @@ def test_rebuild_index_deadline_stops_mid_page_and_resumes_without_omission_or_d
 
     # Real clock restored (the monkeypatch context exited above); the
     # transaction's durable 30s budget is ample for this tiny fixture.
-    final_pass = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, operation_id=operation_id))
+    final_pass = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, operation_id=operation_id, schema_inference_receipt_path=receipt_path)
+    )
     assert final_pass.status == "replayed"
     assert final_pass.materialized is True
 

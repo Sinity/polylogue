@@ -79,6 +79,7 @@ from polylogue.sources.revision_backfill import RawParsePrefetchCache
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -171,6 +172,7 @@ def _drive_rebuild_to_promotion(
     """
     receipts: list[Any] = []
     operation_id: str | None = None
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     for _ in range(20):  # generous upper bound; promotion ends the loop early
         receipt = rebuild_index_from_source_sync(
             RebuildIndexRequest(
@@ -179,6 +181,7 @@ def _drive_rebuild_to_promotion(
                 raw_batch_size=raw_batch_size,
                 operation_id=operation_id,
                 prefetch_cache=prefetch_cache,
+                schema_inference_receipt_path=receipt_path,
             )
         )
         receipts.append(receipt)

@@ -20,6 +20,7 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _init_empty_source(root: Path) -> None:
@@ -35,11 +36,14 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
     """
     root = tmp_path / "archive"
     _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
     location = ArchiveLocation.resolve(root)
     owned = OwnedArchiveLocation.acquire(location, owner_id="concurrent-campaign")
     try:
         with pytest.raises(ArchiveOwnershipError):
-            rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+            rebuild_index_from_source_sync(
+                RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+            )
         # Failure happened before any generation bookkeeping was created.
         assert not (root / ".index-generations").exists()
         # The rebuild lease is now deliberately acquired before the general
@@ -49,13 +53,16 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
         owned.release()
 
     # Releasing the concurrent holder's ownership lets the rebuild proceed.
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+    )
     assert receipt.status == "empty-source"
 
 
 def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_creation(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
     with sqlite3.connect(root / "source.db") as conn:
         conn.execute(
             """
@@ -66,7 +73,9 @@ def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_c
         )
 
     with pytest.raises(RuntimeError, match="reindex source preflight gate failed: blob-refs-liveness"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
 
     assert not (root / ".index-generations").exists()
 
@@ -74,6 +83,7 @@ def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_c
 def test_rebuild_preflight_exposes_unreconciled_source_ref_types(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
     with sqlite3.connect(root / "source.db") as conn:
         conn.executemany(
             """
@@ -88,7 +98,9 @@ def test_rebuild_preflight_exposes_unreconciled_source_ref_types(tmp_path: Path)
         )
 
     with pytest.raises(RuntimeError) as exc_info:
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
 
     message = str(exc_info.value)
     assert "reindex source preflight gate failed: blob-refs-liveness" in message
@@ -108,8 +120,11 @@ def test_rebuild_releases_ownership_lock_after_completion(tmp_path: Path) -> Non
     """
     root = tmp_path / "archive"
     _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+    )
     assert receipt.status == "empty-source"
 
     location = ArchiveLocation.resolve(root)

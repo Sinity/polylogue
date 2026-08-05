@@ -45,6 +45,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from tests.infra.rebuild_cost_model import Stratum, build_stratum_sample_corpus
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 #: The bead's named correctness surface, in composite-primary-key order so a
 #: row-for-row comparison is well-defined without depending on SQLite's
@@ -140,6 +141,9 @@ def _build_corpus(tmp_path: Path, *, sample_n: int) -> Path:
 
 def _rebuild(archive_root: Path, *, shard_count: int, raw_batch_size: int) -> float:
     with _archive_root_env(archive_root):
+        receipt_path = write_valid_rebuild_receipt(
+            archive_root, archive_root.parent / "schema-inference-gate-receipt.json"
+        )
         started_at = time.perf_counter()
         receipt = rebuild_index_from_source_sync(
             RebuildIndexRequest(
@@ -147,6 +151,7 @@ def _rebuild(archive_root: Path, *, shard_count: int, raw_batch_size: int) -> fl
                 promote=True,
                 raw_batch_size=raw_batch_size,
                 shard_count=shard_count,
+                schema_inference_receipt_path=receipt_path,
             )
         )
         elapsed_s = time.perf_counter() - started_at

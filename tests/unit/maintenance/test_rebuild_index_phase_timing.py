@@ -41,6 +41,7 @@ from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -85,8 +86,11 @@ def test_replayed_receipt_carries_selection_phase_timing(tmp_path: Path, monkeyp
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     _seed_distinct_codex_sessions(root, 2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=receipt_path)
+    )
 
     assert receipt.status == "replayed"
     assert "selection_s" in receipt.timings_s
@@ -108,9 +112,17 @@ def test_partial_rebuild_cannot_complete_when_candidate_omits_source_document(
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     raw_ids = _seed_distinct_codex_sessions(root, 2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
     with pytest.raises(RuntimeError, match="reindex acceptance gate failed.*corpus-absences"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, raw_ids=(raw_ids[0],), promote=False))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                raw_ids=(raw_ids[0],),
+                promote=False,
+                schema_inference_receipt_path=receipt_path,
+            )
+        )
 
     with sqlite3.connect(root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
@@ -141,6 +153,7 @@ def test_rebuild_corpus_gate_blocks_mutated_inactive_candidate(
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     _seed_distinct_codex_sessions(root, 1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
     original_repopulate = rebuild_index._repopulate_bulk_build_derived_state
 
     def corrupt_candidate_before_acceptance(index_path: Path) -> dict[str, float]:
@@ -188,7 +201,9 @@ def test_rebuild_corpus_gate_blocks_mutated_inactive_candidate(
     monkeypatch.setattr(rebuild_index, "_repopulate_bulk_build_derived_state", corrupt_candidate_before_acceptance)
 
     with pytest.raises(RuntimeError, match=f"reindex acceptance gate failed.*{expected_check}"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=False))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, promote=False, schema_inference_receipt_path=receipt_path)
+        )
 
     with sqlite3.connect(root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
@@ -201,12 +216,18 @@ def test_deferred_pass_cost_carries_selection_phase_timing(tmp_path: Path, monke
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     _seed_distinct_codex_sessions(root, 2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
 
     # A sub-millisecond deadline truncates to pass_deadline_ms=0, so the
     # first between-cohorts check always trips deterministically (see
     # test_rebuild_index_deadline.py for the same technique in detail).
     receipt = rebuild_index_from_source_sync(
-        RebuildIndexRequest(archive_root=root, raw_batch_size=10, pass_deadline_seconds=0.0001)
+        RebuildIndexRequest(
+            archive_root=root,
+            raw_batch_size=10,
+            pass_deadline_seconds=0.0001,
+            schema_inference_receipt_path=receipt_path,
+        )
     )
 
     assert receipt.status == "deferred"
