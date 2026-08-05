@@ -10,6 +10,8 @@ from typing import Any, cast
 
 import pytest
 
+import polylogue.maintenance.rebuild_index as rebuild_index_module
+import polylogue.maintenance.sharded_rebuild as sharded_rebuild_module
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
@@ -333,4 +335,130 @@ def test_sharded_target_creation_cleans_candidate_when_receipt_expires_after_cre
         )
 
     assert create_count == 1
+    assert _generation_ids(root) == set()
+
+
+def test_full_source_transaction_creation_cleans_candidate_after_post_create_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absent raw-id filter still gets post-create cleanup on receipt failure."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    original_create = IndexGenerationStore.create
+
+    def expire_after_create(
+        store: IndexGenerationStore, *, owner_id: str | None = None, source_snapshot: str
+    ) -> IndexGeneration:
+        generation = original_create(store, owner_id=owner_id, source_snapshot=source_snapshot)
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["generated_at"] = "2000-01-01T00:00:00Z"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        return generation
+
+    monkeypatch.setattr(IndexGenerationStore, "create", expire_after_create)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
+
+    assert _generation_ids(root) == set()
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+
+
+def test_full_source_setup_validation_cleans_candidate_and_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A receipt failure after transaction creation still cleans before replay setup returns."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    original_validate = rebuild_index_module._validate_rebuild_provenance_receipt
+    validation_calls = 0
+
+    def expire_on_setup_validation(root_arg: Path, receipt_arg: Path | None) -> dict[str, object]:
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 3:
+            payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+            payload["generated_at"] = "2000-01-01T00:00:00Z"
+            receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        return original_validate(root_arg, receipt_arg)
+
+    monkeypatch.setattr(rebuild_index_module, "_validate_rebuild_provenance_receipt", expire_on_setup_validation)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
+
+    assert validation_calls == 3
+    assert _generation_ids(root) == set()
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+
+
+def test_sharded_graph_drift_blocks_derived_stages_and_cleans_resumable_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Receipt drift after graph resolution cannot reach derived-state writers."""
+    root = tmp_path / "archive"
+    _seed(root, count=4)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    original_graph_resolution = sharded_rebuild_module.resolve_cross_shard_session_graph
+    original_create = IndexGenerationStore.create
+    original_discard = IndexGenerationStore.discard_if_inactive
+    created_generation_ids: list[str] = []
+    discard_calls: list[str] = []
+    repopulate_calls: list[Path] = []
+    insight_calls: list[object] = []
+
+    def drift_after_graph_resolution(*args: Any, **kwargs: Any) -> float:
+        graph_elapsed_s = original_graph_resolution(*args, **kwargs)
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["generated_at"] = "2000-01-01T00:00:00Z"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        return graph_elapsed_s
+
+    def record_create(
+        store: IndexGenerationStore, *, owner_id: str | None = None, source_snapshot: str
+    ) -> IndexGeneration:
+        generation = original_create(store, owner_id=owner_id, source_snapshot=source_snapshot)
+        created_generation_ids.append(generation.generation_id)
+        return generation
+
+    def record_discard(store: IndexGenerationStore, generation: IndexGeneration) -> bool:
+        discard_calls.append(generation.generation_id)
+        return original_discard(store, generation)
+
+    def unexpected_repopulate(index_path: Path) -> dict[str, float]:
+        repopulate_calls.append(index_path)
+        raise AssertionError("stale provenance reached bulk-derived repopulation")
+
+    def unexpected_insight_repair(*args: Any, **kwargs: Any) -> object:
+        insight_calls.append((args, kwargs))
+        raise AssertionError("stale provenance reached session insight repair")
+
+    monkeypatch.setattr(sharded_rebuild_module, "resolve_cross_shard_session_graph", drift_after_graph_resolution)
+    monkeypatch.setattr(IndexGenerationStore, "create", record_create)
+    monkeypatch.setattr(IndexGenerationStore, "discard_if_inactive", record_discard)
+    monkeypatch.setattr(rebuild_index_module, "_repopulate_bulk_build_derived_state", unexpected_repopulate)
+    monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", unexpected_insight_repair)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                shard_count=2,
+            )
+        )
+
+    assert repopulate_calls == []
+    assert insight_calls == []
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+    shard_ids = set(created_generation_ids[1:])
+    assert shard_ids
+    assert shard_ids <= set(discard_calls)
+    assert len([generation_id for generation_id in discard_calls if generation_id in shard_ids]) == len(shard_ids)
     assert _generation_ids(root) == set()

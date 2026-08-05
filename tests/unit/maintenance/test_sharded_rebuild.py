@@ -37,11 +37,14 @@ from polylogue.maintenance.schema_inference_gate import (
     validate_schema_inference_receipt,
 )
 from polylogue.maintenance.sharded_rebuild import (
+    _cleanup_shard_generations,
+    _surface_shard_cleanup_failures,
     merge_shards_into_target,
     resolve_cross_shard_session_graph,
     shard_raw_ids,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -279,3 +282,38 @@ def test_merge_revalidates_external_evidence_before_target_mutation(tmp_path: Pa
 
     with sqlite3.connect(target) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_shard_cleanup_attempts_all_candidates_and_preserves_primary_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One cleanup error cannot prevent sibling cleanup or replace the build error."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    store = IndexGenerationStore.for_archive_root(root)
+    generations = [store.create(source_snapshot="snapshot") for _ in range(3)]
+    failed_generation_id = generations[0].generation_id
+    discard_calls: list[str] = []
+    original_discard = IndexGenerationStore.discard_if_inactive
+
+    def fail_one_discard(generation_store: IndexGenerationStore, generation: IndexGeneration) -> bool:
+        generation_id = generation.generation_id
+        discard_calls.append(generation_id)
+        if generation_id == failed_generation_id:
+            raise OSError("synthetic shard cleanup failure")
+        return original_discard(generation_store, generation)
+
+    monkeypatch.setattr(IndexGenerationStore, "discard_if_inactive", fail_one_discard)
+    cleanup_errors = _cleanup_shard_generations(
+        store,
+        generations,
+        cast(RebuildProvenanceContext, _NOOP_PROVENANCE),
+    )
+    primary = RuntimeError("synthetic shard build failure")
+    _surface_shard_cleanup_failures(primary, cleanup_errors)
+
+    assert discard_calls == [generation.generation_id for generation in generations]
+    assert len(cleanup_errors) == 1
+    assert str(primary) == "synthetic shard build failure"
+    assert primary.__notes__ and "synthetic shard cleanup failure" in primary.__notes__[0]
+    assert {path.name for path in (root / ".index-generations").glob("gen-*")} == {failed_generation_id}

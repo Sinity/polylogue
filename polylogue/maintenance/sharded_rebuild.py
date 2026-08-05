@@ -63,12 +63,13 @@ from typing import TYPE_CHECKING, cast
 from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.paths import render_root
+from polylogue.storage.index_generation import IndexGeneration
 from polylogue.storage.sqlite.connection_profile import BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
 
 if TYPE_CHECKING:
     from polylogue.maintenance.rebuild_index import RebuildProvenanceContext
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
-    from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
+    from polylogue.storage.index_generation import IndexGenerationStore
 
 logger = get_logger(__name__)
 
@@ -460,6 +461,34 @@ def resolve_cross_shard_session_graph(
     return time.perf_counter() - started_at
 
 
+def _cleanup_shard_generations(
+    generation_store: IndexGenerationStore,
+    shard_generations: list[IndexGeneration],
+    provenance: RebuildProvenanceContext,
+) -> list[BaseException]:
+    """Attempt every shard cleanup and return failures without short-circuiting."""
+    errors: list[BaseException] = []
+    for shard_generation in shard_generations:
+        try:
+            provenance.validate_cleanup()
+            generation_store.discard_if_inactive(shard_generation)
+        except BaseException as exc:
+            cleanup_error = RuntimeError(f"{shard_generation.generation_id}: {exc}")
+            cleanup_error.__cause__ = exc
+            errors.append(cleanup_error)
+    return errors
+
+
+def _surface_shard_cleanup_failures(primary: BaseException | None, cleanup_errors: list[BaseException]) -> None:
+    """Preserve a primary failure while surfacing every cleanup failure."""
+    if not cleanup_errors:
+        return
+    detail = "; ".join(str(error) for error in cleanup_errors)
+    if primary is None:
+        raise RuntimeError(f"shard cleanup failed: {detail}") from cleanup_errors[0]
+    primary.add_note(f"shard cleanup also failed: {detail}")
+
+
 async def replay_selected_raw_ids_sharded(
     *,
     root: Path,
@@ -528,13 +557,10 @@ async def replay_selected_raw_ids_sharded(
     )
     failures = [result for result in build_results if isinstance(result, BaseException)]
     if failures:
-        for shard_generation in created_generations:
-            try:
-                provenance.validate()
-            except Exception:
-                provenance.validate_cleanup()
-            generation_store.discard_if_inactive(shard_generation)
-        raise failures[0]
+        primary = failures[0]
+        cleanup_errors = _cleanup_shard_generations(generation_store, created_generations, provenance)
+        _surface_shard_cleanup_failures(primary, cleanup_errors)
+        raise primary
     shard_generations = [cast(tuple[IndexGeneration, ShardBuildStats], result)[0] for result in build_results]
     shard_stats = [cast(tuple[IndexGeneration, ShardBuildStats], result)[1] for result in build_results]
     try:
@@ -544,13 +570,13 @@ async def replay_selected_raw_ids_sharded(
         )
         merge_s = time.perf_counter() - merge_started_at
         graph_resolve_s = resolve_cross_shard_session_graph(Path(generation.index_path), provenance=provenance)
-    finally:
-        for shard_generation in shard_generations:
-            try:
-                provenance.validate()
-            except Exception:
-                provenance.validate_cleanup()
-            generation_store.discard_if_inactive(shard_generation)
+    except BaseException as primary:
+        cleanup_errors = _cleanup_shard_generations(generation_store, shard_generations, provenance)
+        _surface_shard_cleanup_failures(primary, cleanup_errors)
+        raise
+    else:
+        cleanup_errors = _cleanup_shard_generations(generation_store, shard_generations, provenance)
+        _surface_shard_cleanup_failures(None, cleanup_errors)
     logger.info(
         "sharded_rebuild_merge_complete",
         generation_id=generation.generation_id,
