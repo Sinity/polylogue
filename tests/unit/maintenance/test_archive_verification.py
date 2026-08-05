@@ -64,6 +64,13 @@ def _seed_coherent_archive(root: Path) -> None:
             VALUES ('raw-1', 'fp', 'complete', 1, 100)
             """
         )
+        source_conn.execute(
+            """
+            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-1', 'raw_payload', '/x', 10, 100)
+            """,
+            (bytes.fromhex(blob_hash),),
+        )
         source_conn.commit()
     finally:
         source_conn.close()
@@ -712,18 +719,6 @@ def test_blob_ref_with_no_referent_trips_blob_refs_liveness(tmp_path: Path) -> N
 
 def test_blob_refs_liveness_passes_on_coherent_archive(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
-    conn = _connect(tmp_path / "source.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, size_bytes, acquired_at_ms)
-            VALUES (?, 'raw-1', 'raw_payload', 10, 100)
-            """,
-            (b"a" * 32,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
     report = verify_archive(tmp_path, checks=("blob-refs-liveness",))
 
@@ -735,6 +730,25 @@ def test_blob_refs_liveness_passes_on_coherent_archive(tmp_path: Path) -> None:
         "raw_payload": 0,
         "sidecar": 0,
     }
+
+
+def test_blob_reference_closure_rejects_acquired_attachment_without_ref(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute(
+            "INSERT INTO attachments (attachment_id, byte_count, blob_hash, acquisition_status, ref_count) "
+            "VALUES ('orphan-acquired', 1, ?, 'acquired', 0)",
+            (b"a" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("blob-reference-closure",))
+    check = _check(report, "blob-reference-closure")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["acquired_attachment_missing_ref_count"] == 1
 
 
 def test_attachment_blob_ref_joins_its_parent_raw_session(tmp_path: Path) -> None:
@@ -1590,6 +1604,7 @@ RED_TWIN_TESTS: dict[str, str] = {
     "lineage-sanity": "test_dangling_resolved_dst_trips_lineage_sanity",
     "enum-superset-check": "test_missing_enum_value_trips_enum_superset_check",
     "blob-refs-liveness": "test_blob_ref_with_no_referent_trips_blob_refs_liveness",
+    "blob-reference-closure": "test_blob_reference_closure_rejects_acquired_attachment_without_ref",
     "blob-integrity": "test_full_blob_integrity_red_twin",
     "attachment-acquisition-debt": "test_acquired_unreachable_attachment_debt_is_blocking",
     "raw-failure-lifecycle": "test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures",

@@ -122,6 +122,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Classify source-tier orphan refs; apply only with backup and receipt.",
     ),
     (
+        "blob-reference-closure",
+        "_blob_reference_closure",
+        "blob_reference_closure_command",
+        "Repair deterministic raw and acquired-attachment reference gaps; dry-run by default.",
+    ),
+    (
         "hook-payload-ref-reconcile",
         "_hook_payload_ref_reconciliation",
         "hook_payload_ref_reconcile_command",

@@ -36,17 +36,24 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload, ingest_record
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.write import (
     _attachment_caption,
     _attachment_id,
-    _attachment_position,
+    _attachment_message_id_maps,
+    _attachment_native_id_values,
+    _attachment_reference_positions,
     _attachment_source_url,
-    _message_id,
+    _duplicate_message_native_ids,
+    _message_content_hash,
+    _next_message_position,
+    _normalized_message_native_id,
 )
 from polylogue.storage.sqlite.queries.mappers_archive import _row_to_raw_session
 
@@ -55,6 +62,7 @@ logger = get_logger(__name__)
 # Raw parsing is real work (decode + provider dispatch + normalize); bound how
 # many raw_sessions rows one plan pass inspects unless the caller overrides it.
 DEFAULT_RAW_ROW_LIMIT = 5_000
+MAX_ATTACHMENT_SAMPLE_LIMIT = 1_000_000
 
 _NO_RAW_MATCH_REASON = "no raw session in source.db reproduces this attachment's identity"
 _MESSAGE_MISSING_REASON = (
@@ -75,12 +83,19 @@ class RelinkableAttachment:
     source_url: str | None
     caption: str | None
     raw_id: str
+    native_ids: tuple[tuple[str, str], ...]
+
+
+class UnrecoverableAttachmentReason(StrEnum):
+    NO_AUTHORITATIVE_RAW = "no_authoritative_raw"
+    MESSAGE_MISSING = "message_missing"
 
 
 @dataclass(frozen=True, slots=True)
 class UnrecoverableAttachment:
     attachment_id: str
     reason: str
+    reason_kind: UnrecoverableAttachmentReason = UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +116,7 @@ class OrphanedAttachmentRelinkPlan:
     unrecoverable_samples: tuple[UnrecoverableAttachment, ...]
     raw_rows_scanned: int
     raw_rows_total: int
+    unrecoverable_samples_truncated: bool = False
 
 
 RawSessionParser = Callable[[RawSessionRecord], IngestRecordResult]
@@ -128,6 +144,84 @@ def _read_orphaned_attachment_ids(index_conn: sqlite3.Connection) -> list[str]:
 
 def _message_exists(index_conn: sqlite3.Connection, message_id: str) -> bool:
     return index_conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,)).fetchone() is not None
+
+
+def _append_materialized_message_ids(
+    index_conn: sqlite3.Connection,
+    session_id: str,
+    messages: list[ParsedMessage],
+) -> dict[int, str]:
+    """Find append payload messages already present in the current index.
+
+    ``_write_session`` clears append message positions before the writer adds
+    the current tail offset. Once that append is materialized, deriving an
+    owner from the raw payload and the *new* ``MAX(position) + 1`` offset
+    points past the real row. Native ids identify materialized rows directly;
+    id-less messages use the writer's content hash at each stored position so
+    an old base message cannot be mistaken for the append tail.
+    """
+    rows = index_conn.execute(
+        """
+        SELECT message_id, native_id, position, variant_index, content_hash
+        FROM messages
+        WHERE session_id = ?
+        ORDER BY position, variant_index
+        """,
+        (session_id,),
+    ).fetchall()
+    duplicate_native_ids = _duplicate_message_native_ids(messages)
+    rows_by_content_hash: dict[bytes, list[sqlite3.Row]] = {}
+    for row in rows:
+        rows_by_content_hash.setdefault(bytes(row[4]), []).append(row)
+    content_hash_cache: dict[tuple[int, int, int], bytes] = {}
+    resolved: dict[int, str] = {}
+    for message_index, message in enumerate(messages):
+        native_id = _normalized_message_native_id(message)
+        if native_id is not None and native_id not in duplicate_native_ids:
+            matches = [row for row in rows if row[1] == native_id]
+        else:
+            matches = []
+            for row in rows:
+                position = int(row[2])
+                variant_index = int(row[3])
+                cache_key = (message_index, position, variant_index)
+                message_hash = content_hash_cache.get(cache_key)
+                if message_hash is None:
+                    message_hash = _message_content_hash(
+                        session_id,
+                        message,
+                        position=position,
+                        variant_index=variant_index,
+                    )
+                    content_hash_cache[cache_key] = message_hash
+                matches.extend(rows_by_content_hash.get(message_hash, ()))
+        if len(matches) == 1:
+            resolved[message_index] = str(matches[0][0])
+    return resolved
+
+
+def _append_materialized_attachment_maps(
+    index_conn: sqlite3.Connection,
+    session_id: str,
+    messages: list[ParsedMessage],
+) -> tuple[dict[str, str], dict[int, str]]:
+    resolved = _append_materialized_message_ids(index_conn, session_id, messages)
+    by_native_message_id: dict[str, str] = {}
+    by_message_position: dict[int, str] = {}
+    for message_index, message in enumerate(messages):
+        message_id = resolved.get(message_index)
+        if message_id is None:
+            continue
+        provider_message_id = message.provider_message_id
+        if provider_message_id:
+            by_native_message_id[str(provider_message_id)] = message_id
+            normalized = _normalized_message_native_id(message)
+            if normalized is not None:
+                by_native_message_id[normalized] = message_id
+        message_position = message.position
+        if message_position is not None:
+            by_message_position[int(message_position)] = message_id
+    return by_native_message_id, by_message_position
 
 
 def _iter_raw_session_rows(source_conn: sqlite3.Connection, *, raw_row_limit: int | None) -> list[sqlite3.Row]:
@@ -179,11 +273,12 @@ def plan_orphaned_attachment_relink(
             unrecoverable_samples=(),
             raw_rows_scanned=0,
             raw_rows_total=0,
+            unrecoverable_samples_truncated=False,
         )
 
     pending: set[str] = set(orphan_ids)
     recovered: dict[str, RelinkableAttachment] = {}
-    ineligible_reasons: dict[str, str] = {}
+    ineligible_reasons: dict[str, tuple[UnrecoverableAttachmentReason, str]] = {}
 
     parser = raw_session_parser or _default_raw_session_parser(archive_root, blob_root)
 
@@ -212,14 +307,20 @@ def plan_orphaned_attachment_relink(
             _match_session_payload(payload, pending, recovered, ineligible_reasons, index_conn, raw_record.raw_id)
 
     reason_counts: dict[str, int] = {}
+    effective_sample_limit = min(max(sample_limit, 0), MAX_ATTACHMENT_SAMPLE_LIMIT)
     samples: list[UnrecoverableAttachment] = []
+    unrecoverable_count = 0
     for attachment_id in orphan_ids:
         if attachment_id in recovered:
             continue
-        reason = ineligible_reasons.get(attachment_id, _NO_RAW_MATCH_REASON)
+        reason_kind, reason = ineligible_reasons.get(
+            attachment_id,
+            (UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW, _NO_RAW_MATCH_REASON),
+        )
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
-        if len(samples) < sample_limit:
-            samples.append(UnrecoverableAttachment(attachment_id=attachment_id, reason=reason))
+        unrecoverable_count += 1
+        if len(samples) < effective_sample_limit:
+            samples.append(UnrecoverableAttachment(attachment_id=attachment_id, reason=reason, reason_kind=reason_kind))
 
     return OrphanedAttachmentRelinkPlan(
         orphan_count=orphan_count,
@@ -228,6 +329,7 @@ def plan_orphaned_attachment_relink(
         unrecoverable_samples=tuple(samples),
         raw_rows_scanned=scanned,
         raw_rows_total=raw_rows_total,
+        unrecoverable_samples_truncated=unrecoverable_count > len(samples),
     )
 
 
@@ -235,7 +337,7 @@ def _match_session_payload(
     payload: SessionWritePayload,
     pending: set[str],
     recovered: dict[str, RelinkableAttachment],
-    ineligible_reasons: dict[str, str],
+    ineligible_reasons: dict[str, tuple[UnrecoverableAttachmentReason, str]],
     index_conn: sqlite3.Connection,
     raw_id: str,
 ) -> None:
@@ -243,36 +345,74 @@ def _match_session_payload(
         return
     session_id = payload.session_id
     messages = payload.parsed_session.messages
-    by_native_message_id = {
-        message.provider_message_id: _message_id(session_id, message, fallback_position)
-        for fallback_position, message in enumerate(messages)
-        if message.provider_message_id
-    }
+    position_offset = _next_message_position(index_conn, session_id) if payload.append_only else 0
+    by_native_message_id, by_message_position = _attachment_message_id_maps(
+        session_id,
+        messages,
+        position_offset=position_offset,
+    )
+    if payload.append_only:
+        materialized_by_native_id, materialized_by_position = _append_materialized_attachment_maps(
+            index_conn,
+            session_id,
+            messages,
+        )
+        by_native_message_id.update(materialized_by_native_id)
+        by_message_position.update(materialized_by_position)
     # Attachments are session-level (``ParsedSession.attachments``), each
     # linked to its owning message via ``message_provider_id`` -- mirroring
-    # exactly how ``_write_attachments`` consumes them (write.py:3288-3318).
+    # exactly how ``_write_attachments`` consumes them (write.py:_attachment_message_id_maps).
+    resolved_message_ids: dict[int, str] = {}
+    attachments_by_message: dict[str, list[ParsedAttachment]] = {}
+    for attachment in payload.parsed_session.attachments:
+        attachment_id = _attachment_id(session_id, attachment)
+        message_id = (
+            by_native_message_id.get(attachment.message_provider_id) if attachment.message_provider_id else None
+        )
+        if message_id is None and attachment.message_position is not None:
+            message_id = by_message_position.get(attachment.message_position)
+        if message_id is None:
+            if attachment_id in pending:
+                ineligible_reasons.setdefault(
+                    attachment_id,
+                    (UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW, _NO_RAW_MATCH_REASON),
+                )
+            continue
+        if not _message_exists(index_conn, message_id):
+            if attachment_id in pending:
+                ineligible_reasons.setdefault(
+                    attachment_id,
+                    (UnrecoverableAttachmentReason.MESSAGE_MISSING, _MESSAGE_MISSING_REASON),
+                )
+            continue
+        resolved_message_ids[id(attachment)] = message_id
+        attachments_by_message.setdefault(message_id, []).append(attachment)
+
+    attachment_positions: dict[int, int] = {}
+    for message_id, message_group in attachments_by_message.items():
+        rows = index_conn.execute(
+            "SELECT position, attachment_id FROM attachment_refs WHERE message_id = ?",
+            (message_id,),
+        ).fetchall()
+        occupied = {int(row[0]) for row in rows if str(row[1]) not in pending}
+        attachment_positions.update(_attachment_reference_positions(message_group, occupied_positions=occupied))
     for attachment in payload.parsed_session.attachments:
         attachment_id = _attachment_id(session_id, attachment)
         if attachment_id not in pending:
             continue
-        message_id = (
-            by_native_message_id.get(attachment.message_provider_id) if attachment.message_provider_id else None
-        )
+        message_id = resolved_message_ids.get(id(attachment))
         if message_id is None:
-            ineligible_reasons.setdefault(attachment_id, _NO_RAW_MATCH_REASON)
-            continue
-        if not _message_exists(index_conn, message_id):
-            ineligible_reasons.setdefault(attachment_id, _MESSAGE_MISSING_REASON)
             continue
         recovered[attachment_id] = RelinkableAttachment(
             attachment_id=attachment_id,
             session_id=session_id,
             message_id=message_id,
-            position=_attachment_position(attachment),
+            position=attachment_positions[id(attachment)],
             upload_origin=attachment.upload_origin,
             source_url=_attachment_source_url(attachment),
             caption=_attachment_caption(attachment),
             raw_id=raw_id,
+            native_ids=_attachment_native_id_values(attachment),
         )
         pending.discard(attachment_id)
 
@@ -305,10 +445,11 @@ def relink_orphaned_attachments(
     ``attachment_refs`` row per eligible orphan (mirroring the exact INSERT
     ``_write_attachments`` uses) and refreshes that attachment's ``ref_count``
     -- it never touches an attachment this plan did not mark eligible, and it
-    is safe to call repeatedly (``INSERT OR REPLACE`` + a ref_count recompute,
-    both idempotent). ``index_conn`` must be a writable index-tier connection
-    when ``dry_run=False``; this function does not commit -- the caller owns
-    transaction/commit scope.
+    is safe to call repeatedly (the same reference identity is idempotent).
+    ``index_conn`` must be a writable index-tier connection when
+    ``dry_run=False``; this function does not commit -- the caller owns
+    transaction/commit scope. Any write error is propagated so callers cannot
+    accidentally commit a partial relink.
     """
     plan = plan_orphaned_attachment_relink(
         index_conn,
@@ -320,42 +461,43 @@ def relink_orphaned_attachments(
         raw_session_parser=raw_session_parser,
     )
     relinked = 0
-    errors: list[str] = []
     if not dry_run:
         for item in plan.eligible:
-            try:
+            index_conn.execute(
+                """
+                INSERT INTO attachment_refs (
+                    attachment_id, session_id, message_id, position, upload_origin, source_url, caption
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.attachment_id,
+                    item.session_id,
+                    item.message_id,
+                    item.position,
+                    item.upload_origin,
+                    item.source_url,
+                    item.caption,
+                ),
+            )
+            for id_kind, native_id in item.native_ids:
                 index_conn.execute(
                     """
-                    INSERT OR REPLACE INTO attachment_refs (
-                        attachment_id, session_id, message_id, position, upload_origin, source_url, caption
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
+                    VALUES (?, ?, ?)
                     """,
-                    (
-                        item.attachment_id,
-                        item.session_id,
-                        item.message_id,
-                        item.position,
-                        item.upload_origin,
-                        item.source_url,
-                        item.caption,
-                    ),
+                    (f"{item.message_id}:attachment:{item.position}", id_kind, native_id),
                 )
-                index_conn.execute(
-                    """
-                    UPDATE attachments
-                    SET ref_count = (
-                        SELECT COUNT(*) FROM attachment_refs WHERE attachment_refs.attachment_id = attachments.attachment_id
-                    )
-                    WHERE attachment_id = ?
-                    """,
-                    (item.attachment_id,),
+            index_conn.execute(
+                """
+                UPDATE attachments
+                SET ref_count = (
+                    SELECT COUNT(*) FROM attachment_refs WHERE attachment_refs.attachment_id = attachments.attachment_id
                 )
-                relinked += 1
-            except sqlite3.Error as exc:
-                logger.warning(
-                    "attachment relink: failed to write ref for attachment_id=%s: %s", item.attachment_id, exc
-                )
-                errors.append(f"{item.attachment_id}: {exc}")
+                WHERE attachment_id = ?
+                """,
+                (item.attachment_id,),
+            )
+            relinked += 1
 
     return OrphanedAttachmentRelinkResult(
         orphan_count=plan.orphan_count,
@@ -363,15 +505,17 @@ def relink_orphaned_attachments(
         relinked_count=relinked,
         unrecoverable_reason_counts=plan.unrecoverable_reason_counts,
         unrecoverable_samples=plan.unrecoverable_samples,
-        errors=tuple(errors),
+        errors=(),
     )
 
 
 __all__ = [
+    "MAX_ATTACHMENT_SAMPLE_LIMIT",
     "OrphanedAttachmentRelinkPlan",
     "OrphanedAttachmentRelinkResult",
     "RelinkableAttachment",
     "UnrecoverableAttachment",
+    "UnrecoverableAttachmentReason",
     "plan_orphaned_attachment_relink",
     "relink_orphaned_attachments",
 ]

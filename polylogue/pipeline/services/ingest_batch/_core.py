@@ -76,6 +76,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.write import (
     _message_content_hash,
+    _normalized_message_native_id,
     _timestamp_ms,
     _write_repo_edges,
     replace_parser_ingest_flag_tags,
@@ -373,7 +374,7 @@ def _needs_session_fts_repair(conn: sqlite3.Connection, session_id: str) -> bool
 
 def _existing_native_message_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
     return {
-        str(row[0])
+        str(row[0]).strip()
         for row in conn.execute(
             "SELECT native_id FROM messages WHERE session_id = ? AND native_id IS NOT NULL",
             (session_id,),
@@ -388,7 +389,8 @@ def _append_delta_payload(
     existing_native_ids = _existing_native_message_ids(conn, payload.session_id)
     delta_messages: list[ParsedMessage] = []
     for message in payload.parsed_session.messages:
-        if message.provider_message_id in existing_native_ids:
+        native_id = _normalized_message_native_id(message)
+        if native_id is not None and native_id in existing_native_ids:
             continue
         delta_messages.append(message.model_copy(update={"position": None}))
     if not delta_messages and not payload.attachment_count:
@@ -410,7 +412,7 @@ def _append_payload_changes_existing_message(
     session depends on arrival order.
     """
     existing_rows = {
-        str(row[0]): (int(row[1]), int(row[2]), row[3])
+        str(row[0]).strip(): (int(row[1]), int(row[2]), row[3])
         for row in conn.execute(
             """
             SELECT native_id, position, variant_index, content_hash
@@ -421,7 +423,8 @@ def _append_payload_changes_existing_message(
         ).fetchall()
     }
     for message in payload.parsed_session.messages:
-        existing = existing_rows.get(message.provider_message_id)
+        native_id = _normalized_message_native_id(message)
+        existing = existing_rows.get(native_id) if native_id is not None else None
         if existing is None:
             continue
         position, variant_index, existing_hash = existing

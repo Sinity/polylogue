@@ -1063,6 +1063,89 @@ def _check_blob_refs_liveness(archive_root: Path, sample_limit: int) -> ArchiveV
     )
 
 
+def _check_blob_reference_closure_for_index(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Require acquired rows to retain their exact canonical references."""
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("blob-reference-closure", "source.db or index.db not present")
+    try:
+        source_conn = _open_ro(source_path)
+    except sqlite3.Error as exc:
+        return _error_check("blob-reference-closure", f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        index_conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        source_conn.close()
+        return _error_check("blob-reference-closure", f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        from polylogue.maintenance.blob_reference_closure import (
+            closure_counts,
+            raw_reference_closure_predicate,
+        )
+
+        counts = closure_counts(source_conn, index_conn)
+        raw_sample = [
+            str(row[0])
+            for row in source_conn.execute(
+                f"""
+                SELECT r.raw_id FROM raw_sessions r
+                WHERE {raw_reference_closure_predicate()}
+                ORDER BY r.raw_id LIMIT ?
+                """,
+                (sample_limit,),
+            )
+        ]
+        attachment_sample = [
+            str(row[0])
+            for row in index_conn.execute(
+                """
+                SELECT a.attachment_id FROM attachments a
+                WHERE a.acquisition_status = 'acquired'
+                  AND NOT EXISTS (SELECT 1 FROM attachment_refs r WHERE r.attachment_id = a.attachment_id)
+                ORDER BY a.attachment_id LIMIT ?
+                """,
+                (sample_limit,),
+            )
+        ]
+    except sqlite3.Error as exc:
+        return _error_check("blob-reference-closure", f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        index_conn.close()
+        source_conn.close()
+
+    total = sum(counts.values())
+    return ArchiveVerificationCheck(
+        name="blob-reference-closure",
+        status=OutcomeStatus.ERROR if total else OutcomeStatus.OK,
+        summary=(
+            f"{counts['raw_missing_exact_count']:,} raw session(s) and "
+            f"{counts['acquired_attachment_missing_ref_count']:,} acquired attachment(s) lack canonical refs"
+            if total
+            else "every raw session and acquired attachment has canonical reference closure"
+        ),
+        count=total,
+        details=[f"raw:{raw_id}" for raw_id in raw_sample]
+        + [f"attachment:{attachment_id}" for attachment_id in attachment_sample],
+        evidence={
+            **counts,
+            "raw_sample": raw_sample,
+            "attachment_sample": attachment_sample,
+        },
+    )
+
+
+def _check_blob_reference_closure(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_blob_reference_closure_for_index(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_blob_reference_closure_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_blob_reference_closure_for_index(archive_root, index_path, sample_limit)
+
+
 # ---------------------------------------------------------------------------
 # Check: raw failure lifecycle
 # ---------------------------------------------------------------------------
@@ -2535,6 +2618,13 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         _check_raw_failure_lifecycle_at_candidate,
     ),
     ArchiveVerificationCheckSpec(
+        "blob-reference-closure",
+        "Every raw session has exactly one matching raw_payload ref and every acquired attachment is reachable by attachment_refs.",
+        _check_blob_reference_closure,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_blob_reference_closure_at_index_path,
+    ),
+    ArchiveVerificationCheckSpec(
         "pathology-zoo-invariants",
         "Every present pathology-zoo member satisfies its production-owned invariant.",
         _check_pathology_zoo_invariants,
@@ -2672,6 +2762,8 @@ REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
 #: candidate runner so ``index_path_override`` cannot silently inspect the
 #: active generation.
 REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS: tuple[str, ...] = (
+    "blob-reference-closure",
+    "raw-failure-lifecycle",
     "source-index-coverage",
     "blob-refs-liveness",
     "blob-integrity",

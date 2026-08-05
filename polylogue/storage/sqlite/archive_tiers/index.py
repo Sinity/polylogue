@@ -440,7 +440,11 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # It is computed entirely from existing action_pairs outcome columns, so a
 # fast-forward only replaces the derived view. No raw session is reparsed and
 # no persisted source/blob value changes.
-INDEX_SCHEMA_VERSION = 65
+# polylogue-fix-blob-reference-closure: v66 separates native message ids from
+# positional coordinates in the generated message_id expression. Existing
+# derived rows remain readable as opaque legacy ids, but new materialization
+# must replay raw sessions to regenerate message/block/reference identities.
+INDEX_SCHEMA_VERSION = 66
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

@@ -683,11 +683,7 @@ def write_parsed_session_to_archive(
             projection_carry_forward: _ProjectionCarryForward | None = None
             t0 = time.perf_counter()
             if merge_append:
-                row = conn.execute(
-                    "SELECT COALESCE(MAX(position) + 1, 0) FROM messages WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
-                position_offset = int(row[0] or 0) if row is not None else 0
+                position_offset = _next_message_position(conn, session_id)
                 _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
                 conn.execute(
                     """
@@ -1829,7 +1825,7 @@ def _build_message_rows(
 def _messages_insert_sql() -> str:
     spec = archive_tiers_specs.MESSAGES_SPEC
     return f"""
-        INSERT OR REPLACE INTO messages (
+        INSERT INTO messages (
             {spec.insert_column_names}
         ) VALUES ({spec.insert_placeholder_string})
         """
@@ -3326,6 +3322,60 @@ def _increment_session_counts_for_append(
     )
 
 
+def _attachment_message_id_maps(
+    session_id: str,
+    messages: list[ParsedMessage],
+    *,
+    position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] | None = None,
+) -> tuple[dict[str, str], dict[int, str]]:
+    """Build the authoritative attachment-owner lookup maps.
+
+    Native message ids are usable only when unique after the same SQLite
+    normalization used by the writer. Message positions remain the fallback
+    for id-less attachments and for attachments whose native id is ambiguous.
+    Keep this shared with repair/relink paths so they cannot invent a weaker
+    ownership rule than the production write.
+    """
+    duplicates = duplicate_native_ids if duplicate_native_ids is not None else _duplicate_message_native_ids(messages)
+    by_native_message_id: dict[str, str] = {}
+    for fallback_position, message in enumerate(messages):
+        normalized = _normalized_message_native_id(message)
+        if normalized is None or normalized in duplicates:
+            continue
+        message_id = _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicates,
+        )
+        by_native_message_id[normalized] = message_id
+        if message.provider_message_id != normalized:
+            by_native_message_id[message.provider_message_id] = message_id
+    by_message_position = {
+        message.position: _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicates,
+        )
+        for fallback_position, message in enumerate(messages)
+        if message.position is not None
+    }
+    return by_native_message_id, by_message_position
+
+
+def _next_message_position(conn: sqlite3.Connection, session_id: str) -> int:
+    """Return the position offset used when appending messages to a session."""
+    row = conn.execute(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM messages WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
 def _write_attachments(
     conn: sqlite3.Connection,
     session_id: str,
@@ -3337,36 +3387,45 @@ def _write_attachments(
     refresh_attachment_ids: set[str] | None = None,
     preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
 ) -> None:
-    by_native_message_id = {
-        message.provider_message_id: _message_id(
-            session_id,
-            message,
-            fallback_position,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        for fallback_position, message in enumerate(messages)
-        if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
-    }
-    by_message_position = {
-        message.position: _message_id(
-            session_id,
-            message,
-            fallback_position,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicate_native_ids,
-        )
-        for fallback_position, message in enumerate(messages)
-        if message.position is not None
-    }
-    touched_attachment_ids: set[str] = set()
+    attachments = tuple(attachments)
+    by_native_message_id, by_message_position = _attachment_message_id_maps(
+        session_id,
+        messages,
+        position_offset=position_offset,
+        duplicate_native_ids=duplicate_native_ids,
+    )
+    attachment_positions: dict[int, int] = {}
+    resolved_message_ids: dict[int, str] = {}
+    attachments_by_message: defaultdict[str, list[ParsedAttachment]] = defaultdict(list)
     for attachment in attachments:
-        attachment_id = _attachment_id(session_id, attachment)
         message_id = (
             by_native_message_id.get(attachment.message_provider_id) if attachment.message_provider_id else None
         )
         if message_id is None and attachment.message_position is not None:
             message_id = by_message_position.get(attachment.message_position)
+        if message_id is not None:
+            resolved_message_ids[id(attachment)] = message_id
+            attachments_by_message[message_id].append(attachment)
+    for message_id, message_group in attachments_by_message.items():
+        current_ids = {_attachment_id(session_id, attachment) for attachment in message_group}
+        occupied = (
+            {
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT position FROM attachment_refs WHERE message_id = ? AND attachment_id NOT IN ({})".format(
+                        ",".join("?" for _ in current_ids)
+                    ),
+                    (message_id, *sorted(current_ids)),
+                ).fetchall()
+            }
+            if current_ids
+            else set()
+        )
+        attachment_positions.update(_attachment_reference_positions(message_group, occupied_positions=occupied))
+    touched_attachment_ids: set[str] = set()
+    for attachment in attachments:
+        attachment_id = _attachment_id(session_id, attachment)
+        message_id = resolved_message_ids.get(id(attachment))
         if message_id is None:
             continue
         touched_attachment_ids.add(attachment_id)
@@ -3397,16 +3456,33 @@ def _write_attachments(
                 acquisition_status,
             ),
         )
-        ref_position = _attachment_position(attachment)
+        ref_position = attachment_positions[id(attachment)]
         ref_id = f"{message_id}:attachment:{ref_position}"
         # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
         # explicitly so identifiers from an older projection cannot survive.
+        existing_ref = conn.execute(
+            "SELECT attachment_id FROM attachment_refs WHERE message_id = ? AND position = ?",
+            (message_id, ref_position),
+        ).fetchone()
+        if existing_ref is not None and existing_ref[0] != attachment_id:
+            raise ValueError(
+                "distinct attachments resolved to one reference identity: "
+                f"message_id={message_id!r}, position={ref_position}, "
+                f"existing_attachment_id={existing_ref[0]!r}, incoming_attachment_id={attachment_id!r}"
+            )
         conn.execute("DELETE FROM attachment_native_ids WHERE ref_id = ?", (ref_id,))
         conn.execute(
             """
-            INSERT OR REPLACE INTO attachment_refs (
+            INSERT INTO attachment_refs (
                 attachment_id, session_id, message_id, position, upload_origin, source_url, caption
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id, position) DO UPDATE SET
+                attachment_id = excluded.attachment_id,
+                session_id = excluded.session_id,
+                upload_origin = excluded.upload_origin,
+                source_url = excluded.source_url,
+                caption = excluded.caption
+            WHERE attachment_refs.attachment_id = excluded.attachment_id
             """,
             (
                 attachment_id,
@@ -3526,7 +3602,7 @@ def _write_parent_links(
             duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
-        if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
+        if message.provider_message_id and _normalized_message_native_id(message) not in duplicate_native_ids
     }
     by_message_position = {
         message.position: _message_id(
@@ -4268,8 +4344,8 @@ def _write_session_events(
         )
         for fallback_position, message in enumerate(messages)
         if message.provider_message_id
-        and message.provider_message_id not in duplicate_native_ids
-        and message.provider_message_id not in ambiguous_source_provider_ids
+        and _normalized_message_native_id(message) not in duplicate_native_ids
+        and _normalized_message_native_id(message) not in ambiguous_source_provider_ids
     }
     wrote_provider_usage_events = False
     position = event_position_offset
@@ -6338,7 +6414,7 @@ def _extract_prefix_tail(
     inherited_refs: dict[str, str] = {}
     for index, message in enumerate(messages[:k]):
         provider_id = message.provider_message_id
-        if provider_id and provider_id not in duplicate_native_ids:
+        if provider_id and _normalized_message_native_id(message) not in duplicate_native_ids:
             inherited_refs[provider_id] = parent_composed[index][0]
     return (branch_point_message_id, "prefix-sharing", messages[k:], inherited_refs)
 
@@ -6448,29 +6524,38 @@ def _message_id(
 
 
 def _duplicate_message_native_ids(messages: Iterable[ParsedMessage]) -> frozenset[str]:
-    """Native ids that collide once normalized the same way ``messages.native_id`` stores them.
+    """Native ids that collide after the same normalization ``messages.native_id`` stores.
 
-    Counts by the surrogate-substituted (``_sqlite_text``) form, not the raw
-    provider string, so two distinct raw ids that collapse onto the same
-    U+FFFD-substituted text are treated as ambiguous too -- otherwise the
-    ``messages`` UNIQUE generated ``message_id`` column would silently
-    resolve the collision via ``INSERT OR REPLACE`` (one message vanishes)
-    while Python-side code still believed both had distinct identities.
+    Counts by the stripped, surrogate-substituted (``_sqlite_text``) form,
+    not the raw provider string, so whitespace variants and two distinct raw
+    ids that collapse onto the same U+FFFD-substituted text are treated as
+    ambiguous too. Otherwise the ``messages`` UNIQUE generated ``message_id``
+    column would silently resolve the collision via ``INSERT OR REPLACE`` (one
+    message vanishes) while Python-side code still believed both had distinct
+    identities.
     """
     counts = Counter(
-        normalized for message in messages if (normalized := _sqlite_text(message.provider_message_id)) is not None
+        normalized for message in messages if (normalized := _normalized_message_native_id(message)) is not None
     )
     return frozenset(native_id for native_id, count in counts.items() if count > 1)
 
 
+def _normalized_message_native_id(message: ParsedMessage) -> str | None:
+    native_id = _sqlite_text(message.provider_message_id)
+    if native_id is None:
+        return None
+    stripped = native_id.strip()
+    return stripped or None
+
+
 def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: frozenset[str]) -> str | None:
-    """Return the surrogate-normalized native id, or ``None`` if ambiguous.
+    """Return the storage-normalized native id, or ``None`` if ambiguous.
 
     ``duplicate_native_ids`` (from ``_duplicate_message_native_ids``) is keyed
-    by the same surrogate-substituted form computed here, so membership is
-    always compared apples-to-apples.
+    by the same stripped, surrogate-substituted form computed here, so
+    membership is always compared apples-to-apples.
     """
-    native_id = _sqlite_text(message.provider_message_id)
+    native_id = _normalized_message_native_id(message)
     if native_id in duplicate_native_ids:
         return None
     return native_id
@@ -6798,6 +6883,48 @@ def _attachment_position(attachment: ParsedAttachment) -> int:
     return int.from_bytes(digest.digest()[:4], "big")
 
 
+def _attachment_reference_positions(
+    attachments: Iterable[ParsedAttachment],
+    *,
+    occupied_positions: Iterable[int] = (),
+) -> dict[int, int]:
+    """Return stable per-object reference positions without silent collisions.
+
+    The historical four-byte position remains the primary identity so ordinary
+    archives retain their existing reference ids. When distinct attachment
+    identities share that truncated value, the canonical attachment-id order
+    keeps the first identity at the historical position and assigns the rest a
+    deterministic full-identity-derived position with collision probing. The
+    result is independent of parser/list order and is shared by write and
+    closure relink routes.
+    """
+    attachments_by_identity: dict[str, list[ParsedAttachment]] = {}
+    for attachment in attachments:
+        attachments_by_identity.setdefault(_attachment_id("", attachment), []).append(attachment)
+
+    groups: dict[int, list[tuple[str, list[ParsedAttachment]]]] = defaultdict(list)
+    for attachment_id, equivalent_attachments in attachments_by_identity.items():
+        groups[_attachment_position(equivalent_attachments[0])].append((attachment_id, equivalent_attachments))
+
+    occupied = {int(position) for position in occupied_positions}
+    assigned: dict[int, int] = {}
+    for base_position, identity_group in sorted(groups.items()):
+        for collision_index, (attachment_id, equivalent_attachments) in enumerate(sorted(identity_group)):
+            if collision_index == 0 and base_position not in occupied:
+                position = base_position
+            else:
+                position = int.from_bytes(
+                    hashlib.sha256(f"attachment-reference:{attachment_id}".encode()).digest()[:8],
+                    "big",
+                ) & ((1 << 63) - 1)
+                while position in occupied:
+                    position = (position + 1) & ((1 << 63) - 1)
+            occupied.add(position)
+            for attachment in equivalent_attachments:
+                assigned[id(attachment)] = position
+    return assigned
+
+
 def _acquire_attachment_blob(
     conn: sqlite3.Connection,
     attachment: ParsedAttachment,
@@ -6823,22 +6950,32 @@ def _attachment_caption(attachment: ParsedAttachment) -> str | None:
     return attachment.caption
 
 
-def _write_attachment_native_ids(conn: sqlite3.Connection, ref_id: str, attachment: ParsedAttachment) -> None:
+def _attachment_native_id_values(attachment: ParsedAttachment) -> tuple[tuple[str, str], ...]:
+    """Return SQLite-sanitized typed native identities for one attachment."""
     native_values = (
         ("attachment", attachment.provider_attachment_id),
         ("file", attachment.provider_file_id),
         ("drive", attachment.provider_drive_id),
         ("url", _attachment_source_url(attachment)),
     )
-    for id_kind, native_id in native_values:
-        if native_id:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
-                VALUES (?, ?, ?)
-                """,
-                (ref_id, id_kind, _sqlite_text(native_id)),
-            )
+    return tuple(
+        (id_kind, sanitized)
+        for id_kind, native_id in native_values
+        if native_id is not None
+        for sanitized in (_sqlite_text(native_id),)
+        if sanitized
+    )
+
+
+def _write_attachment_native_ids(conn: sqlite3.Connection, ref_id: str, attachment: ParsedAttachment) -> None:
+    for id_kind, native_id in _attachment_native_id_values(attachment):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
+            VALUES (?, ?, ?)
+            """,
+            (ref_id, id_kind, _sqlite_text(native_id)),
+        )
 
 
 def _hash_bytes(*parts: str) -> bytes:
