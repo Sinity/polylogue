@@ -170,7 +170,7 @@ def _seed_live_append_plan(
     path = root / f"{native_id}.jsonl"
     baseline = (
         f'{{"type":"session_meta","payload":{{"id":"{native_id}",'
-        '"timestamp":"2026-06-02T00:00:00Z"}}}\n'
+        '"timestamp":"2026-06-02T00:00:00Z"}}\n'
         '{"type":"response_item","payload":{"type":"message","id":"message-0",'
         '"role":"user","content":[{"type":"input_text","text":"zero"}]}}\n'
     ).encode()
@@ -4055,7 +4055,11 @@ def test_full_archive_lock_propagates_for_watcher_retry(
     root = tmp_path / "sessions"
     root.mkdir()
     source = root / "full-locked.jsonl"
-    source.write_bytes(b'{"type":"session_meta","payload":{"id":"full-locked"}}\n')
+    source.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"full-locked"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0",'
+        b'"role":"user","content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),

@@ -2301,7 +2301,10 @@ def is_supported_session_stream(payload: Sequence[object]) -> bool:
             return False
         record_type = _record_type(record)
         if record_type in supported_envelope_types:
-            has_envelope_record = True
+            # ``session_meta`` is the shared header for both the envelope
+            # stream and the legacy direct-message stream. It must not make a
+            # valid header-plus-direct stream look like mixed generations.
+            has_envelope_record = has_envelope_record or record_type != "session_meta"
             if not _is_envelope(record):
                 return False
             session_meta = _session_meta_record(record)
@@ -2328,11 +2331,10 @@ def is_supported_session_stream(payload: Sequence[object]) -> bool:
         # The parser supports these wire formats independently, but their
         # records cannot be combined into one trustworthy session stream.
         return False
-    # The legacy direct-message format has no session header. Its parser uses
-    # the acquisition fallback id, so a complete stream of direct records is
-    # still materializable. Header-bearing streams must prove their header;
-    # this keeps bare or truncated envelope prefixes ineligible.
-    return has_session_header or (has_direct_record and not has_envelope_record)
+    # Legacy direct-message streams and headerless envelope append deltas use
+    # the acquisition fallback id. A bare header remains ineligible because
+    # ``has_message`` is false above.
+    return has_session_header or has_direct_record or has_envelope_record
 
 
 def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession:

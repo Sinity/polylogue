@@ -21,7 +21,7 @@ from types import TracebackType
 from typing import BinaryIO, Final, Literal, cast
 
 from polylogue import logging as _polylogue_logging
-from polylogue.archive.artifact_taxonomy.models import ArtifactClassification
+from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -2516,6 +2516,16 @@ def _declared_non_session_artifact_classification(
     # same decoded-JSON shape ijson/json.loads ever produce, so the cast is
     # a type-identity bridge, not a real behavior narrowing.
     classification = classify_artifact(cast(list[JSONValue], list(sample)), provider=provider, source_path=source_path)
+    # ``UNKNOWN`` means the taxonomy cannot decide, not that the payload is
+    # a proved sidecar.  Codex append deltas intentionally omit the
+    # session_meta header and become materializable only after the live
+    # revision layer supplies its recorded native-id hint.  Treating that
+    # undecided partial stream as an artifact skips revision binding and
+    # silently loses its append frontier.  Keep the raw evidence on the
+    # normal parser path, which either uses the hint or records a typed parse
+    # failure; only a positive non-session cohort may bypass session parsing.
+    if classification.kind is ArtifactKind.UNKNOWN:
+        return None
     return classification if not classification.parse_as_session else None
 
 

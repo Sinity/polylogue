@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
-from itertools import islice
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
@@ -2147,16 +2146,9 @@ class LiveBatchProcessor:
                     fallback_id = Path(record.source_path).stem
                     blob_hash = record.blob_hash or record.raw_id
                     acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
-                    artifact_sample: list[object] = []
-                    if payload is not None and Path(record.source_path).suffix.lower() in {".jsonl", ".ndjson"}:
-                        try:
-                            artifact_sample = list(islice(_iter_json_stream(BytesIO(payload), source_name), 64))
-                        except Exception:
-                            artifact_sample = []
                     artifact_classification = _declared_non_session_artifact_classification(
                         provider,
                         record.source_path,
-                        sample=artifact_sample,
                     )
                     if artifact_classification is not None:
                         explicit_raw_id = record.raw_id if record.blob_hash is not None else None

@@ -248,6 +248,32 @@ def test_parse_stream_refuses_non_conversational_content_with_no_path_rule(tmp_p
     assert sessions == []
 
 
+def test_parse_stream_keeps_unheadered_codex_append_for_hint_materialization(tmp_path: Path) -> None:
+    """A Codex append delta is undecided by taxonomy, not a proved artifact.
+
+    The live revision path provides the archived session identity as the
+    fallback, so this real append envelope must reach the parser.  Returning
+    ``[]`` here causes live admission to classify the range as a sidecar and
+    drops byte-authoritative revisions before they can update the session.
+    """
+    source_path = tmp_path / "sessions" / "append.jsonl"
+    payload = BytesIO(
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
+        b'"role":"assistant","content":[{"type":"output_text","text":"one"}]}}\n'
+    )
+
+    sessions = revision_backfill._parse_stream(
+        Provider.CODEX,
+        payload,
+        str(source_path),
+        fallback_id_override="append-owner",
+    )
+
+    assert len(sessions) == 1
+    assert sessions[0].provider_session_id == "append-owner"
+    assert [message.text for message in sessions[0].messages] == ["one"]
+
+
 def test_parse_one_still_replays_real_claude_code_sessions_with_no_path_rule(tmp_path: Path) -> None:
     """Guard against the regression-direction failure mode: the content gate
     added for polylogue-9ykn must not start refusing genuine Claude Code
