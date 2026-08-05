@@ -176,14 +176,23 @@ def has_resumable_daemon_bulk_rebuild_transaction(root: Path) -> bool:
     threshold -- abandoning a partially-built generation mid-flight would
     waste every page already replayed into it.
     """
-    store = IndexGenerationStore.for_archive_root(root)
+    anchor = root / ".index-active-pointer"
+    if not anchor.exists() and not anchor.is_symlink():
+        return False
+    location = ArchiveLocation.resolve(root)
+    owned = OwnedArchiveLocation.acquire(location)
     try:
-        transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
-    except FileNotFoundError:
-        return False
-    except (OSError, ValueError, TypeError, KeyError):
-        return False
-    return transaction.status not in _TERMINAL_NOT_RESUMABLE
+        assert_owns_archive_location(owned, location)
+        store = IndexGenerationStore(location)
+        try:
+            transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
+        return transaction.status not in _TERMINAL_NOT_RESUMABLE
+    finally:
+        owned.release()
 
 
 async def run_daemon_bulk_rebuild_pass(
@@ -223,8 +232,16 @@ async def run_daemon_bulk_rebuild_pass(
     if transaction.status == "promoted":
         return None
 
-    store = IndexGenerationStore.for_archive_root(root)
-    page = await asyncio.to_thread(store.next_raw_page, transaction, limit=batch_size)
+    location = ArchiveLocation.resolve(root)
+    owned = await asyncio.to_thread(OwnedArchiveLocation.acquire, location)
+    try:
+        await asyncio.to_thread(assert_owns_archive_location, owned, location)
+        await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
+        store = IndexGenerationStore(location)
+        await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
+        page = await asyncio.to_thread(store.next_raw_page, transaction, limit=batch_size)
+    finally:
+        owned.release()
     raw_ids = [raw_id for raw_id, _blob_hash_hex, _blob_size in page.rows]
     if raw_ids:
         warmed = await asyncio.to_thread(
