@@ -41,6 +41,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab seed-receipt-compare",
     "lab snapshot read-surface",
     "lab test-economics",
+    "lab testmon-blind-spots",
     "lab testmon-proof",
 )
 
@@ -482,6 +483,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "for bounded unrelated-change selection."
         ),
         examples=("devtools lab testmon-proof", "devtools lab testmon-proof --json"),
+    ),
+    CommandSpec(
+        "lab testmon-blind-spots",
+        "verification lab",
+        "Audit coverage-known files that are absent from the testmon fingerprint graph.",
+        "devtools.testmon_blind_spot_audit",
+        use_when=(
+            "Inspect an existing coverage JSON report against an existing pytest-testmon database. "
+            "Declaration-only modules are reported separately from executable validator risk; this command "
+            "does not run pytest or regenerate coverage."
+        ),
+        examples=(
+            "devtools lab testmon-blind-spots",
+            "devtools lab testmon-blind-spots --json",
+            "devtools lab testmon-blind-spots --coverage-json path/to/coverage.json --testmon-db path/to/testmondata",
+        ),
     ),
     CommandSpec(
         "lab pytest-witness-repetitions",
