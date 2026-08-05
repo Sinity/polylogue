@@ -22,6 +22,7 @@ class _WireFormatContext(Protocol):
     wire_format: WireFormat
     _semantic_gen: SemanticValueGenerator | None
     _active_record_bucket: tuple[str, str] | None
+    _coverage_witness_mode: bool
 
     def _generate_from_schema(
         self,
@@ -119,7 +120,14 @@ def _generate_tree_json(
     nodes: list[SyntheticRecord] = []
 
     for i in range(n_messages):
-        node = _coerce_record(self._generate_from_schema(node_schema, rng))
+        node_path = "$.properties." + tree_cfg.container_path + ".additionalProperties.*"
+        node = _coerce_record(
+            self._generate_from_schema(
+                node_schema,
+                rng,
+                path=node_path if self._coverage_witness_mode else "$",
+            )
+        )
 
         node_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
         node[tree_cfg.key_field] = node_id
@@ -184,7 +192,16 @@ def _generate_linear_json(
 
     messages: list[SyntheticRecord] = []
     for i in range(n_messages):
-        msg = _coerce_record(self._generate_from_schema(item_schema, rng))
+        item_path = (
+            "$.properties." + ".properties.".join(msgs_parts) + ".items[*]" if self._coverage_witness_mode else "$"
+        )
+        msg = _coerce_record(
+            self._generate_from_schema(
+                item_schema,
+                rng,
+                path=item_path,
+            )
+        )
         role = roles[i % len(roles)]
         self._ensure_wire_format(msg, role, rng, i, base_ts=base_ts, theme=theme)
         _advance_semantic_turn(self)

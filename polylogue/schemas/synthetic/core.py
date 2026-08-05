@@ -63,6 +63,10 @@ class SyntheticCorpus:
         self._max_synthetic_string_length = max_string_length
         self._active_profile_tokens: tuple[str, ...] = ()
         self._active_record_bucket: tuple[str, str] | None = None
+        self._coverage_branch_choices: dict[str, int] = {}
+        self._coverage_type_choices: dict[str, str] = {}
+        self._coverage_null_paths: set[str] = set()
+        self._coverage_witness_mode = False
         self._generation_state = SyntheticGenerationState(
             relation_solver=RelationConstraintSolver(schema, max_string_length=max_string_length),
             semantic_generator=None,
@@ -402,6 +406,8 @@ class SyntheticCorpus:
         max_depth: int = 6,
         path: str = "$",
     ) -> JSONValue:
+        if self._coverage_witness_mode and max_depth == 6:
+            max_depth = 24
         return synthetic_runtime._generate_from_schema(
             self,
             schema,

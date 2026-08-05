@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
+from polylogue.schemas import validator as validator_module
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, wire_formats
 from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
@@ -16,6 +20,7 @@ from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRouteError
+from polylogue.schemas.validator import SchemaValidator
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 
 
@@ -138,6 +143,142 @@ def test_crossed_property_values_cannot_satisfy_each_others_types() -> None:
 
     assert any(keyword.startswith("type:integer@$.properties.count") for keyword in coverage.missing_keywords)
     assert any(keyword.startswith("type:string@$.properties.label") for keyword in coverage.missing_keywords)
+    assert not coverage.complete
+
+
+def test_frequency_optional_field_is_an_obligation_even_when_omitted() -> None:
+    schema: SchemaRecord = {
+        "type": "object",
+        "properties": {
+            "required_value": {"type": "string"},
+            "optional_value": {"type": "integer", "x-polylogue-frequency": 0.0},
+        },
+        "required": ["required_value"],
+    }
+
+    coverage = wire_formats.construct_coverage(schema, ({"required_value": "present"},))
+
+    optional_path = "type:integer@$.properties.optional_value"
+    assert optional_path in coverage.schema_keywords
+    assert optional_path in coverage.missing_keywords
+    assert not coverage.complete
+
+
+def test_coverage_witnesses_select_nested_array_union_branches() -> None:
+    schema: SchemaRecord = {
+        "type": "object",
+        "properties": {
+            "choice": {"oneOf": [{"type": "integer"}, {"type": "string"}]},
+            "items": {
+                "type": "array",
+                "items": {"oneOf": [{"type": "integer"}, {"type": "string"}]},
+            },
+            "typed_choice": {"type": ["object", "string"]},
+        },
+    }
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
+
+    payloads = [json.loads(raw) for raw in wire_formats.generate_coverage_witnesses(corpus, seed=31)]
+
+    assert {type(payload["choice"]) for payload in payloads} >= {int, str}
+    assert {type(payload["items"][0]) for payload in payloads} >= {int, str}
+    assert {type(payload["typed_choice"]) for payload in payloads} >= {dict, str}
+
+
+def test_coverage_witnesses_keep_nested_union_choices_independent() -> None:
+    schema: SchemaRecord = {
+        "oneOf": [
+            {"type": "string"},
+            {"oneOf": [{"type": "integer"}, {"type": "boolean"}]},
+        ]
+    }
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
+
+    payloads = [json.loads(raw) for raw in wire_formats.generate_coverage_witnesses(corpus, seed=17, max_witnesses=8)]
+
+    assert any(isinstance(payload, str) for payload in payloads)
+    assert 0 in payloads
+    assert True in payloads
+
+
+def test_receipt_generation_and_validation_use_injected_registry_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = SchemaRegistry()
+    selected_schema = registry.get_element_schema("chatgpt", version="default", element_kind="session_document")
+    assert selected_schema is not None
+    divergent_schema = deepcopy(selected_schema)
+    properties = divergent_schema.setdefault("properties", {})
+    assert isinstance(properties, dict)
+    properties["memory_scope"] = {"type": "integer", "x-polylogue-frequency": 1.0}
+    properties["registry_only_marker"] = {
+        "type": "integer",
+        "x-polylogue-frequency": 0.0,
+    }
+    required = divergent_schema.setdefault("required", [])
+    assert isinstance(required, list)
+    required.append("memory_scope")
+    original_loader = registry.get_element_schema
+
+    def load_divergent_schema(
+        provider: str,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> SchemaRecord | None:
+        if provider == "chatgpt" and element_kind == "session_document":
+            return divergent_schema
+        return original_loader(provider, version=version, element_kind=element_kind)
+
+    monkeypatch.setattr(registry, "get_element_schema", load_divergent_schema)
+    captured_schemas: list[Mapping[str, object]] = []
+
+    class CapturingValidator(SchemaValidator):
+        def __init__(
+            self,
+            schema: Mapping[str, object],
+            strict: bool = True,
+            provider: Provider | None = None,
+        ) -> None:
+            captured_schemas.append(schema)
+            super().__init__(schema, strict=strict, provider=provider)
+
+    monkeypatch.setattr(validator_module, "SchemaValidator", CapturingValidator)
+    receipt = wire_formats.build_wire_support_receipt(registry=registry)
+
+    entry = next(item for item in receipt.entries if item.provider == "chatgpt")
+    assert entry.schema_valid is True
+    assert entry.healthy
+    assert any(schema is divergent_schema for schema in captured_schemas)
+    assert entry.construct_coverage is not None
+    marker = "type:integer@$.properties.registry_only_marker"
+    assert marker in entry.construct_coverage.schema_keywords
+    assert marker in entry.construct_coverage.exercised_keywords
+
+
+def test_claude_code_route_only_waives_unrepresentable_nested_content() -> None:
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    entry = next(item for item in receipt.entries if item.provider == "claude-code")
+
+    assert entry.construct_coverage is not None
+    assert entry.construct_coverage.complete
+    assert not any(
+        "snapshot.properties.trackedFileBackups" in keyword
+        for keyword in entry.construct_coverage.nonrepresentable_keywords
+    )
+    assert all(
+        "$.properties.message.properties.content.anyOf[1].items[*].properties.content.anyOf[1]" in keyword
+        for keyword in entry.construct_coverage.nonrepresentable_keywords
+    )
+
+
+def test_unmatched_union_does_not_count_as_exercised() -> None:
+    schema: SchemaRecord = {
+        "oneOf": [{"type": "integer"}, {"type": "string"}],
+    }
+    coverage = wire_formats.construct_coverage(schema, (True,))
+
+    assert "oneOf" in coverage.missing_keywords
     assert not coverage.complete
 
 
