@@ -17,11 +17,15 @@ from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisi
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
 from polylogue.maintenance.sharded_rebuild import shard_raw_ids
 from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
 from polylogue.storage.archive_identity import OwnedArchiveLocation
-from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore, IndexRebuildTransaction
+from polylogue.storage.index_generation import (
+    IndexGeneration,
+    IndexGenerationStore,
+    IndexRebuildTransaction,
+    rebuild_source_evidence_snapshot,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
@@ -227,7 +231,7 @@ def test_deadline_checkpoint_revalidates_receipt_before_persisting_state(
     receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
     store = IndexGenerationStore.for_archive_root(root)
     transaction = store.create_transaction(
-        source_snapshot=rebuild_source_revision_snapshot(root), operation_id="deadline-checkpoint"
+        source_snapshot=rebuild_source_evidence_snapshot(root), operation_id="deadline-checkpoint"
     )
     transaction = store.checkpoint_transaction(transaction, status="running", derived_stores_cleared=True)
     transaction_path = root / ".index-rebuild-transactions" / "deadline-checkpoint.json"

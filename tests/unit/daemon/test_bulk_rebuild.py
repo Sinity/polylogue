@@ -219,11 +219,13 @@ def test_daemon_bulk_pass_uses_rebuild_evidence_snapshot_before_replay(
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     _seed_corpus(tmp_path, count=2)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path / "receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     evidence_snapshot = rebuild_source_evidence_snapshot(tmp_path)
     full_row_snapshot = source_revision_snapshot(tmp_path)
     assert full_row_snapshot != evidence_snapshot
 
-    transaction = resolve_or_start_daemon_bulk_rebuild_transaction(tmp_path)
+    transaction = resolve_or_start_daemon_bulk_rebuild_transaction(tmp_path, schema_inference_receipt_path=receipt_path)
     assert transaction.source_snapshot == evidence_snapshot
     assert transaction.source_snapshot != full_row_snapshot
 
