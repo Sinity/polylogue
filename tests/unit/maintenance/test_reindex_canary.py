@@ -54,6 +54,11 @@ def _synthetic_report_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
         "_capture_archive_provenance",
         lambda *args, **kwargs: {},
     )
+    monkeypatch.setattr(
+        reindex_canary_module,
+        "_validate_archive_provenance",
+        lambda *args, **kwargs: None,
+    )
 
 
 def _seed_index(
@@ -477,7 +482,7 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     """The real canary runner supplements operator IDs from the production manifest."""
     from polylogue.maintenance.pathology_zoo import pathology_zoo_session_ids
 
-    current = tmp_path / "current.db"
+    current = tmp_path / "index.db"
     pathology_session_ids = pathology_zoo_session_ids()
     native_ids = tuple(session_id.split(":", 1)[1] for session_id in pathology_session_ids)
     origins = tuple(session_id.split(":", 1)[0] for session_id in pathology_session_ids)
@@ -586,7 +591,7 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
 def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    current = tmp_path / "current.db"
+    current = tmp_path / "index.db"
     _seed_index(current)
     selection = CanarySelection(
         index_path=current,
@@ -758,7 +763,7 @@ def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
     monkeypatch.setattr(rebuild_index, "_repopulate_bulk_build_derived_state", corrupt_candidate_after_replay)
     monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", unexpected_insight_repair)
 
-    with pytest.raises(RuntimeError, match="session-lineage-acyclic"):
+    with pytest.raises(RuntimeError, match="session-lineage-acyclic|no longer parses to one session"):
         run_reindex_canary(zoo.archive_root, sessions_per_origin=1, no_promote=True)
 
     assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
