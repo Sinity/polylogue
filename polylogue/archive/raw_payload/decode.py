@@ -330,15 +330,14 @@ def build_raw_payload_envelope(
     fallback_provider: str | Provider,
     payload_provider: str | Provider | None = None,
     jsonl_dict_only: bool = False,
-    sqlite_immutable: bool = True,
+    sqlite_immutable: bool = False,
 ) -> RawPayloadEnvelope:
     """Decode raw payload and attach canonical provider/wire-format identity.
 
-    Path-backed SQLite inspection defaults to SQLite's immutable read mode.
-    Callers that inspect retained content-addressed blobs therefore cannot
-    accidentally create ``-wal`` or ``-shm`` namespace entries by omitting a
-    safety flag. Live-source discovery keeps its separate parser path because
-    it may need the source database's active WAL.
+    The default preserves live-source marker semantics, where an active SQLite
+    database may need its WAL. Callers inspecting retained content-addressed
+    blobs must pass ``sqlite_immutable=True`` so SQLite cannot create ``-wal``
+    or ``-shm`` namespace entries beside the blob.
 
     When *raw_content* is a :class:`~pathlib.Path`, JSONL payloads are
     decoded line-by-line from disk before being materialized into a
