@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
+from polylogue.core.json import JSONValue
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
 from tests.infra.inferred_corpus import (
     CorpusManifestKey,
+    InferredCorpusConvergenceHandoff,
     InferredCorpusManifest,
+    assert_inferred_corpus_convergence_handoff_complete,
     assert_inferred_corpus_manifest_complete,
+    build_inferred_corpus_convergence_handoff,
     compile_inferred_corpus_manifest,
 )
 
@@ -213,9 +218,81 @@ def test_unsupported_json_schema_construct_is_keyed_and_receiptable() -> None:
     assert target.spec is None
     assert target.unsupported is not None
     assert target.unsupported.reason == "unsupported_json_schema_construct"
-    assert target.unsupported.details == ("enum",)
+    assert target.unsupported.details == ("enum", "required")
     assert target.key.construct_support[-1].construct == "type"
     assert target.key.construct_support[-1].state == "supported"
     assert manifest.package_receipt == receipt
     assert manifest.receipt_state == "package_receipt_attached"
     assert manifest.to_payload()["package_receipt"] == receipt
+
+
+def test_every_actual_schema_keyword_is_keyed_and_unhandled_constraints_fail_closed() -> None:
+    registry = _registry()
+    manifest = compile_inferred_corpus_manifest(registry=registry)
+
+    observed_constructs: set[str] = set()
+    for entry in manifest.entries:
+        observed_constructs.update(item.construct for item in entry.key.construct_support)
+
+    assert {"$id", "$schema", "maxLength", "minLength", "required"} <= observed_constructs
+    browser_entry = next(entry for entry in manifest.entries if entry.key.provider == "browser-capture")
+    construct_states = {item.construct: item.state for item in browser_entry.key.construct_support}
+    assert construct_states["minLength"] == "unsupported"
+    assert construct_states["maxLength"] == "unsupported"
+    assert construct_states["required"] == "unsupported"
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value"),
+    [
+        ("pattern", "^[A-Z]+$"),
+        ("format", "uuid"),
+        ("minimum", 1),
+        ("maxItems", 1),
+    ],
+)
+def test_unhandled_standard_constraints_are_typed_unsupported_records(keyword: str, value: object) -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    provider = next(name for name in registry.list_providers() if name in PROVIDER_WIRE_FORMATS)
+    catalog = registry.load_package_catalog(provider)
+    assert catalog is not None
+    package = catalog.packages[0]
+    element = package.elements[0]
+    schema = registry.get_element_schema(provider, version=package.version, element_kind=element.element_kind)
+    assert isinstance(schema, dict)
+    mutated = dict(schema)
+    raw_properties = mutated.get("properties")
+    assert isinstance(raw_properties, dict)
+    properties: dict[str, JSONValue] = dict(raw_properties)
+    properties["unhandled_constraint"] = {"type": "string", keyword: cast(JSONValue, value)}
+    mutated["properties"] = properties
+    proxy.schema_overrides[(provider, package.version, element.element_kind)] = mutated
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy)  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (provider, package.version, element.element_kind)
+    )
+
+    assert target.spec is None
+    assert target.unsupported is not None
+    assert target.unsupported.reason == "unsupported_json_schema_construct"
+    assert keyword in target.unsupported.details
+    assert (keyword, "unsupported") in {(item.construct, item.state) for item in target.key.construct_support}
+
+
+def test_convergence_handoff_rejects_an_omitted_supported_spec() -> None:
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
+    handoff = build_inferred_corpus_convergence_handoff(manifest)
+    assert handoff.specs
+
+    incomplete = InferredCorpusConvergenceHandoff(
+        manifest_id=handoff.manifest_id,
+        specs=handoff.specs[1:],
+    )
+
+    with pytest.raises(AssertionError, match="omitted or substituted"):
+        assert_inferred_corpus_convergence_handoff_complete(manifest, incomplete)

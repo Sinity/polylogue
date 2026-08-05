@@ -38,36 +38,119 @@ PackageReceipt: TypeAlias = JSONDocument
 # arbitrary unknown keys for the current corpus contract.
 _SUPPORTED_SCHEMA_CONSTRUCTS = frozenset(
     {
-        "type",
-        "properties",
-        "required",
-        "items",
-        "anyOf",
-        "oneOf",
+        "$anchor",
+        "$comment",
+        "$id",
+        "$schema",
         "additionalProperties",
+        "anyOf",
+        "default",
+        "deprecated",
+        "description",
+        "examples",
+        "items",
+        "oneOf",
+        "properties",
+        "readOnly",
+        "title",
+        "type",
+        "writeOnly",
     }
 )
-_UNSUPPORTED_SCHEMA_CONSTRUCTS = frozenset(
+
+# The synthetic runtime can select structural branches and emit declared
+# properties, but it does not validate generated values against JSON Schema.
+# Every assertion keyword outside the explicit structural subset therefore
+# fails closed. This keeps a manifest spec from implying conformance to a
+# pattern, format, range, collection bound, or other constraint it cannot
+# prove.
+_STANDARD_SCHEMA_KEYWORDS = frozenset(
     {
+        "$anchor",
+        "$comment",
         "$defs",
+        "$dynamicAnchor",
+        "$dynamicRef",
+        "$id",
+        "$recursiveAnchor",
+        "$recursiveRef",
         "$ref",
+        "$schema",
+        "$vocabulary",
+        "additionalProperties",
         "allOf",
+        "anyOf",
         "const",
         "contains",
+        "contentEncoding",
+        "contentMediaType",
+        "contentSchema",
+        "default",
         "definitions",
-        "dependencies",
+        "dependentRequired",
         "dependentSchemas",
+        "dependencies",
+        "deprecated",
+        "description",
+        "else",
         "enum",
+        "examples",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "format",
+        "formatAssertion",
         "if",
+        "items",
+        "maxContains",
+        "maxItems",
+        "maxLength",
+        "maxProperties",
+        "maximum",
+        "minContains",
+        "minItems",
+        "minLength",
+        "minProperties",
+        "minimum",
+        "multipleOf",
         "not",
+        "oneOf",
+        "pattern",
         "patternProperties",
         "prefixItems",
+        "properties",
+        "propertyNames",
+        "readOnly",
+        "required",
+        "then",
+        "title",
+        "type",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "uniqueItems",
+        "writeOnly",
+    }
+)
+_SCHEMA_MAPPING_KEYWORDS = frozenset(
+    {
+        "$defs",
+        "additionalProperties",
+        "contentSchema",
+        "contains",
+        "dependentSchemas",
+        "dependencies",
+        "else",
+        "if",
+        "items",
+        "not",
+        "patternProperties",
+        "properties",
         "propertyNames",
         "then",
         "unevaluatedItems",
         "unevaluatedProperties",
     }
 )
+_SCHEMA_ARRAY_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
 
 
 @dataclass(frozen=True, order=True)
@@ -189,8 +272,16 @@ class InferredCorpusManifest:
         return {"manifest_id": self.manifest_id, **self._payload_without_id()}
 
 
+@dataclass(frozen=True)
+class InferredCorpusConvergenceHandoff:
+    """Exact executable manifest subset admitted to the convergence loop."""
+
+    manifest_id: str
+    specs: tuple[CorpusSpec, ...]
+
+
 def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
-    """Collect structural JSON Schema keywords without treating field names as keywords."""
+    """Census every schema-scope keyword without treating property names as keywords."""
 
     found: dict[str, ConstructSupportState] = {}
 
@@ -198,40 +289,52 @@ def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
         if not isinstance(node, Mapping):
             return
         for key, value in node.items():
-            if key in _SUPPORTED_SCHEMA_CONSTRUCTS:
-                found[key] = "supported"
-            elif key in _UNSUPPORTED_SCHEMA_CONSTRUCTS:
-                found[key] = "unsupported"
+            if not isinstance(key, str):
+                continue
+            if key.startswith("x-"):
+                continue
+            found[key] = "supported" if key in _SUPPORTED_SCHEMA_CONSTRUCTS else "unsupported"
 
-            if key == "properties" and isinstance(value, Mapping):
-                for child in value.values():
-                    visit(child)
-            elif key in {
-                "items",
-                "additionalProperties",
-                "patternProperties",
-                "propertyNames",
-                "contains",
-                "if",
-                "then",
-                "unevaluatedItems",
-                "unevaluatedProperties",
-                "not",
-            }:
-                visit(value)
-            elif key in {"anyOf", "oneOf", "allOf", "prefixItems"} and isinstance(value, Sequence):
+            if key in _SCHEMA_MAPPING_KEYWORDS and isinstance(value, Mapping):
+                if key in {"$defs", "dependentSchemas", "dependencies", "patternProperties", "properties"}:
+                    for child in value.values():
+                        visit(child)
+                else:
+                    visit(value)
+            elif key in _SCHEMA_ARRAY_KEYWORDS and isinstance(value, Sequence) and not isinstance(value, str):
                 for child in value:
                     visit(child)
-            elif key in {"$defs", "definitions", "dependentSchemas"} and isinstance(value, Mapping):
-                for child in value.values():
-                    visit(child)
-            elif key == "dependencies" and isinstance(value, Mapping):
-                for child in value.values():
-                    if isinstance(child, Mapping):
-                        visit(child)
 
     visit(schema)
     return tuple(ConstructSupport(construct, found[construct]) for construct in sorted(found))
+
+
+def build_inferred_corpus_convergence_handoff(
+    manifest: InferredCorpusManifest,
+) -> InferredCorpusConvergenceHandoff:
+    """Bind every supported manifest spec to one convergence-property invocation."""
+
+    handoff = InferredCorpusConvergenceHandoff(manifest_id=manifest.manifest_id, specs=manifest.supported_specs)
+    assert_inferred_corpus_convergence_handoff_complete(manifest, handoff)
+    return handoff
+
+
+def assert_inferred_corpus_convergence_handoff_complete(
+    manifest: InferredCorpusManifest,
+    handoff: InferredCorpusConvergenceHandoff,
+) -> None:
+    """Reject a stale, omitted, or substituted convergence handoff."""
+
+    if handoff.manifest_id != manifest.manifest_id:
+        raise AssertionError(
+            "inferred corpus convergence handoff belongs to a different manifest: "
+            f"expected={manifest.manifest_id!r}, actual={handoff.manifest_id!r}"
+        )
+    if handoff.specs != manifest.supported_specs:
+        raise AssertionError(
+            "inferred corpus convergence handoff omitted or substituted supported specs: "
+            f"expected={manifest.supported_specs!r}, actual={handoff.specs!r}"
+        )
 
 
 def _stable_seed(key: CorpusManifestKey) -> int:
@@ -380,10 +483,13 @@ def compile_inferred_corpus_manifest(
 __all__ = [
     "ConstructSupport",
     "CorpusManifestKey",
+    "InferredCorpusConvergenceHandoff",
     "InferredCorpusManifest",
     "InferredCorpusManifestEntry",
     "PackageReceipt",
     "UnsupportedCorpusRecord",
+    "assert_inferred_corpus_convergence_handoff_complete",
     "assert_inferred_corpus_manifest_complete",
+    "build_inferred_corpus_convergence_handoff",
     "compile_inferred_corpus_manifest",
 ]
