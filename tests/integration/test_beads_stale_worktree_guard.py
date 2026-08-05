@@ -19,6 +19,20 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _installed_bd() -> str | None:
+    """Resolve the Nix-installed binary even when this checkout's shim is on PATH."""
+    configured = os.environ.get("POLYLOGUE_BD_REAL")
+    if configured and Path(configured).resolve() != (ROOT / "scripts/bd").resolve():
+        return configured
+    scripts_dir = str((ROOT / "scripts").resolve())
+    search_path = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if Path(entry or ".").resolve() != Path(scripts_dir)
+    )
+    return shutil.which("bd", path=search_path)
+
+
 def _run(command: list[str], cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
@@ -98,12 +112,21 @@ def _set_export_timestamp(repo: Path, issue_id: str, updated_at: str) -> None:
     export_path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
 
 
+def _set_export_row(repo: Path, issue_id: str, **updates: object) -> None:
+    export_path = repo / ".beads" / "issues.jsonl"
+    rows = [json.loads(line) for line in export_path.read_text().splitlines()]
+    matching_rows = [row for row in rows if row.get("id") == issue_id]
+    assert len(matching_rows) == 1
+    matching_rows[0].update(updates)
+    export_path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
+
+
 def _setup_stale_worktree(
     tmp_path: Path,
     import_auto: bool,
     stale_snapshot_updated_at: str | None = None,
 ) -> tuple[str, dict[str, str], Path, Path, Path]:
-    bd = shutil.which("bd")
+    bd = _installed_bd()
     if bd is None:
         pytest.skip("bd is not installed")
 
@@ -111,12 +134,18 @@ def _setup_stale_worktree(
     wrapper_dir = tmp_path / "bin"
     wrapper_dir.mkdir()
     invocation_log = tmp_path / "bd-invocations.log"
-    wrapper = wrapper_dir / "bd"
-    wrapper.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$BD_GUARD_COMMAND_LOG"\nexec "$BD_GUARD_REAL_BD" "$@"\n')
-    wrapper.chmod(0o755)
+    real_wrapper = wrapper_dir / "bd-real"
+    real_wrapper.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$BD_GUARD_COMMAND_LOG"\nexec "$BD_GUARD_REAL_BD" "$@"\n'
+    )
+    real_wrapper.chmod(0o755)
     env["BD_GUARD_COMMAND_LOG"] = str(invocation_log)
     env["BD_GUARD_REAL_BD"] = bd
-    env["PATH"] = str(wrapper_dir) + os.pathsep + env["PATH"]
+    env["POLYLOGUE_BD_REAL"] = str(real_wrapper)
+    # The lane deliberately does not contain a copy of the new files. The
+    # machine-level devshell path supplies the current checkout's stable
+    # wrapper, just as an operator shell does after entering this repo.
+    env["PATH"] = os.pathsep.join((str(ROOT / "scripts"), str(wrapper_dir), env["PATH"]))
     repo = tmp_path / "coordinator"
     lane = tmp_path / "stale-lane"
     repo.mkdir()
@@ -127,12 +156,11 @@ def _setup_stale_worktree(
     _run([bd, "init", "--prefix", "guard", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents"], repo, env)
     _write_import_policy(repo, import_auto)
 
-    hooks_dir = repo / ".githooks"
-    hooks_dir.mkdir()
-    hook_path = hooks_dir / "post-checkout"
-    hook_path.write_text((ROOT / ".beads-hooks" / "post-checkout").read_text())
-    hook_path.chmod(0o755)
-    _run(["git", "config", "core.hooksPath", str(hooks_dir)], repo, env)
+    # Keep setup commits hook-free, then point the linked lane at the actual
+    # production hook path for the checkout that exercises the guard.
+    setup_hooks = repo / ".setup-hooks"
+    setup_hooks.mkdir()
+    _run(["git", "config", "core.hooksPath", str(setup_hooks)], repo, env)
 
     _run([bd, "create", "coordinator-owned issue", "--type", "bug"], repo, env)
     _run([bd, "export", "-o", ".beads/issues.jsonl"], repo, env)
@@ -142,8 +170,9 @@ def _setup_stale_worktree(
     if stale_snapshot_updated_at is not None:
         _set_export_timestamp(repo, issue_id, stale_snapshot_updated_at)
 
-    _run(["git", "add", ".beads", ".githooks"], repo, env)
+    _run(["git", "add", ".beads"], repo, env)
     _run(["git", "commit", "-m", "baseline Beads snapshot"], repo, env)
+    _run(["git", "config", "core.hooksPath", str(ROOT / ".beads-hooks")], repo, env)
     _run(["git", "branch", "stale-lane"], repo, env)
     _run(["git", "worktree", "add", str(lane), "stale-lane"], repo, env)
     _run([bd, "close", issue_id, "--reason", "coordinator close"], repo, env)
@@ -160,17 +189,34 @@ def test_stale_worktree_plain_read_preserves_coordinator_write_when_env_reenable
     it to ``true`` only for the stale lane. The production shim must clear that
     unsafe Viper override before it can re-enable imports.
     """
-    issue_id, env, _repo, lane, invocation_log = _setup_stale_worktree(tmp_path, import_auto=False)
+    issue_id, env, _repo, lane, invocation_log = _setup_stale_worktree(tmp_path, import_auto=True)
     env["BD_IMPORT_AUTO"] = "true"
     _run(["git", "switch", "--detach", "HEAD"], lane, env)
 
-    shown = _json_from_output(_run([env["BD_GUARD_REAL_BD"], "show", issue_id, "--json"], lane, env).stdout)
+    shown = _json_from_output(_run(["bd", "show", issue_id, "--json"], lane, env).stdout)
     assert isinstance(shown, list) and len(shown) == 1
     assert shown[0]["status"] == "closed"
 
     delegated_commands = invocation_log.read_text().splitlines()
-    imported = any(command.startswith("import --quiet ") for command in delegated_commands)
-    assert not imported
+    imported = any(command.startswith("import ") for command in delegated_commands)
+    assert not imported, "the stale row must be filtered before the real bd entry point sees it"
+
+
+def test_bd_wrapper_preserves_legitimate_newer_snapshot_import(tmp_path: Path) -> None:
+    """The guard rejects stale rows without disabling genuinely newer rows."""
+    issue_id, env, _repo, lane, _invocation_log = _setup_stale_worktree(tmp_path, import_auto=True)
+    _set_export_row(
+        lane,
+        issue_id,
+        status="open",
+        updated_at="2099-01-01T00:00:00Z",
+        title="legitimate newer snapshot",
+    )
+
+    shown = _json_from_output(_run(["bd", "show", issue_id, "--json"], lane, env).stdout)
+    assert isinstance(shown, list) and len(shown) == 1
+    assert shown[0]["status"] == "open"
+    assert shown[0]["title"] == "legitimate newer snapshot"
 
 
 def test_unsafe_import_auto_control_reverts_clock_skewed_stale_snapshot(tmp_path: Path) -> None:
@@ -194,4 +240,4 @@ def test_unsafe_import_auto_control_reverts_clock_skewed_stale_snapshot(tmp_path
     assert shown[0]["status"] == "open"
 
     delegated_commands = invocation_log.read_text().splitlines()
-    assert any(command.startswith("import --quiet ") for command in delegated_commands)
+    assert any(command.startswith("import ") for command in delegated_commands)

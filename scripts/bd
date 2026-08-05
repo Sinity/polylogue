@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+set -eu
+
+_bd_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+_bd_guard="$_bd_script_dir/../devtools/bd_reimport_guard.py"
+_bd_real=${POLYLOGUE_BD_REAL:-}
+
+if [ -z "$_bd_real" ] || [ "$_bd_real" = "$_bd_script_dir/bd" ]; then
+  _bd_search_path=$PATH
+  case ":$_bd_search_path:" in
+    *":$_bd_script_dir:"*) _bd_search_path=${_bd_search_path#"$_bd_script_dir:"} ;;
+  esac
+  _bd_real=$(PATH="$_bd_search_path" command -v bd 2>/dev/null || true)
+fi
+
+if [ -z "$_bd_real" ] || [ "$_bd_real" = "$_bd_script_dir/bd" ]; then
+  echo "polylogue bd wrapper: installed bd binary not found" >&2
+  exit 127
+fi
+
+exec python3 "$_bd_guard" invoke "$_bd_real" "$@"

@@ -1,10 +1,11 @@
 """Monotonic, receipted reconciliation for Beads JSONL snapshots.
 
 Linked worktrees share one live Dolt database but retain the JSONL snapshot
-from their branch point. Beads hook imports are blind upserts, so this repo
-disables ``import.auto`` in ``.beads/config.yaml`` rather than trying to repair
-state after an import has happened. The 2026-07-15 planning audit showed why:
-a staged issues.jsonl can be syntactically valid yet contain stale rows.
+from their branch point. Beads' automatic JSONL import path can blind-upsert,
+so the repository's ``scripts/bd`` entry point compares the snapshot with live
+state before every normal invocation and delegates with automatic imports
+disabled. The 2026-07-15 planning audit showed why: a staged issues.jsonl can
+be syntactically valid yet contain stale rows.
 
 This module owns the explicit reconciliation flows that remain legitimate:
 
@@ -28,17 +29,17 @@ This module owns the explicit reconciliation flows that remain legitimate:
   marker-bearing file can never be staged as if it were clean.
 - ``cmd_reconcile`` is the explicit, operator-invokable entry point for
   explicit-recovery flows such as `git reset --hard` or a hand-merged
-  conflict file. Hook auto-import is disabled, so a stale file is not
-  imported merely by subsequent hook execution; ordinary reconcile can only
-  apply new/updated rows. Recovering a genuine downgrade (accepting an older
-  row on purpose, e.g. because live state itself was corrupted) requires
-  ``--allow-downgrade`` plus a recorded ``--actor``/``--reason``, and every
-  downgraded row is still named in the receipt.
+  conflict file. Normal ``scripts/bd`` invocations apply only new/updated
+  rows before delegating to Beads. Recovering a genuine downgrade (accepting
+  an older row on purpose, e.g. because live state itself was corrupted)
+  requires ``--allow-downgrade`` plus a recorded ``--actor``/``--reason``,
+  and every downgraded row is still named in the receipt.
 
 This module deliberately depends on nothing beyond the Python stdlib so an
 operator can use it from a repository checkout without the devshell/venv.
 
 Usage:
+  bd_reimport_guard.py invoke <real-bd-path> <bd-args...>
   bd_reimport_guard.py reconcile <candidate-jsonl-path> [--source NAME]
       [--allow-downgrade --actor ACTOR --reason REASON] [--dry-run]
   bd_reimport_guard.py export <target-jsonl-path>
@@ -46,6 +47,8 @@ Usage:
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -54,7 +57,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import IO, Any, Literal
 
 # --- revision-comparable row classification ---------------------------------
 
@@ -220,6 +223,53 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _invocation_directory(args: list[str]) -> Path:
+    """Resolve bd's optional ``-C``/``--directory`` target for guard I/O."""
+    for index, arg in enumerate(args):
+        if arg in ("-C", "--directory") and index + 1 < len(args):
+            return Path(args[index + 1]).expanduser().resolve()
+        for prefix in ("-C=", "--directory="):
+            if arg.startswith(prefix):
+                return Path(arg[len(prefix) :]).expanduser().resolve()
+    return Path.cwd().resolve()
+
+
+def _shared_lock_path(start: Path) -> Path:
+    """Return one lock path shared by all linked worktrees of this repo."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            common_dir = Path(result.stdout.strip())
+            if not common_dir.is_absolute():
+                common_dir = start / common_dir
+            return common_dir.resolve() / "polylogue-bd-guard.lock"
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir()))
+    token = hashlib.sha256(str(start).encode()).hexdigest()[:20]
+    return runtime_dir / f"polylogue-bd-guard-{token}.lock"
+
+
+def _acquire_invocation_lock(start: Path) -> IO[str]:
+    """Serialize guarded bd calls across linked worktrees and retain the lock.
+
+    The file descriptor is made inheritable by ``cmd_invoke`` before it
+    replaces this process with the real bd binary. This covers the check,
+    filtered import, and delegated command as one writer boundary.
+    """
+    path = _shared_lock_path(start)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+
 def _receipts_dir() -> Path:
     return _repo_root() / ".cache" / "bd-sync-receipts"
 
@@ -300,7 +350,12 @@ def atomic_write_jsonl(path: Path, rows: dict[str, dict[str, Any]]) -> None:
 # --- live bd state ------------------------------------------------------------
 
 
-def _export_live_state() -> dict[str, dict[str, Any]]:
+def _export_live_state(
+    *,
+    bd_command: str = "bd",
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> dict[str, dict[str, Any]]:
     """Return {id: full_row_dict} for every issue currently live.
 
     Uses default `bd export` filtering (excludes infra beads/memories) --
@@ -310,12 +365,16 @@ def _export_live_state() -> dict[str, dict[str, Any]]:
     with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as tf:
         path = tf.name
     try:
-        subprocess.run(
-            ["bd", "export", "-o", path],
+        process_result = subprocess.run(
+            [bd_command, "export", "-o", path],
             capture_output=True,
             text=True,
             timeout=30,
+            env=env,
+            cwd=cwd,
         )
+        if process_result.returncode != 0:
+            raise RuntimeError(f"bd export failed ({process_result.returncode}): {process_result.stderr.strip()}")
         result: dict[str, dict[str, Any]] = {}
         with open(path) as f:
             for line in f:
@@ -334,20 +393,118 @@ def _export_live_state() -> dict[str, dict[str, Any]]:
         Path(path).unlink(missing_ok=True)
 
 
-def _bd_import_rows(rows: dict[str, dict[str, Any]]) -> None:
+def _bd_import_rows(
+    rows: dict[str, dict[str, Any]],
+    *,
+    bd_command: str = "bd",
+    env: dict[str, str] | None = None,
+    reexport: bool = True,
+    cwd: Path | None = None,
+) -> None:
     if not rows:
         return
+    # The installed bd importer performs its own conditional upsert. Never
+    # pass --allow-stale here: an explicit downgrade remains an audited
+    # reconcile operation, not part of ordinary wrapper synchronization.
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tf:
         import_path = tf.name
         for row in rows.values():
             tf.write(json.dumps(row) + "\n")
     try:
-        subprocess.run(["bd", "import", import_path], capture_output=True, text=True, timeout=30)
-        # Re-export so the working tree's issues.jsonl matches restored live
-        # state (avoids the restore looking like a phantom git diff).
-        subprocess.run(["bd", "export"], capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            [bd_command, "import", import_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+            cwd=cwd,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"bd import failed ({result.returncode}): {result.stderr.strip()}")
+        if reexport:
+            # Re-export so the working tree's issues.jsonl matches restored live
+            # state (avoids the restore looking like a phantom git diff).
+            subprocess.run(
+                [bd_command, "export"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+                cwd=cwd,
+            )
     finally:
         Path(import_path).unlink(missing_ok=True)
+
+
+def _find_candidate_jsonl(start: Path | None = None) -> Path | None:
+    """Find the checked-out workspace snapshot without invoking bd."""
+    current = (start or Path.cwd()).resolve()
+    for directory in (current, *current.parents):
+        candidate = directory / ".beads" / "issues.jsonl"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _preflight_invocation(
+    bd_command: str,
+    candidate_path: Path | None = None,
+    *,
+    cwd: Path | None = None,
+) -> None:
+    """Import only candidate rows newer than live state before ``bd`` runs.
+
+    The delegated command receives ``BD_IMPORT_AUTO=false`` so Beads cannot
+    perform its blind automatic import after this comparison. Failures are
+    reported as warnings and leave the live database untouched; the requested
+    bd command still gets to run against the live database.
+    """
+    candidate_path = candidate_path or _find_candidate_jsonl()
+    if candidate_path is None:
+        return
+
+    safe_env = os.environ.copy()
+    safe_env["BD_IMPORT_AUTO"] = "false"
+    try:
+        live = _export_live_state(bd_command=bd_command, env=safe_env, cwd=cwd)
+        candidate = parse_and_validate_jsonl(candidate_path.read_text())
+        merged, outcomes = merge_rows(live, candidate)
+    except (OSError, InvalidJsonlError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"bd guard: skipped automatic JSONL reconciliation: {exc}", file=sys.stderr)
+        return
+
+    to_apply = {o.issue_id: merged[o.issue_id] for o in outcomes if o.outcome in ("new", "updated")}
+    skipped = [o.issue_id for o in outcomes if o.outcome == "skipped_downgrade"]
+    if skipped:
+        print(
+            f"bd guard: skipped {len(skipped)} stale JSONL row(s) before bd invocation",
+            file=sys.stderr,
+        )
+    if not to_apply:
+        return
+
+    try:
+        _bd_import_rows(to_apply, bd_command=bd_command, env=safe_env, reexport=False, cwd=cwd)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"bd guard: skipped automatic JSONL reconciliation: {exc}", file=sys.stderr)
+
+
+def cmd_invoke(args: list[str]) -> int:
+    """Run the installed bd binary behind the monotonic preflight boundary."""
+    if len(args) < 1:
+        print("usage: bd_reimport_guard.py invoke <real-bd-path> <bd-args...>", file=sys.stderr)
+        return 1
+
+    bd_command, *bd_args = args
+    invocation_dir = _invocation_directory(bd_args)
+    candidate_path = _find_candidate_jsonl(invocation_dir)
+    lock = _acquire_invocation_lock(invocation_dir)
+    _preflight_invocation(bd_command, candidate_path, cwd=invocation_dir)
+    safe_env = os.environ.copy()
+    safe_env["BD_IMPORT_AUTO"] = "false"
+    os.set_inheritable(lock.fileno(), True)
+    os.execvpe(bd_command, [bd_command, *bd_args], safe_env)
+    return 1
 
 
 # --- commands ------------------------------------------------------------------
@@ -467,11 +624,13 @@ def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     if len(args) < 1:
         print(
-            "usage: bd_reimport_guard.py <reconcile|export> ...",
+            "usage: bd_reimport_guard.py <invoke|reconcile|export> ...",
             file=sys.stderr,
         )
         return 1
     command = args[0]
+    if command == "invoke":
+        return cmd_invoke(args[1:])
     if command == "reconcile":
         return cmd_reconcile(args[1:])
     if command == "export":
