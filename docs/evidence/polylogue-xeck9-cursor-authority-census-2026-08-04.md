@@ -50,7 +50,7 @@ The live cursor is ahead of its accepted full-head frontier. That is production 
 
 ## Safe reconciliation contract, not performed
 
-There is no cursor-specific dry-run/apply actuator that can safely repair this condition without re-running the real ingest path. Do not use raw-authority frontier application as a shortcut: it is a different break-glass workflow and may persist census observations. The safe sequence for an operator is:
+There is no cursor-specific dry-run/apply actuator that can safely repair this condition without re-running the real ingest path. Do not use raw-authority frontier inspection as a cursor repair shortcut: it records census observations, while daemon convergence applies only executable proof-backed plans under its writer coordinator, and neither path reconciles the cursor condition. The safe sequence for an operator is:
 
 1. Stop or confirm quiescence of the daemon, then capture a backup plan and an initial read-only full status receipt:
 
