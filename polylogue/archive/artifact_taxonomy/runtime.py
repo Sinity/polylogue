@@ -424,15 +424,36 @@ def _classify_list(
                 default_priority=90 if subagent else 120,
                 reason="parser-supported Codex session record stream",
             )
-        if dict_items and any(looks_like_record_entry(item) for item in dict_items):
-            return ArtifactClassification(
-                provider=provider,
-                kind=ArtifactKind.UNKNOWN,
-                parse_as_session=False,
-                schema_eligible=False,
-                default_priority=0,
-                reason="Codex record stream contains unsupported session records",
-            )
+
+    # A Codex rollout can be truncated to repeated bare session headers while
+    # still remaining a JSONL record stream.  A single bare ``type`` is too
+    # weak to admit generically, but multiple exact Codex session-meta records
+    # with a declared Codex origin are provider-specific structural evidence.
+    # Keep this before the generic record predicate so the narrow recovery
+    # shape reaches schema inference without reopening the generic type-only
+    # false-positive class.
+    if (
+        provider is Provider.CODEX
+        and len(dict_items) > 1
+        and all(item == {"type": "session_meta"} for item in dict_items)
+    ):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_RECORD_STREAM,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=120,
+            reason="repeated bare Codex session-meta record stream",
+        )
+    if provider is Provider.CODEX and dict_items and any(looks_like_record_entry(item) for item in dict_items):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.UNKNOWN,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason="Codex record stream contains unsupported session records",
+        )
 
     if dict_items and looks_like_record_stream(dict_items):
         subagent = is_subagent_path(source_path)

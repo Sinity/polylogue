@@ -506,20 +506,10 @@ class TestLoadSamplesFromDb:
             "reason": "duplicate_blob_content",
         }
 
-    def test_schema_observation_classifies_supported_and_unsupported_codex_streams(self, tmp_path: Path) -> None:
-        """DB sampling admits real envelopes and refuses bare session headers."""
+    def test_schema_observation_includes_repeated_bare_codex_session_meta_records(self, tmp_path: Path) -> None:
+        """The DB-backed record sampler reaches the shared envelope eligibility route."""
         db = _archive_index_db(tmp_path)
-        supported_raw_id = _insert_raw_session(
-            db_path=db,
-            origin="codex-session",
-            source_path="/tmp/rollout-supported.jsonl",
-            raw_content=(
-                b'{"type":"session_meta","payload":{"id":"supported-session"}}\n'
-                b'{"type":"response_item","payload":{"type":"message","role":"user",'
-                b'"content":[{"type":"input_text","text":"hello"}]}}\n'
-            ),
-        )
-        unsupported_raw_id = _insert_raw_session(
+        raw_id = _insert_raw_session(
             db_path=db,
             origin="codex-session",
             source_path="/tmp/rollout-repeated.jsonl",
@@ -536,7 +526,51 @@ class TestLoadSamplesFromDb:
             )
         )
 
-        assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [(supported_raw_id, "session_record_stream")]
+        assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [(raw_id, "session_record_stream")]
+        assert [outcome for outcome in outcomes if outcome["raw_id"] == raw_id] == [
+            {
+                "raw_id": raw_id,
+                "status": "included",
+                "artifact_kind": "session_record_stream",
+                "source_path": "/tmp/rollout-repeated.jsonl",
+                "reason": "observed_schema_units",
+            }
+        ]
+
+    def test_schema_observation_classifies_supported_codex_streams(self, tmp_path: Path) -> None:
+        """DB sampling admits parser-supported and repeated-header Codex streams."""
+        db = _archive_index_db(tmp_path)
+        supported_raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/rollout-supported.jsonl",
+            raw_content=(
+                b'{"type":"session_meta","payload":{"id":"supported-session"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+            ),
+        )
+        repeated_raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/rollout-repeated.jsonl",
+            raw_content=b'{"type":"session_meta"}\n' * 1024,
+        )
+        outcomes: list[dict[str, object]] = []
+
+        units = list(
+            iter_schema_units(
+                "codex",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [
+            (supported_raw_id, "session_record_stream"),
+            (repeated_raw_id, "session_record_stream"),
+        ]
         outcomes_by_raw_id = {outcome["raw_id"]: outcome for outcome in outcomes}
         assert outcomes_by_raw_id[supported_raw_id] == {
             "raw_id": supported_raw_id,
@@ -545,12 +579,12 @@ class TestLoadSamplesFromDb:
             "source_path": "/tmp/rollout-supported.jsonl",
             "reason": "observed_schema_units",
         }
-        assert outcomes_by_raw_id[unsupported_raw_id] == {
-            "raw_id": unsupported_raw_id,
-            "status": "unsupported",
-            "artifact_kind": None,
+        assert outcomes_by_raw_id[repeated_raw_id] == {
+            "raw_id": repeated_raw_id,
+            "status": "included",
+            "artifact_kind": "session_record_stream",
             "source_path": "/tmp/rollout-repeated.jsonl",
-            "reason": "no_schema_eligible_units",
+            "reason": "observed_schema_units",
         }
 
     def test_schema_observation_excludes_hermes_sqlite_evidence_before_json_decode(self, tmp_path: Path) -> None:
