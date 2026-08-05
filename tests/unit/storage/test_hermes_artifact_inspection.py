@@ -134,18 +134,25 @@ def test_retained_wal_snapshot_marker_reopen_keeps_blob_namespace_pristine(
     """Inspection reopens the marker path for schema support, so both opens must be immutable."""
     snapshot = tmp_path / "retained-wal.sqlite3"
     _write_hermes_v16(snapshot, wal_mode=True)
-
-    observation = inspect_raw_artifact(
-        _record(
-            blob_store,
-            snapshot,
-            raw_id="hermes:profile-a:wal-revision",
-            source_path="/original/profile/state.db",
-        )
+    record = _record(
+        blob_store,
+        snapshot,
+        raw_id="hermes:profile-a:wal-revision",
+        source_path="/original/profile/state.db",
     )
 
+    observation = inspect_raw_artifact(record)
+
     assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
-    assert blob_store.verify_all().passed
+    assert record.blob_hash is not None
+    expected_path = f"{record.blob_hash[:2]}/{record.blob_hash[2:]}"
+    namespace = tuple(blob_store.iter_namespace())
+    assert [entry.relative_path for entry in namespace] == [expected_path]
+    assert all(not entry.relative_path.endswith(("-wal", "-shm")) for entry in namespace)
+    assert not tuple(blob_store.root.rglob("*-wal"))
+    assert not tuple(blob_store.root.rglob("*-shm"))
+    verification = blob_store.verify_all()
+    assert verification.passed, verification.failures
 
 
 def test_retained_structurally_compatible_v17_snapshot_is_parseable(

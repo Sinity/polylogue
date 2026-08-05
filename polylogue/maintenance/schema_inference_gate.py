@@ -11,34 +11,115 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import sqlite3
 import sys
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, NotRequired, TypeAlias, TypedDict, cast
+from uuid import uuid4
 
 from polylogue.maintenance.archive_verification import CORPUS_FIDELITY_CHECKS, verify_archive
+from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+from polylogue.storage.backup_attestation import (
+    BackupAttestationError,
+    sign_verification_receipt,
+    verify_verification_receipt,
+)
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.version import POLYLOGUE_VERSION
 
-RECEIPT_SCHEMA = "polylogue.schema-inference-gate.v1"
-GATE_VERSION = "2"
+RECEIPT_SCHEMA = "polylogue.schema-inference-gate.v2"
+GATE_VERSION = "3"
 DEFAULT_SAMPLE_LIMIT = 10
 RECEIPT_FILENAME = "schema-inference-gate-receipt.json"
+SCHEMA_INFERENCE_RECEIPT_ENV = "POLYLOGUE_SCHEMA_INFERENCE_RECEIPT"
+RECEIPT_TTL = timedelta(hours=24)
+RECEIPT_CLOCK_SKEW = timedelta(minutes=5)
 
 _ALLOWED_RESIDUAL_EXPLANATIONS = frozenset(
     {"materialized", "superseded-duplicate", "legitimately-excluded-non-conversation"}
 )
 _CAUSE_EXPLANATIONS = {"byte-revision-governed": "superseded-duplicate"}
+GroundTruthKey: TypeAlias = tuple[str, int]
+GroundTruthDisposition: TypeAlias = Literal[
+    "materialized",
+    "superseded-duplicate",
+    "legitimately-excluded-non-conversation",
+    "unreconciled-source-raw",
+]
+ExternalDisposition: TypeAlias = Literal["unmatched-external-file", "cross-origin-source"]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalGroundTruthFile:
+    root_index: int
+    relative_path: str
+    content_hash: str
+    size: int
+    path: Path
+
+    @property
+    def key(self) -> GroundTruthKey:
+        return (self.content_hash, self.size)
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceRawGroundTruth:
+    raw_id: str
+    origin: str
+    native_id: str | None
+    logical_source_key: str | None
+    source_path: str
+    blob_hash: str
+    blob_size: int
+    disposition: GroundTruthDisposition
+
+    @property
+    def key(self) -> GroundTruthKey:
+        return (self.blob_hash, self.blob_size)
+
+
+class _RawGroundTruthProvenance(TypedDict):
+    raw_id: str
+    origin: str
+    native_id: str | None
+    logical_source_key: str | None
+    source_path: str
+    blob_hash: str
+    blob_size: int
+    matched_external_relative_path: str | None
+    matched_external_hash: str | None
+    matched_external_size: int | None
+    disposition: GroundTruthDisposition
+
+
+class _ExternalGroundTruthReceipt(TypedDict):
+    root_index: int
+    relative_path: str
+    hash: str
+    size: int
+    disposition: ExternalDisposition
+    other_origins: NotRequired[list[str]]
+
+
+class _UnmatchedSourceRawReceipt(TypedDict):
+    raw_id: str
+    blob_hash: str
+    blob_size: int
+    disposition: Literal["unreconciled-source-raw"]
+
 
 # Hooks and browser capture are the explicit no-external-ground-truth
 # exceptions from r9xsj. Every other origin present in source.db must receive
@@ -406,40 +487,272 @@ def _failed_source_gates(reason: str) -> dict[str, object]:
     }
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_schema_digest(conn: sqlite3.Connection) -> str:
+    rows = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE sql IS NOT NULL AND name != 'sqlite_stat1' ORDER BY type, name, tbl_name"
+    ).fetchall()
+    encoded = json.dumps(
+        [[str(value) if value is not None else None for value in row] for row in rows],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _canonical_schema_digest(tier: ArchiveTier) -> str | None:
+    """Return the schema identity of a fresh canonical tier, when loadable."""
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        if tier is ArchiveTier.EMBEDDINGS:
+            loaded, _error = try_load_sqlite_vec(conn)
+            if not loaded:
+                return None
+        initialize_archive_tier(conn, tier)
+        return _sqlite_schema_digest(conn)
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def _tier_schema_identity(archive_root: Path, location: ArchiveLocation) -> dict[str, object]:
     tiers: dict[str, object] = {}
     for tier, spec in ARCHIVE_TIER_SPECS.items():
-        path = location.active_index_path if tier is ArchiveTier.INDEX else archive_root / spec.filename
+        identity = (
+            location.active_index if tier is ArchiveTier.INDEX else location.configured_tier(cast(Any, tier.value))
+        )
+        path = identity.resolved_path
+        expected_schema_sha256 = _canonical_schema_digest(tier)
         entry: dict[str, object] = {
             "path": str(path),
+            "stable_id": identity.stable_id,
             "expected_user_version": spec.version,
             "durability": spec.durability,
             "exists": path.exists(),
             "actual_user_version": None,
+            "content_sha256": None,
+            "schema_sha256": None,
+            "expected_schema_sha256": expected_schema_sha256,
         }
         if path.exists():
             try:
                 with open_readonly_connection(path) as conn:
                     entry["actual_user_version"] = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                    entry["schema_sha256"] = _sqlite_schema_digest(conn)
             except sqlite3.Error as exc:
                 entry["error"] = str(exc)
+            try:
+                entry["content_sha256"] = _file_sha256(path)
+            except OSError as exc:
+                entry["error"] = str(exc)
         entry["matches_expected"] = entry["actual_user_version"] == spec.version
+        if expected_schema_sha256 is not None:
+            entry["matches_expected"] = bool(entry["matches_expected"]) and (
+                entry["schema_sha256"] == expected_schema_sha256
+            )
         tiers[tier.value] = entry
-    return {"archive": ArchiveIdentity.resolve_location(location).as_dict(), "tiers": tiers}
+    archive_identity = ArchiveIdentity.resolve_location(location)
+    runtime_archive_payload = archive_identity.as_dict()
+    archive_payload = {
+        key: runtime_archive_payload[key]
+        for key in (
+            "configured_root",
+            "durable_id",
+            "active_generation",
+            "generation_owner",
+            "generation_state",
+            "tiers",
+        )
+    }
+    archive_payload["authority_identity_digest"] = archive_identity.authority_identity_digest
+    return {"archive": archive_payload, "tiers": tiers}
 
 
 def _resolve_receipt_path(receipt_path: Path, *, archive_root: Path) -> Path:
-    """Accept only the dedicated receipt filename outside the archive file set."""
+    """Accept only a receipt path outside the archive file set."""
 
     target = receipt_path.expanduser().resolve()
     root = archive_root.resolve()
-    if target.name != RECEIPT_FILENAME:
-        raise SchemaInferenceGateError(f"receipt filename must be {RECEIPT_FILENAME!r}")
     try:
         target.relative_to(root)
     except ValueError:
         return target
-    raise SchemaInferenceGateError("receipt path must be outside the archive root")
+    raise SchemaInferenceGateError("receipt filename/path must be outside the archive root")
+
+
+def resolve_schema_inference_receipt_reference(archive_root: Path, receipt_path: Path | None = None) -> Path:
+    """Resolve the policy-controlled receipt reference used by rebuild callers."""
+
+    root = Path(archive_root).absolute()
+    if receipt_path is not None:
+        candidate = receipt_path
+    else:
+        configured = os.environ.get(SCHEMA_INFERENCE_RECEIPT_ENV, "").strip()
+        if not configured:
+            raise SchemaInferenceGateError(
+                f"a fresh schema-inference receipt is required; pass a receipt path or set {SCHEMA_INFERENCE_RECEIPT_ENV}"
+            )
+        candidate = Path(configured)
+    return _resolve_receipt_path(candidate, archive_root=root)
+
+
+def _archive_receipt_identity(location: ArchiveLocation) -> dict[str, object]:
+    identity = ArchiveIdentity.resolve_location(location)
+    return {
+        "configured_root": str(location.configured_root),
+        "durable_id": identity.durable_id,
+        "source_tier": identity.tier("source").as_dict(),
+        "user_tier": identity.tier("user").as_dict(),
+    }
+
+
+def _parse_receipt_datetime(value: object, *, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise SchemaInferenceGateError(f"receipt field {field!r} must be an ISO-8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise SchemaInferenceGateError(f"receipt field {field!r} is not a valid ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise SchemaInferenceGateError(f"receipt field {field!r} must include a timezone")
+    return parsed.astimezone(UTC)
+
+
+def rebuild_source_revision_snapshot(archive_root: Path) -> str:
+    """Return the exact canonical source proof consumed by rebuild execution.
+
+    Receipt production and rebuild execution must commit to one snapshot
+    function. The shared evidence snapshot includes every durable input that
+    can affect parsing, including capture mode/index, file metadata, blob
+    references, and capture observations. Keeping this adapter name preserves
+    the schema-gate API while removing the old, narrower receipt-only digest.
+    """
+    from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
+
+    return rebuild_source_evidence_snapshot(Path(archive_root))
+
+
+def _canonical_external_ground_truth_digest(origins: Mapping[str, object]) -> str:
+    """Digest the complete external corpus inventory recorded in a receipt."""
+
+    canonical: list[dict[str, object]] = []
+    for origin in sorted(origins):
+        evidence = _as_dict(origins[origin])
+        mapping = evidence.get("raw_external_mapping")
+        if not isinstance(mapping, list) or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("raw_id"), str)
+            and isinstance(item.get("source_path"), str)
+            and isinstance(item.get("disposition"), str)
+            for item in mapping
+        ):
+            raise SchemaInferenceGateError(f"raw external mapping for {origin} is missing or malformed")
+        if bool(evidence.get("exempt")):
+            canonical.append(
+                {
+                    "origin": origin,
+                    "exempt": True,
+                    "reason": evidence.get("reason"),
+                    "mapping": sorted(mapping, key=lambda item: str(item["raw_id"])),
+                }
+            )
+            continue
+        roots = evidence.get("declared_roots")
+        inventory = evidence.get("external_inventory")
+        if not isinstance(roots, list) or not all(isinstance(root, str) for root in roots):
+            raise SchemaInferenceGateError(f"ground truth roots for {origin} are missing or malformed")
+        if not isinstance(inventory, list):
+            raise SchemaInferenceGateError(f"ground truth inventory for {origin} is missing or malformed")
+        files: list[dict[str, object]] = []
+        for item in inventory:
+            record = _as_dict(item)
+            root_index = record.get("root_index")
+            relative_path = record.get("relative_path")
+            content_hash = record.get("hash")
+            size = record.get("size")
+            if (
+                not isinstance(root_index, int)
+                or isinstance(root_index, bool)
+                or not isinstance(relative_path, str)
+                or not isinstance(content_hash, str)
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+                or size < 0
+            ):
+                raise SchemaInferenceGateError(f"ground truth inventory for {origin} contains a malformed file")
+            files.append(
+                {
+                    "root_index": root_index,
+                    "relative_path": relative_path,
+                    "hash": content_hash.lower(),
+                    "size": size,
+                }
+            )
+        mappings: list[dict[str, object]] = []
+        for item in mapping:
+            record = _as_dict(item)
+            raw_id = record.get("raw_id")
+            source_path = record.get("source_path")
+            disposition = record.get("disposition")
+            blob_hash = record.get("blob_hash")
+            blob_size = record.get("blob_size")
+            external_relative_path = record.get("external_relative_path")
+            external_hash = record.get("external_hash")
+            external_size = record.get("external_size")
+            if (
+                not isinstance(raw_id, str)
+                or not isinstance(source_path, str)
+                or not isinstance(disposition, str)
+                or not isinstance(blob_hash, str)
+                or not isinstance(blob_size, int)
+                or isinstance(blob_size, bool)
+                or blob_size < 0
+                or (external_relative_path is not None and not isinstance(external_relative_path, str))
+                or (external_hash is not None and not isinstance(external_hash, str))
+                or (
+                    external_size is not None
+                    and (not isinstance(external_size, int) or isinstance(external_size, bool))
+                )
+            ):
+                raise SchemaInferenceGateError(f"raw external mapping for {origin} contains a malformed row")
+            mappings.append(
+                {
+                    "raw_id": raw_id,
+                    "source_path": source_path,
+                    "blob_hash": blob_hash.lower(),
+                    "blob_size": blob_size,
+                    "external_relative_path": external_relative_path,
+                    "external_hash": external_hash.lower() if isinstance(external_hash, str) else None,
+                    "external_size": external_size,
+                    "disposition": disposition,
+                }
+            )
+        canonical.append(
+            {
+                "origin": origin,
+                "roots": sorted(str(Path(root).expanduser().resolve()) for root in roots),
+                "files": sorted(
+                    files,
+                    key=lambda item: (int(cast(int, item["root_index"])), str(item["relative_path"])),
+                ),
+                "mapping": sorted(mappings, key=lambda item: str(item["raw_id"])),
+            }
+        )
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _snapshot_blob_root(blob_root: Path) -> dict[str, object]:
@@ -531,25 +844,239 @@ def _file_hash(path: Path) -> tuple[str, int]:
     return hasher.hexdigest(), size
 
 
+def _external_inventory(roots: Sequence[Path]) -> list[_ExternalGroundTruthFile]:
+    """Return a stable, relative-path inventory for declared external roots."""
+
+    inventory: list[_ExternalGroundTruthFile] = []
+    for root_index, root in enumerate(sorted({path.resolve() for path in roots}, key=str)):
+        for path in _iter_ground_truth_files(root):
+            resolved_path = path.resolve()
+            digest, size = _file_hash(resolved_path)
+            relative_path = resolved_path.name if root.is_file() else resolved_path.relative_to(root).as_posix()
+            inventory.append(
+                _ExternalGroundTruthFile(
+                    root_index=root_index,
+                    relative_path=relative_path,
+                    content_hash=digest,
+                    size=size,
+                    path=resolved_path,
+                )
+            )
+    inventory.sort(key=lambda item: (item.relative_path, item.root_index))
+    return inventory
+
+
+def _external_inventory_records(inventory: Sequence[_ExternalGroundTruthFile]) -> list[dict[str, object]]:
+    return [
+        {
+            "root_index": item.root_index,
+            "relative_path": item.relative_path,
+            "hash": item.content_hash,
+            "size": item.size,
+        }
+        for item in inventory
+    ]
+
+
+def _validate_external_ground_truth_roots(archive_root: Path, roots: Sequence[Path]) -> None:
+    """Reject archive-owned bytes from posing as independent source evidence."""
+
+    protected = (archive_root.resolve(), (archive_root / "blob").resolve())
+    for root in roots:
+        candidate = root.resolve()
+        for owned in protected:
+            try:
+                candidate.relative_to(owned)
+            except ValueError:
+                continue
+            raise SchemaInferenceGateError(
+                f"ground-truth root must be external to the archive and blob namespace: {candidate}"
+            )
+
+
+def _external_receipt(
+    item: _ExternalGroundTruthFile,
+    disposition: ExternalDisposition,
+    *,
+    other_origins: list[str] | None = None,
+) -> _ExternalGroundTruthReceipt:
+    receipt: _ExternalGroundTruthReceipt = {
+        "root_index": item.root_index,
+        "relative_path": item.relative_path,
+        "hash": item.content_hash,
+        "size": item.size,
+        "disposition": disposition,
+    }
+    if other_origins:
+        receipt["other_origins"] = other_origins
+    return receipt
+
+
+def _raw_provenance(
+    raw: _SourceRawGroundTruth,
+    matched_external: _ExternalGroundTruthFile | None,
+) -> _RawGroundTruthProvenance:
+    return {
+        "raw_id": raw.raw_id,
+        "origin": raw.origin,
+        "native_id": raw.native_id,
+        "logical_source_key": raw.logical_source_key,
+        "source_path": raw.source_path,
+        "blob_hash": raw.blob_hash,
+        "blob_size": raw.blob_size,
+        "matched_external_relative_path": (matched_external.relative_path if matched_external is not None else None),
+        "matched_external_hash": matched_external.content_hash if matched_external is not None else None,
+        "matched_external_size": matched_external.size if matched_external is not None else None,
+        "disposition": raw.disposition,
+    }
+
+
+def _raw_external_mapping(
+    source: sqlite3.Connection,
+    *,
+    origin: str,
+    inventory: Sequence[_ExternalGroundTruthFile],
+    exempt: bool,
+) -> list[dict[str, object]]:
+    """Persist one deterministic external-file choice for every source raw."""
+
+    rows = source.execute(
+        """
+        SELECT raw_id, source_path, hex(blob_hash), blob_size
+        FROM raw_sessions
+        WHERE origin = ?
+        ORDER BY raw_id
+        """,
+        (origin,),
+    ).fetchall()
+    by_key: dict[GroundTruthKey, list[_ExternalGroundTruthFile]] = {}
+    for item in inventory:
+        by_key.setdefault(item.key, []).append(item)
+    mapping: list[dict[str, object]] = []
+    for raw_id, source_path, blob_hash, blob_size in rows:
+        canonical_hash = str(blob_hash).lower()
+        canonical_size = int(blob_size)
+        match = by_key.get((canonical_hash, canonical_size), [None])[0]
+        mapping.append(
+            {
+                "raw_id": str(raw_id),
+                "source_path": str(source_path),
+                "blob_hash": canonical_hash,
+                "blob_size": canonical_size,
+                "external_relative_path": match.relative_path if match is not None else None,
+                "external_hash": match.content_hash if match is not None else None,
+                "external_size": match.size if match is not None else None,
+                "disposition": "origin-exempt"
+                if exempt
+                else "matched-external"
+                if match is not None
+                else "unmatched-source-raw",
+            }
+        )
+    return mapping
+
+
+def _raw_dispositions(
+    source: sqlite3.Connection,
+    *,
+    index_path: Path,
+) -> dict[str, list[_SourceRawGroundTruth]]:
+    """Classify raw rows using durable receipts and the indexed read model."""
+
+    source_rows = source.execute(
+        """
+        SELECT raw_id, origin, native_id, logical_source_key, source_path, hex(blob_hash), blob_size
+        FROM raw_sessions
+        ORDER BY origin, raw_id
+        """
+    ).fetchall()
+    indexed_raw_ids: set[str] = set()
+    if index_path.exists():
+        with open_readonly_connection(index_path) as index:
+            if table_exists(index, "sessions"):
+                indexed_raw_ids = {
+                    str(row[0]) for row in index.execute("SELECT raw_id FROM sessions WHERE raw_id IS NOT NULL")
+                }
+
+    def receipt_ids(table: str) -> set[str]:
+        return (
+            {str(row[0]) for row in source.execute(f"SELECT raw_id FROM {table}")}
+            if table_exists(source, table)
+            else set()
+        )
+
+    superseded_ids = receipt_ids("raw_byte_duplicate_supersession_receipts")
+    superseded_ids.update(receipt_ids("raw_quarantine_group_dedup_receipts"))
+    excluded_ids = receipt_ids("raw_non_session_duplicate_exclusion_receipts")
+
+    rows_by_origin: dict[str, list[_SourceRawGroundTruth]] = {}
+    for row in source_rows:
+        raw_id = str(row[0])
+        disposition: GroundTruthDisposition
+        if raw_id in indexed_raw_ids:
+            disposition = "materialized"
+        elif raw_id in superseded_ids:
+            disposition = "superseded-duplicate"
+        elif raw_id in excluded_ids:
+            disposition = "legitimately-excluded-non-conversation"
+        else:
+            disposition = "unreconciled-source-raw"
+        rows_by_origin.setdefault(str(row[1]), []).append(
+            _SourceRawGroundTruth(
+                raw_id=raw_id,
+                origin=str(row[1]),
+                native_id=None if row[2] is None else str(row[2]),
+                logical_source_key=None if row[3] is None else str(row[3]),
+                source_path=str(row[4]),
+                blob_hash=str(row[5]).lower(),
+                blob_size=int(row[6]),
+                disposition=disposition,
+            )
+        )
+    return rows_by_origin
+
+
 def _ground_truth_evidence(
     archive_root: Path,
     *,
+    index_path: Path,
     source_counts: Mapping[str, Mapping[str, int]],
     roots: Mapping[str, Sequence[Path]] | None,
 ) -> dict[str, object]:
-    """Compare source raw blobs with the files actually present under declared roots."""
+    """Reconcile source raws and external files in both directions by origin."""
 
     root_map = roots or {}
     source_path = archive_root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
     evidence: dict[str, object] = {}
     errors: list[str] = []
     with open_readonly_connection(source_path) as source:
-        for origin in sorted(source_counts):
+        rows_by_origin = _raw_dispositions(source, index_path=index_path)
+        origins = sorted(set(source_counts) | set(root_map))
+        external_claims: dict[Path, set[str]] = {}
+        inventories: dict[str, list[_ExternalGroundTruthFile]] = {}
+        declared_roots_by_origin: dict[str, tuple[Path, ...]] = {}
+        for origin in origins:
             declared = GROUND_TRUTH_INPUTS.get(origin, {"exempt": False})
             if bool(declared.get("exempt")):
-                evidence[origin] = {"exempt": True, "reason": declared.get("reason")}
+                evidence[origin] = {
+                    "exempt": True,
+                    "reason": declared.get("reason"),
+                    "raw_external_mapping": _raw_external_mapping(source, origin=origin, inventory=(), exempt=True),
+                }
                 continue
             declared_roots = tuple(Path(path).expanduser().resolve() for path in root_map.get(origin, ()))
+            try:
+                _validate_external_ground_truth_roots(archive_root, declared_roots)
+            except SchemaInferenceGateError as exc:
+                errors.append(f"ground truth for {origin} is invalid: {exc}")
+                evidence[origin] = {
+                    "exempt": False,
+                    "declared_roots": [str(path) for path in declared_roots],
+                    "external_inventory": [],
+                    "raw_external_mapping": _raw_external_mapping(source, origin=origin, inventory=(), exempt=False),
+                    "passed": False,
+                }
+                continue
             unavailable = [str(path) for path in declared_roots if not path.exists()]
             if not declared_roots or unavailable:
                 errors.append(f"ground truth for {origin} is unavailable or undeclared")
@@ -557,44 +1084,149 @@ def _ground_truth_evidence(
                     "exempt": False,
                     "declared_roots": [str(path) for path in declared_roots],
                     "unavailable_roots": unavailable,
+                    "external_inventory": [],
+                    "raw_external_mapping": _raw_external_mapping(source, origin=origin, inventory=(), exempt=False),
                     "passed": False,
                 }
                 continue
-            files = [path for root in declared_roots for path in _iter_ground_truth_files(root)]
-            hashes: set[str] = set()
-            bytes_total = 0
             try:
-                for path in files:
-                    digest, size = _file_hash(path)
-                    hashes.add(digest)
-                    bytes_total += size
+                inventory = _external_inventory(declared_roots)
             except OSError as exc:
                 errors.append(f"ground truth for {origin} could not be fully scanned: {exc}")
                 evidence[origin] = {
                     "exempt": False,
                     "declared_roots": [str(path) for path in declared_roots],
+                    "external_inventory": [],
+                    "raw_external_mapping": _raw_external_mapping(source, origin=origin, inventory=(), exempt=False),
                     "passed": False,
                 }
                 continue
-            source_hashes = {
-                bytes(row[0]).hex()
-                for row in source.execute("SELECT DISTINCT blob_hash FROM raw_sessions WHERE origin = ?", (origin,))
-            }
-            missing = sorted(source_hashes - hashes)
+            inventories[origin] = inventory
+            declared_roots_by_origin[origin] = declared_roots
+            for item in inventory:
+                external_claims.setdefault(item.path, set()).add(origin)
+
+        for path, claimed_origins in sorted(external_claims.items(), key=lambda item: str(item[0])):
+            if len(claimed_origins) > 1:
+                errors.append(
+                    "external ground-truth file is claimed by multiple origins: "
+                    f"{path.name} ({', '.join(sorted(claimed_origins))})"
+                )
+
+        source_key_origins: dict[GroundTruthKey, set[str]] = {}
+        for origin, rows in rows_by_origin.items():
+            for row in rows:
+                source_key_origins.setdefault(row.key, set()).add(origin)
+
+        for origin in origins:
+            declared = GROUND_TRUTH_INPUTS.get(origin, {"exempt": False})
+            if bool(declared.get("exempt")) or origin not in inventories:
+                continue
+            rows = rows_by_origin.get(origin, [])
+            inventory = inventories[origin]
+            declared_roots = declared_roots_by_origin[origin]
+            by_key: dict[GroundTruthKey, list[_ExternalGroundTruthFile]] = {}
+            for item in inventory:
+                by_key.setdefault(item.key, []).append(item)
+            provenance: list[_RawGroundTruthProvenance] = []
+            matched_external_paths: set[tuple[int, str]] = set()
+            unmatched_raws: list[_UnmatchedSourceRawReceipt] = []
+            for row in rows:
+                matches = by_key.get(row.key, [])
+                match = matches[0] if matches else None
+                if match is None:
+                    unmatched_raws.append(
+                        {
+                            "raw_id": row.raw_id,
+                            "blob_hash": row.blob_hash,
+                            "blob_size": row.blob_size,
+                            "disposition": "unreconciled-source-raw",
+                        }
+                    )
+                else:
+                    matched_external_paths.add((match.root_index, match.relative_path))
+                provenance.append(_raw_provenance(row, match))
+
+            unmatched_external = [
+                item for item in inventory if (item.root_index, item.relative_path) not in matched_external_paths
+            ]
+            unmatched_external_files: list[_ExternalGroundTruthReceipt] = []
+            cross_origin_mismatches: list[_ExternalGroundTruthReceipt] = []
+            for item in unmatched_external:
+                other_origins = sorted(source_key_origins.get(item.key, set()) - {origin})
+                if other_origins:
+                    receipt = _external_receipt(item, "cross-origin-source", other_origins=other_origins)
+                    unmatched_external_files.append(receipt)
+                    cross_origin_mismatches.append(receipt)
+                else:
+                    unmatched_external_files.append(_external_receipt(item, "unmatched-external-file"))
+            for item in inventory:
+                claimed_origins = external_claims.get(item.path, set()) - {origin}
+                if claimed_origins:
+                    cross_origin_mismatches.append(
+                        _external_receipt(item, "cross-origin-source", other_origins=sorted(claimed_origins))
+                    )
+
+            source_keys: set[GroundTruthKey] = {row.key for row in rows}
+            source_distinct_bytes = sum(size for _hash, size in source_keys)
+            external_bytes = sum(item.size for item in inventory)
+            count_discrepancy = len(source_keys) != len(inventory)
+            byte_discrepancy = source_distinct_bytes != external_bytes
+            origin_errors: list[str] = []
+            if unmatched_raws:
+                origin_errors.append(f"{len(unmatched_raws)} source raw(s) have no external file match")
+            if unmatched_external_files:
+                origin_errors.append(f"{len(unmatched_external_files)} external file(s) have no source raw match")
+            if count_discrepancy:
+                origin_errors.append(
+                    f"source distinct blob count {len(source_keys)} disagrees with external file count {len(inventory)}"
+                )
+            if byte_discrepancy:
+                origin_errors.append(
+                    f"source distinct blob bytes {source_distinct_bytes} disagrees with external bytes {external_bytes}"
+                )
+            if cross_origin_mismatches:
+                origin_errors.append(f"{len(cross_origin_mismatches)} external file(s) match another origin")
+            if origin_errors:
+                errors.extend(f"ground truth for {origin}: {reason}" for reason in origin_errors)
+            hashes = {item.content_hash for item in inventory}
+            missing = sorted(
+                source_keys_hash for source_keys_hash, _size in source_keys if source_keys_hash not in hashes
+            )
+            mapping = _raw_external_mapping(source, origin=origin, inventory=inventory, exempt=False)
+            unmatched_mapping = [item for item in mapping if item.get("disposition") == "unmatched-source-raw"]
             if missing:
                 errors.append(f"ground truth for {origin} does not verify every source raw blob")
+            if unmatched_mapping:
+                errors.append(f"ground truth for {origin} has {len(unmatched_mapping)} unmapped source raw(s)")
             evidence[origin] = {
                 "exempt": False,
                 "declared_roots": [str(path) for path in declared_roots],
-                "external_files": len(files),
-                "external_bytes": bytes_total,
+                "external_files": len(inventory),
+                "external_bytes": external_bytes,
                 "external_hashes": len(hashes),
-                "source_blob_hashes": len(source_hashes),
+                "source_raw_count": len(rows),
+                "source_raw_bytes": sum(row.blob_size for row in rows),
+                "source_blob_hashes": len(source_keys),
+                "source_blob_bytes": source_distinct_bytes,
+                "count_discrepancy": count_discrepancy,
+                "byte_discrepancy": byte_discrepancy,
                 "unverified_source_blob_hashes": len(missing),
                 "unverified_samples": _sample(missing, DEFAULT_SAMPLE_LIMIT),
-                "passed": not missing,
+                "unmatched_source_raws": unmatched_raws[:DEFAULT_SAMPLE_LIMIT],
+                "unmatched_external_files": unmatched_external_files[:DEFAULT_SAMPLE_LIMIT],
+                "cross_origin_mismatches": cross_origin_mismatches[:DEFAULT_SAMPLE_LIMIT],
+                "provenance": provenance,
+                "external_inventory": _external_inventory_records(inventory),
+                "raw_external_mapping": mapping,
+                "passed": not missing and not unmatched_mapping,
             }
-    return {"passed": not errors, "origins": evidence, "reasons": errors}
+    return {
+        "passed": not errors,
+        "origins": evidence,
+        "reasons": errors,
+        "external_ground_truth_digest": _canonical_external_ground_truth_digest(evidence),
+    }
 
 
 def _fidelity_evidence(report: object) -> dict[str, object]:
@@ -737,33 +1369,333 @@ def _int_or_zero(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _write_json(path: Path, payload: dict[str, object]) -> None:
+def _current_external_ground_truth_digest(archive_root: Path, ground_truth: Mapping[str, object]) -> str:
+    origins = _as_dict(ground_truth.get("origins"))
+    current: dict[str, object] = {}
+    with open_readonly_connection(archive_root / "source.db") as source:
+        for origin, raw_evidence in origins.items():
+            evidence = _as_dict(raw_evidence)
+            if bool(evidence.get("exempt")):
+                current[origin] = {
+                    "exempt": True,
+                    "reason": evidence.get("reason"),
+                    "raw_external_mapping": _raw_external_mapping(source, origin=origin, inventory=(), exempt=True),
+                }
+                continue
+            roots = evidence.get("declared_roots")
+            if not isinstance(roots, list) or not all(isinstance(root, str) and root for root in roots):
+                raise SchemaInferenceGateError(f"ground truth roots for {origin} are missing or malformed")
+            resolved_roots = tuple(Path(root).expanduser().resolve() for root in roots)
+            unavailable = [str(root) for root in resolved_roots if not root.exists()]
+            if unavailable:
+                raise SchemaInferenceGateError(
+                    f"ground truth roots for {origin} are unavailable: {', '.join(unavailable)}"
+                )
+            inventory = _external_inventory(resolved_roots)
+            current[origin] = {
+                "declared_roots": [str(root) for root in resolved_roots],
+                "external_inventory": _external_inventory_records(inventory),
+                "raw_external_mapping": _raw_external_mapping(source, origin=origin, inventory=inventory, exempt=False),
+            }
+    return _canonical_external_ground_truth_digest(current)
+
+
+def validate_schema_inference_receipt(
+    archive_root: Path,
+    receipt_path: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Validate the evidence a rebuild is authorized to consume.
+
+    This validator deliberately checks the embedded subgates instead of
+    trusting the top-level verdict. It also recomputes archive/source identity,
+    the source snapshot, and the external corpus digest against the live
+    read-only inputs.
+    """
+
+    root = Path(archive_root).absolute()
+    path = resolve_schema_inference_receipt_reference(root, receipt_path)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SchemaInferenceGateError(f"could not read schema-inference receipt: {exc}") from exc
+    if not isinstance(document, dict):
+        raise SchemaInferenceGateError("schema-inference receipt root must be an object")
+
+    errors: list[str] = []
+    if document.get("schema") != RECEIPT_SCHEMA:
+        errors.append(f"schema must be {RECEIPT_SCHEMA!r}")
+    if document.get("verdict") != "PASS":
+        errors.append("receipt verdict must be PASS")
+    if document.get("archive_root") != str(root):
+        errors.append("receipt archive_root does not match the requested archive")
+
+    generated_at: datetime | None = None
+    try:
+        generated_at = _parse_receipt_datetime(document.get("generated_at"), field="generated_at")
+    except SchemaInferenceGateError as exc:
+        errors.append(str(exc))
+    effective_now = (now or datetime.now(UTC)).astimezone(UTC)
+    if generated_at is not None:
+        if generated_at > effective_now + RECEIPT_CLOCK_SKEW:
+            errors.append("receipt generated_at is in the future")
+        if effective_now - generated_at > RECEIPT_TTL + RECEIPT_CLOCK_SKEW:
+            errors.append("schema-inference receipt is stale")
+
+    try:
+        location = ArchiveLocation.resolve(root)
+        current_identity = _archive_receipt_identity(location)
+        receipt_identity = _as_dict(document.get("archive_identity"))
+        for field in ("configured_root", "durable_id", "source_tier", "user_tier"):
+            if receipt_identity.get(field) != current_identity.get(field):
+                errors.append(f"receipt archive identity field {field!r} does not match the requested archive")
+        source_path = root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
+        if not source_path.exists():
+            errors.append("source.db is missing")
+        else:
+            expected_snapshot = document.get("source_snapshot")
+            actual_snapshot = rebuild_source_revision_snapshot(root)
+            if not isinstance(expected_snapshot, str) or expected_snapshot != actual_snapshot:
+                errors.append("receipt source snapshot does not match source.db")
+    except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+        errors.append(f"archive/source identity validation failed: {exc}")
+
+    source_identity = _as_dict(document.get("source_identity"))
+    if source_identity.get("durable_id") != _as_dict(document.get("archive_identity")).get("durable_id"):
+        errors.append("receipt source identity is missing or does not match durable identity")
+    if source_identity.get("source_tier") != _as_dict(document.get("archive_identity")).get("source_tier"):
+        errors.append("receipt source identity is missing or does not match source tier identity")
+    if _as_dict(document.get("source_schema_identity")).get("matches_expected") is not True:
+        errors.append("receipt source schema identity is not PASS")
+
+    query_results = document.get("query_results")
+    required_gates = (*_HARD_GATE_SQL, "zero-unexplained-byte-duplicates")
+    if not isinstance(query_results, dict):
+        errors.append("receipt query_results are missing or malformed")
+    else:
+        for gate_id in required_gates:
+            result = query_results.get(gate_id)
+            if not isinstance(result, dict) or result.get("passed") is not True:
+                errors.append(f"receipt subgate {gate_id} is not PASS")
+
+    for field in ("corpus_fidelity", "full_blob_hash_verification", "ground_truth_inputs"):
+        if _as_dict(document.get(field)).get("passed") is not True:
+            errors.append(f"receipt subgate {field} is not PASS")
+
+    ground_truth = document.get("ground_truth_inputs")
+    if not isinstance(ground_truth, dict):
+        errors.append("receipt ground_truth_inputs are missing or malformed")
+    else:
+        recorded_digest = document.get("external_ground_truth_digest")
+        nested_digest = ground_truth.get("external_ground_truth_digest")
+        if not isinstance(recorded_digest, str) or recorded_digest != nested_digest:
+            errors.append("receipt external ground-truth digest is missing or inconsistent")
+        try:
+            recorded_structure_digest = _canonical_external_ground_truth_digest(
+                cast(Mapping[str, object], _as_dict(ground_truth.get("origins")))
+            )
+            if recorded_digest != recorded_structure_digest:
+                errors.append("receipt raw external mapping or inventory does not match its digest")
+            current_digest = _current_external_ground_truth_digest(root, ground_truth)
+            if recorded_digest != current_digest:
+                errors.append("external ground-truth corpus changed since the receipt was produced")
+        except (OSError, SchemaInferenceGateError, sqlite3.Error) as exc:
+            errors.append(str(exc))
+        try:
+            with open_readonly_connection(root / "source.db") as source:
+                source_origins = {str(row[0]) for row in source.execute("SELECT DISTINCT origin FROM raw_sessions")}
+            receipt_origins = set(_as_dict(ground_truth.get("origins")))
+            if source_origins != receipt_origins:
+                errors.append("receipt ground-truth origins do not match source.db")
+            for origin, raw_evidence in _as_dict(ground_truth.get("origins")).items():
+                evidence = _as_dict(raw_evidence)
+                if not bool(evidence.get("exempt")) and evidence.get("passed") is not True:
+                    errors.append(f"receipt ground-truth subgate for {origin} is not PASS")
+        except (OSError, sqlite3.Error) as exc:
+            errors.append(f"could not compare receipt ground-truth origins: {exc}")
+
+    if errors:
+        raise SchemaInferenceGateError("schema-inference receipt rejected: " + "; ".join(errors))
+
+    identity = _as_dict(document.get("archive_identity"))
+    return {
+        "receipt_path": str(path),
+        "schema": document.get("schema"),
+        "generated_at": document.get("generated_at"),
+        "validated_at": effective_now.isoformat(),
+        "archive_root": str(root),
+        "durable_id": identity.get("durable_id"),
+        "source_identity": document.get("source_identity"),
+        "source_snapshot": document.get("source_snapshot"),
+        "external_ground_truth_digest": document.get("external_ground_truth_digest"),
+    }
+
+
+def schema_inference_gate_receipt_digest(payload: Mapping[str, object]) -> str:
+    """Digest every receipt field except the self-authenticating digest."""
+
+    body = {key: value for key, value in payload.items() if key not in {"receipt_sha256", "attestations"}}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _write_json(path: Path, payload: dict[str, object], *, authority_paths: Mapping[str, Path]) -> None:
+    payload["receipt_sha256"] = schema_inference_gate_receipt_digest(payload)
+    payload = sign_verification_receipt(payload, authority_paths=authority_paths)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise SchemaInferenceGateError(f"immutable schema-inference gate receipt already exists: {path}") from exc
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
-def run_schema_inference_gate(
+def _archive_config(root: Path) -> Any:
+    from polylogue.config import Config
+
+    return Config(archive_root=root, render_root=root / "render", sources=[])
+
+
+def resolve_schema_inference_archive_root(config: object, *, fallback_db_path: Path) -> Path:
+    """Resolve the archive root consistently across privileged schema routes."""
+
+    configured_root = getattr(config, "archive_root", None)
+    return Path(configured_root) if configured_root is not None else fallback_db_path.parent
+
+
+@contextmanager
+def schema_inference_quiescence(archive_root: Path) -> Iterator[None]:
+    """Hold the archive-wide offline lease for the complete evidence window."""
+
+    root = Path(archive_root).absolute()
+    daemon_pid = running_daemon_pid(_archive_config(root))
+    if daemon_pid is not None:
+        raise SchemaInferenceGateError(
+            f"schema-inference gate requires a quiesced archive; polylogued PID {daemon_pid} is running"
+        )
+    try:
+        with RebuildLease(root):
+            yield
+    except RebuildLeaseUnavailableError as exc:
+        raise SchemaInferenceGateError(
+            f"schema-inference gate requires exclusive offline archive ownership: {exc}"
+        ) from exc
+
+
+def _parse_receipt_time(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise SchemaInferenceGateError("schema-inference gate receipt generated_at is missing")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise SchemaInferenceGateError("schema-inference gate receipt generated_at is invalid") from exc
+    if parsed.tzinfo is None:
+        raise SchemaInferenceGateError("schema-inference gate receipt generated_at must include a timezone")
+    return parsed.astimezone(UTC)
+
+
+def validate_schema_inference_gate_receipt(
+    receipt_path: Path,
+    *,
+    archive_root: Path,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Validate a fresh, immutable PASS receipt against the live archive."""
+
+    root = Path(archive_root).absolute()
+    safe_path = _resolve_receipt_path(Path(receipt_path), archive_root=root)
+    try:
+        raw = safe_path.read_bytes()
+        loaded = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SchemaInferenceGateError(f"unable to read schema-inference gate receipt: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise SchemaInferenceGateError("schema-inference gate receipt must be a JSON object")
+    payload = cast(dict[str, object], loaded)
+    if payload.get("schema") != RECEIPT_SCHEMA or payload.get("gate_version") != GATE_VERSION:
+        raise SchemaInferenceGateError("schema-inference gate receipt schema version is unsupported")
+    if payload.get("verdict") != "PASS":
+        raise SchemaInferenceGateError("schema-inference gate receipt is not a PASS")
+    if payload.get("receipt_sha256") != schema_inference_gate_receipt_digest(payload):
+        raise SchemaInferenceGateError("schema-inference gate receipt content digest mismatch")
+    try:
+        verify_verification_receipt(payload, tier="source", live_tier_path=root / "source.db")
+        verify_verification_receipt(payload, tier="user", live_tier_path=root / "user.db")
+    except BackupAttestationError as exc:
+        raise SchemaInferenceGateError(f"schema-inference gate receipt attestation is invalid: {exc}") from exc
+    generated_at = _parse_receipt_time(payload.get("generated_at"))
+    current_time = (now or datetime.now(UTC)).astimezone(UTC)
+    age = current_time - generated_at
+    if age < -RECEIPT_CLOCK_SKEW or age > RECEIPT_TTL:
+        raise SchemaInferenceGateError("schema-inference gate receipt is stale or from the future")
+    location = ArchiveLocation.resolve(root)
+    if payload.get("archive_root") != str(root):
+        raise SchemaInferenceGateError("schema-inference gate receipt targets a different archive")
+    live_identity = _tier_schema_identity(root, location)
+    if payload.get("schema_identity") != live_identity:
+        raise SchemaInferenceGateError("schema-inference gate receipt archive or tier identity is stale")
+    archive_payload = _as_dict(live_identity.get("archive"))
+    if payload.get("archive_identity_digest") != archive_payload.get("authority_identity_digest"):
+        raise SchemaInferenceGateError("schema-inference gate receipt archive identity is stale")
+    if payload.get("source_schema_identity") != _as_dict(_as_dict(live_identity.get("tiers")).get("source")):
+        raise SchemaInferenceGateError("schema-inference gate receipt source schema identity is stale")
+    if not all(bool(_as_dict(value).get("matches_expected")) for value in _as_dict(live_identity["tiers"]).values()):
+        raise SchemaInferenceGateError("live archive has a stale durable or derived tier schema identity")
+    input_paths = _as_dict(payload.get("input_paths"))
+    if input_paths.get("receipt") != str(safe_path):
+        raise SchemaInferenceGateError("schema-inference gate receipt is bound to a different receipt path")
+    reasons = payload.get("pass_fail_reasons")
+    if not isinstance(reasons, list) or reasons:
+        raise SchemaInferenceGateError("schema-inference gate receipt contains failure reasons")
+    return payload
+
+
+@contextmanager
+def authorize_schema_generation(archive_root: Path, receipt_path: Path) -> Iterator[dict[str, object]]:
+    """Hold quiescence for one fresh schema operation or compatible short sequence."""
+
+    with schema_inference_quiescence(archive_root):
+        yield validate_schema_inference_gate_receipt(receipt_path, archive_root=archive_root)
+
+
+def _run_schema_inference_gate_locked(
     archive_root: Path,
     *,
     receipt_path: Path,
     ground_truth_roots: Mapping[str, Sequence[Path]] | None = None,
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
 ) -> SchemaInferenceGateResult:
-    """Run and persist the schema-inference prerequisite receipt."""
+    """Run and persist the schema-inference prerequisite while already locked."""
 
     if sample_limit <= 0:
         raise SchemaInferenceGateError("sample_limit must be positive")
     root = Path(archive_root).absolute()
     safe_receipt_path = _resolve_receipt_path(Path(receipt_path), archive_root=root)
+    location: ArchiveLocation | None = None
     try:
         location = ArchiveLocation.resolve(root)
         index_path = location.active_index_path
         schema_identity = _tier_schema_identity(root, location)
+        archive_receipt_identity = _archive_receipt_identity(location)
     except (OSError, ValueError, RuntimeError) as exc:
         schema_identity = {"error": str(exc), "tiers": {}}
         index_path = root / "index.db"
+        archive_receipt_identity = {"error": str(exc)}
 
     source_entry = _as_dict(_as_dict(schema_identity.get("tiers")).get("source"))
     source_schema_ok = bool(source_entry.get("matches_expected"))
@@ -791,6 +1723,7 @@ def run_schema_inference_gate(
     try:
         ground_truth = _ground_truth_evidence(
             root,
+            index_path=index_path,
             source_counts=cast(Mapping[str, Mapping[str, int]], source_gates.get("source_counts", {})),
             roots=ground_truth_roots,
         )
@@ -799,8 +1732,15 @@ def run_schema_inference_gate(
             "passed": False,
             "origins": {},
             "reasons": [f"ground truth reconciliation could not read source evidence: {exc}"],
+            "external_ground_truth_digest": None,
         }
 
+    source_snapshot: str | None = None
+    reasons_for_snapshot: str | None = None
+    try:
+        source_snapshot = rebuild_source_revision_snapshot(root)
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        reasons_for_snapshot = f"source revision snapshot could not be read: {exc}"
     gate_results = _as_dict(source_gates.get("gates"))
     duplicate_gate = source_gates.get("duplicate_gate", {})
     if isinstance(duplicate_gate, dict):
@@ -809,6 +1749,8 @@ def run_schema_inference_gate(
     reasons = [
         str(_as_dict(result).get("reason")) for result in gate_results.values() if _as_dict(result).get("reason")
     ]
+    if not source_gates.get("source_counts"):
+        reasons.append("schema inference requires at least one reconciled source raw")
     if not source_schema_ok:
         reasons.append("source.db schema identity is missing or does not match the packaged schema")
     if not bool(fidelity.get("passed")):
@@ -821,14 +1763,35 @@ def run_schema_inference_gate(
         ground_truth_reasons = ground_truth.get("reasons", [])
         if isinstance(ground_truth_reasons, list):
             reasons.extend(str(reason) for reason in ground_truth_reasons)
+    if source_snapshot is None:
+        reasons.append(reasons_for_snapshot or "source revision snapshot could not be computed")
 
+    final_schema_identity = _tier_schema_identity(root, location) if location is not None else schema_identity
+    tier_entries = _as_dict(final_schema_identity.get("tiers"))
+    schema_identity_ok = len(tier_entries) == len(ARCHIVE_TIER_SPECS) and all(
+        bool(_as_dict(value).get("matches_expected")) for value in tier_entries.values()
+    )
+    if not schema_identity_ok:
+        for tier_name, entry in tier_entries.items():
+            if not bool(_as_dict(entry).get("matches_expected")):
+                reasons.append(f"{tier_name}.db schema identity is stale or does not match the packaged schema")
+    archive_payload = _as_dict(final_schema_identity.get("archive"))
     payload: dict[str, object] = {
         "schema": RECEIPT_SCHEMA,
         "gate_version": GATE_VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
-        "verdict": "PASS" if not reasons and passed_hard_gates else "FAIL",
+        "receipt_nonce": uuid4().hex,
+        "verdict": "PASS" if not reasons and passed_hard_gates and schema_identity_ok else "FAIL",
         "archive_root": str(root),
-        "schema_identity": schema_identity,
+        "archive_identity": archive_receipt_identity,
+        "source_identity": {
+            "durable_id": archive_receipt_identity.get("durable_id"),
+            "source_tier": archive_receipt_identity.get("source_tier"),
+        },
+        "source_snapshot": source_snapshot,
+        "external_ground_truth_digest": ground_truth.get("external_ground_truth_digest"),
+        "archive_identity_digest": archive_payload.get("authority_identity_digest"),
+        "schema_identity": final_schema_identity,
         "source_schema_identity": source_entry,
         "query_results": gate_results,
         "source_denominators": source_gates.get("source_counts", {}),
@@ -844,6 +1807,7 @@ def run_schema_inference_gate(
             "active_index_db": str(index_path),
             "receipt": str(safe_receipt_path),
         },
+        "quiescence": {"lease": "index-rebuild-exclusive", "daemon_pid": None},
         "tool_versions": {
             "polylogue": POLYLOGUE_VERSION,
             "gate": GATE_VERSION,
@@ -853,8 +1817,30 @@ def run_schema_inference_gate(
         },
         "pass_fail_reasons": reasons,
     }
-    _write_json(safe_receipt_path, payload)
+    _write_json(
+        safe_receipt_path,
+        payload,
+        authority_paths={"source": root / "source.db", "user": root / "user.db"},
+    )
     return SchemaInferenceGateResult(payload)
+
+
+def run_schema_inference_gate(
+    archive_root: Path,
+    *,
+    receipt_path: Path,
+    ground_truth_roots: Mapping[str, Sequence[Path]] | None = None,
+    sample_limit: int = DEFAULT_SAMPLE_LIMIT,
+) -> SchemaInferenceGateResult:
+    """Run the prerequisite under exclusive offline ownership."""
+
+    with schema_inference_quiescence(Path(archive_root).absolute()):
+        return _run_schema_inference_gate_locked(
+            archive_root,
+            receipt_path=receipt_path,
+            ground_truth_roots=ground_truth_roots,
+            sample_limit=sample_limit,
+        )
 
 
 __all__ = [
@@ -862,7 +1848,17 @@ __all__ = [
     "GROUND_TRUTH_INPUTS",
     "RECEIPT_FILENAME",
     "RECEIPT_SCHEMA",
+    "RECEIPT_CLOCK_SKEW",
+    "RECEIPT_TTL",
+    "SCHEMA_INFERENCE_RECEIPT_ENV",
     "SchemaInferenceGateError",
     "SchemaInferenceGateResult",
+    "rebuild_source_revision_snapshot",
+    "resolve_schema_inference_receipt_reference",
+    "authorize_schema_generation",
+    "schema_inference_gate_receipt_digest",
+    "schema_inference_quiescence",
+    "validate_schema_inference_gate_receipt",
     "run_schema_inference_gate",
+    "validate_schema_inference_receipt",
 ]

@@ -107,6 +107,7 @@ if TYPE_CHECKING:
     from polylogue.core.protocols import ProgressCallback
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
+    from polylogue.insights.fable_packet import FableDelegationPacket
     from polylogue.insights.hermes_integration_health import HermesIntegrationHealth
     from polylogue.insights.judgment.types import ComparativeJudgment
     from polylogue.insights.pathology import PathologyReport
@@ -2190,6 +2191,10 @@ class _ArchiveInsightExportOperations:
                 terminal_state=getattr(query, "terminal_state", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
+                first_message_since=getattr(query, "first_message_since", None),
+                first_message_until=getattr(query, "first_message_until", None),
+                session_date_since=getattr(query, "session_date_since", None),
+                session_date_until=getattr(query, "session_date_until", None),
                 tier=str(getattr(query, "tier", "merged")),
                 limit=getattr(query, "limit", None),
                 offset=int(getattr(query, "offset", 0)),
@@ -2368,11 +2373,43 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
     """
     from polylogue.archive.actions.actions import build_actions, build_tool_calls_from_content_blocks
 
+    # Keep pairing aligned with storage/sqlite/action_pairs.py: rank uses and
+    # results independently by (message position, variant index, block
+    # position), then join equal ranks for each (session, tool_id). This is
+    # intentionally session-wide because providers commonly emit a tool use in
+    # one message and its result in a later message.
+    ordered_messages = [
+        message
+        for _input_index, message in sorted(
+            enumerate(session.messages),
+            key=lambda item: (item[1].position, item[1].branch_index, item[0]),
+        )
+    ]
+    uses_by_tool_id: dict[str, builtins.list[Mapping[str, object]]] = {}
+    results_by_tool_id: dict[str, builtins.list[Mapping[str, object]]] = {}
+    for message in ordered_messages:
+        for block in message.blocks:
+            block_type = str(block.get("type"))
+            tool_id = block.get("tool_id")
+            if not isinstance(tool_id, str) or not tool_id:
+                continue
+            if block_type == "tool_use":
+                uses_by_tool_id.setdefault(tool_id, []).append(block)
+            elif block_type == "tool_result":
+                results_by_tool_id.setdefault(tool_id, []).append(block)
+
+    result_block_by_use_block_id: dict[int, Mapping[str, object] | None] = {}
+    for tool_id, use_blocks in uses_by_tool_id.items():
+        result_blocks = results_by_tool_id.get(tool_id, ())
+        for rank, use_block in enumerate(use_blocks):
+            result_block_by_use_block_id[id(use_block)] = result_blocks[rank] if rank < len(result_blocks) else None
+
     events: builtins.list[Action] = []
-    for message in session.messages:
+    for message in ordered_messages:
         calls = build_tool_calls_from_content_blocks(
             origin=session.origin,
             content_blocks=message.blocks,
+            result_block_by_use_block_id=result_block_by_use_block_id,
         )
         events.extend(build_actions(message, calls))
     return tuple(events)
@@ -3854,6 +3891,7 @@ class PolylogueArchiveMixin:
 
     async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
         """Resolve one public object/evidence ref into a bounded read payload."""
+        from polylogue.storage.block_anchor import InvalidBlockAnchorError, parse_block_anchor, resolve_block_anchor
         from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
         invalid_unicode_ref = _invalid_unicode_ref_payload(ref)
@@ -3871,6 +3909,47 @@ class PolylogueArchiveMixin:
                 return cast(PublicRefResolutionPayload, bounded_batch_ref)
             if batch_candidate.kind != "annotation-batch":
                 return cast(PublicRefResolutionPayload, bounded_batch_ref)
+        try:
+            block_anchor = parse_block_anchor(ref)
+        except InvalidBlockAnchorError:
+            block_anchor = None
+        if block_anchor is not None:
+            archive_root = _active_archive_root(self.config)
+
+            def read_anchor(archive: ArchiveStore) -> PublicRefResolutionPayload:
+                resolution = resolve_block_anchor(archive._conn, block_anchor)
+                resolved = resolution.state in {"ok", "drifted_position", "drifted_message"}
+                object_refs = (
+                    (f"message:{resolution.resolved_message_id}",) if resolution.resolved_message_id is not None else ()
+                )
+                return PublicRefResolutionPayload(
+                    ref=ref,
+                    kind="block",
+                    resolved=resolved,
+                    payload_kind="block-anchor",
+                    payload={
+                        "state": resolution.state,
+                        "anchor": resolution.anchor.to_text(),
+                        "resolved_message_id": resolution.resolved_message_id,
+                        "resolved_position": resolution.resolved_position,
+                        "candidates": [
+                            {"message_id": message_id, "position": position}
+                            for message_id, position in resolution.candidates
+                        ],
+                        "detail": resolution.detail,
+                    },
+                    object_refs=object_refs,
+                    caveats=() if resolved else (resolution.detail or f"block anchor state: {resolution.state}",),
+                )
+
+            return await run_archive_read(
+                archive_root,
+                operation="archive.resolve_block_anchor",
+                arguments={"ref": ref},
+                work=read_anchor,
+                projection="block-anchor-resolution",
+                stable_order="canonical",
+            )
         try:
             parsed = parse_public_ref(ref)
         except ValueError as exc:
@@ -5138,6 +5217,10 @@ class PolylogueArchiveMixin:
                 "terminal_state": request.terminal_state,
                 "since": request.since,
                 "until": request.until,
+                "first_message_since": request.first_message_since,
+                "first_message_until": request.first_message_until,
+                "session_date_since": request.session_date_since,
+                "session_date_until": request.session_date_until,
                 "tier": request.tier,
             },
             work=lambda archive: archive.list_session_profile_insights(
@@ -5146,6 +5229,10 @@ class PolylogueArchiveMixin:
                 terminal_state=request.terminal_state,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
+                first_message_since=request.first_message_since,
+                first_message_until=request.first_message_until,
+                session_date_since=request.session_date_since,
+                session_date_until=request.session_date_until,
                 tier=request.tier,
                 limit=request.limit,
                 offset=request.offset,
@@ -5476,6 +5563,40 @@ class PolylogueArchiveMixin:
             arguments={"query": query},
             work=lambda archive: archive.audit_insight_rigor(query),
             projection="insight-rigor",
+            workload_class="scan",
+        )
+
+    async def regenerate_private_fable_packet(
+        self,
+        *,
+        seed: str,
+        requested_size: int,
+        schema_id: str = "delegation.discourse",
+        schema_version: int = 1,
+        exact_template_cap: int = 1,
+    ) -> FableDelegationPacket:
+        """Cold-regenerate the private descriptive Fable packet from the archive."""
+        from polylogue.insights.fable_packet import regenerate_private_fable_packet
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.fable_packet.regenerate",
+            arguments={
+                "seed": seed,
+                "requested_size": requested_size,
+                "schema_id": schema_id,
+                "schema_version": schema_version,
+                "exact_template_cap": exact_template_cap,
+            },
+            work=lambda archive: regenerate_private_fable_packet(
+                archive,
+                seed=seed,
+                requested_size=requested_size,
+                schema_id=schema_id,
+                schema_version=schema_version,
+                exact_template_cap=exact_template_cap,
+            ),
+            projection="fable-delegation-packet",
             workload_class="scan",
         )
 

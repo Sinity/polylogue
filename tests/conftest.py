@@ -1114,7 +1114,10 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
 
 
 @pytest.fixture
-def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]:
+def synthetic_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[str, int, range, int], Source]:
     """Factory fixture that generates synthetic Source objects for any provider.
 
     Writes SyntheticCorpus output to temp files, returning Source objects that
@@ -1133,6 +1136,7 @@ def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]
     """
     from polylogue.config import Source
     from polylogue.schemas.synthetic import SyntheticCorpus
+    from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 
     def _factory(
         provider: str,
@@ -1153,12 +1157,10 @@ def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]
         written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synth")
 
         if provider == "antigravity":
-            # The real acquisition path roots itself at a directory holding
-            # brain/ (and conversations/), not a single file -- see
-            # SyntheticCorpus.write_spec_artifacts's antigravity branch. It
-            # also resolves source.name via Provider.from_string, so the name
-            # must be exactly "antigravity", not "antigravity-test" like
-            # every other provider's synthetic source name.
+            monkeypatch.setattr(
+                "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+                SyntheticAntigravityLanguageServerClient,
+            )
             return Source(name=provider, path=provider_dir)
 
         if count == 1:

@@ -476,6 +476,25 @@ def test_chatgpt_codex_cloud_task_classifies_as_session_document() -> None:
     assert artifact.parse_as_session is True
 
 
+def test_headerless_codex_append_delta_is_a_session_record_stream() -> None:
+    records: list[JSONValue] = [
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "append delta"}],
+            },
+        }
+    ]
+
+    artifact = classify_artifact(records, provider="codex", source_path="/exports/rollout.jsonl")
+
+    assert artifact.kind is ArtifactKind.SESSION_RECORD_STREAM
+    assert artifact.parse_as_session is True
+    assert artifact.schema_eligible is True
+
+
 def test_chatgpt_library_files_entry_is_not_a_session() -> None:
     entry: JSONValue = {"file_id": "file_abc", "file_name": "notes.md", "mime_type": "text/markdown"}
 

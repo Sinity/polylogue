@@ -1,0 +1,103 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:source:v27",
+  "tier": "source",
+  "current_version": 26,
+  "target_version": 27,
+  "slot": 27,
+  "owner_ref": "polylogue-r9xsj",
+  "migration": {
+    "tier": "source",
+    "target_version": 27,
+    "slot": 27,
+    "path": "027_raw_non_session_duplicate_exclusion_receipts.sql",
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/027_raw_non_session_duplicate_exclusion_receipts.sql",
+    "sql_sha256": "26e2d5ba8f2fd6aa0519f4bc48d333578a1b7bb04872d23a583bd4cf0bf8cd3f",
+    "requires_backup": true
+  },
+  "riders": [
+    {
+      "rider_id": "rider:raw-non-session-duplicate-exclusion",
+      "owner_ref": "polylogue-r9xsj",
+      "schema_objects": [
+        "table:gc_generations",
+        "table:raw_non_session_duplicate_exclusion_receipts",
+        "index:idx_raw_non_session_duplicate_exclusion_receipts_twin"
+      ],
+      "runtime_consumers": [
+        {
+          "consumer_id": "source-archive-bootstrap",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+          "behavior_proof_ref": "proof:source-v27:archive-bootstrap",
+          "roles": ["write"]
+        },
+        {
+          "consumer_id": "source-tier-bootstrap",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+          "behavior_proof_ref": "proof:source-v27:tier-bootstrap",
+          "roles": ["read"]
+        }
+      ],
+      "behavior_proof_refs": [
+        "proof:source-v27:archive-bootstrap",
+        "proof:source-v27:tier-bootstrap"
+      ],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    },
+    {
+      "rider_id": "rider:raw-hook-events-origin-repair",
+      "owner_ref": "polylogue-tfzw0",
+      "schema_objects": [
+        "table:raw_hook_events",
+        "index:idx_raw_hook_events_session"
+      ],
+      "runtime_consumers": [
+        {
+          "consumer_id": "source-hook-event-writer",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/source_write.py:write_source_hook_event",
+          "behavior_proof_ref": "proof:source-v27:raw-hook-events-origin-repair",
+          "roles": ["write"]
+        },
+        {
+          "consumer_id": "source-hook-event-bootstrap",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+          "behavior_proof_ref": "proof:source-v27:raw-hook-events-origin-repair",
+          "roles": ["read"]
+        }
+      ],
+      "behavior_proof_refs": [
+        "proof:source-v27:raw-hook-events-origin-repair"
+      ],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "ordering_constraints": [],
+  "drop_constraints": [
+    {
+      "object_ref": "table:pending_blob_refs",
+      "after_rider_ids": [],
+      "copy_forward_proof_ref": "proof:polylogue-v7e0:lease-table-drop",
+      "consent_ref": "polylogue-v7e0"
+    }
+  ],
+  "row_change_allowances": [],
+  "backup_plan_ref": "backup-profile:source-tier",
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 1785876509000,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "manifest_sha256": "668e9cd491d40bc3cf594f1c3b5effd897d6945270b4c7c2a8fc0348b57075c6"
+}

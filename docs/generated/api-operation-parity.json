@@ -738,6 +738,11 @@
           "async": true,
           "binding": "Polylogue.export_insight_bundle",
           "signature": "(self, request: 'InsightExportBundleRequest') -> 'InsightExportBundleResult'"
+        },
+        {
+          "async": true,
+          "binding": "Polylogue.regenerate_private_fable_packet",
+          "signature": "(self, *, seed: 'str', requested_size: 'int', schema_id: 'str' = 'delegation.discourse', schema_version: 'int' = 1, exact_template_cap: 'int' = 1) -> 'FableDelegationPacket'"
         }
       ],
       "route_class": "index-read",

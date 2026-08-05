@@ -2692,21 +2692,40 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         except (OSError, sqlite3.Error):
             quick_check_ok = False
 
+        from polylogue.daemon.status import raw_failure_lifecycle_for_root
+
+        raw_lifecycle = raw_failure_lifecycle_for_root(archive_root())
+        raw_lifecycle_payload = {
+            "available": raw_lifecycle.available,
+            "state": raw_lifecycle.state,
+            "reason": raw_lifecycle.reason,
+            "parse_failures": raw_lifecycle.parse_failures,
+            "validation_failures": raw_lifecycle.validation_failures,
+            "deferred": raw_lifecycle.deferred,
+            "terminal": raw_lifecycle.terminal,
+            "unexplained": raw_lifecycle.unexplained,
+        }
+        archive_health_ok = quick_check_ok and raw_lifecycle.healthy
+
         overview: dict[str, object] = {
-            "ok": quick_check_ok,
+            "ok": archive_health_ok,
             "db_size_bytes": db_size,
             "wal_size_bytes": wal_size,
             "disk_free_bytes": disk_free,
             "blob_dir_size_bytes": 0,
             "quick_check": "pass" if quick_check_ok else "error",
             "quick_check_age_s": None,
+            "raw_failure_lifecycle_available": raw_lifecycle.available,
+            "raw_failure_lifecycle_state": raw_lifecycle.state,
+            "raw_failure_lifecycle_reason": raw_lifecycle.reason,
+            "raw_failure_lifecycle": raw_lifecycle_payload,
             "archive_root": str(load_polylogue_config().archive_root),
             "index_schema_version": INDEX_SCHEMA_VERSION,
             "daemon_version": POLYLOGUE_VERSION,
             "commit": VERSION_INFO.commit,
             "started_at": getattr(self.server, "started_at", None),
         }
-        self._send_json(HTTPStatus.OK, overview)
+        self._send_json(HTTPStatus.OK if archive_health_ok else HTTPStatus.SERVICE_UNAVAILABLE, overview)
 
     # ------------------------------------------------------------------
     # Handlers: status
@@ -5292,6 +5311,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         promote = body.get("promote", True)
         max_blob_mb = body.get("max_blob_mb")
         operation_id = body.get("operation_id")
+        schema_inference_receipt_path = body.get("schema_inference_receipt_path")
         raw_batch_size = body.get("raw_batch_size", 500)
         pass_byte_budget_mb = body.get("pass_byte_budget_mb")
         pass_deadline_seconds = body.get("pass_deadline_seconds")
@@ -5304,6 +5324,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
         if operation_id is not None and (not isinstance(operation_id, str) or not operation_id):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if schema_inference_receipt_path is not None and (
+            not isinstance(schema_inference_receipt_path, str) or not schema_inference_receipt_path
+        ):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
         if isinstance(raw_batch_size, bool) or not isinstance(raw_batch_size, int):
@@ -5334,6 +5359,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             max_blob_mb=float(max_blob_mb) if max_blob_mb is not None else None,
             promote=promote,
             operation_id=operation_id,
+            schema_inference_receipt_path=(
+                Path(schema_inference_receipt_path) if schema_inference_receipt_path is not None else None
+            ),
             raw_batch_size=raw_batch_size,
             pass_byte_budget_mb=float(pass_byte_budget_mb) if pass_byte_budget_mb is not None else None,
             pass_deadline_seconds=(float(pass_deadline_seconds) if pass_deadline_seconds is not None else None),

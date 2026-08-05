@@ -1,0 +1,65 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:source:v28",
+  "tier": "source",
+  "current_version": 27,
+  "target_version": 28,
+  "slot": 28,
+  "owner_ref": "polylogue-fix-3806",
+  "migration": {
+    "tier": "source",
+    "target_version": 28,
+    "slot": 28,
+    "path": "028_raw_hook_events_source_hash_index.sql",
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/028_raw_hook_events_source_hash_index.sql",
+    "sql_sha256": "33c124b2fa8c90cce1f1d58405fa69224684def469659a79b40aab64f3b4e26c",
+    "requires_backup": true
+  },
+  "riders": [
+    {
+      "rider_id": "rider:raw-hook-events-source-hash-index",
+      "owner_ref": "polylogue-fix-3806",
+      "schema_objects": ["index:idx_raw_hook_events_source_hash"],
+      "runtime_consumers": [
+        {
+          "consumer_id": "liveness-hook-snapshot",
+          "production_ref": "polylogue/maintenance/blob_ref_liveness_reconciliation.py:_stage_locked_hook_snapshot",
+          "behavior_proof_ref": "proof:source-v28:liveness-hook-snapshot",
+          "roles": ["read"]
+        },
+        {
+          "consumer_id": "hook-match-stage",
+          "production_ref": "polylogue/storage/hook_payload_ref_reconciliation.py:_create_match_stage",
+          "behavior_proof_ref": "proof:source-v28:hook-match-stage",
+          "roles": ["read"]
+        }
+      ],
+      "behavior_proof_refs": [
+        "proof:source-v28:liveness-hook-snapshot",
+        "proof:source-v28:hook-match-stage"
+      ],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "ordering_constraints": [],
+  "drop_constraints": [],
+  "row_change_allowances": [],
+  "backup_plan_ref": "backup-profile:source-tier",
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 1785876509000,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "manifest_sha256": "2b02f2f4e2b596f5903c67ec1add6f9e8eea9559a6bd14d6a98832b2e4d19b0d"
+}

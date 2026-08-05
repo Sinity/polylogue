@@ -85,6 +85,7 @@ class FastForwardOperationKind(StrEnum):
     CREATE_INDEX = "create-index"
     REBUILD_FTS = "rebuild-fts"
     DROP_TABLE = "drop-table"
+    REPAIR_ORPHAN_ATTACHMENT_NATIVE_IDS = "repair-orphan-attachment-native-ids"
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +290,11 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
                     ("table", "session_observed_events"),
                     ("table", "session_context_snapshots"),
                 ),
+            ),
+            FastForwardOperation(
+                name="v37-repair-orphan-attachment-native-ids",
+                kind=FastForwardOperationKind.REPAIR_ORPHAN_ATTACHMENT_NATIVE_IDS,
+                objects=(("table", "attachment_native_ids"),),
             ),
         ),
     ),
@@ -857,6 +863,36 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
                 ),
             ),
         ),
+    ),
+    IndexDeltaDeclaration(
+        version=64,
+        # The new session stamps are derived from parser/lowering semantics.
+        # Existing rows require raw replay for trustworthy values, so nullable
+        # DDL cannot take the clone-safe fast-forward route.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=65,
+        # polylogue-cuxz.5: `actions.result_state` is a CASE projection over
+        # existing action_pairs columns. Replacing this derived view exposes
+        # no-result separately from an existing result with unknown outcome;
+        # it neither changes parser semantics nor materialized values.
+        classes=(DerivedDeltaClass.VIEW_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v65-actions-result-state",
+                kind=FastForwardOperationKind.REPLACE_VIEW,
+                objects=(("view", "actions"),),
+            ),
+        ),
+    ),
+    IndexDeltaDeclaration(
+        version=66,
+        # Native and positional message identities now use disjoint tagged
+        # namespaces. Existing generated ids are still valid read values, but
+        # every newly written message and dependent reference must be produced
+        # by raw replay under the new expression.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
 )
 

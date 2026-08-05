@@ -76,6 +76,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab seed-receipt-compare` | Judge a seed-testmon or focused pytest run's resource receipt against a named baseline receipt (e.g. a prior incident) — confirms both runs share workload identity and terminated cleanly, then scores wall-time speedup and peak-PSS ceiling targets, naming a blocker and linked follow-up for any unmet target instead of silently dropping it. |
 | `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
 | `devtools lab test-economics` | Decide where test-writing effort or test-suite pruning actually pays off, by cross-referencing coverage percent, historical fix-commit density, testmon wall-time cost exposure, and testmon selection fan-out per top-level package. |
+| `devtools lab testmon-blind-spots` | Inspect an existing coverage JSON report against an existing pytest-testmon database. Declaration-only modules are reported separately from executable validator risk; this command does not run pytest or regenerate coverage. |
 | `devtools lab testmon-proof` | Validate the affected-test harness itself: a disposable copy of a real Polylogue module and existing route test is seeded, semantically mutated, edge-severed, restored, and checked for bounded unrelated-change selection. |
 
 ## Core Loop
@@ -94,6 +95,34 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools bench mutation list`, `devtools bench mutation run filters`.
 - `devtools bench campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
   Common forms: `devtools bench campaign list`, `devtools bench campaign run search-filters`, `devtools bench campaign compare baseline.json candidate.json`.
+
+## Workspace disposition audit
+
+The utf.1 triage retains workspace commands with operator history, reusable output, or focused tests. The stale archive-schema-fast-forward name is removed in favor of the registered index fast-forward command.
+
+| Named entry | Disposition | Evidence | Replacement |
+| --- | --- | --- | --- |
+| `devtools workspace index-fast-forward` | `retain` | Recent production commits plus focused devtools/storage tests; emits a reusable proof receipt. | Keep the registered command as the index-tier actuator. |
+| `workspace archive-schema-fast-forward` | `remove` | No current CommandSpec, implementation module, focused test, or history entry exists for this name. | Use workspace index-fast-forward for declared derived-index fast-forwards. |
+| `devtools workspace degraded-archive-proof` | `retain` | Focused tests and deterministic self-healing proof artifacts cover the command. | Keep the registered command for archive repair evidence. |
+| `devtools workspace frontier` | `retain` | Operator-facing frontier report with documented workflow use and structured report output. | Keep the registered command for frontier batching and wait-ahead decisions. |
+| `devtools workspace temporal-read-profile` | `retain` | Focused tests cover the report and JSON timing output is reusable for read tuning. | Keep the registered command as the temporal read profiling entrypoint. |
+| `devtools workspace temporal-devloop` | `retain` | Focused tests cover structured and Markdown event sources; output is a reusable evidence window. | Keep the registered command as the devloop temporal evidence entrypoint. |
+| `devtools workspace temporal-archive-aggregates` | `retain` | Focused tests cover aggregate report construction and reusable archive artifacts. | Keep the registered command as the run-projection aggregate entrypoint. |
+| `devtools workspace lineage-validation` | `retain` | Focused tests cover lineage evidence and the command emits reusable count and composition proof. | Keep the registered command before publishing archive cardinality claims. |
+| `devtools workspace cli-surface-audit` | `retain` | Focused tests cover bounded output and stale-artifact pruning; the audit shelf is reusable. | Keep the registered command as the current CLI surface audit entrypoint. |
+| `devtools demo real-slice-screen` | `retain` | Focused privacy-screening tests cover redaction, PII review, and report generation. | Keep the registered command as the read-only real-archive screening entrypoint. |
+
+Catalog bypass audit sites are machine-checked across workflow runs, CI-owned npm scripts, hooks, and devtools process launches. Direct hook adapters require declared sanctioned exceptions with an exact occurrence and cardinality.
+
+| Site | Status | Registered command | Occurrence | Reason |
+| --- | --- | --- | --- | --- |
+| `.github/workflows/mutation-testing.yml` | `registered` | `devtools verify mutation-freshness` | not applicable | CI invokes the catalog command so inventory and workflow validation see the freshness gate. |
+| `.github/workflows/nightly-scale.yml` | `registered` | `devtools bench nightly-compare` | not applicable | CI invokes the catalog command so the nightly comparison is discoverable and checked. |
+| `devtools/pre_push_gate.py` | `registered` | `devtools lab policy backlog-hygiene` | not applicable | The intentional Beads-only route remains narrow while using the registered policy command. |
+| `docs/test-economics.md` | `sanctioned-bypass` | `devtools lab test-economics` | not applicable | The generated provenance header preserves the module that emitted the document; operators use the catalog command. |
+| `.githooks/pre-push` | `sanctioned-bypass` | `hook adapter` | line 21 (1 expected) | The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate. |
+| `.beads-hooks/pre-push` | `sanctioned-bypass` | `hook adapter` | line 21 (1 expected) | The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs. |
 
 ### Core
 
@@ -174,6 +203,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab smoke` | Run direct archive and reader smoke sets. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
 | `devtools lab test-economics` | Report per-package coverage/fix-density/test-cost economics (polylogue-9e5.11). |
+| `devtools lab testmon-blind-spots` | Audit coverage-known files that are absent from the testmon fingerprint graph. |
 | `devtools lab testmon-proof` | Prove real testmon affected selection against a semantic production mutation. |
 
 ### Verification
@@ -184,6 +214,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
+| `devtools verify catalog-bypasses` | Reject direct devtools module or script execution outside sanctioned adapters. |
 | `devtools verify ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
 | `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |
@@ -194,6 +225,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify evidence` | Render the pytest-first evidence dashboard. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
+| `devtools verify mutation-freshness` | Verify fresh mutation campaigns meet their declared kill-rate thresholds. |
 | `devtools verify public-claims` | Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy. |
 | `devtools verify pytest-timeout-overrides` | Verify explicit pytest timeout overrides are positive, bounded, and justified. |
 | `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
@@ -210,6 +242,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench mutation` | Run focused mutation campaigns and maintain their local index. |
+| `devtools bench nightly-compare` | Compare nightly pytest-benchmark output with the committed baseline. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 | `devtools bench synthetic` | Run synthetic benchmark campaigns over generated archives. |
 
@@ -242,7 +275,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace frontier` | Classify ready and in-progress Beads into devloop batches. |
-| `devtools workspace index-v37-fast-forward` | Clone-forward index v36 to v37 by retiring derived caches without raw replay. |
+| `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools workspace lane-brief` | Generate a dispatch brief for a bead lane with live footprint/prior-art evidence. |
 | `devtools workspace lane-init` | Provision a fanout lane worktree: branch, isolated venv, guard check, ledger record. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
@@ -255,6 +288,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |
 | `devtools workspace raw-byte-duplicate-supersession-apply` | Promote quarantined, logical-key-less raws proven byte-identical to an already-indexed raw. |
+| `devtools workspace raw-failure-disposition-apply` | Apply reviewed terminal dispositions to historical raw parse failures. |
 | `devtools workspace raw-live-source-reconciliation` | Classify quarantined raw evidence against its live source file's current bytes. |
 | `devtools workspace raw-live-source-reconciliation-apply` | Promote quarantined raw evidence proven correct by live-source verification. |
 | `devtools workspace raw-membership-writeback-apply` | Propagate already-decided membership verdicts onto raw_sessions.revision_authority. |

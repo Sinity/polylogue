@@ -22,6 +22,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.config import get_config
+from polylogue.maintenance.schema_inference_gate import (
+    authorize_schema_generation,
+    resolve_schema_inference_archive_root,
+)
+
 # Re-export the full public API so callers don't need to know the split.
 from polylogue.schemas.field_stats.stats import (
     UUID_PATTERN,
@@ -121,17 +127,27 @@ def cli_main(args: list[str] | None = None) -> int:
         action="store_true",
         help="Also write an aggregate archive composition profile beside staged provider packages",
     )
+    parser.add_argument(
+        "--schema-inference-receipt",
+        type=Path,
+        required=True,
+        help="Fresh authoritative PASS receipt required before writing schema packages.",
+    )
 
     parsed = parser.parse_args(args)
 
     providers = None if parsed.provider == "all" else [parsed.provider]
-    results = generate_all_schemas(
-        output_dir=parsed.output_dir,
-        db_path=parsed.db_path,
-        providers=providers,
-        max_samples=parsed.max_samples,
-        include_archive_workload_profile=parsed.archive_workload_profile,
-    )
+    config = get_config()
+    db_path = parsed.db_path or config.db_path
+    archive_root = resolve_schema_inference_archive_root(config, fallback_db_path=db_path)
+    with authorize_schema_generation(archive_root, parsed.schema_inference_receipt):
+        results = generate_all_schemas(
+            output_dir=parsed.output_dir,
+            db_path=db_path,
+            providers=providers,
+            max_samples=parsed.max_samples,
+            include_archive_workload_profile=parsed.archive_workload_profile,
+        )
 
     success = []
     failed = []

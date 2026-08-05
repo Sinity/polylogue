@@ -113,6 +113,14 @@ _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
 #: that hit this guard retry-eligible even after the message wording
 #: changes again.
 _MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX = "MembershipReplayConflictError:"
+# These are durable parse-error values written before the corresponding
+# revision guards acquired typed exception classes.  They name an authority
+# refusal, not malformed source evidence: replay must reconsider them against
+# the current accepted frontier.  Keep the complete legacy values exact so a
+# broad RuntimeError prefix cannot turn unrelated parser failures into an
+# unbounded repair loop.
+_LEGACY_OLDER_ACCEPTED_FRONTIER_ERROR = "RuntimeError: raw revision CAS rejected an older accepted frontier"
+_LEGACY_UNCONVERTIBLE_BYTE_HEAD_ERROR = "RuntimeError: membership replay cannot replace an unconvertible byte head"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact_byte_and_semantic_proof"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT = 100
 _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
@@ -3933,6 +3941,10 @@ def _raw_materialization_candidate_ids(
                   -- own wording changes again.
                   r.parse_error LIKE '{_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX}%'
                 )
+                OR r.parse_error IN (
+                  '{_LEGACY_OLDER_ACCEPTED_FRONTIER_ERROR}',
+                  '{_LEGACY_UNCONVERTIBLE_BYTE_HEAD_ERROR}'
+                )
               )
               AND NOT (
                 COALESCE(r.validation_status, '') = 'skipped'
@@ -4179,6 +4191,11 @@ def _raw_materialization_retryable_missing_blob_error(parse_error: object) -> bo
         # optimization the SQL and this function must independently agree,
         # or a row that clears the SQL gate is silently re-excluded here).
         or parse_error.startswith(_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX)
+        or parse_error
+        in {
+            _LEGACY_OLDER_ACCEPTED_FRONTIER_ERROR,
+            _LEGACY_UNCONVERTIBLE_BYTE_HEAD_ERROR,
+        }
     )
 
 

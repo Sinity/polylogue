@@ -8,7 +8,6 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.core.json import json_document, loads
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.schemas.synthetic import builders as synthetic_builders
@@ -64,6 +63,10 @@ class SyntheticCorpus:
         self._max_synthetic_string_length = max_string_length
         self._active_profile_tokens: tuple[str, ...] = ()
         self._active_record_bucket: tuple[str, str] | None = None
+        self._coverage_branch_choices: dict[str, int] = {}
+        self._coverage_type_choices: dict[str, str] = {}
+        self._coverage_null_paths: set[str] = set()
+        self._coverage_witness_mode = False
         self._generation_state = SyntheticGenerationState(
             relation_solver=RelationConstraintSolver(schema, max_string_length=max_string_length),
             semantic_generator=None,
@@ -187,6 +190,21 @@ class SyntheticCorpus:
     @classmethod
     def generate_batch_for_spec(cls, spec: CorpusSpec) -> SyntheticGenerationBatch:
         corpus = cls.from_spec(spec)
+        return cls._generate_batch_for_corpus(corpus, spec)
+
+    @classmethod
+    def generate_batch_for_selection(
+        cls,
+        selection: SyntheticSchemaSelection,
+        spec: CorpusSpec,
+    ) -> SyntheticGenerationBatch:
+        """Generate a spec through an already-resolved persisted schema route."""
+
+        corpus = cls.from_selection(selection)
+        return cls._generate_batch_for_corpus(corpus, spec)
+
+    @staticmethod
+    def _generate_batch_for_corpus(corpus: SyntheticCorpus, spec: CorpusSpec) -> SyntheticGenerationBatch:
         return corpus.generate_batch(
             count=spec.count,
             messages_per_session=spec.messages_per_session,
@@ -209,30 +227,54 @@ class SyntheticCorpus:
         index_width: int = 2,
     ) -> SyntheticWrittenBatch:
         corpus = cls.from_spec(spec)
+        return cls._write_batch_artifacts(corpus, spec, output_dir, prefix=prefix, index_width=index_width)
+
+    @classmethod
+    def write_selection_artifacts(
+        cls,
+        selection: SyntheticSchemaSelection,
+        spec: CorpusSpec,
+        output_dir: Path,
+        *,
+        prefix: str,
+        index_width: int = 2,
+    ) -> SyntheticWrittenBatch:
+        """Write artifacts from the exact schema selection carried by a manifest."""
+
+        corpus = cls.from_selection(selection)
+        return cls._write_batch_artifacts(corpus, spec, output_dir, prefix=prefix, index_width=index_width)
+
+    @classmethod
+    def _write_batch_artifacts(
+        cls,
+        corpus: SyntheticCorpus,
+        spec: CorpusSpec,
+        output_dir: Path,
+        *,
+        prefix: str,
+        index_width: int,
+    ) -> SyntheticWrittenBatch:
         output_dir.mkdir(parents=True, exist_ok=True)
         ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        batch = cls.generate_batch_for_spec(spec)
+        batch = cls._generate_batch_for_corpus(corpus, spec)
         written_files: list[Path] = []
         for idx, artifact in enumerate(batch.artifacts):
             if corpus.provider == "antigravity":
-                # The real acquisition path (iter_antigravity_language_server_sessions /
-                # its brain-metadata fallback, polylogue-eo81) requires a rooted
-                # directory layout: root/brain/<session-dir>/<name>.md.metadata.json,
-                # session identity derived from the immediate parent directory name.
-                # A flat root/<name>.md.metadata.json layout is refused by the
-                # generic per-file walk (deliberately, so real conversations aren't
-                # double-counted as sidecar fragments) and never reaches a parser.
-                session_dir = output_dir / "brain" / f"{prefix}-{idx:0{index_width}d}"
-                session_dir.mkdir(parents=True, exist_ok=True)
-                file_path = session_dir / f"{prefix}-{idx:0{index_width}d}.md.metadata.json"
-                markdown_path = session_dir / f"{prefix}-{idx:0{index_width}d}.md"
-                payload = json_document(loads(artifact.raw_bytes))
-                markdown_path.write_text(
-                    str(payload.get("summary") or "Synthetic Antigravity artifact"), encoding="utf-8"
+                # Sidecars describe artifacts and are intentionally not sessions.
+                # Synthetic conversations must use the same rooted trajectory shape
+                # as the real acquisition path: conversations/<cascade_id>.pb.
+                conversations_dir = output_dir / "conversations"
+                conversations_dir.mkdir(parents=True, exist_ok=True)
+                cascade_id = (
+                    spec.session_native_ids[idx]
+                    if idx < len(spec.session_native_ids)
+                    else f"{prefix}-{idx:0{index_width}d}"
                 )
+                file_path = conversations_dir / f"{cascade_id}.pb"
+                file_path.write_bytes(b"fake-protobuf-bytes-" + cascade_id.encode("utf-8"))
             else:
                 file_path = output_dir / f"{prefix}-{idx:0{index_width}d}{ext}"
-            file_path.write_bytes(artifact.raw_bytes)
+                file_path.write_bytes(artifact.raw_bytes)
             written_files.append(file_path)
         return SyntheticWrittenBatch(batch=batch, files=tuple(written_files))
 
@@ -406,6 +448,8 @@ class SyntheticCorpus:
         max_depth: int = 6,
         path: str = "$",
     ) -> JSONValue:
+        if self._coverage_witness_mode and max_depth == 6:
+            max_depth = 24
         return synthetic_runtime._generate_from_schema(
             self,
             schema,

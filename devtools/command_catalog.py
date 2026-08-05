@@ -41,6 +41,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab seed-receipt-compare",
     "lab snapshot read-surface",
     "lab test-economics",
+    "lab testmon-blind-spots",
     "lab testmon-proof",
 )
 
@@ -97,6 +98,26 @@ class CommandSpec:
         data["invocation"] = self.invocation
         data["argv"] = list(self.argv)
         return data
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceCommandDisposition:
+    name: str
+    disposition: str
+    evidence: str
+    replacement: str
+    replacement_command: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogBypassSite:
+    path: str
+    marker: str
+    command_name: str | None
+    disposition: str
+    reason: str
+    occurrence_line: int | None = None
+    expected_occurrences: int = 0
 
 
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
@@ -415,8 +436,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.reindex_canary",
         use_when="Exercise the bounded semantic reindex canary before paying for a full rebuild.",
         examples=(
-            "devtools reindex-canary --input /path/to/index.db --sample 100 --report /path/to/canary.json --no-promote",
-            "devtools reindex-canary --pathology-session-id codex-session:whale --report /path/to/canary.json --no-promote",
+            "devtools reindex-canary --archive-root /path/to/isolated-archive --input /path/to/index.db --schema-inference-receipt /path/to/schema-inference-gate-receipt.json --sample 100 --report /path/to/canary.json --no-promote",
+            "devtools reindex-canary --archive-root /path/to/isolated-archive --schema-inference-receipt /path/to/schema-inference-gate-receipt.json --pathology-session-id codex-session:whale --report /path/to/canary.json --no-promote",
         ),
     ),
     CommandSpec(
@@ -429,6 +450,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools verify coverage",
             "devtools verify coverage --ignore-integration --term-missing",
             "devtools verify coverage -- --maxfail=1",
+        ),
+    ),
+    CommandSpec(
+        "verify mutation-freshness",
+        "verification",
+        "Verify fresh mutation campaigns meet their declared kill-rate thresholds.",
+        "devtools.verify_mutation_freshness",
+        use_when=(
+            "Enforce mutation campaign freshness and kill-rate thresholds after a rotating CI campaign "
+            "has produced its local artifacts."
+        ),
+        examples=(
+            "devtools verify mutation-freshness --enforce-kill-rate",
+            "devtools verify mutation-freshness --yaml .local/mutation-campaigns/index.yaml --strict",
         ),
     ),
     CommandSpec(
@@ -482,6 +517,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "for bounded unrelated-change selection."
         ),
         examples=("devtools lab testmon-proof", "devtools lab testmon-proof --json"),
+    ),
+    CommandSpec(
+        "lab testmon-blind-spots",
+        "verification lab",
+        "Audit coverage-known files that are absent from the testmon fingerprint graph.",
+        "devtools.testmon_blind_spot_audit",
+        use_when=(
+            "Inspect an existing coverage JSON report against an existing pytest-testmon database. "
+            "Declaration-only modules are reported separately from executable validator risk; this command "
+            "does not run pytest or regenerate coverage."
+        ),
+        examples=(
+            "devtools lab testmon-blind-spots",
+            "devtools lab testmon-blind-spots --json",
+            "devtools lab testmon-blind-spots --coverage-json path/to/coverage.json --testmon-db path/to/testmondata",
+        ),
     ),
     CommandSpec(
         "lab pytest-witness-repetitions",
@@ -572,18 +623,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace index-v37-fast-forward",
+        "workspace index-fast-forward",
         "workspace",
-        "Clone-forward index v36 to v37 by retiring derived caches without raw replay.",
-        "devtools.index_v37_fast_forward",
+        "Plan and prove a declared index fast-forward against retained raw replay.",
+        "devtools.index_fast_forward",
         use_when=(
-            "Advance a stopped exact-shape v36 index to v37. The actuator reflink-clones the active generation, "
-            "drops only the three retired run-projection caches, proves surviving schema and row-count parity, "
-            "then separately atomically activates the proven generation."
+            "Advance a stopped index generation across a declared clone-safe schema gap. The actuator clones the "
+            "active generation, applies lifecycle operations, proves a deterministic retained-raw sample through "
+            "the production parser/materializer route, then atomically activates the proven generation."
         ),
         examples=(
-            "devtools workspace index-v37-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
-            "devtools workspace index-v37-fast-forward activate --receipt /path/to/receipt.json",
+            "devtools workspace index-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
+            "devtools workspace index-fast-forward activate --receipt /path/to/receipt.json",
         ),
     ),
     CommandSpec(
@@ -1095,6 +1146,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace raw-membership-writeback-apply",
             "devtools workspace raw-membership-writeback-apply --json",
             "devtools workspace raw-membership-writeback-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
+        "workspace raw-failure-disposition-apply",
+        "workspace",
+        "Apply reviewed terminal dispositions to historical raw parse failures.",
+        "devtools.raw_failure_disposition_apply",
+        use_when=(
+            "polylogue-dyica: terminal historical parse failures predate typed lifecycle evidence. "
+            "Default is dry-run; --apply requires an exact JSONL disposition manifest and a verified "
+            "source-tier backup. It retains raw bytes and parser errors while replacing only the stale "
+            "artifact classification and writing immutable per-row receipts."
+        ),
+        examples=(
+            "devtools workspace raw-failure-disposition-apply --manifest-path /realm/staging/raw-failure-disposition.jsonl",
+            "devtools workspace raw-failure-disposition-apply --apply --manifest-path /realm/staging/raw-failure-disposition.jsonl "
             "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
         ),
     ),
@@ -1648,6 +1716,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify ci-workflows", "devtools verify ci-workflows --json"),
     ),
     CommandSpec(
+        "verify catalog-bypasses",
+        "verification",
+        "Reject direct devtools module or script execution outside sanctioned adapters.",
+        "devtools.verify_catalog_bypasses",
+        use_when=(
+            "Check workflow run blocks, repository hooks, and devtools process-launch sites for direct "
+            "python -m devtools.X or python devtools/X.py execution that bypasses the command catalog."
+        ),
+        examples=("devtools verify catalog-bypasses", "devtools verify catalog-bypasses --json"),
+    ),
+    CommandSpec(
         "verify test-infra-currency",
         "verification",
         "Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION.",
@@ -2175,6 +2254,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "bench nightly-compare",
+        "benchmarking",
+        "Compare nightly pytest-benchmark output with the committed baseline.",
+        "devtools.benchmark_compare_nightly",
+        use_when="Check the nightly scale benchmark result against its committed regression threshold.",
+        examples=(
+            "devtools bench nightly-compare tests/benchmarks/baselines/nightly-baseline.json nightly-results.json",
+            "devtools bench nightly-compare baseline.json candidate.json --fail-pct 20",
+        ),
+    ),
+    CommandSpec(
         "bench synthetic",
         "benchmarking",
         "Run synthetic benchmark campaigns over generated archives.",
@@ -2267,6 +2357,121 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
 
 
+WORKSPACE_COMMAND_DISPOSITIONS: tuple[WorkspaceCommandDisposition, ...] = (
+    WorkspaceCommandDisposition(
+        "workspace index-fast-forward",
+        "retain",
+        "Recent production commits plus focused devtools/storage tests; emits a reusable proof receipt.",
+        "Keep the registered command as the index-tier actuator.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace archive-schema-fast-forward",
+        "remove",
+        "No current CommandSpec, implementation module, focused test, or history entry exists for this name.",
+        "Use workspace index-fast-forward for declared derived-index fast-forwards.",
+        "workspace index-fast-forward",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace degraded-archive-proof",
+        "retain",
+        "Focused tests and deterministic self-healing proof artifacts cover the command.",
+        "Keep the registered command for archive repair evidence.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace frontier",
+        "retain",
+        "Operator-facing frontier report with documented workflow use and structured report output.",
+        "Keep the registered command for frontier batching and wait-ahead decisions.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace temporal-read-profile",
+        "retain",
+        "Focused tests cover the report and JSON timing output is reusable for read tuning.",
+        "Keep the registered command as the temporal read profiling entrypoint.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace temporal-devloop",
+        "retain",
+        "Focused tests cover structured and Markdown event sources; output is a reusable evidence window.",
+        "Keep the registered command as the devloop temporal evidence entrypoint.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace temporal-archive-aggregates",
+        "retain",
+        "Focused tests cover aggregate report construction and reusable archive artifacts.",
+        "Keep the registered command as the run-projection aggregate entrypoint.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace lineage-validation",
+        "retain",
+        "Focused tests cover lineage evidence and the command emits reusable count and composition proof.",
+        "Keep the registered command before publishing archive cardinality claims.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace cli-surface-audit",
+        "retain",
+        "Focused tests cover bounded output and stale-artifact pruning; the audit shelf is reusable.",
+        "Keep the registered command as the current CLI surface audit entrypoint.",
+    ),
+    WorkspaceCommandDisposition(
+        "demo real-slice-screen",
+        "retain",
+        "Focused privacy-screening tests cover redaction, PII review, and report generation.",
+        "Keep the registered command as the read-only real-archive screening entrypoint.",
+    ),
+)
+
+
+CATALOG_BYPASS_SITES: tuple[CatalogBypassSite, ...] = (
+    CatalogBypassSite(
+        ".github/workflows/mutation-testing.yml",
+        "uv run devtools verify mutation-freshness",
+        "verify mutation-freshness",
+        "registered",
+        "CI invokes the catalog command so inventory and workflow validation see the freshness gate.",
+    ),
+    CatalogBypassSite(
+        ".github/workflows/nightly-scale.yml",
+        "uv run devtools bench nightly-compare",
+        "bench nightly-compare",
+        "registered",
+        "CI invokes the catalog command so the nightly comparison is discoverable and checked.",
+    ),
+    CatalogBypassSite(
+        "devtools/pre_push_gate.py",
+        'control_plane_argv("lab policy backlog-hygiene")',
+        "lab policy backlog-hygiene",
+        "registered",
+        "The intentional Beads-only route remains narrow while using the registered policy command.",
+    ),
+    CatalogBypassSite(
+        "docs/test-economics.md",
+        "python -m devtools.test_economics_report",
+        "lab test-economics",
+        "sanctioned-bypass",
+        "The generated provenance header preserves the module that emitted the document; operators use the catalog command.",
+    ),
+    CatalogBypassSite(
+        ".githooks/pre-push",
+        "python -m devtools.pre_push_gate",
+        None,
+        "sanctioned-bypass",
+        "The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate.",
+        occurrence_line=21,
+        expected_occurrences=1,
+    ),
+    CatalogBypassSite(
+        ".beads-hooks/pre-push",
+        "python -m devtools.pre_push_gate",
+        None,
+        "sanctioned-bypass",
+        "The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs.",
+        occurrence_line=21,
+        expected_occurrences=1,
+    ),
+)
+
+
 def command_name_from_tokens(tokens: Iterable[str], commands: Iterable[CommandSpec] = COMMAND_SPECS) -> str | None:
     """Resolve leading argv tokens to a registered command name."""
     token_tuple = tuple(tokens)
@@ -2317,14 +2522,17 @@ __all__ = [
     "CATEGORY_ORDER",
     "COMMANDS",
     "COMMAND_SPECS",
+    "CATALOG_BYPASS_SITES",
     "CONTROL_PLANE",
     "CommandMain",
     "CommandSpec",
+    "WorkspaceCommandDisposition",
     "command_name_from_tokens",
     "control_plane_argv",
     "control_plane_command",
     "featured_command_specs",
     "grouped_command_specs",
     "VERIFICATION_LAB_COMMAND_NAMES",
+    "WORKSPACE_COMMAND_DISPOSITIONS",
     "verification_lab_command_specs",
 ]

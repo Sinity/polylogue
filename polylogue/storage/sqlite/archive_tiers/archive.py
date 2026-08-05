@@ -63,7 +63,7 @@ from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import ActionResultState, Origin, Provider
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.refs import delegation_edge_object_id
@@ -177,6 +177,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     _raw_revision_source_path_has_divergent_evidence,
     _write_parsed_precedence_result,
     admit_raw_and_parsed_result,
+    admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
     apply_raw_membership_classification,
     apply_raw_revision_replay,
@@ -463,26 +464,31 @@ class ArchiveActionQueryRow:
     output_text: str | None
     is_error: int | None
     exit_code: int | None
+    result_state: ActionResultState
     followup_class: str | None
     followup_message_ref: str | None
 
 
 def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
+    tool_result_block_id = str(row["tool_result_block_id"]) if row["tool_result_block_id"] is not None else None
+    is_error = int(row["is_error"]) if row["is_error"] is not None else None
+    exit_code = int(row["exit_code"]) if row["exit_code"] is not None else None
     return ArchiveActionQueryRow(
         session_id=str(row["session_id"]),
         message_id=str(row["message_id"]),
         origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
         tool_use_block_id=str(row["tool_use_block_id"]),
-        tool_result_block_id=str(row["tool_result_block_id"]) if row["tool_result_block_id"] is not None else None,
+        tool_result_block_id=tool_result_block_id,
         tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
         semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
         tool_command=str(row["tool_command"]) if row["tool_command"] is not None else None,
         tool_path=str(row["tool_path"]) if row["tool_path"] is not None else None,
         occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
         output_text=str(row["output_text"]) if row["output_text"] is not None else None,
-        is_error=int(row["is_error"]) if row["is_error"] is not None else None,
-        exit_code=int(row["exit_code"]) if row["exit_code"] is not None else None,
+        is_error=is_error,
+        exit_code=exit_code,
+        result_state=ActionResultState(str(row["result_state"])),
         followup_class=str(row["followup_class"]) if row["followup_class"] is not None else None,
         followup_message_ref=str(row["followup_message_ref"]) if row["followup_message_ref"] is not None else None,
     )
@@ -1317,6 +1323,7 @@ _ARCHIVE_ACTION_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("output_text", "a.output_text"),
     ("is_error", "a.is_error"),
     ("exit_code", "a.exit_code"),
+    ("result_state", "a.result_state"),
     ("followup_class", "a.followup_class"),
     ("followup_message_ref", "a.followup_message_ref"),
 )
@@ -1667,8 +1674,13 @@ class ArchiveStore:
                 from polylogue.storage.index_generation import IndexGenerationStore
 
                 generation_id, owner_id = owned_inactive_generation
-                configured_root = configured_archive_root()
-                generation = IndexGenerationStore.for_archive_root(configured_root).load(generation_id)
+                # An inactive generation is opened from its generation root,
+                # while the configured root may intentionally point at a
+                # different live archive. Resolve the owning archive from the
+                # candidate path instead of routing this safety check through
+                # global configuration.
+                generation_archive_root = archive_root.parent.parent
+                generation = IndexGenerationStore.for_archive_root(generation_archive_root).load(generation_id)
                 if (
                     generation.owner_id != owner_id
                     or generation.state != "inactive"
@@ -2095,6 +2107,7 @@ class ArchiveStore:
         native_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
         revision: RawRevisionEnvelope | None = None,
+        post_parse: bool = False,
     ) -> str:
         return write_raw_payload(
             self,
@@ -2108,6 +2121,7 @@ class ArchiveStore:
             native_id=native_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
+            post_parse=post_parse,
         )
 
     def raw_native_id(self, raw_id: str) -> str | None:
@@ -2172,6 +2186,7 @@ class ArchiveStore:
         raw_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
         revision: RawRevisionEnvelope | None = None,
+        post_parse: bool = False,
     ) -> str:
         return write_raw_blob_ref(
             self,
@@ -2185,6 +2200,7 @@ class ArchiveStore:
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
+            post_parse=post_parse,
         )
 
     def admit_raw_artifact_payload(
@@ -2196,6 +2212,7 @@ class ArchiveStore:
         acquired_at_ms: int,
         classification: ArtifactClassification,
         source_index: int = 0,
+        raw_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
     ) -> RawAdmissionResult:
         """Route a non-conversational artifact payload through the raw-admission chokepoint.
@@ -2210,6 +2227,34 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             classification=classification,
             source_index=source_index,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+        )
+
+    def admit_raw_artifact_blob_ref(
+        self,
+        *,
+        provider: Provider,
+        blob_hash_hex: str,
+        blob_size: int,
+        source_path: str,
+        acquired_at_ms: int,
+        classification: ArtifactClassification,
+        source_index: int = 0,
+        raw_id: str | None = None,
+        blob_publication_receipt_id: str | None = None,
+    ) -> RawAdmissionResult:
+        """Route a prepublished non-conversational blob through typed admission."""
+        return admit_raw_artifact_blob_ref(
+            self,
+            provider=provider,
+            blob_hash_hex=blob_hash_hex,
+            blob_size=blob_size,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            classification=classification,
+            source_index=source_index,
+            raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
         )
 
@@ -2631,6 +2676,8 @@ class ArchiveStore:
         acquired_at_ms: int,
         logical_source_key: str,
         source_index: int = 0,
+        raw_id: str | None = None,
+        shared_raw: bool = False,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "append",
         manage_transaction: bool = True,
@@ -2652,6 +2699,8 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             logical_source_key=logical_source_key,
             source_index=source_index,
+            raw_id=raw_id,
+            shared_raw=shared_raw,
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
@@ -4008,6 +4057,10 @@ class ArchiveStore:
         terminal_state: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
         tier: str = "merged",
         limit: int | None = 50,
         offset: int = 0,
@@ -4044,6 +4097,18 @@ class ArchiveStore:
         if until_ms is not None:
             where.append("s.sort_key_ms <= ?")
             params.append(until_ms)
+        if first_message_since is not None:
+            where.append("sp.first_message_at >= ?")
+            params.append(first_message_since)
+        if first_message_until is not None:
+            where.append("sp.first_message_at <= ?")
+            params.append(first_message_until)
+        if session_date_since is not None:
+            where.append("sp.canonical_session_date >= date(?)")
+            params.append(session_date_since)
+        if session_date_until is not None:
+            where.append("sp.canonical_session_date <= date(?)")
+            params.append(session_date_until)
         if min_wallclock_seconds is not None:
             where.append(f"COALESCE({wall_expr}, 0) >= ?")
             params.append(int(min_wallclock_seconds * 1000))
@@ -7647,39 +7712,40 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         placeholders = ", ".join("?" for _ in normalized_session_ids)
+        prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+            session_ids=normalized_session_ids,
+            include_followup=False,
+        )
         rows = self._conn.execute(
             f"""
+            {prefix_sql}
             SELECT
-                u.session_id,
-                u.message_id,
+                a.session_id,
+                a.message_id,
                 s.origin,
                 s.title,
-                u.block_id AS tool_use_block_id,
-                r.block_id AS tool_result_block_id,
-                u.tool_name,
-                u.semantic_type,
-                {_action_command_expression("u")} AS tool_command,
-                u.tool_path,
+                a.tool_use_block_id,
+                a.tool_result_block_id,
+                a.tool_name,
+                a.semantic_type,
+                {_action_command_expression("a")} AS tool_command,
+                a.tool_path,
                 m.occurred_at_ms,
-                r.search_text AS output_text,
-                r.tool_result_is_error AS is_error,
-                r.tool_result_exit_code AS exit_code,
+                a.output_text,
+                a.is_error,
+                a.exit_code,
+                a.result_state,
                 NULL AS followup_class,
                 NULL AS followup_message_ref
-            FROM blocks u INDEXED BY idx_blocks_session_position
-            JOIN sessions s ON s.session_id = u.session_id
-            JOIN messages m ON m.message_id = u.message_id
-            LEFT JOIN blocks r INDEXED BY idx_blocks_tool_id
-              ON r.tool_id = u.tool_id
-             AND r.session_id = u.session_id
-             AND r.block_type = 'tool_result'
-            WHERE u.session_id IN ({placeholders})
-              AND u.block_type = 'tool_use'
+            FROM {action_relation_name} a
+            JOIN sessions s ON s.session_id = a.session_id
+            JOIN messages m ON m.message_id = a.message_id
+            WHERE a.session_id IN ({placeholders})
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction},
-                     u.block_id {order_direction}
+                     a.tool_use_block_id {order_direction}
             LIMIT ? OFFSET ?
             """,
-            [*normalized_session_ids, normalized_limit, normalized_offset],
+            [*relation_params, *normalized_session_ids, normalized_limit, normalized_offset],
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
 
@@ -7940,6 +8006,7 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         clause, params = _structural_predicate_clause("delegation", "d", predicate, session_alias="s")
+        where_clause = f"WHERE {clause}" if clause else ""
         session_clause = ""
         session_params: list[object] = []
         if session_filters:
@@ -7949,7 +8016,7 @@ class ArchiveStore:
             SELECT d.*
             FROM delegations d
             JOIN sessions s ON s.session_id = d.parent_session_id
-            WHERE {clause}
+            {where_clause}
             {session_clause}
             ORDER BY d.parent_session_id {order_direction},
                      COALESCE(d.instruction_tool_use_block_id, d.child_session_id) {order_direction}

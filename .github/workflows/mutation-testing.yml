@@ -49,7 +49,7 @@ jobs:
         # default_min_kill_rate). --enforce-kill-rate without --strict only checks
         # fresh campaigns, so campaigns whose group did not run this week are
         # ignored rather than flagged missing in the artifact-less CI checkout.
-        run: uv run python -m devtools.verify_mutation_freshness --enforce-kill-rate
+        run: uv run devtools verify mutation-freshness --enforce-kill-rate
       - name: Upload campaign artifacts
         if: always()
         uses: actions/upload-artifact@v7

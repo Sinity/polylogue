@@ -10,7 +10,7 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
-from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider
 from polylogue.scenarios.workload import (
     BudgetVerdict,
     WorkloadPhaseObservation,
@@ -32,6 +32,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_tag,
     read_assertion_envelope,
 )
+from polylogue.surfaces.payloads import ActionQueryRowPayload
 from tests.infra.workload_artifacts import build_seeded_archive
 
 
@@ -172,6 +173,225 @@ def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(t
     assert [(row.session_id, row.is_error, row.exit_code) for row in failed_rows] == [(session_id, 1, 2)]
     assert [(row.group_key, row.count) for row in error_counts] == [("1", 1)]
     assert [(row.group_key, row.count) for row in exit_counts] == [("2", 1)]
+
+
+def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) -> None:
+    """The writer -> actions view -> public archive facade preserves all states."""
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-action-result-states",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-unknown",
+                        tool_input={"command": "unknown"},
+                    ),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-unknown", text="no status"),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-success",
+                        tool_input={"command": "success"},
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="tool-success",
+                        text="ok",
+                        is_error=False,
+                        exit_code=0,
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-error",
+                        tool_input={"command": "error"},
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="tool-error",
+                        text="failed",
+                        is_error=True,
+                        exit_code=2,
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-absent",
+                        tool_input={"command": "absent"},
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="",
+                        tool_input={"command": "empty"},
+                    ),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="", text="must not pair"),
+                ],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        rows = facade.query_session_actions([session_id], limit=10)
+        occurrence_rows = facade.query_session_action_occurrences([session_id], limit=10)
+
+    payloads = [ActionQueryRowPayload.from_row(row) for row in rows]
+    assert {row.tool_command: row.result_state for row in rows} == {
+        "unknown": ActionResultState.OUTCOME_UNKNOWN,
+        "success": ActionResultState.OUTCOME_SUCCESS,
+        "error": ActionResultState.OUTCOME_ERROR,
+        "absent": ActionResultState.NO_RESULT,
+        "empty": ActionResultState.NO_RESULT,
+    }
+    rows_by_command = {row.tool_command: row for row in rows}
+    assert rows_by_command["absent"].tool_result_block_id is None
+    assert rows_by_command["empty"].tool_result_block_id is None
+    assert rows_by_command["empty"].output_text is None
+    assert {payload.tool_command: payload.result_state for payload in payloads}["empty"] == "no_result"
+    occurrence_by_command = {row.tool_command: row for row in occurrence_rows}
+    assert {row.tool_command: row.result_state for row in occurrence_rows} == {
+        "unknown": ActionResultState.OUTCOME_UNKNOWN,
+        "success": ActionResultState.OUTCOME_SUCCESS,
+        "error": ActionResultState.OUTCOME_ERROR,
+        "absent": ActionResultState.NO_RESULT,
+        "empty": ActionResultState.NO_RESULT,
+    }
+    assert occurrence_by_command["empty"].tool_result_block_id is None
+
+
+def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage(
+    tmp_path: Path,
+) -> None:
+    """A matched empty result is still a result, unlike an absent linkage."""
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-action-empty-payload",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-empty-payload",
+                        tool_input={"command": "empty-payload"},
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="tool-empty-payload",
+                        text=None,
+                        is_error=None,
+                        exit_code=None,
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-unknown-nonempty",
+                        tool_input={"command": "unknown-nonempty"},
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="tool-unknown-nonempty",
+                        text="provider omitted outcome",
+                        is_error=None,
+                        exit_code=None,
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-absent-linkage",
+                        tool_input={"command": "absent-linkage"},
+                    ),
+                ],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        rows = facade.query_session_actions([session_id], limit=10)
+
+    rows_by_command = {row.tool_command: row for row in rows}
+    assert rows_by_command["empty-payload"].result_state is ActionResultState.OUTCOME_UNKNOWN
+    assert rows_by_command["empty-payload"].tool_result_block_id is not None
+    assert rows_by_command["empty-payload"].output_text is None
+    assert rows_by_command["unknown-nonempty"].result_state is ActionResultState.OUTCOME_UNKNOWN
+    assert rows_by_command["unknown-nonempty"].tool_result_block_id is not None
+    assert rows_by_command["unknown-nonempty"].output_text == "provider omitted outcome"
+    assert rows_by_command["absent-linkage"].result_state is ActionResultState.NO_RESULT
+    assert rows_by_command["absent-linkage"].tool_result_block_id is None
+    assert rows_by_command["absent-linkage"].output_text is None
+
+
+def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pairing(
+    tmp_path: Path,
+) -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-repeated-action-occurrences",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m-use-1",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="repeated",
+                        tool_input={"command": "first"},
+                    )
+                ],
+            ),
+            ParsedMessage(
+                provider_message_id="m-use-2",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="repeated",
+                        tool_input={"command": "second"},
+                    )
+                ],
+            ),
+            ParsedMessage(
+                provider_message_id="m-result-1",
+                role=Role.ASSISTANT,
+                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-one")],
+            ),
+            ParsedMessage(
+                provider_message_id="m-result-2",
+                role=Role.ASSISTANT,
+                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-two")],
+            ),
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        all_rows = facade.query_session_action_occurrences([session_id], limit=10)
+        first_page = facade.query_session_action_occurrences([session_id], limit=1, offset=0)
+        second_page = facade.query_session_action_occurrences([session_id], limit=1, offset=1)
+
+    assert [(row.tool_command, row.output_text) for row in all_rows] == [
+        ("first", "result-one"),
+        ("second", "result-two"),
+    ]
+    assert [(row.tool_command, row.output_text) for row in first_page] == [("first", "result-one")]
+    assert [(row.tool_command, row.output_text) for row in second_page] == [("second", "result-two")]
 
 
 def test_exact_session_action_count_bounds_pairing_before_global_ranking(

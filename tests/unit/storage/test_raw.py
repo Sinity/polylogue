@@ -60,6 +60,14 @@ class TestRawSessionStorage:
         result = await backend.save_raw_session(record)
 
         assert result is True
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'raw_payload' AND ref_id = ?",
+                (record.raw_id,),
+            )
+            row = await cursor.fetchone()
+            assert row is not None
+            assert row[0] == 1
 
     async def test_repository_update_raw_state_uses_source_tier(self, tmp_path: Path) -> None:
         initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)

@@ -845,6 +845,43 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
     assert json_object_list(phase_payload["session_phases"])[0]["insight_kind"] == "session_phase"
 
 
+def test_insights_profile_session_date_filter_reaches_archive_predicate(cli_workspace: CliWorkspace) -> None:
+    """A different-day profile must be excluded by the real CLI/API/storage route."""
+    _seed_products(cli_workspace)
+    with open_index_db(cli_workspace["db_path"]) as conn:
+        conn.execute(
+            """
+            UPDATE session_profiles
+            SET canonical_session_date = '2026-03-02', first_message_at = '2026-03-02T11:00:00+00:00'
+            WHERE session_id LIKE '%:ext-conv-child'
+            """
+        )
+        conn.commit()
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "analyze",
+            "insights",
+            "profiles",
+            "--session-date-since",
+            "2026-03-01",
+            "--session-date-until",
+            "2026-03-01",
+            "--format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    assert json_int(payload["total"]) == 1
+    session_id = json_object_list(payload["session_profiles"])[0]["session_id"]
+    assert isinstance(session_id, str)
+    assert session_id.endswith(":ext-conv-root")
+
+
 def test_insights_work_events_json_preserves_archive_temporal_provenance_without_marker(
     cli_workspace: CliWorkspace,
 ) -> None:

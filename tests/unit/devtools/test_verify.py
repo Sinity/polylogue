@@ -89,6 +89,7 @@ def test_quick_verify_omits_pytest() -> None:
         "lab schema roundtrip",
         "verify manifests",
         "verify ci-workflows",
+        "verify catalog-bypasses",
         "verify doc-commands",
         "verify docs-coverage",
         "verify test-infra-currency",

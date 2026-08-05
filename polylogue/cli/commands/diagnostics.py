@@ -39,6 +39,11 @@ def diagnostics_group() -> None:
     help="Count missing referenced blob files exactly. This can stat many blob paths on large archives.",
 )
 @click.option(
+    "--preflight",
+    is_flag=True,
+    help="Add the strict read-only deployed-status preflight ledger.",
+)
+@click.option(
     "--compare",
     nargs=2,
     type=click.Path(path_type=Path),
@@ -53,6 +58,7 @@ def workload_command(
     integrity_check: bool,
     exact_derived_counts: bool,
     blob_reference_debt: bool,
+    preflight: bool,
     compare: tuple[Path, Path] | None,
 ) -> None:
     """Inspect daemon ingest workload, convergence debt, and hot query plans."""
@@ -70,6 +76,8 @@ def workload_command(
         argv.append("--exact-derived-counts")
     if blob_reference_debt:
         argv.append("--blob-reference-debt")
+    if preflight:
+        argv.append("--preflight")
     if compare is not None:
         before, after = compare
         argv.extend(("--compare", str(before), str(after)))
@@ -255,13 +263,6 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     default="full",
     show_default=True,
     help="Report detail: headline skips expensive origin-event and stale-rollup diagnostics.",
-)
-@click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
 )
 @click.option(
     "--format",
@@ -533,13 +534,6 @@ def _usage_counter_line(counters: object) -> str:
     ),
 )
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
-@click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
-)
 @click.option(
     "--format",
     "-f",
@@ -895,13 +889,6 @@ async def _tools(
 @click.option("--surface", help="Only rows for this surface (cli, mcp, daemon-http, daemon-internal, web).")
 @click.option("--since-hours", type=float, default=24.0, show_default=True, help="Lookback window in hours.")
 @click.option("--limit", "-l", "-n", type=int, default=1000, help="Max rows read per source table.")
-@click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
-)
 @click.option(
     "--format",
     "-f",

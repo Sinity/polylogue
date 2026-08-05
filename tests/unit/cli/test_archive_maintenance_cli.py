@@ -6,6 +6,8 @@ import itertools
 import json
 import os
 import sqlite3
+import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _ARCHIVE_TIERS = tuple(spec.filename for spec in ARCHIVE_TIER_SPECS.values())
 
@@ -1422,6 +1425,173 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
         ).fetchone()
 
 
+def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite import migration_runner
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.migration_runner import (
+        DurableChangeRider,
+        DurableRuntimeConsumer,
+        declare_durable_change_train,
+        durable_change_train_to_payload,
+        durable_migration_claim_for_sql,
+    )
+
+    package_root = tmp_path / "fixture_migrations_cli"
+    source_package = package_root / "source"
+    source_package.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (source_package / "__init__.py").write_text("", encoding="utf-8")
+    sql = "-- migration-safety: additive-no-backup\nCREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;\n"
+    (source_package / "002_future_items.sql").write_text(sql, encoding="utf-8")
+    claim = durable_migration_claim_for_sql(
+        ArchiveTier.SOURCE,
+        "002_future_items.sql",
+        sql,
+        owner_ref="owner:cli-source",
+    )
+    rider = DurableChangeRider(
+        rider_id="rider:cli",
+        owner_ref="owner:cli-rider",
+        schema_objects=("table:future_items",),
+        runtime_consumers=(
+            DurableRuntimeConsumer(
+                "bootstrap",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+                "proof:bootstrap",
+                ("write",),
+            ),
+            DurableRuntimeConsumer(
+                "daemon-health",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                "proof:daemon-health",
+                ("read",),
+            ),
+        ),
+        behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
+    )
+    declared = declare_durable_change_train(
+        train_id="train:source:cli-v2",
+        tier=ArchiveTier.SOURCE,
+        current_version=1,
+        target_version=2,
+        slot=2,
+        owner_ref="owner:cli-source",
+        migration=claim,
+        riders=(rider,),
+        declared_at_ms=1,
+    )
+    (source_package / "002.train.json").write_text(
+        json.dumps(durable_change_train_to_payload(declared)), encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(migration_runner, "_migration_package", lambda _tier: "fixture_migrations_cli.source")
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda _tier: "fixture_migrations_cli.source",
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train.DURABLE_MIGRATION_ADOPTION_FLOORS",
+        {ArchiveTier.SOURCE: 1, ArchiveTier.USER: 1},
+    )
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = 2
+    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
+    ddl = dict(ARCHIVE_DDL_BY_TIER)
+    ddl[ArchiveTier.SOURCE] = (
+        "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT; "
+        "CREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;"
+    )
+    monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
+    source_db = cli_workspace["archive_root"] / "source.db"
+    source_db.unlink()
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "migrate-tier", "source", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["train_state"] == "released"
+    assert payload["applied_versions"] == [2]
+    manifest = Path(payload["train_manifest"])
+    assert manifest.exists()
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='future_items'").fetchone() == ("future_items",)
+
+
+def test_migrate_tier_cli_refuses_live_daemon_before_sql(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    user_db = cli_workspace["archive_root"] / "user.db"
+    _create_user_v3(user_db)
+    daemon = subprocess.Popen(
+        ["bash", "-c", "exec -a polylogued python3 -c 'import time; time.sleep(30)'"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        (cli_workspace["archive_root"] / "daemon.pid").write_text(f"{daemon.pid}\n", encoding="utf-8")
+        time.sleep(0.1)
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "migrate-tier", "user", "--output-format", "json"],
+            catch_exceptions=False,
+        )
+    finally:
+        daemon.terminate()
+        daemon.wait(timeout=5)
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "daemon to be stopped" in payload["error"]
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+
+
+def test_migrate_tier_cli_uses_shared_stable_archive_lock(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+
+    user_db = cli_workspace["archive_root"] / "user.db"
+    _create_user_v3(user_db)
+    with OwnedArchiveLocation.acquire(
+        ArchiveLocation.resolve(cli_workspace["archive_root"]),
+        owner_id="test:daemon-owner",
+    ):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "migrate-tier", "user", "--output-format", "json"],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "archive location already owned" in payload["error"]
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+
+
 def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
@@ -1775,6 +1945,10 @@ def test_rebuild_index_source_replay_expands_every_execution_selection_to_author
     monkeypatch: pytest.MonkeyPatch,
     selection_args: list[str],
 ) -> None:
+    receipt_path = write_valid_rebuild_receipt(
+        cli_workspace["archive_root"], cli_workspace["archive_root"].parent / "schema-inference-gate-receipt.json"
+    )
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.count_source_raw_sessions", lambda _root: 4)
     monkeypatch.setattr(
         "polylogue.maintenance.rebuild_index.all_index_rebuild_raw_ids",
@@ -1820,6 +1994,9 @@ def test_rebuild_index_daemon_path_posts_the_real_selection_request(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict[str, object] = {}
+    receipt_path = write_valid_rebuild_receipt(
+        cli_workspace["archive_root"], cli_workspace["archive_root"].parent / "schema-inference-gate-receipt.json"
+    )
 
     class Response:
         def read(self) -> bytes:
@@ -1855,6 +2032,8 @@ def test_rebuild_index_daemon_path_posts_the_real_selection_request(
             "--daemon",
             "--daemon-url",
             "http://127.0.0.1:9876",
+            "--schema-inference-receipt",
+            str(receipt_path),
             "--raw-batch-size",
             "17",
             "--pass-byte-budget-mb",
@@ -1874,6 +2053,7 @@ def test_rebuild_index_daemon_path_posts_the_real_selection_request(
             "max_blob_mb": None,
             "promote": True,
             "operation_id": None,
+            "schema_inference_receipt_path": str(receipt_path),
             "raw_batch_size": 17,
             "pass_byte_budget_mb": 12.5,
             "pass_deadline_seconds": 45.0,
@@ -1931,7 +2111,7 @@ def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
 
 
 def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotion(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A bounded pass retains its generation; only the terminal resume promotes it."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1949,6 +2129,8 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
     first = cli_runner.invoke(
         cli,
@@ -2002,7 +2184,7 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
 
 
 def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every rebuild pass receipt survives on disk, not only on the CLI's stdout.
 
@@ -2027,6 +2209,8 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
     first = cli_runner.invoke(
         cli,
@@ -2080,7 +2264,7 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
 
 
 def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The real CLI replays every raw over passes; byte budgeting never filters archive data."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -2098,6 +2282,8 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     first = cli_runner.invoke(
         cli,
         [
@@ -2149,10 +2335,10 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
 
 
-def test_rebuild_index_source_snapshot_drift_marks_candidate_stale_before_promotion(
+def test_rebuild_index_source_snapshot_drift_fails_before_candidate_creation(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A changed source vector is terminal evidence, never a ready/promoted candidate."""
+    """A receipt/source mismatch stops the route before candidate creation."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = cli_workspace["archive_root"]
@@ -2167,17 +2353,24 @@ def test_rebuild_index_source_snapshot_drift_marks_candidate_stale_before_promot
             source_path="drift.jsonl",
             acquired_at_ms=1,
         )
-    snapshots = iter(("source-v1", "source-v1", "source-v2"))
-    monkeypatch.setattr("polylogue.storage.index_generation.source_revision_snapshot", lambda _root: next(snapshots))
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"drift-after-receipt"}}\n',
+            source_path="drift-after-receipt.jsonl",
+            acquired_at_ms=2,
+        )
     result = cli_runner.invoke(
         cli,
         ["--plain", "ops", "maintenance", "rebuild-index", "--output-format", "json"],
         catch_exceptions=False,
     )
     assert result.exit_code == 1
-    assert "stale because source evidence changed" in result.output
-    transaction = next((root / ".index-rebuild-transactions").glob("*.json"))
-    assert json.loads(transaction.read_text())["status"] == "stale"
+    assert "schema-inference preflight gate failed" in result.output
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+    assert not list((root / ".index-generations").glob("gen-*"))
     assert not root.joinpath("index.db").is_symlink()
 
 
@@ -2199,6 +2392,8 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
             source_path="deadline.jsonl",
             acquired_at_ms=1,
         )
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     # `monkeypatch.setattr("polylogue.maintenance.rebuild_index.time.time", ...)`
     # patches the *stdlib* `time` module's `time` attribute (modules are
     # process-wide singletons), not a private copy scoped to rebuild_index.py.

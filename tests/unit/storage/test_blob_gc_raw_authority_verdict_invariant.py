@@ -20,7 +20,7 @@ row would project to.
 
 Anti-vacuity: every scenario binds real cohorts through the production writer
 (``ArchiveStore.write_raw_payload`` / ``bind_raw_revision``), projects real
-verdicts via ``project_raw_authority_verdicts`` (the same Phase 2 machinery
+verdicts via ``get_or_compute_raw_authority_verdicts`` (the same Phase 2 machinery
 ``tests/unit/storage/test_raw_authority_verdict_projection.py`` exercises),
 and then runs the real ``run_blob_gc_report`` against the resulting
 ``source.db`` + on-disk blob store -- not a mock reference check.
@@ -40,7 +40,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.core.enums import Provider, RawAuthorityVerdict
 from polylogue.storage.blob_gc import run_blob_gc_report
-from polylogue.storage.raw_authority_verdict_projection import project_raw_authority_verdicts
+from polylogue.storage.raw_authority_verdict_cache import get_or_compute_raw_authority_verdicts
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -106,10 +106,10 @@ def test_blob_gc_protects_every_verdict_value_while_the_raw_row_survives(tmp_pat
         )
 
         verdicts = {
-            **project_raw_authority_verdicts(archive, "codex:chain"),
-            **project_raw_authority_verdicts(archive, "codex:fork"),
-            **project_raw_authority_verdicts(archive, "codex:solo"),
-            **project_raw_authority_verdicts(archive, "codex:pending"),
+            **get_or_compute_raw_authority_verdicts(archive, "codex:chain", now_ms=1000),
+            **get_or_compute_raw_authority_verdicts(archive, "codex:fork", now_ms=1000),
+            **get_or_compute_raw_authority_verdicts(archive, "codex:solo", now_ms=1000),
+            **get_or_compute_raw_authority_verdicts(archive, "codex:pending", now_ms=1000),
         }
 
         source_db_path = archive.source_db_path
@@ -158,7 +158,7 @@ def test_blob_gc_reclaims_only_after_the_verdict_owning_row_is_actually_gone(tmp
         _bind_full(archive, raw_id="chain-old", payload=b"one\n", logical_source_key="codex:chain")
         _bind_full(archive, raw_id="chain-new", payload=b"one\ntwo\n", logical_source_key="codex:chain")
 
-        verdicts = project_raw_authority_verdicts(archive, "codex:chain")
+        verdicts = get_or_compute_raw_authority_verdicts(archive, "codex:chain", now_ms=1000)
         assert verdicts["chain-old"] is RawAuthorityVerdict.SUPERSEDED
 
         source_db_path = archive.source_db_path

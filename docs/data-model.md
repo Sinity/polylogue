@@ -72,7 +72,7 @@ Convenience properties resolve these:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `str` | Message ID, `session_id:native_id` (or `session_id:position.variant`) |
+| `id` | `str` | Message ID, `session_id:n:native_id` (or `session_id:p:position.variant`) |
 | `role` | `Role` | `user`, `assistant`, `system`, `tool`, `unknown` |
 | `text` | `str?` | Flattened message text |
 | `timestamp` | `datetime?` | Message timestamp |

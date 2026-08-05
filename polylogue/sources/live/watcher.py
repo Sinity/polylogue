@@ -17,7 +17,8 @@ import os
 import sqlite3
 import stat as stat_module
 import time
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+import uuid
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,7 +31,12 @@ from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import drain_hook_event_spool, hook_spool_root, pending_hook_spool_dir
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
-from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
+from polylogue.sources.live.batch import (
+    CursorAuthorityBlockedError,
+    LiveBatchEventEmitter,
+    LiveBatchProcessor,
+    fingerprint_file,
+)
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
     cursor_ctime_ns,
@@ -224,6 +230,7 @@ class LiveWatcher:
         max_workers: int | None = None,
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
         event_emitter: LiveBatchEventEmitter | None = None,
+        catch_up_event_emitter: Callable[..., None] | None = None,
         write_coordinator: object | None = None,
         parse_stage: LiveParseStage | None = None,
     ) -> None:
@@ -238,6 +245,7 @@ class LiveWatcher:
         self._max_workers = max_workers
         self._converger = converger
         self._write_coordinator = write_coordinator
+        self._catch_up_event_emitter = catch_up_event_emitter
         # polylogue-wf8a: always on -- pre-parsing runs entirely BEFORE the
         # write coordinator is ever asked for the writer hold
         # (``LiveBatchProcessor._ingest_full_paths``), so it never contends
@@ -428,16 +436,49 @@ class LiveWatcher:
         plan_holder: list[CatchUpPlan] = []
 
         async def prepare_catch_up() -> None:
+            # The preflight must precede both cursor initialization and the
+            # planning pass. ``_plan_catch_up`` can reconcile missing cursors
+            # and rebase matching filesystem observations before ingestion has
+            # a chance to apply its own gate.
+            self._batch_processor.require_cursor_authority()
             await self._run_writer_sync("watcher.catch_up.cursor_initialize", self._cursor.initialize)
+            self._batch_processor.require_cursor_authority()
             logger.info("live.watcher: catch-up scan over %d file(s)", len(candidates))
             plan_holder.append(self._plan_catch_up(candidates))
 
-        await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
+        try:
+            await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
+        except CursorAuthorityBlockedError as exc:
+            logger.warning("live.watcher: catch-up planning refused by cursor authority: %s", exc)
+            return
         plan = plan_holder[0]
         if not plan.needed:
             return
+        operation_id = f"watcher-catch-up:{uuid.uuid4()}"
+        cycle_started = time.perf_counter()
+        await self._emit_catch_up_cycle(
+            operation_id=operation_id,
+            phase="start",
+            backlog_start=len(plan.candidates),
+            backlog_end=len(plan.candidates),
+            discovered=len(plan.candidates),
+            attempted=0,
+            skipped=0,
+            ingested=0,
+            quarantine_count=0,
+            errors_by_kind={},
+            cursor_before=None,
+            cursor_after=None,
+            duration_ms=0.0,
+            stage_timings_s={},
+            repair=None,
+        )
         candidate_by_path = {candidate.path: candidate for candidate in plan.candidates}
         chunks = tuple(self._chunk_catch_up_paths(plan.needed, candidate_by_path))
+        attempted = 0
+        ingested = 0
+        failed = 0
+        stage_timings_s: dict[str, float] = {}
         logger.info(
             "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d, chunks=%d",
             len(plan.needed),
@@ -445,39 +486,91 @@ class LiveWatcher:
             plan.skipped_file_count,
             len(chunks),
         )
-        for index, chunk in enumerate(chunks, start=1):
-            if self._stop.is_set():
-                break
-            chunk_bytes = sum(candidate_by_path[path].stat.st_size for path in chunk)
-            logger.info(
-                "live.watcher: catch-up chunk %d/%d ingesting %d file(s) (%.1f MB)",
-                index,
-                len(chunks),
-                len(chunk),
-                chunk_bytes / 1e6,
-            )
-            chunk_index = index
-            chunk_paths = list(chunk)
-
-            async def ingest_chunk(
-                chunk_index: int = chunk_index,
-                chunk_paths: list[Path] = chunk_paths,
-            ) -> None:
-                metrics = await self._ingest_files(
-                    chunk_paths,
-                    queued_file_count=len(plan.candidates) if chunk_index == 1 else len(chunk_paths),
-                    skipped_file_count=plan.skipped_file_count if chunk_index == 1 else 0,
+        try:
+            for index, chunk in enumerate(chunks, start=1):
+                if self._stop.is_set():
+                    await self._emit_catch_up_terminal(
+                        operation_id, "stopped", plan, attempted, ingested, failed, stage_timings_s, cycle_started
+                    )
+                    return
+                chunk_bytes = sum(candidate_by_path[path].stat.st_size for path in chunk)
+                logger.info(
+                    "live.watcher: catch-up chunk %d/%d ingesting %d file(s) (%.1f MB)",
+                    index,
+                    len(chunks),
+                    len(chunk),
+                    chunk_bytes / 1e6,
                 )
-                if metrics is not None:
-                    _log_ingest_metrics(f"live.watcher: catch-up chunk {chunk_index}/{len(chunks)}", metrics)
-                    if (
-                        getattr(metrics, "succeeded_file_count", 0) == 0
-                        and getattr(metrics, "failed_file_count", 0) == 0
-                    ):
-                        self._defer_unaccounted_failed_retries(chunk_paths)
+                chunk_index = index
+                chunk_paths = list(chunk)
 
-            await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
-        self._schedule_failed_retry_scan()
+                async def ingest_chunk(
+                    chunk_index: int = chunk_index,
+                    chunk_paths: list[Path] = chunk_paths,
+                ) -> None:
+                    nonlocal attempted, ingested, failed
+                    metrics = await self._ingest_files(
+                        chunk_paths,
+                        queued_file_count=len(plan.candidates) if chunk_index == 1 else len(chunk_paths),
+                        skipped_file_count=plan.skipped_file_count if chunk_index == 1 else 0,
+                    )
+                    if metrics is not None:
+                        _log_ingest_metrics(f"live.watcher: catch-up chunk {chunk_index}/{len(chunks)}", metrics)
+                        # Keep the catch-up coordinator compatible with older
+                        # metrics objects and focused test doubles.  The chunk
+                        # itself is the authoritative fallback denominator.
+                        attempted += int(getattr(metrics, "needed_file_count", len(chunk_paths)) or len(chunk_paths))
+                        ingested += int(getattr(metrics, "succeeded_file_count", 0) or 0)
+                        failed += int(getattr(metrics, "failed_file_count", 0) or 0)
+                        for stage, elapsed_s in getattr(metrics, "stage_timings_s", {}).items():
+                            stage_timings_s[stage] = stage_timings_s.get(stage, 0.0) + elapsed_s
+                        if (
+                            getattr(metrics, "succeeded_file_count", 0) == 0
+                            and getattr(metrics, "failed_file_count", 0) == 0
+                        ):
+                            self._defer_unaccounted_failed_retries(chunk_paths)
+
+                await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
+            if self._stop.is_set():
+                await self._emit_catch_up_terminal(
+                    operation_id, "stopped", plan, attempted, ingested, failed, stage_timings_s, cycle_started
+                )
+                return
+            backlog_end = max(0, len(plan.candidates) - plan.skipped_file_count - ingested)
+            await self._emit_catch_up_cycle(
+                operation_id=operation_id,
+                phase="end",
+                backlog_start=len(plan.candidates),
+                backlog_end=backlog_end,
+                discovered=len(plan.candidates),
+                attempted=attempted,
+                skipped=plan.skipped_file_count,
+                ingested=ingested,
+                quarantine_count=0,
+                errors_by_kind={"ingest_failed": failed} if failed else {},
+                cursor_before=None,
+                cursor_after=None,
+                duration_ms=(time.perf_counter() - cycle_started) * 1000.0,
+                stage_timings_s=stage_timings_s,
+                repair={"required": failed, "performed": 0, "remaining": backlog_end},
+            )
+            await self._emit_catch_up_terminal(
+                operation_id, "success", plan, attempted, ingested, failed, stage_timings_s, cycle_started, backlog_end
+            )
+            self._schedule_failed_retry_scan()
+        except asyncio.CancelledError:
+            await self._emit_catch_up_terminal(
+                operation_id, "cancelled", plan, attempted, ingested, failed, stage_timings_s, cycle_started
+            )
+            raise
+        except CursorAuthorityBlockedError as exc:
+            logger.warning("live.watcher: catch-up refused by cursor authority: %s", exc)
+            return
+        except BaseException:
+            await self._emit_catch_up_terminal(
+                operation_id, "failure", plan, attempted, ingested, failed, stage_timings_s, cycle_started
+            )
+            raise
 
     async def _drain_hook_spool(self) -> None:
         """Acknowledge hook envelopes only after their source-tier write commits.
@@ -486,6 +579,12 @@ class LiveWatcher:
         large spool backlog cannot monopolize the single writer against
         live ingest and catch-up chunks.
         """
+
+        try:
+            self._batch_processor.require_cursor_authority()
+        except CursorAuthorityBlockedError as exc:
+            logger.warning("live.watcher: hook-spool drain refused by cursor authority: %s", exc)
+            return
 
         total_acknowledged = 0
         while True:
@@ -716,7 +815,12 @@ class LiveWatcher:
             self._pending_paths.clear()
 
         async def flush_batch() -> None:
+            # Filtering a changed-file batch invokes cursor reconciliation and
+            # lifecycle actuators, so the source-selection proof must be
+            # consumed before initialization or any stateful decision.
+            self._batch_processor.require_cursor_authority()
             await self._run_writer_sync("watcher.live_batch.cursor_initialize", self._cursor.initialize)
+            self._batch_processor.require_cursor_authority()
             # Filter to files that actually need work.
             cursor_records = self._cursor.get_records(paths)
             needed = []
@@ -750,6 +854,15 @@ class LiveWatcher:
 
         try:
             await self._run_coordinated("watcher.live_batch", flush_batch)
+        except CursorAuthorityBlockedError as exc:
+            logger.warning("live.watcher: changed-file batch refused by cursor authority: %s", exc)
+            # Authority denial must leave both durable cursor state and the
+            # in-memory work queue intact.  Otherwise the source is invisible
+            # until a later catch-up scan instead of retrying on the next
+            # authorized debounce flush.
+            async with self._batch_lock:
+                self._pending_paths.update(paths)
+            return True
         except sqlite3.OperationalError as exc:
             if not _is_database_locked(exc):
                 raise
@@ -1337,6 +1450,7 @@ class LiveWatcher:
         skipped_file_count: int = 0,
     ) -> LiveBatchMetrics:
         """Ingest files through the reusable daemon live batch processor."""
+        self._batch_processor.require_cursor_authority()
         async with self._ingest_lock:
 
             async def ingest() -> LiveBatchMetrics:
@@ -1350,6 +1464,49 @@ class LiveWatcher:
             run = getattr(self._write_coordinator, "run", None)
             metrics = await run("watcher.live_ingest", ingest) if callable(run) else await ingest()
         return metrics
+
+    async def _emit_catch_up_terminal(
+        self,
+        operation_id: str,
+        outcome: str,
+        plan: CatchUpPlan,
+        attempted: int,
+        ingested: int,
+        failed: int,
+        stage_timings_s: Mapping[str, float],
+        cycle_started: float,
+        backlog_end: int | None = None,
+    ) -> None:
+        resolved_backlog_end = (
+            max(0, len(plan.candidates) - plan.skipped_file_count - ingested) if backlog_end is None else backlog_end
+        )
+        await self._emit_catch_up_cycle(
+            operation_id=operation_id,
+            phase="terminal",
+            backlog_start=len(plan.candidates),
+            backlog_end=resolved_backlog_end,
+            discovered=len(plan.candidates),
+            attempted=attempted,
+            skipped=plan.skipped_file_count,
+            ingested=ingested,
+            quarantine_count=0,
+            errors_by_kind={"ingest_failed": failed} if failed else {},
+            cursor_before=None,
+            cursor_after=None,
+            duration_ms=(time.perf_counter() - cycle_started) * 1000.0,
+            stage_timings_s=stage_timings_s,
+            repair={"required": failed, "performed": 0, "remaining": resolved_backlog_end},
+            terminal_outcome=outcome,
+        )
+
+    async def _emit_catch_up_cycle(self, **kwargs: object) -> None:
+        """Persist lifecycle facts through the daemon's write coordinator."""
+        if self._catch_up_event_emitter is not None:
+            await self._run_writer_sync(
+                "watcher.catch_up.event",
+                self._catch_up_event_emitter,
+                **kwargs,
+            )
 
     async def _run_coordinated(self, actor: str, operation: Callable[[], Awaitable[None]]) -> None:
         """Run a complete watcher write batch under the injected coordinator."""

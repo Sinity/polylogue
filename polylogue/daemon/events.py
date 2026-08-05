@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -24,8 +26,6 @@ CREATE TABLE IF NOT EXISTS daemon_events (
     operation_id TEXT,
     payload_json TEXT NOT NULL
  ) STRICT;
-CREATE INDEX IF NOT EXISTS idx_daemon_events_kind ON daemon_events(kind);
-CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
 """
 
 
@@ -74,8 +74,30 @@ def _open_events_reader() -> sqlite3.Connection | None:
     return conn
 
 
-def _now_ms() -> int:
+def current_epoch_ms() -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
+
+
+class CatchUpCycleTerminalOutcome(StrEnum):
+    """Typed terminal outcomes for a catch-up lifecycle."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLED = "cancelled"
+    STOPPED = "stopped"
+
+
+@dataclass(frozen=True)
+class CatchUpLifecycleHistory:
+    """Bounded catch-up evidence with an explicit completeness result."""
+
+    events: tuple[dict[str, object], ...]
+    incomplete: bool
+
+
+_CATCH_UP_LIFECYCLE_IDENTITY_LIMIT = 32
+_CATCH_UP_LIFECYCLE_RECEIPT_LIMIT = 4
+CATCH_UP_LIFECYCLE_RETURN_LIMIT = _CATCH_UP_LIFECYCLE_IDENTITY_LIMIT * _CATCH_UP_LIFECYCLE_RECEIPT_LIMIT + 1
 
 
 def _iso_from_ms(value: object) -> str:
@@ -100,7 +122,7 @@ def emit_daemon_event(
         conn.execute(
             "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
             (
-                _now_ms(),
+                current_epoch_ms(),
                 kind,
                 operation_id,
                 json.dumps(payload or {}),
@@ -144,6 +166,76 @@ def query_daemon_events(
                 }
             )
         return result
+    finally:
+        conn.close()
+
+
+def query_recent_catch_up_lifecycles() -> CatchUpLifecycleHistory:
+    """Return bounded, complete histories for recent catch-up identities.
+
+    A valid lifecycle writes at most start, end, and terminal receipts. The
+    indexed seed query therefore reads at most ``32 * 3 + 1`` catch-up
+    rows, then each selected identity receives at most four indexed receipts:
+    three valid boundaries plus one overflow detector. Any older tail, excess
+    identity, malformed operation id, or repeated identity receipt marks the
+    result incomplete so status cannot hide it behind a newer healthy cycle.
+    """
+    conn = _open_events_reader()
+    if conn is None:
+        return CatchUpLifecycleHistory(events=(), incomplete=False)
+    try:
+        seed_limit = _CATCH_UP_LIFECYCLE_IDENTITY_LIMIT * 3
+        seed_rows = conn.execute(
+            "SELECT id, ts_ms, kind, operation_id, payload_json "
+            "FROM daemon_events WHERE kind = 'catch_up_cycle' "
+            "ORDER BY id DESC LIMIT ?",
+            (seed_limit + 1,),
+        ).fetchall()
+        incomplete = len(seed_rows) > seed_limit
+        operation_ids: list[str] = []
+        for row in seed_rows[:seed_limit]:
+            operation_id = row[3]
+            if not isinstance(operation_id, str):
+                incomplete = True
+            elif operation_id not in operation_ids:
+                if len(operation_ids) == _CATCH_UP_LIFECYCLE_IDENTITY_LIMIT:
+                    incomplete = True
+                else:
+                    operation_ids.append(operation_id)
+
+        lifecycle_rows: list[tuple[object, ...]] = []
+        for operation_id in operation_ids:
+            rows = conn.execute(
+                "SELECT id, ts_ms, kind, operation_id, payload_json "
+                "FROM daemon_events WHERE kind = 'catch_up_cycle' AND operation_id = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (operation_id, _CATCH_UP_LIFECYCLE_RECEIPT_LIMIT),
+            ).fetchall()
+            lifecycle_rows.extend(rows)
+            if len(rows) == _CATCH_UP_LIFECYCLE_RECEIPT_LIMIT:
+                incomplete = True
+
+        marker = conn.execute(
+            "SELECT id, ts_ms, kind, operation_id, payload_json FROM daemon_events "
+            "WHERE kind IN ('bulk_import_started', 'bulk_import_opened', 'bulk_import_completed', 'bulk_import_closed') "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if marker is not None:
+            lifecycle_rows.append(marker)
+        lifecycle_rows.sort(key=lambda row: int(cast(int | str | bytes | bytearray, row[0])), reverse=True)
+        events = tuple(
+            {
+                "id": row[0],
+                "ts": _iso_from_ms(row[1]),
+                "kind": row[2],
+                "operation_id": row[3],
+                "payload": json.loads(cast(str | bytes | bytearray, row[4])),
+            }
+            for row in lifecycle_rows
+        )
+        if len(events) > CATCH_UP_LIFECYCLE_RETURN_LIMIT:
+            raise RuntimeError("catch-up lifecycle query exceeded its fixed return bound")
+        return CatchUpLifecycleHistory(events=events, incomplete=incomplete)
     finally:
         conn.close()
 
@@ -235,6 +327,7 @@ def emit_catch_up_cycle(
     duration_ms: float,
     stage_timings_s: Mapping[str, float] | None,
     repair: Mapping[str, object] | None,
+    terminal_outcome: CatchUpCycleTerminalOutcome | str | None = None,
 ) -> None:
     """Emit one catch-up convergence cycle envelope.
 
@@ -242,9 +335,20 @@ def emit_catch_up_cycle(
     attempts taxonomy, errors, queue/backlog, repair state, per-stage timings)
     so downstream tooling can read durable evidence without scraping logs.
 
-    ``phase`` is ``"start"`` or ``"end"``; the same ``operation_id`` ties them
-    together. End events carry the realized counts and timings.
+    ``phase`` is ``"start"``, ``"end"``, or ``"terminal"``. Terminal events
+    require a typed outcome. The same ``operation_id`` ties every boundary
+    together, while an end event remains the realized backlog measurement.
     """
+    if phase not in {"start", "end", "terminal"}:
+        raise ValueError(f"unsupported catch-up cycle phase: {phase!r}")
+    if phase == "terminal":
+        if terminal_outcome is None:
+            raise ValueError("terminal catch-up cycle events require an outcome")
+        resolved_terminal_outcome = CatchUpCycleTerminalOutcome(terminal_outcome)
+    elif terminal_outcome is not None:
+        raise ValueError("only terminal catch-up cycle events may carry an outcome")
+    else:
+        resolved_terminal_outcome = None
     payload: dict[str, object] = {
         "phase": phase,
         "backlog_start": backlog_start,
@@ -262,6 +366,7 @@ def emit_catch_up_cycle(
             {key: round(float(value), 6) for key, value in stage_timings_s.items()} if stage_timings_s else {}
         ),
         "repair": dict(repair) if repair is not None else None,
+        "terminal_outcome": (resolved_terminal_outcome.value if resolved_terminal_outcome is not None else None),
     }
     emit_daemon_event("catch_up_cycle", operation_id=operation_id, payload=payload)
 
@@ -389,6 +494,9 @@ def get_daemon_event_counts() -> dict[str, int]:
 
 
 __all__ = [
+    "CATCH_UP_LIFECYCLE_RETURN_LIMIT",
+    "CatchUpLifecycleHistory",
+    "CatchUpCycleTerminalOutcome",
     "EVENT_SESSION_APPENDED",
     "EVENT_SESSION_UPDATED",
     "EVENT_MESSAGE_APPENDED",
@@ -402,6 +510,8 @@ __all__ = [
     "get_last_ingestion_batch",
     "get_latest_event_id",
     "get_recent_operations",
+    "current_epoch_ms",
     "query_daemon_events",
     "query_events_since",
+    "query_recent_catch_up_lifecycles",
 ]

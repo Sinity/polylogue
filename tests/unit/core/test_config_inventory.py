@@ -79,6 +79,7 @@ def test_inventory_env_mapping_is_executable(monkeypatch: pytest.MonkeyPatch, wo
     monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN", "receiver-token")
     monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH", "/tmp/polylogue-spool")
     monkeypatch.setenv("POLYLOGUE_HEALTH_BLOB_INTEGRITY_SAMPLE_SIZE", "3")
+    monkeypatch.setenv("POLYLOGUE_MEMORY_BUDGET_BYTES", "123456789")
     monkeypatch.setenv("NO_COLOR", "1")
 
     cfg = load_polylogue_config()
@@ -92,7 +93,31 @@ def test_inventory_env_mapping_is_executable(monkeypatch: pytest.MonkeyPatch, wo
     assert cfg.browser_capture_auth_token == "receiver-token"
     assert cfg.browser_capture_spool_path == "/tmp/polylogue-spool"
     assert cfg.health_blob_integrity_sample_size == 3
+    assert inventory["memory_budget_bytes"].env_var == "POLYLOGUE_MEMORY_BUDGET_BYTES"
+    assert cfg.memory_budget_bytes == 123456789
+    assert cfg.layer_of("memory_budget_bytes") == "env"
     assert cfg.no_color is True
+
+
+def test_memory_budget_is_typed_across_toml_and_env_and_rejects_invalid_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import ConfigError, load_polylogue_config
+
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+    config_path = tmp_path / "polylogue.toml"
+    config_path.write_text("[resource]\nmemory_budget_bytes = 987654321\n", encoding="utf-8")
+
+    cfg = load_polylogue_config(config_path=config_path)
+    assert cfg.memory_budget_bytes == 987654321
+    assert cfg.layer_of("memory_budget_bytes") == "user"
+
+    for raw_value in ("", "0", "-1", "not-a-number"):
+        monkeypatch.setenv("POLYLOGUE_MEMORY_BUDGET_BYTES", raw_value)
+        with pytest.raises(ConfigError, match=re.escape(f"POLYLOGUE_MEMORY_BUDGET_BYTES={raw_value!r}")):
+            load_polylogue_config()
 
 
 def test_effective_config_payload_redacts_secret_presence_and_exposes_source_layer(

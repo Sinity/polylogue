@@ -29,6 +29,7 @@ def _base_kwargs() -> dict[str, object]:
         "search_ready": True,
         "search_summary": "ready",
         "active_writer": False,
+        "convergence_debt_available": True,
         "active_writer_summary": "",
     }
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from concurrent.futures import as_completed
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,14 +19,22 @@ from polylogue.pipeline.services.process_pool import (
     process_pool_executor,
     resolve_archive_ingest_dispatch,
 )
+from polylogue.sources.decoder_zip import (
+    ZipBombError,
+    ZipEntryValidator,
+    open_bounded_zip_entry,
+    zip_entry_session_artifact,
+)
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import (
+    has_decoded_session_evidence,
     iter_antigravity_language_server_sessions,
     iter_source_sessions_with_raw,
     parse_one_source_path,
 )
 from polylogue.sources.source_walk import _setup_source_walk
 from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, deterministic_raw_session_id
 from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
@@ -133,6 +142,7 @@ async def parse_sources_archive(
     # source_path, source_index, blob_hash) so a later re-ingest of identical
     # bytes resolves to the SAME raw_id every time. Ref polylogue-sjf6.
     shared_raw_ids: dict[tuple[str, str, int, str], str] = {}
+    shared_raw_memberships: dict[tuple[str, str, int, str], dict[str, ParsedSession]] = {}
 
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         counters["raw_rows"] += _admit_non_session_origin_artifacts(
@@ -191,21 +201,38 @@ async def parse_sources_archive(
                             bytes.fromhex(blob_hash_str),
                             None,
                         )
-                    write_result = archive.write_raw_and_parsed_result(
+                    write_result = archive.admit_raw_and_parsed_result(
                         session,
                         payload=payload,
                         source_path=source_path,
                         acquired_at_ms=acquired_at_ms,
                         source_index=source_index,
                         raw_id=raw_id,
+                        shared_raw=shared_key is not None,
+                        logical_source_key=(
+                            f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                        ),
                         stage_timings_s=result.stage_timings_s,
                         manage_transaction=not batched,
                         blob_publication_receipt_id=(
                             raw_data.blob_publication_receipt_id if raw_data is not None else None
                         ),
                     )
-                    if shared_key is not None:
-                        shared_raw_ids[shared_key] = write_result.raw_id
+                if shared_key is not None:
+                    shared_raw_ids[shared_key] = write_result.raw_id
+                    memberships = shared_raw_memberships.setdefault(shared_key, {})
+                    memberships[session.provider_session_id] = session
+                    archive.replace_raw_membership_census(
+                        write_result.raw_id,
+                        list(memberships.values()),
+                        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                        censused_at_ms=acquired_at_ms,
+                        # This mutates durable source.db state. Its transaction
+                        # must close before the next grouped raw publisher can
+                        # reserve through its separate source connection;
+                        # index message batching applies only to index.db.
+                        manage_transaction=True,
+                    )
             except ContentExcisedError as exc:
                 # The archive can forget on purpose (polylogue-27m): this raw
                 # payload's content hash is durably excised, so acquire
@@ -393,9 +420,22 @@ def _admit_non_session_origin_artifacts(
         )
         if walk is None:
             continue
+        provider = Provider.from_string(source.name)
         for candidate, _mtime in walk.paths_to_process:
+            if candidate.suffix.lower() == ".zip":
+                admitted += _admit_non_session_zip_artifacts(
+                    archive,
+                    candidate,
+                    provider=provider,
+                    acquired_at_ms=acquired_at_ms,
+                )
+                continue
             classification = classify_artifact_path(candidate, provider=source.name)
-            if classification is None or classification.parse_as_session:
+            if (
+                classification is None
+                or classification.parse_as_session
+                or has_decoded_session_evidence(candidate, provider=provider)
+            ):
                 continue
             try:
                 # polylogue-1fijp arm 4: route through the raw-admission
@@ -414,6 +454,51 @@ def _admit_non_session_origin_artifacts(
                 admitted += 1
             except Exception:
                 logger.error("Failed to admit configured Claude fact artifact %s", candidate, exc_info=True)
+    return admitted
+
+
+def _admit_non_session_zip_artifacts(
+    archive: ArchiveStore,
+    zip_path: Path,
+    *,
+    provider: Provider,
+    acquired_at_ms: int,
+) -> int:
+    """Retain ZIP member artifacts only after decoded JSONL evidence is absent."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    admitted = 0
+    publisher = ArchiveBlobPublisher(archive.source_db_path, archive.archive_root / "blob")
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            validator = ZipEntryValidator(provider, cursor_state=None, zip_path=zip_path)
+            for info in validator.filter_entries(zf.infolist()):
+                classification = classify_artifact_path(info.filename, provider=provider)
+                if (
+                    classification is None
+                    or classification.parse_as_session
+                    or zip_entry_session_artifact(zf, info, provider=provider) is not None
+                ):
+                    continue
+                with open_bounded_zip_entry(zf, info) as payload:
+                    blob_hash, blob_size = publisher.write_from_fileobj(payload)
+                receipt_id = publisher.receipt_id(blob_hash)
+                publisher.flush()
+                archive.admit_raw_artifact_blob_ref(
+                    provider=provider,
+                    blob_hash_hex=blob_hash,
+                    blob_size=blob_size,
+                    source_path=f"{zip_path}:{info.filename}",
+                    source_index=0,
+                    acquired_at_ms=acquired_at_ms,
+                    classification=classification,
+                    blob_publication_receipt_id=receipt_id,
+                )
+                admitted += 1
+    except (OSError, ZipBombError, zipfile.BadZipFile):
+        logger.error("Failed to admit configured ZIP artifacts from %s", zip_path, exc_info=True)
+    finally:
+        publisher.discard_pending()
     return admitted
 
 

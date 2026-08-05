@@ -918,6 +918,28 @@ def test_ingest_record_streams_detected_codex_jsonl_without_full_envelope_decode
     assert result.sessions[0].parsed_session.source_name == "codex"
 
 
+def test_ingest_record_streams_headerless_codex_append_with_fallback_identity(tmp_path: Path) -> None:
+    from polylogue.pipeline.services.ingest_worker import ingest_record
+
+    content = (
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"append delta"}]}}\n'
+    )
+    record = _make_raw_record("codex-append", "unknown", content, "/exports/rollout-append.jsonl")
+
+    with patch(
+        "polylogue.archive.raw_payload.build_raw_payload_envelope",
+        side_effect=AssertionError("headerless Codex append must use stream parsing"),
+    ):
+        result = ingest_record(record, str(tmp_path / "archive"), "advisory")
+
+    assert result.error is None
+    assert len(result.sessions) == 1
+    parsed = result.sessions[0].parsed_session
+    assert parsed.source_name == "codex"
+    assert parsed.provider_session_id == "rollout-append"
+
+
 def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None:
     from polylogue.pipeline.services.ingest_worker import ingest_record
 

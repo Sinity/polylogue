@@ -83,7 +83,7 @@ def _make_messages_spec() -> TableColumnSpec:
     all_columns: tuple[ColumnSpec, ...] = (
         _ddl(
             "message_id",
-            "TEXT GENERATED ALWAYS AS (session_id || ':' || COALESCE(native_id, position || '.' || variant_index)) STORED UNIQUE",
+            "TEXT GENERATED ALWAYS AS (session_id || ':' || CASE WHEN native_id IS NULL THEN 'p:' || position || '.' || variant_index ELSE 'n:' || native_id END) STORED UNIQUE",
         ),
         _ddl("session_id", "TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"),
         _ddl("native_id", "TEXT"),
@@ -213,6 +213,7 @@ def _make_messages_spec() -> TableColumnSpec:
         "occurred_at_ms": record(
             "occurred_at_ms",
             record_name="sort_key",
+            domain_name="timestamp",
             select_expression="{alias}.occurred_at_ms / 1000.0",
             domain_transform=_epoch_seconds_to_datetime,
         ),

@@ -23,7 +23,21 @@ def test_devtools_reindex_canary_delegates_to_product_cli(
 
     monkeypatch.setattr(reindex_canary, "invoke_polylogue_cli", fake_invoke)
 
-    assert reindex_canary.main(["--report", "/tmp/canary.json", "--no-promote", "--json"]) == 0
+    assert (
+        reindex_canary.main(
+            [
+                "--archive-root",
+                "/tmp/isolated-archive",
+                "--schema-inference-receipt",
+                "/tmp/schema-inference-gate-receipt.json",
+                "--report",
+                "/tmp/canary.json",
+                "--no-promote",
+                "--json",
+            ]
+        )
+        == 0
+    )
     execution = captured["execution"]
     assert isinstance(execution, ExecutionSpec)
     assert execution.command == (
@@ -32,6 +46,10 @@ def test_devtools_reindex_canary_delegates_to_product_cli(
         "ops",
         "maintenance",
         "reindex-canary",
+        "--archive-root",
+        "/tmp/isolated-archive",
+        "--schema-inference-receipt",
+        "/tmp/schema-inference-gate-receipt.json",
         "--report",
         "/tmp/canary.json",
         "--no-promote",
