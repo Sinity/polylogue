@@ -19,6 +19,15 @@ WireEncoding: TypeAlias = Literal["json", "jsonl"]
 WireCapabilityStatus: TypeAlias = Literal["supported", "unsupported"]
 
 
+class UnsupportedSyntheticWireRouteError(ValueError):
+    """Raised when synthetic selection reaches an explicit unsupported route."""
+
+    def __init__(self, provider: str, reason: str) -> None:
+        self.provider = provider
+        self.reason = reason
+        super().__init__(f"Synthetic wire route unsupported for {provider}: {reason}")
+
+
 @dataclass(frozen=True)
 class TreeConfig:
     """Configuration for tree-structured message formats."""
@@ -94,6 +103,8 @@ class WireSupportEntry:
             self.schema_valid is True
             and self.parsed_session_count > 0
             and self.parsed_message_count > 0
+            and self.construct_coverage is not None
+            and self.construct_coverage.complete
             and self.validation_error is None
         )
 
@@ -188,19 +199,20 @@ PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
         encoding="json",
         messages_path="chunkedPrompt.chunks",
     ),
-    "antigravity": WireFormat(
-        encoding="json",
-    ),
 }
 
 
-# All catalog providers must have a route here.  The three unsupported routes
+# All catalog providers must have a route here.  The unsupported routes
 # are explicit capabilities, not implicit generator fallbacks.
 PROVIDER_WIRE_ROUTES: dict[str, WireRoute] = {
     **{
         provider: WireRoute(status="supported", wire_format=wire_format)
         for provider, wire_format in PROVIDER_WIRE_FORMATS.items()
     },
+    "antigravity": WireRoute(
+        status="unsupported",
+        reason="antigravity requires the language-server .pb adapter and source-path semantics, which generic JSON generation does not exercise",
+    ),
     "browser-capture": WireRoute(
         status="unsupported",
         reason="browser-capture is an envelope with provider-specific typed turns, not a generic export wire format",
@@ -297,13 +309,14 @@ def construct_coverage(
     for construct in schema_keywords:
         if construct.startswith("type:"):
             type_name = construct.removeprefix("type:")
-            if type_name in handlers and type_name in value_types:
+            if type_name in handlers and payloads:
                 exercised.add(construct)
         elif (
             (construct in handlers and payloads)
             or (construct == "properties" and "object" in value_types)
             or (construct == "items" and "array" in value_types)
             or (construct == "required" and "object" in value_types)
+            or (construct == "additionalProperties" and "object" in value_types)
         ):
             exercised.add(construct)
 
@@ -457,6 +470,7 @@ __all__ = [
     "WireRoute",
     "WireSupportEntry",
     "WireSupportReceipt",
+    "UnsupportedSyntheticWireRouteError",
     "build_wire_support_receipt",
     "construct_coverage",
 ]

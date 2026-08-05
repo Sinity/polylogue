@@ -9,12 +9,13 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.core.json import JSONValue
-from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, wire_formats
 from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
 from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
-from polylogue.sources import iter_source_sessions
+from polylogue.schemas.synthetic.selection import select_synthetic_schema
+from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRouteError
+from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 
 
 def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> None:
@@ -23,8 +24,12 @@ def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> No
 
     assert set(receipt.catalog_providers) == set(registry.list_providers())
     assert not receipt.missing_routes
-    assert receipt.supported_count == len(wire_formats.PROVIDER_WIRE_FORMATS)
-    assert receipt.unsupported_count == len(wire_formats.PROVIDER_WIRE_ROUTES) - len(wire_formats.PROVIDER_WIRE_FORMATS)
+    assert receipt.supported_count == sum(
+        route.status == "supported" for route in wire_formats.PROVIDER_WIRE_ROUTES.values()
+    )
+    assert receipt.unsupported_count == sum(
+        route.status == "unsupported" for route in wire_formats.PROVIDER_WIRE_ROUTES.values()
+    )
     assert all(entry.reason for entry in receipt.entries if entry.status == "unsupported")
 
 
@@ -36,6 +41,8 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
     assert all(entry.schema_valid is True for entry in supported)
     assert all(entry.parsed_session_count > 0 for entry in supported)
     assert all(entry.parsed_message_count > 0 for entry in supported)
+    assert all(entry.construct_coverage is not None and entry.construct_coverage.complete for entry in supported)
+    assert receipt.complete
 
 
 def test_support_receipt_is_deterministic() -> None:
@@ -55,45 +62,51 @@ def test_codex_flat_and_envelope_records_cannot_be_mixed() -> None:
         validate_wire_payload("codex", mixed)
 
 
-def test_antigravity_metadata_only_payload_is_not_written_as_a_session_artifact(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
-
-    spec = CorpusSpec.for_provider(
-        "antigravity",
-        count=1,
-        messages_min=3,
-        messages_max=3,
-        seed=41,
-        session_native_ids=("synthetic-cascade",),
+def test_catalog_unsupported_routes_fail_selection_with_typed_reason() -> None:
+    registry = SchemaRegistry()
+    catalog = set(registry.list_providers())
+    unsupported = sorted(
+        provider
+        for provider, route in wire_formats.PROVIDER_WIRE_ROUTES.items()
+        if provider in catalog and route.status == "unsupported"
     )
-    written = SyntheticCorpus.write_spec_artifacts(spec, tmp_path, prefix="metadata-only")
 
-    # The selected package schema produces metadata-shaped JSON, but the
-    # provider route writes the production conversation .pb boundary. A
-    # metadata-only JSON artifact must never be presented as a session source.
-    assert written.batch.artifacts
-    assert all(path.suffix == ".pb" for path in written.files)
-    assert not list(tmp_path.glob("*.json"))
+    assert unsupported
+    for provider in unsupported:
+        with pytest.raises(UnsupportedSyntheticWireRouteError) as exc_info:
+            SyntheticCorpus.for_provider(provider)
+        assert exc_info.value.provider == provider
+        assert exc_info.value.reason == wire_formats.PROVIDER_WIRE_ROUTES[provider].reason
 
-    monkeypatch.setattr(
-        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
-        SyntheticAntigravityLanguageServerClient,
-    )
-    sessions = list(iter_source_sessions(Source(name="antigravity", path=tmp_path)))
-    assert len(sessions) == 1
-    assert sessions[0].provider_session_id == "synthetic-cascade"
+
+def test_supported_selection_uses_declared_route_format() -> None:
+    registry = SchemaRegistry()
+    for provider, route in wire_formats.PROVIDER_WIRE_ROUTES.items():
+        if route.status != "supported":
+            continue
+        selection = select_synthetic_schema(provider, registry_factory=lambda: registry)
+        assert selection.wire_format == route.wire_format
+
+
+def test_antigravity_metadata_only_source_has_no_language_server_session(tmp_path: Path) -> None:
+    metadata_path = tmp_path / "brain" / "work-session" / "plan.md.metadata.json"
+    metadata_path.parent.mkdir(parents=True)
+    metadata_path.write_text(json.dumps({"artifactType": "plan", "summary": "metadata only"}), encoding="utf-8")
+
+    sessions = list(iter_antigravity_language_server_sessions(Source(name="antigravity", path=tmp_path)))
+
+    assert sessions == []
 
 
 def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
     before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    assert before.complete
 
     monkeypatch.delitem(SCHEMA_CONSTRUCT_HANDLERS, "array")
     after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
 
     assert before.to_dict() != after.to_dict()
+    assert not after.complete
     assert any(
         entry.construct_coverage is not None and "type:array" in entry.construct_coverage.missing_keywords
         for entry in after.entries
@@ -110,6 +123,8 @@ def test_removed_provider_route_changes_explicit_support_receipt(monkeypatch: py
     assert before.to_dict() != after.to_dict()
     assert after.missing_routes == ("codex",)
     assert after.supported_count == before.supported_count - 1
+    with pytest.raises(UnsupportedSyntheticWireRouteError, match="no explicit synthetic wire route"):
+        SyntheticCorpus.for_provider("codex")
 
 
 def test_codex_native_id_pinning_preserves_one_wire_shape() -> None:
