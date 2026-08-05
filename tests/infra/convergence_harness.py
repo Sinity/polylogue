@@ -2,6 +2,13 @@
 
 This module adapts the production archive writers, daemon stages, and ops
 ledger. It deliberately owns no alternate convergence state machine.
+
+The harness starts at the production ``ParsedSession`` boundary. Its
+deterministic JSON payload gives the raw writer real bytes to retain, but does
+not claim provider parser-byte fidelity or inferred-package selection. Those
+remain dependencies of the provider parser and corpus-inference lanes; this
+property surface must not fake either with a synthetic manifest or wire
+support.
 """
 
 from __future__ import annotations
@@ -110,6 +117,14 @@ class ArchiveSnapshot:
     semantic_tables: tuple[tuple[str, tuple[FactRow, ...]], ...]
     fts_matches: tuple[tuple[str, object], ...]
     raw_authority: tuple[FactRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedReadinessSnapshot:
+    """Stable production derived-model and archive-readiness projections."""
+
+    derived_models_json: str
+    archive_readiness_json: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +346,69 @@ def assert_archives_equivalent(left: ConvergenceArchive, right: ConvergenceArchi
     right_snapshot = archive_snapshot(right.root)
     if left_snapshot != right_snapshot:
         raise AssertionError(f"canonical archive snapshots differ:\nleft={left_snapshot!r}\nright={right_snapshot!r}")
+
+
+def derived_readiness_snapshot(root: Path) -> DerivedReadinessSnapshot:
+    """Capture production derived status and exact archive readiness facts.
+
+    The status/readiness helpers are read-only projections. Path-bearing
+    evidence is normalized so two otherwise equivalent temporary archives are
+    compared by facts rather than their unrelated temp-directory names.
+    """
+    from polylogue.storage.archive_readiness import archive_readiness_status
+    from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
+
+    with sqlite3.connect(root / "index.db") as conn:
+        derived_models = {name: status.to_dict() for name, status in collect_derived_model_statuses_sync(conn).items()}
+    readiness = archive_readiness_status(root)
+    return DerivedReadinessSnapshot(
+        derived_models_json=_stable_json(derived_models, root),
+        archive_readiness_json=_stable_json(readiness, root),
+    )
+
+
+def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
+    """Require derived model snapshots and readiness projections to agree."""
+    left_snapshot = derived_readiness_snapshot(left)
+    right_snapshot = derived_readiness_snapshot(right)
+    from polylogue.storage.archive_readiness import archive_readiness_status
+    from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
+
+    required_insight_models = frozenset(
+        {
+            "session_profile_rows",
+            "session_work_events",
+            "session_phases",
+            "threads",
+            "session_tag_rollups",
+        }
+    )
+    for root in (left, right):
+        with sqlite3.connect(root / "index.db") as conn:
+            derived_models = collect_derived_model_statuses_sync(conn)
+        missing_models = required_insight_models.difference(derived_models)
+        unready_models = sorted(
+            name for name in required_insight_models if name in derived_models and not derived_models[name].ready
+        )
+        if missing_models or unready_models:
+            raise AssertionError(
+                f"primary insight readiness is incomplete for {root}: "
+                f"missing={sorted(missing_models)}, unready={unready_models}"
+            )
+        # The status projection also reports secondary work-event FTS and
+        # retrieval surfaces. They remain in the equality snapshot, as does
+        # the production messages_fts status. The two-stage route owns
+        # messages-FTS repair for changed sessions, while the neutral parser
+        # fixture can expose archive-wide excess rows from provider-derived
+        # blocks. Keep that production readiness signal in the equality law
+        # instead of asserting a global repair this route does not promise.
+        readiness = archive_readiness_status(root)
+        if readiness.get("checked") is not True or readiness.get("blocked_surface_count") != 0:
+            raise AssertionError(f"archive readiness is incomplete for {root}: {readiness!r}")
+    if left_snapshot != right_snapshot:
+        raise AssertionError(
+            f"derived model/readiness snapshots differ:\nleft={left_snapshot!r}\nright={right_snapshot!r}"
+        )
 
 
 def _complete_session_order(pathology: ComposedPathology, order: Sequence[int] | None) -> tuple[int, ...]:
@@ -929,18 +1007,27 @@ def _fact_rows(rows: list[tuple[object, ...]]) -> tuple[FactRow, ...]:
     return tuple(cast(FactRow, tuple(row)) for row in rows)
 
 
+def _stable_json(value: object, root: Path) -> str:
+    """Serialize JSON-shaped status evidence while masking temp-root paths."""
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return encoded.replace(str(root), "<archive-root>")
+
+
 __all__ = [
     "ArchiveSnapshot",
     "ConvergenceArchive",
     "DebtLedgerRow",
+    "DerivedReadinessSnapshot",
     "PartialConvergenceArchive",
     "SessionMaterializationFacts",
     "archive_snapshot",
     "assert_archive_verification_green",
     "assert_archives_equivalent",
+    "assert_derived_readiness_equivalent",
     "build_converged_archive",
     "converge_convergence_archive",
     "debt_ledger_row",
+    "derived_readiness_snapshot",
     "ingest_convergence_pathology",
     "initialize_active_archive",
     "make_messages_fts_stale",
