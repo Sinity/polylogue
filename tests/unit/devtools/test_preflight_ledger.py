@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from devtools import preflight_ledger
 from devtools.preflight_ledger import build_preflight_ledger
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt
@@ -21,6 +22,10 @@ def _mapping(value: object) -> dict[str, object]:
 def _list(value: object) -> list[object]:
     assert isinstance(value, list)
     return cast(list[object], value)
+
+
+def _mixed_replay_backlog(*_args: object, **_kwargs: object) -> dict[str, object]:
+    return {"available": True, "candidate_count": 2, "blocked_candidate_count": 5}
 
 
 def _initialize_all_tiers(root: Path) -> None:
@@ -174,6 +179,54 @@ def test_preflight_fails_closed_on_missing_census_relation(tmp_path: Path) -> No
     reason = source["reason"]
     assert isinstance(reason, str)
     assert "raw_membership_census" in reason
+
+
+def test_preflight_fails_when_executable_replay_candidates_coexist_with_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(preflight_ledger, "raw_materialization_replay_backlog", _mixed_replay_backlog)
+
+    replay = preflight_ledger._replay_preflight(tmp_path, limit=10)
+
+    assert replay["state"] == "fail"
+    assert replay["candidate_count"] == 2
+    assert replay["blocked_candidate_count"] == 5
+
+
+def test_preflight_ignores_blank_parse_errors_in_origin_and_totals(tmp_path: Path) -> None:
+    _initialize_all_tiers(tmp_path)
+    _insert_raws(
+        tmp_path,
+        origin="codex-session",
+        quarantined_count=4,
+        missing_census=0,
+        missing_quarantine_count=0,
+        quarantined_bytes=4,
+        missing_census_bytes=0,
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET revision_authority = 'byte_proven'")
+        conn.executemany(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = ?",
+            [
+                (None, "codex-session-raw-0"),
+                ("", "codex-session-raw-1"),
+                ("   ", "codex-session-raw-2"),
+                ("parse failed", "codex-session-raw-3"),
+            ],
+        )
+        conn.commit()
+
+    report = build_preflight_ledger(tmp_path)
+
+    source = _mapping(_mapping(report["checks"])["source"])
+    totals = _mapping(source["totals"])
+    by_origin = {str(item["origin"]): item for item in (_mapping(value) for value in _list(source["by_origin"]))}
+    origin = by_origin["codex-session"]
+    eligibility = _mapping(origin["eligibility"])
+    assert totals["parse_failures"] == 1
+    assert origin["parse_failures"] == 1
+    assert eligibility["actionable_count"] == 1
 
 
 def test_preflight_exposes_schema_and_convergence_failures_without_writing(tmp_path: Path) -> None:
