@@ -275,6 +275,44 @@ def test_production_append_attaches_idless_message_at_max_position_plus_one(tmp_
     assert ref == (f"{session_id}:1.0",)
 
 
+def test_closure_relinks_idless_append_attachment_to_existing_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closure must reuse the already-materialized append tail position.
+
+    The raw append payload still carries its relative position ``0``. The
+    current index already contains that message at position ``1``. Applying
+    ``MAX(position) + 1`` again would probe position ``2`` and incorrectly
+    report the acquired attachment as unrecoverable.
+    """
+    attachment = ParsedAttachment(
+        provider_attachment_id="append-orphan",
+        message_position=0,
+        name="append-orphan.txt",
+        mime_type="text/plain",
+        size_bytes=6,
+        inline_bytes=b"append",
+    )
+    root, session_id, attachment_id, parser = _mapping_fixture(
+        tmp_path,
+        messages=[ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="appended", position=0)],
+        existing_messages=[ParsedMessage(provider_message_id="", role=Role.USER, text="older", position=0)],
+        attachment=attachment,
+        append_only=True,
+    )
+
+    plan = plan_blob_reference_closure(root, raw_session_parser=parser)
+    assert plan.attachment_candidates[0].attachment_id == attachment_id
+    assert plan.attachment_candidates[0].message_id == f"{session_id}:1.0"
+
+    _apply_mapping_fixture(monkeypatch, root, parser)
+    with sqlite3.connect(root / "index.db") as conn:
+        ref = conn.execute(
+            "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
+        ).fetchone()
+    assert ref == (f"{session_id}:1.0",)
+
+
 def test_closure_fails_closed_for_whitespace_duplicate_native_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

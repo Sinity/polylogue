@@ -40,6 +40,7 @@ from pathlib import Path
 
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload, ingest_record
+from polylogue.sources.parsers.base import ParsedMessage
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.write import (
     _attachment_caption,
@@ -47,7 +48,10 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _attachment_message_id_maps,
     _attachment_position,
     _attachment_source_url,
+    _duplicate_message_native_ids,
+    _message_content_hash,
     _next_message_position,
+    _normalized_message_native_id,
 )
 from polylogue.storage.sqlite.queries.mappers_archive import _row_to_raw_session
 
@@ -129,6 +133,76 @@ def _read_orphaned_attachment_ids(index_conn: sqlite3.Connection) -> list[str]:
 
 def _message_exists(index_conn: sqlite3.Connection, message_id: str) -> bool:
     return index_conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,)).fetchone() is not None
+
+
+def _append_materialized_message_ids(
+    index_conn: sqlite3.Connection,
+    session_id: str,
+    messages: list[ParsedMessage],
+) -> dict[int, str]:
+    """Find append payload messages already present in the current index.
+
+    ``_write_session`` clears append message positions before the writer adds
+    the current tail offset. Once that append is materialized, deriving an
+    owner from the raw payload and the *new* ``MAX(position) + 1`` offset
+    points past the real row. Native ids identify materialized rows directly;
+    id-less messages use the writer's content hash at each stored position so
+    an old base message cannot be mistaken for the append tail.
+    """
+    rows = index_conn.execute(
+        """
+        SELECT message_id, native_id, position, variant_index, content_hash
+        FROM messages
+        WHERE session_id = ?
+        ORDER BY position, variant_index
+        """,
+        (session_id,),
+    ).fetchall()
+    duplicate_native_ids = _duplicate_message_native_ids(messages)
+    resolved: dict[int, str] = {}
+    for message_index, message in enumerate(messages):
+        native_id = _normalized_message_native_id(message)
+        if native_id is not None and native_id not in duplicate_native_ids:
+            matches = [row for row in rows if row[1] == native_id]
+        else:
+            matches = [
+                row
+                for row in rows
+                if _message_content_hash(
+                    session_id,
+                    message,
+                    position=int(row[2]),
+                    variant_index=int(row[3]),
+                )
+                == bytes(row[4])
+            ]
+        if len(matches) == 1:
+            resolved[message_index] = str(matches[0][0])
+    return resolved
+
+
+def _append_materialized_attachment_maps(
+    index_conn: sqlite3.Connection,
+    session_id: str,
+    messages: list[ParsedMessage],
+) -> tuple[dict[str, str], dict[int, str]]:
+    resolved = _append_materialized_message_ids(index_conn, session_id, messages)
+    by_native_message_id: dict[str, str] = {}
+    by_message_position: dict[int, str] = {}
+    for message_index, message in enumerate(messages):
+        message_id = resolved.get(message_index)
+        if message_id is None:
+            continue
+        provider_message_id = message.provider_message_id
+        if provider_message_id:
+            by_native_message_id[str(provider_message_id)] = message_id
+            normalized = _normalized_message_native_id(message)
+            if normalized is not None:
+                by_native_message_id[normalized] = message_id
+        message_position = message.position
+        if message_position is not None:
+            by_message_position[int(message_position)] = message_id
+    return by_native_message_id, by_message_position
 
 
 def _iter_raw_session_rows(source_conn: sqlite3.Connection, *, raw_row_limit: int | None) -> list[sqlite3.Row]:
@@ -250,6 +324,14 @@ def _match_session_payload(
         messages,
         position_offset=position_offset,
     )
+    if payload.append_only:
+        materialized_by_native_id, materialized_by_position = _append_materialized_attachment_maps(
+            index_conn,
+            session_id,
+            messages,
+        )
+        by_native_message_id.update(materialized_by_native_id)
+        by_message_position.update(materialized_by_position)
     # Attachments are session-level (``ParsedSession.attachments``), each
     # linked to its owning message via ``message_provider_id`` -- mirroring
     # exactly how ``_write_attachments`` consumes them (write.py:_attachment_message_id_maps).

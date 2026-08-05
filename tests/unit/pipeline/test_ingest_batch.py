@@ -745,6 +745,70 @@ def test_write_session_append_mode_preserves_existing_messages(tmp_path: Path) -
         assert (stats["message_count"], stats["word_count"]) == (2, 2)
 
 
+def test_write_session_append_dedupes_whitespace_padded_native_id(tmp_path: Path) -> None:
+    """Append dedupe must use the normalized id before INSERT OR REPLACE.
+
+    The writer stores ``" msg-1 "`` as ``"msg-1"``. If the append gate
+    compares the raw provider id, it admits the duplicate and the generated
+    message id makes INSERT OR REPLACE overwrite the original message.
+    """
+    with open_connection(tmp_path / "index.db") as conn:
+        initial = _session_data(
+            "codex-session:append-whitespace-id",
+            content_hash="hash-initial",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:append-whitespace-id",
+                    role="user",
+                    text="original message",
+                    content_hash="msg-original",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        duplicate = _session_data(
+            "codex-session:append-whitespace-id",
+            content_hash="hash-append-duplicate",
+            message_tuples=[
+                _message_tuple(
+                    " msg-1 ",
+                    "codex-session:append-whitespace-id",
+                    role="assistant",
+                    text="replacement must not win",
+                    content_hash="msg-replacement",
+                    sort_key=1.0,
+                )
+            ],
+            append_only=True,
+        )
+
+        changed_initial, _ = _write_session(conn, initial)
+        changed_duplicate, counts_duplicate = _write_session(conn, duplicate)
+        conn.commit()
+
+        rows = conn.execute(
+            "SELECT native_id, position FROM messages WHERE session_id = ?",
+            ("codex-session:append-whitespace-id",),
+        ).fetchall()
+        text = conn.execute(
+            """
+            SELECT b.text
+            FROM blocks b
+            JOIN messages m ON m.message_id = b.message_id
+            WHERE m.session_id = ? AND b.block_type = 'text'
+            """,
+            ("codex-session:append-whitespace-id",),
+        ).fetchone()
+
+        assert changed_initial is True
+        assert changed_duplicate is False
+        assert counts_duplicate["skipped_messages"] == 1
+        assert [(row["native_id"], row["position"]) for row in rows] == [("msg-1", 0)]
+        assert text is not None
+        assert text["text"] == "original message"
+
+
 def test_write_session_append_no_delta_refreshes_raw_link(tmp_path: Path) -> None:
     with open_connection(tmp_path / "index.db") as conn:
         initial = _session_data(
