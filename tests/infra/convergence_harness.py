@@ -603,7 +603,9 @@ _SNAPSHOT_VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "insight_materialization": frozenset({"materialized_at_ms"}),
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "session_profiles": frozenset({"materialized_at", "priced_at_ms"}),
-    "threads": frozenset({"materialized_at", "source_updated_at"}),
+    # Thread source_updated_at is derived from provider-backed member
+    # timestamps, unlike materialized_at.
+    "threads": frozenset({"materialized_at"}),
 }
 
 
