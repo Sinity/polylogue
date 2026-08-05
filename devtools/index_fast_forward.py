@@ -16,6 +16,7 @@ import os
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from contextlib import closing, suppress
 from dataclasses import asdict
 from pathlib import Path
@@ -37,11 +38,12 @@ from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import a
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.storage.sqlite.lifecycle import IndexFastForwardPlan, index_fast_forward_plan
+from polylogue.storage.sqlite.lifecycle import FastForwardOperationKind, IndexFastForwardPlan, index_fast_forward_plan
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 RECEIPT_SCHEMA = "polylogue.index-fast-forward.v1"
 DEFAULT_SAMPLE_SIZE = 8
+IN_QUERY_CHUNK_SIZE = 500
 
 
 class IndexFastForwardError(RuntimeError):
@@ -230,7 +232,7 @@ def _expected_surplus(plan: IndexFastForwardPlan) -> set[str]:
         f"{kind}:{name}"
         for declaration in plan.declarations
         for operation in declaration.operations
-        if operation.kind.value == "drop-table"
+        if operation.kind is FastForwardOperationKind.DROP_TABLE
         for kind, name in operation.objects
     }
 
@@ -286,17 +288,39 @@ def _fingerprints(origins: tuple[str, ...]) -> dict[str, object]:
     }
 
 
+def _chunks(values: tuple[str, ...] | list[str], *, size: int | None = None) -> Iterator[tuple[str, ...]]:
+    effective_size = IN_QUERY_CHUNK_SIZE if size is None else size
+    if effective_size <= 0:
+        raise ValueError("SQLite IN-query chunk size must be positive")
+    for offset in range(0, len(values), effective_size):
+        yield tuple(values[offset : offset + effective_size])
+
+
+def _query_rows_in_chunks(
+    conn: sqlite3.Connection,
+    sql_for_marks: Callable[[str], str],
+    values: tuple[str, ...] | list[str],
+) -> list[tuple[object, ...]]:
+    rows: list[tuple[object, ...]] = []
+    for chunk in _chunks(values):
+        marks = ", ".join("?" for _ in chunk)
+        rows.extend(conn.execute(sql_for_marks(marks), chunk).fetchall())
+    return rows
+
+
 def _sample_manifest(archive_root: Path, index_path: Path, *, limit: int) -> list[dict[str, object]]:
     with closing(sqlite3.connect(archive_root / "source.db")) as source_conn:
         raw_ids = [str(row[0]) for row in source_conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id")]
     if not raw_ids:
         raise IndexFastForwardError("source-backed fast-forward proof requires retained raw evidence")
-    marks = ", ".join("?" for _ in raw_ids)
     with closing(open_readonly_connection(index_path.resolve(strict=True), immutable=True)) as index_conn:
-        rows = index_conn.execute(
-            f"SELECT raw_id, session_id, origin FROM sessions WHERE raw_id IN ({marks}) ORDER BY raw_id, session_id",
+        rows = _query_rows_in_chunks(
+            index_conn,
+            lambda marks: (
+                f"SELECT raw_id, session_id, origin FROM sessions WHERE raw_id IN ({marks}) ORDER BY raw_id, session_id"
+            ),
             raw_ids,
-        ).fetchall()
+        )
     grouped: dict[str, dict[str, object]] = {}
     for raw_id, session_id, origin in rows:
         entry = grouped.setdefault(str(raw_id), {"raw_id": str(raw_id), "session_ids": [], "origins": []})
@@ -315,19 +339,29 @@ def _json_value(value: object) -> object:
     return value
 
 
-def _hash_query(conn: sqlite3.Connection, sql: str, params: tuple[object, ...]) -> str:
-    rows = conn.execute(sql, params).fetchall()
+def _hash_rows(rows: list[tuple[object, ...]]) -> str:
     payload = [[_json_value(value) for value in row] for row in rows]
+    payload.sort(key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")))
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _hash_query_in_chunks(
+    conn: sqlite3.Connection,
+    sql_for_marks: Callable[[str], str],
+    values: tuple[str, ...],
+) -> str:
+    return _hash_rows(_query_rows_in_chunks(conn, sql_for_marks, values))
 
 
 def _canonical_hashes(conn: sqlite3.Connection, session_ids: tuple[str, ...]) -> dict[str, object]:
     if not session_ids:
         return {"sessions": "", "messages": "", "blocks": "", "fts": "", "scoped": {}}
-    marks = ", ".join("?" for _ in session_ids)
-    messages = conn.execute(f"SELECT message_id FROM messages WHERE session_id IN ({marks})", session_ids).fetchall()
-    message_ids = tuple(str(row[0]) for row in messages)
-    message_marks = ", ".join("?" for _ in message_ids) or "NULL"
+    messages = _query_rows_in_chunks(
+        conn,
+        lambda marks: f"SELECT message_id FROM messages WHERE session_id IN ({marks}) ORDER BY message_id",
+        session_ids,
+    )
+    message_ids = tuple(sorted(str(row[0]) for row in messages))
     scoped: dict[str, str] = {}
     for table_name, key_column in (
         (str(row[0]), key_column)
@@ -339,24 +373,33 @@ def _canonical_hashes(conn: sqlite3.Connection, session_ids: tuple[str, ...]) ->
     ):
         columns = [str(info[1]) for info in conn.execute(f'PRAGMA table_info("{table_name}")')]
         order_by = ", ".join(str(index) for index in range(1, len(columns) + 1))
-        scoped[table_name] = _hash_query(
+        scoped[table_name] = _hash_query_in_chunks(
             conn,
-            f'SELECT * FROM "{table_name}" WHERE "{key_column}" IN ({marks}) ORDER BY {order_by}',
+            lambda marks, table_name=table_name, key_column=key_column, order_by=order_by: (
+                f'SELECT * FROM "{table_name}" WHERE "{key_column}" IN ({marks}) ORDER BY {order_by}'
+            ),
             session_ids,
         )
     return {
-        "sessions": _hash_query(
-            conn, f"SELECT * FROM sessions WHERE session_id IN ({marks}) ORDER BY session_id", session_ids
+        "sessions": _hash_query_in_chunks(
+            conn, lambda marks: f"SELECT * FROM sessions WHERE session_id IN ({marks}) ORDER BY session_id", session_ids
         ),
-        "messages": _hash_query(
-            conn, f"SELECT * FROM messages WHERE session_id IN ({marks}) ORDER BY message_id", session_ids
-        ),
-        "blocks": _hash_query(
-            conn, f"SELECT * FROM blocks WHERE message_id IN ({message_marks}) ORDER BY block_id", message_ids
-        ),
-        "fts": _hash_query(
+        "messages": _hash_query_in_chunks(
             conn,
-            f"SELECT block_id, message_id, session_id, block_type, text FROM messages_fts WHERE session_id IN ({marks}) ORDER BY rowid",
+            lambda marks: f"SELECT * FROM messages WHERE session_id IN ({marks}) ORDER BY message_id",
+            session_ids,
+        ),
+        "blocks": _hash_query_in_chunks(
+            conn,
+            lambda marks: f"SELECT * FROM blocks WHERE message_id IN ({marks}) ORDER BY block_id",
+            message_ids,
+        ),
+        "fts": _hash_query_in_chunks(
+            conn,
+            lambda marks: (
+                "SELECT block_id, message_id, session_id, block_type, text "
+                f"FROM messages_fts WHERE session_id IN ({marks}) ORDER BY session_id, message_id, block_id"
+            ),
             session_ids,
         ),
         "scoped": scoped,
@@ -424,6 +467,8 @@ def _require_complete_proof(proof: dict[str, object]) -> None:
         scoped = hashes.get("scoped")
         if not isinstance(scoped, dict) or not scoped:
             raise IndexFastForwardError(f"source replay proof is incomplete: {key}.scoped")
+    if proof["fast_forward_hashes"] != proof["canonical_replay_hashes"]:
+        raise IndexFastForwardError("source replay proof hashes disagree between clone and canonical replay")
 
 
 def _require_candidate_corpus_fidelity(archive_root: Path, candidate_index: Path) -> None:
