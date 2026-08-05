@@ -13,14 +13,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config
+from polylogue.daemon.write_coordinator import daemon_write_lease_active
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.paths import render_root
-from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
     BlobRefLivenessClassification,
     classify_blob_ref_liveness,
     stage_blob_ref_liveness,
+    validated_blob_ref_liveness_joins,
 )
 from polylogue.storage.hook_payload_ref_reconciliation import _deterministic_raw_session_id_udf
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -43,6 +44,7 @@ _RECOVERY_TERMINAL_PHASES = {
     "recovered_rolled_back",
     "recovered_partial",
     "indeterminate",
+    "postcondition_failed",
 }
 
 
@@ -59,6 +61,7 @@ class BlobRefLivenessReconciliationReport:
     deleted_count: int
     receipt_path: Path | None = None
     backup_manifest: Path | None = None
+    post_classification: BlobRefLivenessClassification | None = None
 
     def to_dict(self, *, sample_limit: int = 30) -> dict[str, object]:
         return {
@@ -68,6 +71,7 @@ class BlobRefLivenessReconciliationReport:
             "deleted_count": self.deleted_count,
             "receipt_path": str(self.receipt_path) if self.receipt_path is not None else None,
             "backup_manifest": str(self.backup_manifest) if self.backup_manifest is not None else None,
+            "post_classification": self.post_classification.to_dict() if self.post_classification is not None else None,
             **self.classification.to_dict(sample_limit=sample_limit),
         }
 
@@ -79,6 +83,8 @@ def _offline_config(archive_root: Path) -> Config:
 def _offline_apply_block_reason(archive_root: Path) -> str | None:
     """Refuse this offline-only repair whenever its archive daemon is live."""
 
+    if daemon_write_lease_active():
+        return "Refusing offline blob-ref liveness reconciliation while a daemon writer lease is active."
     daemon_pid = running_daemon_pid(_offline_config(archive_root))
     if daemon_pid is None:
         return None
@@ -93,8 +99,13 @@ def _checkpoint_source_db(conn: sqlite3.Connection) -> None:
         row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     except sqlite3.Error as exc:
         raise BlobRefLivenessReconciliationError("could not checkpoint source.db before backup validation") from exc
-    if row is None:
+    if row is None or len(row) != 3:
         raise BlobRefLivenessReconciliationError("could not checkpoint source.db before backup validation")
+    busy, log_frames, checkpointed_frames = (int(value) for value in row)
+    if busy != 0 or log_frames != checkpointed_frames:
+        raise BlobRefLivenessReconciliationError(
+            "source.db WAL checkpoint was not clean; stop every writer and retry when no frames remain busy"
+        )
 
 
 def _source_data_version(conn: sqlite3.Connection) -> int:
@@ -193,6 +204,7 @@ def _append_receipt_footer(
     *,
     phase: str,
     deleted_count: int | None = None,
+    post_orphaned_count: int | None = None,
     error: str | None = None,
 ) -> None:
     payload: dict[str, object] = {
@@ -202,6 +214,8 @@ def _append_receipt_footer(
     }
     if deleted_count is not None:
         payload["deleted_count"] = deleted_count
+    if post_orphaned_count is not None:
+        payload["post_orphaned_count"] = post_orphaned_count
     if error is not None:
         payload["error"] = error
     with receipt_path.open("a", encoding="utf-8") as handle:
@@ -530,6 +544,27 @@ def _validate_locked_candidate_plan(
         raise BlobRefLivenessReconciliationError(
             f"prepared candidate presence mismatch: planned={expected_count} present={present_count}"
         )
+    content_mismatch_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {candidate_table} AS c
+            JOIN blob_refs AS b
+              ON b.blob_hash = c.blob_hash
+             AND b.ref_type = c.ref_type
+             AND b.ref_id = c.ref_id
+            WHERE NOT (
+                b.source_path IS c.source_path
+                AND b.size_bytes = c.size_bytes
+                AND b.acquired_at_ms = c.acquired_at_ms
+            )
+            """
+        ).fetchone()[0]
+    )
+    if content_mismatch_count:
+        raise BlobRefLivenessReconciliationError(
+            f"prepared candidate content changed under lock: {content_mismatch_count} row(s)"
+        )
     referent_branches = [
         f"""
         SELECT c.blob_hash, c.ref_type, c.ref_id
@@ -538,14 +573,14 @@ def _validate_locked_candidate_plan(
         WHERE c.ref_type = ?
         """
         for ref_type, (table, column) in {
-            ref_type: (table, column) for ref_type, table, column in BLOB_REF_LIVENESS_JOIN
+            ref_type: (table, column) for ref_type, table, column in validated_blob_ref_liveness_joins()
         }.items()
     ]
     if referent_branches:
         live_referent_count = int(
             conn.execute(
                 f"SELECT COUNT(*) FROM ({' UNION ALL '.join(referent_branches)})",
-                tuple(ref_type for ref_type, _table, _column in BLOB_REF_LIVENESS_JOIN),
+                tuple(ref_type for ref_type, _table, _column in validated_blob_ref_liveness_joins()),
             ).fetchone()[0]
         )
         if live_referent_count:
@@ -715,6 +750,7 @@ def reconcile_blob_ref_liveness(
 
     pre_conn = sqlite3.connect(source_db)
     staged_plan = None
+    staged_data_version: int | None = None
     try:
         _checkpoint_source_db(pre_conn)
         validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=pre_conn)
@@ -739,6 +775,7 @@ def reconcile_blob_ref_liveness(
             candidate_digest=candidate_digest,
         )
         expected_count = classification.orphaned_count
+        staged_data_version = _source_data_version(pre_conn)
         # Temp tables survive a commit. Clearing the staging transaction here
         # lets this same connection carry the exact plan into ownership without
         # reparsing the durable receipt under the write lock.
@@ -761,7 +798,7 @@ def reconcile_blob_ref_liveness(
                 batch_table,
                 batch_size=BATCH_SIZE,
             )
-            if batch_count == 0:
+            if batch_count == 0 and not first_batch:
                 break
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -775,6 +812,11 @@ def reconcile_blob_ref_liveness(
                     # population before any bounded delete can commit. The
                     # snapshot remains valid for later batches because apply
                     # is offline-only and the same connection owns the plan.
+                    assert staged_data_version is not None
+                    if _source_data_version(conn) != staged_data_version:
+                        raise BlobRefLivenessReconciliationError(
+                            "source.db changed after liveness plan staging; refusing stale plan"
+                        )
                     locked_hook_table = _stage_locked_hook_snapshot(conn, staged_plan.candidate_table)
                     _validate_locked_candidate_plan(
                         conn,
@@ -795,7 +837,9 @@ def reconcile_blob_ref_liveness(
                         batch_count,
                         locked_hook_table=locked_hook_table,
                     )
-                batch_deleted = _delete_candidate_batch(conn, staged_plan.candidate_table, batch_table)
+                batch_deleted = (
+                    _delete_candidate_batch(conn, staged_plan.candidate_table, batch_table) if batch_count else 0
+                )
             except Exception:
                 if conn.in_transaction:
                     conn.rollback()
@@ -821,22 +865,37 @@ def reconcile_blob_ref_liveness(
     finally:
         conn.close()
 
+    post_classification: BlobRefLivenessClassification
     try:
-        _append_receipt_footer(receipt_path, phase="committed", deleted_count=deleted_count)
+        with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as verify_conn:
+            quick_check = verify_conn.execute("PRAGMA quick_check").fetchone()
+            if quick_check is None or str(quick_check[0]).lower() != "ok":
+                raise BlobRefLivenessReconciliationError(f"source.db quick_check failed after commit: {quick_check!r}")
+            post_classification = classify_blob_ref_liveness(verify_conn)
+        if post_classification.orphaned_count != 0:
+            raise BlobRefLivenessReconciliationError(
+                f"liveness postcondition failed: {post_classification.orphaned_count} orphaned blob_refs row(s) remain"
+            )
+        if not post_classification.safe_to_apply:
+            raise BlobRefLivenessReconciliationError(
+                "liveness postcondition failed: source-tier ref types are no longer fully proven"
+            )
+    except Exception as exc:
+        with suppress(OSError):
+            _append_receipt_footer(receipt_path, phase="postcondition_failed", error=str(exc))
+        raise
+
+    try:
+        _append_receipt_footer(
+            receipt_path,
+            phase="committed",
+            deleted_count=deleted_count,
+            post_orphaned_count=post_classification.orphaned_count,
+        )
     except OSError as exc:
         raise BlobRefLivenessReconciliationError(
             f"source.db committed but could not finalize receipt {receipt_path}"
         ) from exc
-
-    try:
-        with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as verify_conn:
-            quick_check = verify_conn.execute("PRAGMA quick_check").fetchone()
-        if quick_check is None or str(quick_check[0]).lower() != "ok":
-            with suppress(OSError):
-                _append_receipt_footer(receipt_path, phase="post_check_failed", error=f"quick_check={quick_check!r}")
-            raise BlobRefLivenessReconciliationError(f"source.db quick_check failed after commit: {quick_check!r}")
-    finally:
-        pass
 
     assert staged_plan is not None
     return BlobRefLivenessReconciliationReport(
@@ -847,6 +906,7 @@ def reconcile_blob_ref_liveness(
         deleted_count=expected_count,
         receipt_path=receipt_path,
         backup_manifest=backup_manifest,
+        post_classification=post_classification,
     )
 
 
