@@ -33,6 +33,7 @@ from tests.infra.convergence_harness import (
     make_messages_fts_stale,
     set_debt_retry_at,
 )
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 from tests.infra.reindex_campaign import (
     REINDEX_CAMPAIGN_REQUIRED_ORIGINS,
     ReindexCampaignCorpus,
@@ -190,7 +191,13 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
         "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
         SyntheticAntigravityLanguageServerClient,
     ):
-        canary = run_reindex_canary(root, sessions_per_origin=100, no_promote=True)
+        receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+        canary = run_reindex_canary(
+            root,
+            schema_inference_receipt_path=receipt_path,
+            sessions_per_origin=100,
+            no_promote=True,
+        )
     assert canary.comparison.unexpected_count > 0
     assert set(canary.comparison.counts_by_table) == {"raw_revision_applications", "raw_revision_heads"}
     canary_generation = canary.rebuild_receipt["generation"]

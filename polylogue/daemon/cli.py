@@ -933,9 +933,20 @@ async def _daemon_bulk_rebuild_transaction_in_flight() -> bool:
     Checking survives a daemon restart via a durable transaction record.
     """
     from polylogue.daemon.bulk_rebuild import has_resumable_daemon_bulk_rebuild_transaction
+    from polylogue.maintenance.schema_inference_gate import (
+        SchemaInferenceGateError,
+        resolve_schema_inference_receipt_reference,
+        validate_schema_inference_receipt,
+    )
     from polylogue.paths import archive_root
 
-    return await asyncio.to_thread(has_resumable_daemon_bulk_rebuild_transaction, archive_root())
+    root = archive_root()
+    try:
+        receipt_path = resolve_schema_inference_receipt_reference(root)
+        await asyncio.to_thread(validate_schema_inference_receipt, root, receipt_path)
+    except (SchemaInferenceGateError, RuntimeError, OSError, ValueError):
+        return False
+    return await asyncio.to_thread(has_resumable_daemon_bulk_rebuild_transaction, root)
 
 
 async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> bool:
@@ -971,15 +982,12 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
     from polylogue.config import Config
     from polylogue.daemon.bulk_rebuild import (
         DAEMON_BULK_REBUILD_OPERATION_ID,
-        has_resumable_daemon_bulk_rebuild_transaction,
         run_daemon_bulk_rebuild_pass,
     )
     from polylogue.paths import archive_root, render_root
 
     root = archive_root()
-    if not _bulk_scale_raw_materialization_backlog(counts) and not await asyncio.to_thread(
-        has_resumable_daemon_bulk_rebuild_transaction, root
-    ):
+    if not _bulk_scale_raw_materialization_backlog(counts) and not await _daemon_bulk_rebuild_transaction_in_flight():
         return False
     config = Config(archive_root=root, render_root=render_root(), sources=[])
     try:

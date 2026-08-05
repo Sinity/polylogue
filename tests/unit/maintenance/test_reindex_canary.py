@@ -42,10 +42,12 @@ from polylogue.maintenance.reindex_canary import (
     write_canary_report,
 )
 from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
 
 
@@ -73,6 +75,13 @@ def _synthetic_report_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
         "_validate_authoritative_rebuild_receipt",
         lambda *args, **kwargs: None,
     )
+
+
+def _receipt_path(tmp_path: Path) -> Path:
+    """A path placeholder for routes whose rebuild call is replaced in-test."""
+    path = tmp_path / "schema-inference-gate-receipt.json"
+    path.touch()
+    return path
 
 
 def _seed_index(
@@ -511,14 +520,17 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     origins = tuple(session_id.split(":", 1)[0] for session_id in pathology_session_ids)
     _seed_index(current, sessions=native_ids, origins=origins)
     captured: dict[str, tuple[str, ...]] = {}
+    captured_receipt_path: Path | None = None
 
     class Receipt:
         def to_dict(self) -> dict[str, object]:
             return {"status": "replayed"}
 
     def fake_rebuild(request: object) -> Receipt:
+        nonlocal captured_receipt_path
         captured["raw_ids"] = tuple(request.raw_ids)  # type: ignore[attr-defined]
         captured["acceptance_checks"] = tuple(request.candidate_acceptance_checks)  # type: ignore[attr-defined]
+        captured_receipt_path = request.schema_inference_receipt_path  # type: ignore[attr-defined]
         return Receipt()
 
     def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
@@ -534,12 +546,75 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     )
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
 
-    result = run_reindex_canary(tmp_path, input_index=current, sessions_per_origin=1, no_promote=True)
+    receipt_path = _receipt_path(tmp_path)
+    result = run_reindex_canary(
+        tmp_path,
+        input_index=current,
+        schema_inference_receipt_path=receipt_path,
+        sessions_per_origin=1,
+        no_promote=True,
+    )
 
     assert result.selection.pathology_session_ids == pathology_session_ids
     assert set(pathology_session_ids) <= set(captured["session_ids"])
     assert len(captured["raw_ids"]) == len(pathology_session_ids)
     assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
+    assert captured_receipt_path == receipt_path
+
+
+def test_run_reindex_canary_rejects_missing_receipt_even_with_ambient_valid_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    ambient_receipt = write_valid_rebuild_receipt(root, tmp_path / "ambient-schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(ambient_receipt))
+
+    with pytest.raises(CanarySelectionError, match="requires an explicit schema-inference receipt path"):
+        run_reindex_canary(root, schema_inference_receipt_path=None, sessions_per_origin=1, no_promote=True)
+
+
+def test_run_reindex_canary_cleans_candidate_after_comparison_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-rebuild canary failure cannot strand its inactive candidate."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+
+    def fail_compare(*args: object, **kwargs: object) -> CanaryDiffReport:
+        raise RuntimeError("synthetic canary comparison failure")
+
+    monkeypatch.setattr(reindex_canary_module, "compare_reindex_generations", fail_compare)
+
+    with pytest.raises(RuntimeError, match="synthetic canary comparison failure"):
+        run_reindex_canary(
+            root,
+            schema_inference_receipt_path=receipt_path,
+            sessions_per_origin=1,
+            no_promote=True,
+        )
+
+    assert not list((root / ".index-generations").glob("gen-*"))
+
+
+def test_run_reindex_canary_clean_success_retains_a_valid_inactive_candidate(tmp_path: Path) -> None:
+    """A successful canary returns the candidate for its comparison evidence."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+
+    result = run_reindex_canary(
+        root,
+        schema_inference_receipt_path=receipt_path,
+        sessions_per_origin=1,
+        no_promote=True,
+    )
+
+    generation = result.rebuild_receipt["generation"]
+    assert isinstance(generation, dict)
+    assert generation["state"] == "inactive"
+    assert Path(str(generation["index_path"])).is_file()
 
 
 def test_run_reindex_canary_rejects_input_index_outside_archive_root(
@@ -550,6 +625,7 @@ def test_run_reindex_canary_rejects_input_index_outside_archive_root(
     external_index = tmp_path / "external" / "index.db"
     external_index.parent.mkdir()
     external_index.touch()
+    receipt_path = _receipt_path(tmp_path)
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: tmp_path / "configured-live")
     selector_called = False
 
@@ -561,7 +637,9 @@ def test_run_reindex_canary_rejects_input_index_outside_archive_root(
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.select_canary_sessions", unexpected_selector)
 
     with pytest.raises(CanarySelectionError, match="inside or bound to the selected archive root"):
-        run_reindex_canary(root, input_index=external_index, no_promote=True)
+        run_reindex_canary(
+            root, input_index=external_index, schema_inference_receipt_path=receipt_path, no_promote=True
+        )
     assert not selector_called
 
 
@@ -578,8 +656,15 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
     active_digest = hashlib.sha256(external_index.read_bytes()).hexdigest()
     evidence_before = rebuild_source_evidence_snapshot(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
 
-    result = run_reindex_canary(root, input_index=external_index, sessions_per_origin=1, no_promote=True)
+    result = run_reindex_canary(
+        root,
+        input_index=external_index,
+        schema_inference_receipt_path=receipt_path,
+        sessions_per_origin=1,
+        no_promote=True,
+    )
 
     receipt = result.rebuild_receipt
     generation = receipt["generation"]
@@ -662,7 +747,10 @@ def test_real_no_promote_rebuild_changes_parse_state_without_evidence_drift(tmp_
     active_digest = hashlib.sha256((root / "index.db").read_bytes()).hexdigest()
     evidence_before = rebuild_source_evidence_snapshot(root)
 
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=False))
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, promote=False, schema_inference_receipt_path=receipt_path)
+    )
 
     with sqlite3.connect(root / "source.db") as connection:
         assert (
@@ -690,6 +778,7 @@ def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
     root = clone_seeded_archive(artifact, tmp_path / "archive").root
     active_index = root / "index.db"
     active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
 
     from polylogue.maintenance import replay as rebuild_replay
@@ -704,10 +793,36 @@ def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
 
     monkeypatch.setattr(rebuild_replay, "rebuild_index_from_source", mutate_source_after_replay)
 
-    with pytest.raises(RuntimeError, match="source evidence changed while rebuilding"):
-        run_reindex_canary(root, sessions_per_origin=1, no_promote=True)
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        run_reindex_canary(root, schema_inference_receipt_path=receipt_path, sessions_per_origin=1, no_promote=True)
 
     assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
+
+
+def test_run_reindex_canary_rejects_active_index_rotation_after_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A canary cannot compare against an index that stopped being active."""
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    location = ArchiveLocation.resolve(root)
+    current_index = location.active_index_path
+    rotated_index = tmp_path / "rotated" / "index.db"
+    rotated_index.parent.mkdir(parents=True)
+    shutil.copy2(current_index, rotated_index)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    rebuild = rebuild_index_from_source_sync
+
+    def rebuild_then_rotate(request: RebuildIndexRequest) -> object:
+        result = rebuild(request)
+        (root / ".index-active-pointer").write_text(str(rotated_index), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", rebuild_then_rotate)
+
+    with pytest.raises(CanarySelectionError, match="active index changed during rebuild"):
+        run_reindex_canary(root, schema_inference_receipt_path=receipt_path, sessions_per_origin=1, no_promote=True)
 
 
 def test_rebuild_rejects_evidence_mutation_in_deadline_interrupted_pass(
@@ -726,10 +841,16 @@ def test_rebuild_rejects_evidence_mutation_in_deadline_interrupted_pass(
         raise RebuildDeadlineExceededError("synthetic deadline")
 
     monkeypatch.setattr(rebuild_replay, "rebuild_index_from_source", mutate_source_then_interrupt)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
 
-    with pytest.raises(RuntimeError, match="stale because source evidence changed"):
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
         rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=root, raw_batch_size=10, pass_deadline_seconds=30.0)
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                raw_batch_size=10,
+                pass_deadline_seconds=30.0,
+            )
         )
 
 
@@ -778,7 +899,9 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
         "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
     )
 
-    result = run_reindex_canary(tmp_path, input_index=current, no_promote=True)
+    result = run_reindex_canary(
+        tmp_path, input_index=current, schema_inference_receipt_path=_receipt_path(tmp_path), no_promote=True
+    )
 
     assert result.selection.pathology_session_ids == ()
     assert captured["raw_ids"] == ("raw-alpha",)
@@ -830,7 +953,9 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
 
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
 
-    result = run_reindex_canary(root, input_index=current, no_promote=True)
+    result = run_reindex_canary(
+        root, input_index=current, schema_inference_receipt_path=_receipt_path(root), no_promote=True
+    )
 
     assert result.comparison.candidate_index == candidate
     assert captured["paths"] == (current, candidate)
@@ -869,7 +994,9 @@ def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, m
     )
 
     with pytest.raises(CanarySelectionError, match="outside this archive's generation root"):
-        run_reindex_canary(tmp_path, input_index=current, no_promote=True)
+        run_reindex_canary(
+            tmp_path, input_index=current, schema_inference_receipt_path=_receipt_path(tmp_path), no_promote=True
+        )
 
 
 def test_run_reindex_canary_refuses_the_configured_live_archive_root(
@@ -886,7 +1013,7 @@ def test_run_reindex_canary_refuses_the_configured_live_archive_root(
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", _unexpected_rebuild)
 
     with pytest.raises(CanarySelectionError, match="refuses the configured live archive root"):
-        run_reindex_canary(tmp_path, no_promote=True)
+        run_reindex_canary(tmp_path, schema_inference_receipt_path=_receipt_path(tmp_path), no_promote=True)
     assert not rebuild_called
 
 
@@ -899,6 +1026,8 @@ def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
     zoo = build_pathology_zoo(tmp_path / "zoo")
     active_index = zoo.archive_root / "index.db"
     active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
+    receipt_path = write_valid_rebuild_receipt(zoo.archive_root, tmp_path / "schema-inference-gate-receipt.json")
+    monkeypatch.setattr("polylogue.maintenance.pathology_zoo.pathology_zoo_is_present", lambda *args, **kwargs: False)
     from polylogue.maintenance import rebuild_index
 
     real_repopulate = rebuild_index._repopulate_bulk_build_derived_state
@@ -924,7 +1053,13 @@ def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
     monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", unexpected_insight_repair)
 
     with pytest.raises(RuntimeError, match="session-lineage-acyclic|no longer parses to one session"):
-        run_reindex_canary(zoo.archive_root, sessions_per_origin=1, no_promote=True)
+        run_reindex_canary(
+            zoo.archive_root,
+            schema_inference_receipt_path=receipt_path,
+            pathology_session_ids=("codex-session:zoo-cycle-a", "codex-session:zoo-cycle-b"),
+            sessions_per_origin=1,
+            no_promote=True,
+        )
 
     assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
 
@@ -947,7 +1082,12 @@ def test_run_reindex_canary_refuses_foreign_input_index_before_rebuild(
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fail_if_rebuild_runs)
 
     with pytest.raises(CanarySelectionError, match="configured archive active generation"):
-        run_reindex_canary(archive_root, input_index=foreign_index, no_promote=True)
+        run_reindex_canary(
+            archive_root,
+            input_index=foreign_index,
+            schema_inference_receipt_path=_receipt_path(tmp_path),
+            no_promote=True,
+        )
 
 
 def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:

@@ -34,6 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _ARCHIVE_TIERS = tuple(spec.filename for spec in ARCHIVE_TIER_SPECS.values())
 
@@ -1944,6 +1945,10 @@ def test_rebuild_index_source_replay_expands_every_execution_selection_to_author
     monkeypatch: pytest.MonkeyPatch,
     selection_args: list[str],
 ) -> None:
+    receipt_path = write_valid_rebuild_receipt(
+        cli_workspace["archive_root"], cli_workspace["archive_root"].parent / "schema-inference-gate-receipt.json"
+    )
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.count_source_raw_sessions", lambda _root: 4)
     monkeypatch.setattr(
         "polylogue.maintenance.rebuild_index.all_index_rebuild_raw_ids",
@@ -1989,6 +1994,9 @@ def test_rebuild_index_daemon_path_posts_the_real_selection_request(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict[str, object] = {}
+    receipt_path = write_valid_rebuild_receipt(
+        cli_workspace["archive_root"], cli_workspace["archive_root"].parent / "schema-inference-gate-receipt.json"
+    )
 
     class Response:
         def read(self) -> bytes:
@@ -2024,6 +2032,8 @@ def test_rebuild_index_daemon_path_posts_the_real_selection_request(
             "--daemon",
             "--daemon-url",
             "http://127.0.0.1:9876",
+            "--schema-inference-receipt",
+            str(receipt_path),
             "--raw-batch-size",
             "17",
             "--pass-byte-budget-mb",
@@ -2043,6 +2053,7 @@ def test_rebuild_index_daemon_path_posts_the_real_selection_request(
             "max_blob_mb": None,
             "promote": True,
             "operation_id": None,
+            "schema_inference_receipt_path": str(receipt_path),
             "raw_batch_size": 17,
             "pass_byte_budget_mb": 12.5,
             "pass_deadline_seconds": 45.0,
@@ -2100,7 +2111,7 @@ def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
 
 
 def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotion(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A bounded pass retains its generation; only the terminal resume promotes it."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -2118,6 +2129,8 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
     first = cli_runner.invoke(
         cli,
@@ -2171,7 +2184,7 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
 
 
 def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every rebuild pass receipt survives on disk, not only on the CLI's stdout.
 
@@ -2196,6 +2209,8 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
     first = cli_runner.invoke(
         cli,
@@ -2249,7 +2264,7 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
 
 
 def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The real CLI replays every raw over passes; byte budgeting never filters archive data."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -2267,6 +2282,8 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     first = cli_runner.invoke(
         cli,
         [
@@ -2318,10 +2335,10 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
 
 
-def test_rebuild_index_source_snapshot_drift_marks_candidate_stale_before_promotion(
+def test_rebuild_index_source_snapshot_drift_fails_before_candidate_creation(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A changed source vector is terminal evidence, never a ready/promoted candidate."""
+    """A receipt/source mismatch stops the route before candidate creation."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = cli_workspace["archive_root"]
@@ -2336,17 +2353,24 @@ def test_rebuild_index_source_snapshot_drift_marks_candidate_stale_before_promot
             source_path="drift.jsonl",
             acquired_at_ms=1,
         )
-    snapshots = iter(("source-v1", "source-v1", "source-v2"))
-    monkeypatch.setattr("polylogue.storage.index_generation.source_revision_snapshot", lambda _root: next(snapshots))
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"drift-after-receipt"}}\n',
+            source_path="drift-after-receipt.jsonl",
+            acquired_at_ms=2,
+        )
     result = cli_runner.invoke(
         cli,
         ["--plain", "ops", "maintenance", "rebuild-index", "--output-format", "json"],
         catch_exceptions=False,
     )
     assert result.exit_code == 1
-    assert "stale because source evidence changed" in result.output
-    transaction = next((root / ".index-rebuild-transactions").glob("*.json"))
-    assert json.loads(transaction.read_text())["status"] == "stale"
+    assert "schema-inference preflight gate failed" in result.output
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+    assert not list((root / ".index-generations").glob("gen-*"))
     assert not root.joinpath("index.db").is_symlink()
 
 
@@ -2368,6 +2392,8 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
             source_path="deadline.jsonl",
             acquired_at_ms=1,
         )
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     # `monkeypatch.setattr("polylogue.maintenance.rebuild_index.time.time", ...)`
     # patches the *stdlib* `time` module's `time` attribute (modules are
     # process-wide singletons), not a private copy scoped to rebuild_index.py.

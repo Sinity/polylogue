@@ -25,7 +25,16 @@ def test_devtools_reindex_canary_delegates_to_product_cli(
 
     assert (
         reindex_canary.main(
-            ["--archive-root", "/tmp/isolated-archive", "--report", "/tmp/canary.json", "--no-promote", "--json"]
+            [
+                "--archive-root",
+                "/tmp/isolated-archive",
+                "--schema-inference-receipt",
+                "/tmp/schema-inference-gate-receipt.json",
+                "--report",
+                "/tmp/canary.json",
+                "--no-promote",
+                "--json",
+            ]
         )
         == 0
     )
@@ -39,6 +48,8 @@ def test_devtools_reindex_canary_delegates_to_product_cli(
         "reindex-canary",
         "--archive-root",
         "/tmp/isolated-archive",
+        "--schema-inference-receipt",
+        "/tmp/schema-inference-gate-receipt.json",
         "--report",
         "/tmp/canary.json",
         "--no-promote",
