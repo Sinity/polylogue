@@ -21,7 +21,7 @@ from polylogue.core.enums import (
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
-SOURCE_SCHEMA_VERSION = 28
+SOURCE_SCHEMA_VERSION = 29
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -264,6 +264,36 @@ ON raw_byte_duplicate_supersession_receipts(promoted_at_ms);
 
 CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_duplicate_of
 ON raw_byte_duplicate_supersession_receipts(duplicate_of_raw_id);
+
+-- v29 (polylogue-dyica): a stopped daemon can leave historical parse failures
+-- whose retained bytes are known terminal inputs, but which predate the live
+-- writer's typed raw_artifacts outcome.  This immutable receipt records the
+-- reviewed manifest and source-tier backup that authorized replacing the
+-- stale artifact classification with a terminal lifecycle classification.
+-- The raw bytes and original parse diagnostic remain untouched.
+CREATE TABLE IF NOT EXISTS raw_failure_disposition_receipts (
+    raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    artifact_id                TEXT NOT NULL UNIQUE REFERENCES raw_artifacts(artifact_id),
+    origin                     TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    source_path                TEXT NOT NULL,
+    source_index               INTEGER NOT NULL,
+    blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
+    previous_parse_error       TEXT NOT NULL,
+    previous_validation_status TEXT,
+    disposition_kind           TEXT NOT NULL CHECK(disposition_kind IN (
+        'terminal_corrupt_input',
+        'terminal_unsupported_shape'
+    )),
+    manifest_sha256            TEXT NOT NULL CHECK(length(manifest_sha256) = 64),
+    disposed_at_ms             INTEGER NOT NULL CHECK(disposed_at_ms >= 0),
+    tool_version               TEXT NOT NULL,
+    backup_manifest_path       TEXT NOT NULL,
+    detail                     TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_failure_disposition_receipts_disposed_at
+ON raw_failure_disposition_receipts(disposed_at_ms);
 
 -- v27 (polylogue-r9xsj): a non-session classification alone is not a
 -- duplicate disposition. This immutable receipt binds an excluded raw blob to
