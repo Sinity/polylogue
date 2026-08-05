@@ -267,6 +267,73 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
     assert occurrence_by_command["empty"].tool_result_block_id is None
 
 
+def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage(
+    tmp_path: Path,
+) -> None:
+    """A matched empty result is still a result, unlike an absent linkage."""
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-action-empty-payload",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-empty-payload",
+                        tool_input={"command": "empty-payload"},
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="tool-empty-payload",
+                        text=None,
+                        is_error=None,
+                        exit_code=None,
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-unknown-nonempty",
+                        tool_input={"command": "unknown-nonempty"},
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="tool-unknown-nonempty",
+                        text="provider omitted outcome",
+                        is_error=None,
+                        exit_code=None,
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-absent-linkage",
+                        tool_input={"command": "absent-linkage"},
+                    ),
+                ],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        rows = facade.query_session_actions([session_id], limit=10)
+
+    rows_by_command = {row.tool_command: row for row in rows}
+    assert rows_by_command["empty-payload"].result_state is ActionResultState.OUTCOME_UNKNOWN
+    assert rows_by_command["empty-payload"].tool_result_block_id is not None
+    assert rows_by_command["empty-payload"].output_text is None
+    assert rows_by_command["unknown-nonempty"].result_state is ActionResultState.OUTCOME_UNKNOWN
+    assert rows_by_command["unknown-nonempty"].tool_result_block_id is not None
+    assert rows_by_command["unknown-nonempty"].output_text == "provider omitted outcome"
+    assert rows_by_command["absent-linkage"].result_state is ActionResultState.NO_RESULT
+    assert rows_by_command["absent-linkage"].tool_result_block_id is None
+    assert rows_by_command["absent-linkage"].output_text is None
+
+
 def test_exact_session_action_count_bounds_pairing_before_global_ranking(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

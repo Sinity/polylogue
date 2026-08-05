@@ -221,6 +221,99 @@ def test_sql_fast_forwardable_index_db_reopen_is_idempotent(tmp_path: Path, monk
         conn.close()
 
 
+def test_v64_to_v65_fast_forward_replaces_actions_view_and_exposes_result_state(tmp_path: Path) -> None:
+    """The real v64→v65 executor path upgrades action queries in place."""
+    from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import apply_index_fast_forward
+    from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
+
+    path = tmp_path / "index.db"
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("v65-action-session", "codex-session", "v65 action fixture", _HASH, 1, 1),
+        )
+        session_id = conn.execute("SELECT session_id FROM sessions WHERE native_id = 'v65-action-session'").fetchone()[
+            "session_id"
+        ]
+        conn.execute(
+            """
+            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash, occurred_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, "v65-action-message", 0, "assistant", "message", _HASH, 1),
+        )
+        message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[
+            "message_id"
+        ]
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, tool_input)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, 0, "tool_use", "shell", "v65-matched", '{"command": "matched"}'),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, tool_input)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, 1, "tool_use", "shell", "v65-absent", '{"command": "absent"}'),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, text, tool_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, 2, "tool_result", "unknown outcome", "v65-matched"),
+        )
+        conn.execute("DROP VIEW actions")
+        conn.execute(
+            """
+            CREATE VIEW actions AS
+            SELECT
+                ap.session_id, ap.message_id, ap.tool_use_block_id, ap.tool_name, ap.semantic_type,
+                ap.tool_command, ap.tool_path, tu.tool_input AS tool_input, tr.text AS output_text,
+                ap.is_error, ap.exit_code, ap.tool_result_block_id
+            FROM action_pairs ap
+            JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
+            LEFT JOIN blocks tr ON tr.block_id = ap.tool_result_block_id
+            """
+        )
+        conn.execute("PRAGMA user_version = 64")
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        plan = index_fast_forward_plan(64, 65)
+        assert plan is not None
+        apply_index_fast_forward(conn, plan)
+        rows = conn.execute(
+            "SELECT tool_command, tool_result_block_id, result_state FROM actions ORDER BY tool_command"
+        ).fetchall()
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        conn.close()
+
+    assert version == 65
+    assert [dict(row) for row in rows] == [
+        {"tool_command": "absent", "tool_result_block_id": None, "result_state": "no_result"},
+        {
+            "tool_command": "matched",
+            "tool_result_block_id": "codex-session:v65-action-session:v65-action-message:2",
+            "result_state": "outcome_unknown",
+        },
+    ]
+
+
 def test_semantic_reparse_gap_still_raises_rebuild_required(
     tmp_path: Path,
 ) -> None:
