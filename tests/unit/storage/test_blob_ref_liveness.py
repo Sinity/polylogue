@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import polylogue.maintenance.blob_ref_liveness_reconciliation as liveness_reconciliation
+import polylogue.storage.hook_payload_ref_reconciliation as hook_payload_ref_reconciliation
 from polylogue.maintenance.blob_ref_liveness_reconciliation import (
     BlobRefLivenessReconciliationError,
     reconcile_blob_ref_liveness,
@@ -255,6 +256,10 @@ def test_apply_deletes_only_join_proven_orphans_and_persists_receipt(
         fake_validate,
     )
     monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_live_fingerprint",
+        fake_validate,
+    )
+    monkeypatch.setattr(
         "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid",
         lambda _config: None,
     )
@@ -282,6 +287,182 @@ def test_apply_deletes_only_join_proven_orphans_and_persists_receipt(
     assert receipt_rows[0]["candidate_digest"]
     assert receipt_rows[-1]["phase"] == "committed"
     assert receipt_rows[-1]["deleted_count"] == 4
+
+
+def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    orphan_count = 10_000
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-live', 'codex-session', '/live.jsonl', 0, ?, 10, 1)
+            """,
+            (b"l" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES ('hook-live', 'codex-session', 'native-live', '/hooks/live.jsonl', 'PostToolUse', '{}', 1)
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES (?, 'codex-session', ?, ?, 'PostToolUse', '{}', 1)
+            """,
+            ((f"hook-{index}", f"native-{index}", f"/hooks/{index}.jsonl") for index in range(orphan_count)),
+        )
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, 1, 1)
+            """,
+            (
+                (index.to_bytes(4, "big") + b"o" * 28, f"raw-gone-{index}", f"/hooks/{index}.jsonl")
+                for index in range(orphan_count)
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-live', 'raw_payload', '/live.jsonl', 10, 1)
+            """,
+            (b"l" * 32,),
+        )
+        conn.commit()
+
+    calls = 0
+    original_id = hook_payload_ref_reconciliation._deterministic_raw_session_id_udf
+
+    def count_udf(*args: object) -> str | None:
+        nonlocal calls
+        calls += 1
+        return original_id(*args)
+
+    monkeypatch.setattr(
+        "polylogue.storage.hook_payload_ref_reconciliation._deterministic_raw_session_id_udf", count_udf
+    )
+
+    def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        return path
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_manifest",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_live_fingerprint",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid", lambda _config: None
+    )
+    receipt = tmp_path / "receipts" / "scale.jsonl"
+    report = reconcile_blob_ref_liveness(
+        archive_root,
+        backup_manifest=tmp_path / "backup" / "manifest.json",
+        receipt_path=receipt,
+        dry_run=False,
+    )
+
+    assert report.deleted_count == orphan_count
+    assert report.classification.orphaned_count == orphan_count
+    assert calls <= orphan_count * 2
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (1,)
+        assert conn.execute("SELECT ref_type, ref_id FROM blob_refs").fetchone() == ("raw_payload", "raw-live")
+    receipt_rows = [json.loads(line) for line in receipt.read_text(encoding="utf-8").splitlines()]
+    assert receipt_rows[0]["candidate_count"] == orphan_count
+    assert sum(row.get("kind") == "candidate" for row in receipt_rows) == orphan_count
+    assert receipt_rows[-1]["phase"] == "committed"
+    assert receipt_rows[-1]["deleted_count"] == orphan_count
+
+
+def test_failure_before_prepared_receipt_rolls_back_without_receipt_or_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _source_archive(tmp_path)
+    receipt = tmp_path / "receipts" / "injected.jsonl"
+
+    def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        return path
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_manifest",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid", lambda _config: None
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation._write_prepared_receipt",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected before prepared receipt")),
+    )
+
+    with pytest.raises(RuntimeError, match="before prepared receipt"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup" / "manifest.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+    assert not receipt.exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
+
+
+def test_shared_legacy_hook_path_fails_closed_without_cross_product(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _source_archive(tmp_path)
+    row_count = 10_000
+    source_path = "/hooks/shared-legacy.jsonl"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES (?, 'codex-session', ?, ?, 'PostToolUse', '{}', 1)
+            """,
+            ((f"shared-hook-{index}", f"native-{index}", source_path) for index in range(row_count)),
+        )
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, 1, 1)
+            """,
+            (
+                (index.to_bytes(4, "big") + b"s" * 28, f"shared-orphan-{index}", source_path)
+                for index in range(row_count)
+            ),
+        )
+        conn.commit()
+
+    calls = 0
+    original_id = hook_payload_ref_reconciliation._deterministic_raw_session_id_udf
+
+    def count_udf(*args: object) -> str | None:
+        nonlocal calls
+        calls += 1
+        return original_id(*args)
+
+    monkeypatch.setattr(
+        "polylogue.storage.hook_payload_ref_reconciliation._deterministic_raw_session_id_udf", count_udf
+    )
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        classification = classify_blob_ref_liveness(conn)
+
+    assert classification.orphaned_count == 4
+    assert classification.rekeyable_hook_payload_count == row_count
+    assert sum(candidate.source_path == source_path for candidate in classification.candidates) == 0
+    assert calls == 0
 
 
 def test_unknown_ref_type_blocks_apply_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
