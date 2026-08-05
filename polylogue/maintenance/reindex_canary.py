@@ -376,6 +376,7 @@ def _resolve_canary_input_index(archive_root: Path, input_index: Path | None) ->
     except ValueError:
         if candidate_resolved != location.active_index.resolved_path:
             raise CanarySelectionError(
+                "input index is not the configured archive active generation; "
                 "explicit canary input index must be inside or bound to the selected archive root"
             ) from None
     return candidate
@@ -843,8 +844,15 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
     }
 
 
-def _validate_archive_provenance(provenance: object, comparison: CanaryDiffReport, receipt: dict[str, object]) -> None:
-    """Recompute local lifecycle evidence before accepting a report for approval."""
+def _validate_archive_provenance(
+    provenance: object,
+    *,
+    configured_archive_root: Path,
+    current_index: Path,
+    candidate_index: Path,
+    receipt: dict[str, object],
+) -> None:
+    """Validate archive-owned evidence before opening report-provided indexes."""
 
     from polylogue.storage.archive_identity import ArchiveLocation, TierFileIdentity
     from polylogue.storage.index_generation import source_revision_snapshot
@@ -854,19 +862,22 @@ def _validate_archive_provenance(provenance: object, comparison: CanaryDiffRepor
     archive_root = provenance.get("archive_root")
     if not isinstance(archive_root, str):
         raise UnclassifiedCanaryDiffError("canary report has invalid archive-owned provenance root")
-    if receipt.get("archive_root") != archive_root:
+    root = configured_archive_root.resolve()
+    if Path(archive_root).resolve() != root:
+        raise UnclassifiedCanaryDiffError("canary report belongs to a different configured archive root")
+    receipt_root = receipt.get("archive_root")
+    if not isinstance(receipt_root, str) or Path(receipt_root).resolve() != root:
         raise UnclassifiedCanaryDiffError("archive-owned provenance root does not match the rebuild receipt")
-    root = Path(archive_root)
     location = ArchiveLocation.resolve(root)
     pointer = str(location.active_pointer) if location.active_pointer is not None else None
     if provenance.get("active_pointer") != pointer:
         raise UnclassifiedCanaryDiffError("archive-owned active pointer no longer matches the report")
-    current_identity = TierFileIdentity.resolve("index", comparison.current_index)
+    if provenance.get("active_generation") != _active_generation_metadata(root, location):
+        raise UnclassifiedCanaryDiffError("archive-owned active generation metadata no longer matches the report")
+    current_identity = TierFileIdentity.resolve("index", current_index)
     if not location.active_index.same_file(current_identity):
         raise UnclassifiedCanaryDiffError("archive-owned active index no longer matches the report")
     _same_index_evidence(provenance.get("active_index"), location.active_index_path, label="active")
-    if provenance.get("active_generation") != _active_generation_metadata(root, location):
-        raise UnclassifiedCanaryDiffError("archive-owned active generation metadata no longer matches the report")
     receipt_generation = receipt.get("generation")
     if not isinstance(receipt_generation, dict):
         raise UnclassifiedCanaryDiffError("canary report has invalid candidate generation provenance")
@@ -878,7 +889,16 @@ def _validate_archive_provenance(provenance: object, comparison: CanaryDiffRepor
     if live_candidate != receipt_generation or live_fields["state"] != "inactive":
         raise UnclassifiedCanaryDiffError("archive-owned candidate generation metadata no longer matches the report")
     candidate_path = Path(cast(str, live_fields["index_path"]))
-    if not candidate_path.samefile(comparison.candidate_index):
+    generation_root = _generation_root(location).resolve()
+    candidate_resolved = candidate_path.resolve(strict=True)
+    expected_generation_path = generation_root / str(receipt_fields["generation_id"]) / "index.db"
+    if candidate_resolved != expected_generation_path.resolve():
+        raise UnclassifiedCanaryDiffError("archive-owned candidate generation path is not archive-owned")
+    try:
+        same_candidate = candidate_path.samefile(candidate_index)
+    except OSError as exc:
+        raise UnclassifiedCanaryDiffError("archive-owned candidate generation is not readable") from exc
+    if not same_candidate:
         raise UnclassifiedCanaryDiffError("archive-owned candidate generation no longer matches the report")
     _same_index_evidence(provenance.get("candidate_index"), candidate_path, label="candidate")
     source_snapshot = source_revision_snapshot(root)
@@ -886,7 +906,7 @@ def _validate_archive_provenance(provenance: object, comparison: CanaryDiffRepor
         raise UnclassifiedCanaryDiffError("archive-owned source snapshot no longer matches the inactive candidate")
 
 
-def load_canary_report(path: Path) -> dict[str, object]:
+def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[str, object]:
     """Read and structurally revalidate a durable report's review coverage."""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -986,6 +1006,15 @@ def load_canary_report(path: Path) -> dict[str, object]:
     _validate_selection_binding(
         persisted_selection, persisted_comparison, cast(dict[str, object], payload["rebuild_receipt"])
     )
+    from polylogue.config import resolve_archive_root
+
+    _validate_archive_provenance(
+        payload.get("archive_provenance"),
+        configured_archive_root=Path(archive_root) if archive_root is not None else resolve_archive_root(),
+        current_index=persisted_comparison.current_index,
+        candidate_index=persisted_comparison.candidate_index,
+        receipt=cast(dict[str, object], payload["rebuild_receipt"]),
+    )
     recomputed_comparison = compare_reindex_generations(
         persisted_comparison.current_index,
         persisted_comparison.candidate_index,
@@ -1015,13 +1044,21 @@ def load_canary_report(path: Path) -> dict[str, object]:
             review = review_by_key[key]
             if review.classification is not difference.classification:
                 raise UnclassifiedCanaryDiffError("canary report review classification disagrees with its difference")
-    _validate_archive_provenance(
-        payload.get("archive_provenance"),
-        persisted_comparison,
-        cast(dict[str, object], payload["rebuild_receipt"]),
-    )
     comparison["summary"] = _summary_for_differences(differences)
     return cast(dict[str, object], payload)
+
+
+def approve_canary_report(path: Path, *, archive_root: Path) -> dict[str, object]:
+    """Consume a fresh durable report and return it only when approvable."""
+
+    payload = load_canary_report(path, archive_root=archive_root)
+    if payload.get("review_status") != "reviewed":
+        raise UnclassifiedCanaryDiffError("canary report is not approved: review is incomplete")
+    comparison = payload.get("comparison")
+    summary = comparison.get("summary") if isinstance(comparison, dict) else None
+    if not isinstance(summary, dict) or summary.get("unexpected_count") != 0:
+        raise UnclassifiedCanaryDiffError("canary report is not approved: unexpected differences remain")
+    return payload
 
 
 def _difference_key(
@@ -1479,6 +1516,7 @@ __all__ = [
     "ExpectedDifference",
     "RowDifference",
     "UnclassifiedCanaryDiffError",
+    "approve_canary_report",
     "compare_reindex_generations",
     "load_canary_report",
     "run_reindex_canary",
