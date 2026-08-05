@@ -436,7 +436,7 @@ def test_drain_convergence_debt_retries_global_messages_fts_surface(
         return True
 
     monkeypatch.setattr(
-        "polylogue.daemon.convergence_stages.repair_fts_surface",
+        "polylogue.daemon.convergence_stages.repair_fts_surface_result",
         fake_repair_fts_surface,
     )
 
@@ -472,7 +472,7 @@ def test_drain_convergence_debt_retries_optional_fts_surface(
         return True
 
     monkeypatch.setattr(
-        "polylogue.daemon.convergence_stages.repair_fts_surface",
+        "polylogue.daemon.convergence_stages.repair_fts_surface_result",
         fake_repair_fts_surface,
     )
 

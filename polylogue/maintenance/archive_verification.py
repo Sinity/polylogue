@@ -620,44 +620,53 @@ def _check_fts_parity(archive_root: Path, sample_limit: int) -> ArchiveVerificat
     evidence: dict[str, Any] = {}
     problems: list[str] = []
     try:
-        if table_exists(conn, "blocks") and table_exists(conn, "messages_fts_docsize"):
-            row = conn.execute(
+        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+
+        messages = fts_invariant_snapshot_sync(conn).messages
+        expected, indexed = messages.source_rows, messages.indexed_rows
+        gap = expected - indexed
+        worst_sessions: list[dict[str, Any]] = []
+        if gap and table_exists(conn, "blocks") and table_exists(conn, "messages_fts_docsize"):
+            rows = conn.execute(
                 """
-                SELECT
-                    COUNT(*) FILTER (WHERE b.search_text != ''),
-                    COUNT(d.id) FILTER (WHERE b.search_text != '')
+                SELECT b.session_id,
+                       COUNT(*) FILTER (WHERE b.search_text != '') AS expected,
+                       COUNT(d.id) FILTER (WHERE b.search_text != '') AS indexed
                 FROM blocks AS b
                 LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-                """
-            ).fetchone()
-            expected, indexed = int(row[0] or 0), int(row[1] or 0)
-            gap = expected - indexed
-            worst_sessions: list[dict[str, Any]] = []
-            if gap:
-                rows = conn.execute(
-                    """
-                    SELECT b.session_id,
-                           COUNT(*) FILTER (WHERE b.search_text != '') AS expected,
-                           COUNT(d.id) FILTER (WHERE b.search_text != '') AS indexed
-                    FROM blocks AS b
-                    LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-                    GROUP BY b.session_id
-                    HAVING expected != indexed
-                    ORDER BY (expected - indexed) DESC
-                    LIMIT ?
-                    """,
-                    (sample_limit,),
-                ).fetchall()
-                worst_sessions = [{"session_id": str(r[0]), "expected": int(r[1]), "indexed": int(r[2])} for r in rows]
-                problems.append(f"messages_fts gap={gap}")
-            evidence["messages_fts"] = {
-                "expected": expected,
-                "indexed": indexed,
-                "gap": gap,
-                "worst_sessions": worst_sessions,
-            }
-        else:
-            evidence["messages_fts"] = None
+                GROUP BY b.session_id
+                HAVING expected != indexed
+                ORDER BY (expected - indexed) DESC
+                LIMIT ?
+                """,
+                (sample_limit,),
+            ).fetchall()
+            worst_sessions = [{"session_id": str(r[0]), "expected": int(r[1]), "indexed": int(r[2])} for r in rows]
+        if messages.source_exists and not messages.exists:
+            problems.append("messages_fts missing")
+        if gap:
+            problems.append(f"messages_fts gap={gap}")
+        elif messages.missing_rows:
+            problems.append(f"messages_fts missing_rows={messages.missing_rows}")
+        if messages.excess_rows:
+            problems.append(f"messages_fts excess_rows={messages.excess_rows}")
+        if messages.duplicate_rows:
+            problems.append(f"messages_fts duplicate_rows={messages.duplicate_rows}")
+        if messages.identity_mismatch_rows:
+            problems.append(f"messages_fts identity_mismatch_rows={messages.identity_mismatch_rows}")
+        if messages.exists and not messages.triggers_present:
+            problems.append("messages_fts triggers missing")
+        evidence["messages_fts"] = {
+            "expected": expected,
+            "indexed": indexed,
+            "gap": gap,
+            "missing_rows": messages.missing_rows,
+            "excess_rows": messages.excess_rows,
+            "duplicate_rows": messages.duplicate_rows,
+            "identity_mismatch_rows": messages.identity_mismatch_rows,
+            "triggers_present": messages.triggers_present,
+            "worst_sessions": worst_sessions,
+        }
 
         if table_exists(conn, "blocks") and table_exists(conn, "blocks_command_trigram_docsize"):
             # blocks_command_trigram is an external-content FTS5 table

@@ -580,23 +580,14 @@ def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: 
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
-def test_archive_fts_global_repair_does_not_run_full_exact_snapshot(tmp_path: Path) -> None:
-    """Daemon global FTS convergence should not end with a full exact scan."""
-    from unittest import mock
-
-    import polylogue.storage.fts.fts_lifecycle as fts_lc
-
+def test_archive_fts_global_repair_records_exact_parity(tmp_path: Path) -> None:
+    """Global repair must not publish ready until the exact invariant is clean."""
     archive_db = tmp_path / "index.db"
     archive_db.touch()
     source_path = tmp_path / "codex.jsonl"
     _seed_minimal_archive(archive_db, source_path)
 
-    with mock.patch.object(
-        fts_lc,
-        "fts_invariant_snapshot_sync",
-        side_effect=AssertionError("full exact FTS snapshot should stay out of daemon convergence"),
-    ):
-        assert stages.repair_messages_fts_surface(archive_db) is True
+    assert stages.repair_messages_fts_surface(archive_db) is True
 
     with sqlite3.connect(archive_db) as conn:
         row = conn.execute(
@@ -664,6 +655,85 @@ def test_archive_fts_global_repair_records_real_counts_status_and_query_agree(tm
         assert query_readiness["ready"] is True
         # Must not raise -- the query path agrees with the status surface.
         check_fts_readiness(query_readiness)
+
+
+def test_fts_surface_debt_retries_after_real_sqlite_backpressure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A locked repair remains deferred, red, and restartable until parity is restored."""
+    from polylogue.core.outcomes import OutcomeStatus
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.fts_status import fts_readiness_info
+    from polylogue.maintenance.archive_verification import verify_archive
+    from polylogue.sources.live.cursor import CursorStore
+
+    archive_db = tmp_path / "index.db"
+    with sqlite3.connect(archive_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        for index in range(3):
+            _seed_index_session(conn, session_id=f"codex-session:retry-{index}", text=f"retry needle {index}")
+        conn.execute("DELETE FROM messages_fts")
+        conn.commit()
+
+    cursor = CursorStore(archive_db)
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="messages_fts",
+        error="global FTS repair pending",
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+
+    blocker = sqlite3.connect(archive_db, timeout=0.01)
+    try:
+        blocker.execute("BEGIN EXCLUSIVE")
+        monkeypatch.setattr(stages, "_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS", 1)
+        assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    deferred = [
+        debt for debt in cursor.list_convergence_debt() if debt.stage == "fts" and debt.subject_id == "messages_fts"
+    ]
+    assert len(deferred) == 1
+    assert deferred[0].status == "deferred"
+    assert fts_readiness_info(archive_db, exact=False)["messages_ready"] is False
+    red = verify_archive(tmp_path, checks=("fts-parity",))
+    assert red.checks[0].status is OutcomeStatus.ERROR
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+    assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
+    assert not [debt for debt in cursor.list_convergence_debt() if debt.subject_id == "messages_fts"]
+    assert fts_readiness_info(archive_db, exact=False)["messages_ready"] is True
+    green = verify_archive(tmp_path, checks=("fts-parity",))
+    assert green.checks[0].status is OutcomeStatus.OK
+
+    retired = stages.repair_fts_surface_result(archive_db, "threads_fts")
+    assert retired.success is False
+    assert retired.deferred is False
+
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="messages_fts",
+        error="global FTS repair pending after malformed shadow table",
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+    with sqlite3.connect(archive_db) as conn:
+        conn.execute("DROP TABLE messages_fts_docsize")
+        conn.commit()
+
+    assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
+    failed = [debt for debt in cursor.list_convergence_debt() if debt.subject_id == "messages_fts"]
+    assert len(failed) == 1
+    assert failed[0].status == "failed"
 
 
 def test_archive_fts_global_repair_deletes_excess_rows_without_reset(tmp_path: Path) -> None:

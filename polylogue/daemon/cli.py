@@ -1732,7 +1732,8 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     for debt in due_debt:
         retried += 1
         if debt.subject_type == "fts_surface":
-            if fts_surface_results.get(debt.subject_id) is True:
+            result = fts_surface_results.get(debt.subject_id)
+            if bool(getattr(result, "success", result)):
                 cursor.clear_convergence_debt(
                     stage=debt.stage,
                     subject_type=debt.subject_type,
@@ -1745,6 +1746,7 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
                 subject_id=debt.subject_id,
                 error="FTS freshness convergence did not converge",
                 materializer_version=debt.materializer_version,
+                deferred=bool(getattr(result, "deferred", False)),
             )
             continue
 
@@ -1802,14 +1804,14 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     return retried
 
 
-def _drain_fts_surface_debt(db: Path, surfaces: tuple[str, ...]) -> dict[str, bool]:
+def _drain_fts_surface_debt(db: Path, surfaces: tuple[str, ...]) -> dict[str, object]:
     if not surfaces:
         return {}
-    from polylogue.daemon.convergence_stages import repair_fts_surface
+    from polylogue.daemon.convergence_stages import repair_fts_surface_result
 
-    results: dict[str, bool] = {}
+    results: dict[str, object] = {}
     for surface in surfaces:
-        results[surface] = repair_fts_surface(db, surface)
+        results[surface] = repair_fts_surface_result(db, surface)
     return results
 
 
