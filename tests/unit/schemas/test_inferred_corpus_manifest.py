@@ -319,6 +319,22 @@ def _schema_with_annotation(
     return mutated
 
 
+def _schema_with_root_annotation(
+    registry: SchemaRegistry,
+    *,
+    provider: str,
+    package_version: str,
+    element_kind: str,
+    annotation: str,
+    value: JSONValue,
+) -> dict[str, JSONValue]:
+    schema = registry.get_element_schema(provider, version=package_version, element_kind=element_kind)
+    assert isinstance(schema, dict)
+    mutated: dict[str, JSONValue] = dict(schema)
+    mutated[annotation] = value
+    return mutated
+
+
 def test_known_generator_annotation_remains_supported_and_is_keyed() -> None:
     registry = _registry()
     proxy = _RegistryProxy(registry)
@@ -343,6 +359,42 @@ def test_known_generator_annotation_remains_supported_and_is_keyed() -> None:
     assert ("x-polylogue-format", "supported") in {
         (item.construct, item.state) for item in target.key.construct_support
     }
+
+
+@pytest.mark.parametrize(
+    ("annotation", "value"),
+    [
+        ("x-polylogue-format", "markdown"),
+        ("x-polylogue-semantic-role", "identifier"),
+        ("x-polylogue-foreign-keys", [{"source": "", "target": "$.id"}]),
+        ("x-polylogue-time-deltas", [{"field_a": "$.a", "field_b": "$.b", "min_delta": "bad"}]),
+    ],
+)
+def test_unenforced_annotation_values_are_typed_unsupported_records(annotation: str, value: JSONValue) -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    provider, package_version, element_kind = _first_wired_catalog_entry(registry)
+    proxy.schema_overrides[(provider, package_version, element_kind)] = _schema_with_root_annotation(
+        registry,
+        provider=provider,
+        package_version=package_version,
+        element_kind=element_kind,
+        annotation=annotation,
+        value=value,
+    )
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy)  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (provider, package_version, element_kind)
+    )
+
+    assert target.spec is None
+    assert target.unsupported is not None
+    assert annotation in target.unsupported.details
+    assert (annotation, "unsupported") in {(item.construct, item.state) for item in target.key.construct_support}
 
 
 @pytest.mark.parametrize(
