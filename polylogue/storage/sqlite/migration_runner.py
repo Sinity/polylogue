@@ -738,6 +738,71 @@ def validate_migration_backup_manifest(
     return _validate_backup_manifest_covers_tier(path, tier, connection=connection, require_attestation=True)
 
 
+def validate_migration_backup_live_fingerprint(
+    path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection
+) -> Path:
+    """Recheck receipt authority and the live tier with a cached inventory.
+
+    Callers run ``validate_migration_backup_manifest`` before taking the live
+    tier lock. Once ownership is held, this helper repeats the local HMAC and
+    manifest binding checks, then validates the complete cached backup
+    inventory. A stat change invalidates the process cache and re-hashes the
+    tree, so source.db/blob mutations after the precheck are rejected without
+    repeating the expensive scan when the tree is unchanged.
+    """
+
+    if tier not in DURABLE_MIGRATION_TIERS:
+        raise MigrationError(f"{tier.value} tier is not a durable migration tier")
+    manifest_path = _backup_manifest_path(path)
+    if not manifest_path.exists() and not manifest_path.is_symlink():
+        raise MigrationError(f"migration requires an existing backup manifest; missing {manifest_path}")
+    backup_root = manifest_path.parent
+    _require_real_backup_directory(backup_root, label="backup root")
+    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
+    manifest = _load_json(manifest_path, label="manifest")
+    if manifest.get("format") != "polylogue-backup-v1":
+        raise MigrationError(f"migration backup manifest has unsupported format: {manifest_path}")
+    if f"{tier.value}.db" not in _json_str_list(manifest.get("included_tiers")):
+        raise MigrationError(f"migration backup manifest does not include {tier.value}.db: {manifest_path}")
+    receipt_path = _receipt_path(manifest_path)
+    if not receipt_path.exists() and not receipt_path.is_symlink():
+        raise MigrationError(f"migration requires a successful backup verification receipt; missing {receipt_path}")
+    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
+    receipt = _load_json(receipt_path, label="verification receipt")
+    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT:
+        raise MigrationError(f"migration backup receipt has unsupported format: {receipt_path}")
+    live_tier_path = _connection_main_path(connection).resolve(strict=False)
+    try:
+        verify_verification_receipt(receipt, tier=tier.value, live_tier_path=live_tier_path)
+    except BackupAttestationError as exc:
+        raise MigrationError(f"migration backup receipt authentication failed: {exc}") from exc
+    if receipt.get("verdict") != "success":
+        raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
+    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
+    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
+    manifest_evidence = file_evidence.get("manifest.json", {})
+    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
+        raise MigrationError("migration backup receipt does not match manifest size")
+    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
+        raise MigrationError("migration backup receipt does not match manifest bytes")
+    artifacts = _validated_receipt_artifacts(
+        backup_root,
+        manifest,
+        receipt,
+        target_tier=tier.value,
+        live_tier_path=live_tier_path,
+        file_evidence=file_evidence,
+    )
+    artifact = artifacts.get(tier.value)
+    if artifact is None:
+        raise MigrationError(f"migration backup receipt does not include {tier.value}.db: {receipt_path}")
+    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
+    if receipt.get("artifact_inventory") != artifact_inventory:
+        raise MigrationError("migration backup receipt does not match the closed artifact inventory")
+    _validate_live_source_fingerprint(connection, artifact)
+    return receipt_path
+
+
 def validate_backup_manifest_covers_derived_tier(
     path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection
 ) -> Path:
@@ -3273,6 +3338,7 @@ __all__ = [
     "reserve_durable_change_train",
     "validate_durable_change_train_manifest",
     "validate_backup_manifest_covers_derived_tier",
+    "validate_migration_backup_live_fingerprint",
     "validate_migration_backup_manifest",
     "write_durable_change_train_manifest",
 ]
