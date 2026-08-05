@@ -9,6 +9,8 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
+from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
 from polylogue.storage.archive_identity import OwnedArchiveLocation
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -187,3 +189,42 @@ def test_mapping_mutation_is_rejected_without_relying_on_aggregate_counts(tmp_pa
             RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
         )
     assert not (root / ".index-generations").exists()
+
+
+@pytest.mark.parametrize("expire", [False, True], ids=["external-drift", "receipt-expiry"])
+def test_deadline_checkpoint_revalidates_receipt_before_persisting_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expire: bool
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    store = IndexGenerationStore.for_archive_root(root)
+    transaction = store.create_transaction(
+        source_snapshot=rebuild_source_revision_snapshot(root), operation_id="deadline-checkpoint"
+    )
+    transaction = store.checkpoint_transaction(transaction, status="running", derived_stores_cleared=True)
+    transaction_path = root / ".index-rebuild-transactions" / "deadline-checkpoint.json"
+    before = transaction_path.read_bytes()
+
+    async def fail_after_receipt_drift(*args: object, **kwargs: object) -> dict[str, object]:
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if expire:
+            payload["generated_at"] = "2000-01-01T00:00:00Z"
+        else:
+            payload["source_snapshot"] = "post-preflight-source-drift"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        raise RebuildDeadlineExceededError("synthetic deadline")
+
+    monkeypatch.setattr("polylogue.maintenance.replay.rebuild_index_from_source", fail_after_receipt_drift)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                operation_id="deadline-checkpoint",
+                schema_inference_receipt_path=receipt_path,
+                raw_batch_size=1,
+            )
+        )
+
+    assert transaction_path.read_bytes() == before

@@ -9,8 +9,16 @@ import json
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
+
+import pytest
+
+from polylogue.storage.archive_identity import OwnedArchiveLocation
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -19,6 +27,24 @@ if TYPE_CHECKING:
 class MockServer:
     auth_token: str | None = None
     api_host = "127.0.0.1"
+
+
+def _interpose_receipt_mutation(monkeypatch: pytest.MonkeyPatch, receipt_path: Path, *, expire: bool) -> None:
+    original_acquire = OwnedArchiveLocation.acquire
+
+    def acquire_after_mutation(
+        cls: type[OwnedArchiveLocation], /, location: object, **kwargs: object
+    ) -> OwnedArchiveLocation:
+        owned = original_acquire(location, **kwargs)  # type: ignore[arg-type]
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if expire:
+            payload["generated_at"] = "2000-01-01T00:00:00Z"
+        else:
+            payload["source_snapshot"] = "post-preflight-source-drift"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        return owned
+
+    monkeypatch.setattr(OwnedArchiveLocation, "acquire", classmethod(acquire_after_mutation))
 
 
 class MockHeaders:
@@ -220,6 +246,38 @@ class TestMaintenanceAPIRoutes:
                 handler._handle_rebuild_index()
         rebuild.assert_not_called()
         send_error.assert_called_once_with(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
+
+    @pytest.mark.parametrize("expire", [False, True], ids=["external-drift", "receipt-expiry"])
+    def test_rebuild_index_route_rejects_post_preflight_receipt_change_before_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expire: bool
+    ) -> None:
+        root = tmp_path / "archive"
+        root.mkdir()
+        initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+        receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+        _interpose_receipt_mutation(monkeypatch, receipt_path, expire=expire)
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+        handler = _make_handler(
+            "/api/maintenance/rebuild-index",
+            body={
+                "promote": False,
+                "schema_inference_receipt_path": str(receipt_path),
+            },
+        )
+        handler.server.write_bridge = type(
+            "Bridge",
+            (),
+            {"run_sync_with_timeout": lambda _self, _actor, _timeout, function, *args: function(*args)},
+        )()
+
+        with patch.object(handler, "_send_json") as send_json:
+            handler._handle_rebuild_index()
+
+        assert send_json.call_args.args[0] == HTTPStatus.INTERNAL_SERVER_ERROR
+        assert not (root / ".index-active-pointer").exists()
+        assert not (root / ".index-generations").exists()
+        assert not (root / ".index-rebuild-transactions").exists()
+        assert not (root / ".index-rebuild.lock").exists()
 
 
 class TestMaintenanceRegistryEndpoints:

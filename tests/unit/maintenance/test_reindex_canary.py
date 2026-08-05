@@ -34,8 +34,10 @@ from polylogue.maintenance.reindex_canary import (
     select_canary_sessions,
     write_canary_report,
 )
+from polylogue.storage.archive_identity import OwnedArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
 
 
@@ -108,6 +110,24 @@ def _empty_comparison(current: Path, candidate: Path, session_ids: tuple[str, ..
         missing_columns=(),
         differences=(),
     )
+
+
+def _interpose_receipt_mutation(monkeypatch: pytest.MonkeyPatch, receipt_path: Path, *, expire: bool) -> None:
+    original_acquire = OwnedArchiveLocation.acquire
+
+    def acquire_after_mutation(
+        cls: type[OwnedArchiveLocation], /, location: object, **kwargs: object
+    ) -> OwnedArchiveLocation:
+        owned = original_acquire(location, **kwargs)  # type: ignore[arg-type]
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if expire:
+            payload["generated_at"] = "2000-01-01T00:00:00Z"
+        else:
+            payload["source_snapshot"] = "post-preflight-source-drift"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        return owned
+
+    monkeypatch.setattr(OwnedArchiveLocation, "acquire", classmethod(acquire_after_mutation))
 
 
 def test_equal_real_generations_ignore_only_materialization_metadata(tmp_path: Path) -> None:
@@ -389,6 +409,8 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     shutil.move(root / "index.db", external_index)
     (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "split-root-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
     result = run_reindex_canary(root, input_index=external_index, sessions_per_origin=1, no_promote=True)
 
@@ -425,6 +447,56 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     assert operation_generation == {"generation_id": generation_id, "state": "inactive"}
     assert operation_delta["transaction_source_snapshot"] == source_snapshot
     assert operation_delta["source_snapshot_matches"] is True
+
+
+@pytest.mark.parametrize("expire", [False, True], ids=["external-drift", "receipt-expiry"])
+def test_run_reindex_canary_rejects_post_preflight_receipt_change_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expire: bool
+) -> None:
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    _interpose_receipt_mutation(monkeypatch, receipt_path, expire=expire)
+
+    pointer = root / ".index-active-pointer"
+    pointer_before = None
+    if pointer.exists() or pointer.is_symlink():
+        pointer_before = os.readlink(pointer) if pointer.is_symlink() else pointer.read_bytes()
+    generations_before = (
+        sorted(path.relative_to(root) for path in (root / ".index-generations").glob("**/*"))
+        if (root / ".index-generations").exists()
+        else []
+    )
+    transactions_before = (
+        sorted(path.relative_to(root) for path in (root / ".index-rebuild-transactions").glob("**/*"))
+        if (root / ".index-rebuild-transactions").exists()
+        else []
+    )
+    lease = root / ".index-rebuild.lock"
+    lease_before = lease.read_bytes() if lease.exists() else None
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        run_reindex_canary(root, input_index=root / "index.db", sessions_per_origin=1, no_promote=True)
+
+    pointer_after = None
+    if pointer.exists() or pointer.is_symlink():
+        pointer_after = os.readlink(pointer) if pointer.is_symlink() else pointer.read_bytes()
+    assert pointer_after == pointer_before
+    generations_after = (
+        sorted(path.relative_to(root) for path in (root / ".index-generations").glob("**/*"))
+        if (root / ".index-generations").exists()
+        else []
+    )
+    transactions_after = (
+        sorted(path.relative_to(root) for path in (root / ".index-rebuild-transactions").glob("**/*"))
+        if (root / ".index-rebuild-transactions").exists()
+        else []
+    )
+    assert generations_after == generations_before
+    assert transactions_after == transactions_before
+    assert (lease.read_bytes() if lease.exists() else None) == lease_before
 
 
 def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
@@ -578,6 +650,8 @@ def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
     zoo = build_pathology_zoo(tmp_path / "zoo")
     active_index = zoo.archive_root / "index.db"
     active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
+    receipt_path = write_valid_rebuild_receipt(zoo.archive_root, tmp_path / "pathology-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     from polylogue.maintenance import rebuild_index
 
     real_repopulate = rebuild_index._repopulate_bulk_build_derived_state
