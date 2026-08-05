@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -56,7 +55,7 @@ class _GeneratorOnlyRegistry:
 
     def get_element_schema(self, provider: str, *, version: str = "default", element_kind: str | None = None) -> object:
         schema = self.base.get_element_schema(provider, version=version, element_kind=element_kind)
-        return cast(object, _generator_only_schema(schema))
+        return _generator_only_schema(schema)
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.base, name)
