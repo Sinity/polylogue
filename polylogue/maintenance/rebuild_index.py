@@ -663,6 +663,8 @@ def validate_rebuild_index_request(request: RebuildIndexRequest) -> None:
         raise ValueError("--raw-id cannot be combined with --only-missing")
     if (request.raw_ids or request.only_missing) and request.promote:
         raise ValueError("partial rebuild selections require --no-promote and can never replace the active index")
+    if request.promote and request.candidate_acceptance_checks is not None:
+        raise ValueError("caller-supplied candidate acceptance profiles require --no-promote")
     if request.max_blob_mb is not None and request.max_blob_mb <= 0:
         raise ValueError("max blob size must be positive")
     if request.max_blob_mb is not None and not request.raw_ids and not request.only_missing:

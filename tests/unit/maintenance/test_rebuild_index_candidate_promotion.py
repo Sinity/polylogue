@@ -10,8 +10,10 @@ from typing import cast
 
 import pytest
 
+import polylogue.maintenance.archive_verification as archive_verification
 import polylogue.storage.sqlite.archive_tiers.revision_governance as revision_governance
 from polylogue.core.enums import Provider
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -141,6 +143,51 @@ def test_cross_tier_user_reference_blocks_full_rebuild_candidate_promotion(
     _seed_raw(root, "candidate-session", "candidate must never become active")
 
     with pytest.raises(RuntimeError, match=r"user-tier-refs \[error\]"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+
+    assert store.active_pointer.resolve(strict=True) == active_before
+
+
+@pytest.mark.parametrize(
+    ("status", "check_name"),
+    (
+        (OutcomeStatus.WARNING, "fts-parity"),
+        (OutcomeStatus.SKIP, "lineage-sanity"),
+        (None, "session-fingerprint-stamps"),
+    ),
+)
+def test_full_rebuild_promotion_rejects_non_ok_or_missing_required_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: OutcomeStatus | None,
+    check_name: str,
+) -> None:
+    """The production promotion route requires every strict result to be OK."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    _seed_raw(root, "active-session", "active generation remains exact")
+    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    assert initial.status == "replayed"
+
+    store = IndexGenerationStore.for_archive_root(root)
+    active_before = store.active_pointer.resolve(strict=True)
+    _seed_raw(root, "candidate-session", "candidate must never become active")
+
+    def mutated_verifier(*args: object, **kwargs: object) -> archive_verification.ArchiveVerificationReport:
+        checks = cast(tuple[str, ...], kwargs["checks"])
+        return archive_verification.ArchiveVerificationReport(
+            checks=[
+                archive_verification.ArchiveVerificationCheck(
+                    name=name,
+                    status=(status if name == check_name and status is not None else OutcomeStatus.OK),
+                )
+                for name in checks
+                if name != check_name or status is not None
+            ]
+        )
+
+    monkeypatch.setattr(archive_verification, "verify_archive", mutated_verifier)
+    with pytest.raises(RuntimeError, match=f"reindex acceptance gate failed.*{check_name}"):
         rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
 
     assert store.active_pointer.resolve(strict=True) == active_before

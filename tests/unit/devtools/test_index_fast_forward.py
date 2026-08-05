@@ -11,7 +11,6 @@ import devtools.index_fast_forward as forward
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
-    REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
     ArchiveVerificationCheck,
     ArchiveVerificationReport,
 )
@@ -101,8 +100,7 @@ def _no_corpus_failure(monkeypatch: pytest.MonkeyPatch) -> None:
         "verify_archive",
         lambda *args, **kwargs: ArchiveVerificationReport(
             checks=[
-                ArchiveVerificationCheck(name=name, status=OutcomeStatus.OK)
-                for name in REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
+                ArchiveVerificationCheck(name=name, status=OutcomeStatus.OK) for name in tuple(kwargs.get("checks", ()))
             ]
         ),
     )
@@ -222,6 +220,47 @@ def test_activation_refuses_waived_embedding_orphan_at_strict_candidate_gate(
         conn.commit()
 
     with pytest.raises(forward.IndexFastForwardError, match=r"embeddings-refs-liveness.*waived by polylogue-feu0"):
+        forward.activate_forward(receipt_path=receipt_path)
+
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+
+
+@pytest.mark.parametrize(
+    ("status", "check_name"),
+    (
+        (OutcomeStatus.WARNING, "fts-parity"),
+        (OutcomeStatus.SKIP, "session-lineage-acyclic"),
+        (None, "message-count-projection"),
+    ),
+)
+def test_activation_rejects_non_ok_or_missing_index_acceptance_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _patch_v37: None,
+    status: OutcomeStatus | None,
+    check_name: str,
+) -> None:
+    """Activation must consume the complete strict profile on its real route."""
+    root = _archive(tmp_path)
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    receipt_path = tmp_path / "transition.json"
+    forward.prepare_forward(archive_root=root, receipt_path=receipt_path)
+
+    def mutated_verifier(*args: object, **kwargs: object) -> ArchiveVerificationReport:
+        checks = cast(tuple[str, ...], kwargs["checks"])
+        return ArchiveVerificationReport(
+            checks=[
+                ArchiveVerificationCheck(
+                    name=name,
+                    status=(status if name == check_name and status is not None else OutcomeStatus.OK),
+                )
+                for name in checks
+                if name != check_name or status is not None
+            ]
+        )
+
+    monkeypatch.setattr(forward, "verify_archive", mutated_verifier)
+    with pytest.raises(forward.IndexFastForwardError, match=check_name):
         forward.activate_forward(receipt_path=receipt_path)
 
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
