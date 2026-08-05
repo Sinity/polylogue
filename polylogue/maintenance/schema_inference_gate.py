@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, NotRequired, TypeAlias, TypedDict, cast
 
 from polylogue.maintenance.archive_verification import CORPUS_FIDELITY_CHECKS, verify_archive
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
@@ -39,14 +39,74 @@ _ALLOWED_RESIDUAL_EXPLANATIONS = frozenset(
     {"materialized", "superseded-duplicate", "legitimately-excluded-non-conversation"}
 )
 _CAUSE_EXPLANATIONS = {"byte-revision-governed": "superseded-duplicate"}
-_GROUND_TRUTH_DISPOSITIONS = frozenset(
-    {
-        "materialized",
-        "superseded-duplicate",
-        "legitimately-excluded-non-conversation",
-        "unreconciled-source-raw",
-    }
-)
+GroundTruthKey: TypeAlias = tuple[str, int]
+GroundTruthDisposition: TypeAlias = Literal[
+    "materialized",
+    "superseded-duplicate",
+    "legitimately-excluded-non-conversation",
+    "unreconciled-source-raw",
+]
+ExternalDisposition: TypeAlias = Literal["unmatched-external-file", "cross-origin-source"]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalGroundTruthFile:
+    root_index: int
+    relative_path: str
+    content_hash: str
+    size: int
+    path: Path
+
+    @property
+    def key(self) -> GroundTruthKey:
+        return (self.content_hash, self.size)
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceRawGroundTruth:
+    raw_id: str
+    origin: str
+    native_id: str | None
+    logical_source_key: str | None
+    source_path: str
+    blob_hash: str
+    blob_size: int
+    disposition: GroundTruthDisposition
+
+    @property
+    def key(self) -> GroundTruthKey:
+        return (self.blob_hash, self.blob_size)
+
+
+class _RawGroundTruthProvenance(TypedDict):
+    raw_id: str
+    origin: str
+    native_id: str | None
+    logical_source_key: str | None
+    source_path: str
+    blob_hash: str
+    blob_size: int
+    matched_external_relative_path: str | None
+    matched_external_hash: str | None
+    matched_external_size: int | None
+    disposition: GroundTruthDisposition
+
+
+class _ExternalGroundTruthReceipt(TypedDict):
+    root_index: int
+    relative_path: str
+    hash: str
+    size: int
+    disposition: ExternalDisposition
+    other_origins: NotRequired[list[str]]
+
+
+class _UnmatchedSourceRawReceipt(TypedDict):
+    raw_id: str
+    blob_hash: str
+    blob_size: int
+    disposition: Literal["unreconciled-source-raw"]
+
 
 # Hooks and browser capture are the explicit no-external-ground-truth
 # exceptions from r9xsj. Every other origin present in source.db must receive
@@ -539,39 +599,75 @@ def _file_hash(path: Path) -> tuple[str, int]:
     return hasher.hexdigest(), size
 
 
-def _external_inventory(roots: Sequence[Path]) -> list[dict[str, object]]:
+def _external_inventory(roots: Sequence[Path]) -> list[_ExternalGroundTruthFile]:
     """Return a stable, relative-path inventory for declared external roots."""
 
-    inventory: list[dict[str, object]] = []
+    inventory: list[_ExternalGroundTruthFile] = []
     for root_index, root in enumerate(sorted({path.resolve() for path in roots}, key=str)):
         for path in _iter_ground_truth_files(root):
             resolved_path = path.resolve()
             digest, size = _file_hash(resolved_path)
             relative_path = resolved_path.name if root.is_file() else resolved_path.relative_to(root).as_posix()
             inventory.append(
-                {
-                    "root_index": root_index,
-                    "relative_path": relative_path,
-                    "hash": digest,
-                    "size": size,
-                    "_path": resolved_path,
-                }
+                _ExternalGroundTruthFile(
+                    root_index=root_index,
+                    relative_path=relative_path,
+                    content_hash=digest,
+                    size=size,
+                    path=resolved_path,
+                )
             )
-    inventory.sort(key=lambda item: (str(item["relative_path"]), int(item["root_index"])))
+    inventory.sort(key=lambda item: (item.relative_path, item.root_index))
     return inventory
+
+
+def _external_receipt(
+    item: _ExternalGroundTruthFile,
+    disposition: ExternalDisposition,
+    *,
+    other_origins: list[str] | None = None,
+) -> _ExternalGroundTruthReceipt:
+    receipt: _ExternalGroundTruthReceipt = {
+        "root_index": item.root_index,
+        "relative_path": item.relative_path,
+        "hash": item.content_hash,
+        "size": item.size,
+        "disposition": disposition,
+    }
+    if other_origins:
+        receipt["other_origins"] = other_origins
+    return receipt
+
+
+def _raw_provenance(
+    raw: _SourceRawGroundTruth,
+    matched_external: _ExternalGroundTruthFile | None,
+) -> _RawGroundTruthProvenance:
+    return {
+        "raw_id": raw.raw_id,
+        "origin": raw.origin,
+        "native_id": raw.native_id,
+        "logical_source_key": raw.logical_source_key,
+        "source_path": raw.source_path,
+        "blob_hash": raw.blob_hash,
+        "blob_size": raw.blob_size,
+        "matched_external_relative_path": (matched_external.relative_path if matched_external is not None else None),
+        "matched_external_hash": matched_external.content_hash if matched_external is not None else None,
+        "matched_external_size": matched_external.size if matched_external is not None else None,
+        "disposition": raw.disposition,
+    }
 
 
 def _raw_dispositions(
     source: sqlite3.Connection,
     *,
     index_path: Path,
-) -> tuple[dict[str, str], dict[str, dict[str, object]]]:
+) -> dict[str, list[_SourceRawGroundTruth]]:
     """Classify raw rows using durable receipts and the indexed read model."""
 
     source_rows = source.execute(
         """
-        SELECT raw_id, origin, native_id, logical_source_key, source_path,
-               hex(blob_hash), blob_size, revision_authority
+        SELECT raw_id, origin, native_id, logical_source_key, source_path, hex(blob_hash), blob_size
         FROM raw_sessions
         ORDER BY origin, raw_id
         """
@@ -594,16 +690,11 @@ def _raw_dispositions(
     superseded_ids = receipt_ids("raw_byte_duplicate_supersession_receipts")
     superseded_ids.update(receipt_ids("raw_quarantine_group_dedup_receipts"))
     excluded_ids = receipt_ids("raw_non_session_duplicate_exclusion_receipts")
-    excluded_ids.update(
-        str(row[0])
-        for row in source.execute("SELECT raw_id FROM raw_membership_census WHERE status = 'non_session'")
-        if str(row[0]) in excluded_ids
-    )
 
-    dispositions: dict[str, str] = {}
-    rows_by_origin: dict[str, list[dict[str, object]]] = {}
+    rows_by_origin: dict[str, list[_SourceRawGroundTruth]] = {}
     for row in source_rows:
         raw_id = str(row[0])
+        disposition: GroundTruthDisposition
         if raw_id in indexed_raw_ids:
             disposition = "materialized"
         elif raw_id in superseded_ids:
@@ -612,22 +703,19 @@ def _raw_dispositions(
             disposition = "legitimately-excluded-non-conversation"
         else:
             disposition = "unreconciled-source-raw"
-        assert disposition in _GROUND_TRUTH_DISPOSITIONS
-        dispositions[raw_id] = disposition
         rows_by_origin.setdefault(str(row[1]), []).append(
-            {
-                "raw_id": raw_id,
-                "origin": str(row[1]),
-                "native_id": row[2],
-                "logical_source_key": row[3],
-                "source_path": str(row[4]),
-                "blob_hash": str(row[5]).lower(),
-                "blob_size": int(row[6]),
-                "revision_authority": str(row[7]),
-                "disposition": disposition,
-            }
+            _SourceRawGroundTruth(
+                raw_id=raw_id,
+                origin=str(row[1]),
+                native_id=None if row[2] is None else str(row[2]),
+                logical_source_key=None if row[3] is None else str(row[3]),
+                source_path=str(row[4]),
+                blob_hash=str(row[5]).lower(),
+                blob_size=int(row[6]),
+                disposition=disposition,
+            )
         )
-    return dispositions, rows_by_origin
+    return rows_by_origin
 
 
 def _ground_truth_evidence(
@@ -644,10 +732,11 @@ def _ground_truth_evidence(
     evidence: dict[str, object] = {}
     errors: list[str] = []
     with open_readonly_connection(source_path) as source:
-        _dispositions, rows_by_origin = _raw_dispositions(source, index_path=index_path)
+        rows_by_origin = _raw_dispositions(source, index_path=index_path)
         origins = sorted(set(source_counts) | set(root_map))
         external_claims: dict[Path, set[str]] = {}
-        inventories: dict[str, list[dict[str, object]]] = {}
+        inventories: dict[str, list[_ExternalGroundTruthFile]] = {}
+        declared_roots_by_origin: dict[str, tuple[Path, ...]] = {}
         for origin in origins:
             declared = GROUND_TRUTH_INPUTS.get(origin, {"exempt": False})
             if bool(declared.get("exempt")):
@@ -675,8 +764,9 @@ def _ground_truth_evidence(
                 }
                 continue
             inventories[origin] = inventory
+            declared_roots_by_origin[origin] = declared_roots
             for item in inventory:
-                external_claims.setdefault(cast(Path, item["_path"]), set()).add(origin)
+                external_claims.setdefault(item.path, set()).add(origin)
 
         for path, claimed_origins in sorted(external_claims.items(), key=lambda item: str(item[0])):
             if len(claimed_origins) > 1:
@@ -685,10 +775,10 @@ def _ground_truth_evidence(
                     f"{path.name} ({', '.join(sorted(claimed_origins))})"
                 )
 
-        source_key_origins: dict[tuple[str, int], set[str]] = {}
+        source_key_origins: dict[GroundTruthKey, set[str]] = {}
         for origin, rows in rows_by_origin.items():
             for row in rows:
-                source_key_origins.setdefault((str(row["blob_hash"]), int(row["blob_size"])), set()).add(origin)
+                source_key_origins.setdefault(row.key, set()).add(origin)
 
         for origin in origins:
             declared = GROUND_TRUTH_INPUTS.get(origin, {"exempt": False})
@@ -696,79 +786,52 @@ def _ground_truth_evidence(
                 continue
             rows = rows_by_origin.get(origin, [])
             inventory = inventories[origin]
-            by_key: dict[tuple[str, int], list[dict[str, object]]] = {}
+            declared_roots = declared_roots_by_origin[origin]
+            by_key: dict[GroundTruthKey, list[_ExternalGroundTruthFile]] = {}
             for item in inventory:
-                by_key.setdefault((str(item["hash"]), int(item["size"])), []).append(item)
-            provenance: list[dict[str, object]] = []
+                by_key.setdefault(item.key, []).append(item)
+            provenance: list[_RawGroundTruthProvenance] = []
             matched_external_paths: set[tuple[int, str]] = set()
-            unmatched_raws: list[dict[str, object]] = []
+            unmatched_raws: list[_UnmatchedSourceRawReceipt] = []
             for row in rows:
-                key = (str(row["blob_hash"]), int(row["blob_size"]))
-                matches = by_key.get(key, [])
+                matches = by_key.get(row.key, [])
                 match = matches[0] if matches else None
                 if match is None:
-                    disposition = "unreconciled-source-raw"
                     unmatched_raws.append(
                         {
-                            "raw_id": row["raw_id"],
-                            "blob_hash": row["blob_hash"],
-                            "blob_size": row["blob_size"],
-                            "disposition": disposition,
+                            "raw_id": row.raw_id,
+                            "blob_hash": row.blob_hash,
+                            "blob_size": row.blob_size,
+                            "disposition": "unreconciled-source-raw",
                         }
                     )
                 else:
-                    matched_external_paths.add((int(match["root_index"]), str(match["relative_path"])))
-                provenance.append(
-                    {
-                        "raw_id": row["raw_id"],
-                        "origin": row["origin"],
-                        "native_id": row["native_id"],
-                        "logical_source_key": row["logical_source_key"],
-                        "source_path": row["source_path"],
-                        "blob_hash": row["blob_hash"],
-                        "blob_size": row["blob_size"],
-                        "matched_external_relative_path": (str(match["relative_path"]) if match is not None else None),
-                        "matched_external_hash": str(match["hash"]) if match is not None else None,
-                        "matched_external_size": int(match["size"]) if match is not None else None,
-                        "disposition": str(row["disposition"]),
-                    }
-                )
+                    matched_external_paths.add((match.root_index, match.relative_path))
+                provenance.append(_raw_provenance(row, match))
 
-            unmatched_external_files = [
-                {
-                    "root_index": int(item["root_index"]),
-                    "relative_path": str(item["relative_path"]),
-                    "hash": str(item["hash"]),
-                    "size": int(item["size"]),
-                    "disposition": "unmatched-external-file",
-                }
-                for item in inventory
-                if (int(item["root_index"]), str(item["relative_path"])) not in matched_external_paths
+            unmatched_external = [
+                item for item in inventory if (item.root_index, item.relative_path) not in matched_external_paths
             ]
-            cross_origin_mismatches: list[dict[str, object]] = []
-            for item in unmatched_external_files:
-                other_origins = sorted(source_key_origins.get((str(item["hash"]), int(item["size"])), set()) - {origin})
+            unmatched_external_files: list[_ExternalGroundTruthReceipt] = []
+            cross_origin_mismatches: list[_ExternalGroundTruthReceipt] = []
+            for item in unmatched_external:
+                other_origins = sorted(source_key_origins.get(item.key, set()) - {origin})
                 if other_origins:
-                    item["disposition"] = "cross-origin-source"
-                    item["other_origins"] = other_origins
-                    cross_origin_mismatches.append(item)
+                    receipt = _external_receipt(item, "cross-origin-source", other_origins=other_origins)
+                    unmatched_external_files.append(receipt)
+                    cross_origin_mismatches.append(receipt)
+                else:
+                    unmatched_external_files.append(_external_receipt(item, "unmatched-external-file"))
             for item in inventory:
-                claimed_origins = external_claims.get(cast(Path, item["_path"]), set()) - {origin}
+                claimed_origins = external_claims.get(item.path, set()) - {origin}
                 if claimed_origins:
                     cross_origin_mismatches.append(
-                        {
-                            "root_index": int(item["root_index"]),
-                            "relative_path": str(item["relative_path"]),
-                            "hash": str(item["hash"]),
-                            "size": int(item["size"]),
-                            "disposition": "cross-origin-source",
-                            "other_origins": sorted(claimed_origins),
-                        }
+                        _external_receipt(item, "cross-origin-source", other_origins=sorted(claimed_origins))
                     )
 
-            source_keys = {(str(row["blob_hash"]), int(row["blob_size"])) for row in rows}
+            source_keys: set[GroundTruthKey] = {row.key for row in rows}
             source_distinct_bytes = sum(size for _hash, size in source_keys)
-            external_bytes = sum(int(item["size"]) for item in inventory)
+            external_bytes = sum(item.size for item in inventory)
             count_discrepancy = len(source_keys) != len(inventory)
             byte_discrepancy = source_distinct_bytes != external_bytes
             origin_errors: list[str] = []
@@ -788,7 +851,7 @@ def _ground_truth_evidence(
                 origin_errors.append(f"{len(cross_origin_mismatches)} external file(s) match another origin")
             if origin_errors:
                 errors.extend(f"ground truth for {origin}: {reason}" for reason in origin_errors)
-            hashes = {str(item["hash"]) for item in inventory}
+            hashes = {item.content_hash for item in inventory}
             missing = sorted(
                 source_keys_hash for source_keys_hash, _size in source_keys if source_keys_hash not in hashes
             )
@@ -799,7 +862,7 @@ def _ground_truth_evidence(
                 "external_bytes": external_bytes,
                 "external_hashes": len(hashes),
                 "source_raw_count": len(rows),
-                "source_raw_bytes": sum(int(row["blob_size"]) for row in rows),
+                "source_raw_bytes": sum(row.blob_size for row in rows),
                 "source_blob_hashes": len(source_keys),
                 "source_blob_bytes": source_distinct_bytes,
                 "count_discrepancy": count_discrepancy,
