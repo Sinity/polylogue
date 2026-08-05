@@ -7999,6 +7999,7 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         clause, params = _structural_predicate_clause("delegation", "d", predicate, session_alias="s")
+        where_clause = f"WHERE {clause}" if clause else ""
         session_clause = ""
         session_params: list[object] = []
         if session_filters:
@@ -8008,7 +8009,7 @@ class ArchiveStore:
             SELECT d.*
             FROM delegations d
             JOIN sessions s ON s.session_id = d.parent_session_id
-            WHERE {clause}
+            {where_clause}
             {session_clause}
             ORDER BY d.parent_session_id {order_direction},
                      COALESCE(d.instruction_tool_use_block_id, d.child_session_id) {order_direction}

@@ -107,6 +107,7 @@ if TYPE_CHECKING:
     from polylogue.core.protocols import ProgressCallback
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
+    from polylogue.insights.fable_packet import FableDelegationPacket
     from polylogue.insights.hermes_integration_health import HermesIntegrationHealth
     from polylogue.insights.judgment.types import ComparativeJudgment
     from polylogue.insights.pathology import PathologyReport
@@ -3858,6 +3859,7 @@ class PolylogueArchiveMixin:
 
     async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
         """Resolve one public object/evidence ref into a bounded read payload."""
+        from polylogue.storage.block_anchor import InvalidBlockAnchorError, parse_block_anchor, resolve_block_anchor
         from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
         invalid_unicode_ref = _invalid_unicode_ref_payload(ref)
@@ -3875,6 +3877,47 @@ class PolylogueArchiveMixin:
                 return cast(PublicRefResolutionPayload, bounded_batch_ref)
             if batch_candidate.kind != "annotation-batch":
                 return cast(PublicRefResolutionPayload, bounded_batch_ref)
+        try:
+            block_anchor = parse_block_anchor(ref)
+        except InvalidBlockAnchorError:
+            block_anchor = None
+        if block_anchor is not None:
+            archive_root = _active_archive_root(self.config)
+
+            def read_anchor(archive: ArchiveStore) -> PublicRefResolutionPayload:
+                resolution = resolve_block_anchor(archive._conn, block_anchor)
+                resolved = resolution.state in {"ok", "drifted_position", "drifted_message"}
+                object_refs = (
+                    (f"message:{resolution.resolved_message_id}",) if resolution.resolved_message_id is not None else ()
+                )
+                return PublicRefResolutionPayload(
+                    ref=ref,
+                    kind="block",
+                    resolved=resolved,
+                    payload_kind="block-anchor",
+                    payload={
+                        "state": resolution.state,
+                        "anchor": resolution.anchor.to_text(),
+                        "resolved_message_id": resolution.resolved_message_id,
+                        "resolved_position": resolution.resolved_position,
+                        "candidates": [
+                            {"message_id": message_id, "position": position}
+                            for message_id, position in resolution.candidates
+                        ],
+                        "detail": resolution.detail,
+                    },
+                    object_refs=object_refs,
+                    caveats=() if resolved else (resolution.detail or f"block anchor state: {resolution.state}",),
+                )
+
+            return await run_archive_read(
+                archive_root,
+                operation="archive.resolve_block_anchor",
+                arguments={"ref": ref},
+                work=read_anchor,
+                projection="block-anchor-resolution",
+                stable_order="canonical",
+            )
         try:
             parsed = parse_public_ref(ref)
         except ValueError as exc:
@@ -5488,6 +5531,40 @@ class PolylogueArchiveMixin:
             arguments={"query": query},
             work=lambda archive: archive.audit_insight_rigor(query),
             projection="insight-rigor",
+            workload_class="scan",
+        )
+
+    async def regenerate_private_fable_packet(
+        self,
+        *,
+        seed: str,
+        requested_size: int,
+        schema_id: str = "delegation.discourse",
+        schema_version: int = 1,
+        exact_template_cap: int = 1,
+    ) -> FableDelegationPacket:
+        """Cold-regenerate the private descriptive Fable packet from the archive."""
+        from polylogue.insights.fable_packet import regenerate_private_fable_packet
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.fable_packet.regenerate",
+            arguments={
+                "seed": seed,
+                "requested_size": requested_size,
+                "schema_id": schema_id,
+                "schema_version": schema_version,
+                "exact_template_cap": exact_template_cap,
+            },
+            work=lambda archive: regenerate_private_fable_packet(
+                archive,
+                seed=seed,
+                requested_size=requested_size,
+                schema_id=schema_id,
+                schema_version=schema_version,
+                exact_template_cap=exact_template_cap,
+            ),
+            projection="fable-delegation-packet",
             workload_class="scan",
         )
 

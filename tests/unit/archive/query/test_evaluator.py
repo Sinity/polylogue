@@ -14,6 +14,7 @@ from polylogue.archive.query.expression import RefOperand, resolve_ref_operand
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.holdout_cohorts import mark_holdout
 from polylogue.storage.sqlite.query_objects import (
     EvaluationReceipt,
     QueryObject,
@@ -244,6 +245,45 @@ def test_retained_sampled_result_set_fails_closed_as_a_set_operand() -> None:
     )
 
     with pytest.raises(RetainedRelationUnavailableError, match="not an exact set operand"):
+        resolve_ref_operand(
+            RefOperand(ObjectRef(kind="result-set", object_id=result.result_set_id)),
+            DurableRefResolver(conn, _Evaluator()),
+        )
+
+
+def test_retained_holdout_result_set_fails_closed_before_members_are_read() -> None:
+    conn = _conn()
+    query = put_query(
+        conn,
+        {"field": "title", "value": "holdout"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    result = put_result_set(
+        conn,
+        result_set_id="holdout-retained",
+        query_hash=query.query_hash,
+        grain="session",
+        corpus_epoch="index:g1",
+        member_refs=("session:secret",),
+        exactness="exact",
+        persistence_class="cohort",
+        created_at_ms=2,
+    )
+    mark_holdout(
+        conn,
+        result_set_id=result.result_set_id,
+        frame="test-frame",
+        selection_definition={"seed": "test"},
+        intended_confirmation_use="confirmation test",
+        authority="test",
+        created_epoch="index:g1",
+        created_at_ms=3,
+    )
+
+    with pytest.raises(RetainedRelationUnavailableError, match="exploratory queries cannot read"):
         resolve_ref_operand(
             RefOperand(ObjectRef(kind="result-set", object_id=result.result_set_id)),
             DurableRefResolver(conn, _Evaluator()),

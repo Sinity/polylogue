@@ -50,6 +50,7 @@ from polylogue.core.refs import (
     delegation_subtree_object_id,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.block_anchor import format_block_anchor
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -267,6 +268,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "join_typed_annotations",
         "neighbor_candidate_payloads",
         "resolve_ref",
+        "regenerate_private_fable_packet",
         "export_otel",
         "session_correlation_payload",
         # Pathology and portfolio read methods added in recent PRs.
@@ -1847,6 +1849,17 @@ def test_session_not_found_is_typed_polylogue_error() -> None:
     assert SessionNotFoundError.http_status_code == 404
 
 
+async def test_regenerate_private_fable_packet_is_an_archive_backed_facade_route(tmp_path: Path) -> None:
+    """The public facade reaches cold regeneration and preserves fail-closed status."""
+    archive = _archive(tmp_path)
+    try:
+        packet = await archive.regenerate_private_fable_packet(seed="facade-test", requested_size=1)
+        assert packet.status == "not_supported"
+        assert "empty_deterministic_sample" in packet.not_supported_reasons
+    finally:
+        await archive.close()
+
+
 @pytest.mark.parametrize(
     "method_name",
     sorted(MUTATION_BY_ID_RAISES_METHODS),
@@ -2705,6 +2718,18 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         assert evidence_block_payload.resolved is True
         assert evidence_block_payload.payload_kind == "block"
         assert evidence_block_payload.evidence_refs == (f"{session_id}::{message_id}::0",)
+
+        with ArchiveStore.open_existing(archive.config.archive_root) as archive_db:
+            content_hash = archive_db._conn.execute(
+                "SELECT content_hash FROM blocks WHERE message_id = ? AND position = 0", (message_id,)
+            ).fetchone()[0]
+        anchor_ref = format_block_anchor(session_id, message_id, bytes(content_hash).hex())
+        anchor_payload = await archive.resolve_ref(anchor_ref)
+        assert anchor_payload.resolved is True
+        assert anchor_payload.payload_kind == "block-anchor"
+        assert anchor_payload.payload is not None
+        assert anchor_payload.payload["state"] == "ok"
+        assert anchor_payload.payload["anchor"] == anchor_ref
 
         runtime_payload = await archive.resolve_ref(f"context-snapshot:{session_id}:session_start")
         assert runtime_payload.resolved is True
