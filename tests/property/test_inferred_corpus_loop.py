@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from polylogue.config import Source
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.maintenance.archive_verification import verify_archive
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -60,7 +63,7 @@ def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
     handoff = build_inferred_corpus_convergence_handoff(manifest_path)
 
     assert persisted.supported_specs
-    assert len(handoff.specs) == len(handoff.selections) == 1
+    assert len(handoff.specs) == len(handoff.selections) >= 1
     spec = handoff.specs[0]
     selection = handoff.selections[0]
     source_root = tmp_path / "synthetic-source"
@@ -145,3 +148,73 @@ def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
         assert cleared_count == 0
         with pytest.raises(AssertionError, match="FTS MATCH returned no blocks"):
             _assert_fts_match(conn, search_token)
+
+
+def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise every persisted schema element through the production route.
+
+    The manifest is the authority for both supported and explicitly
+    unsupported elements.  This test must never silently fall back to the
+    default provider schema or drop an element because its wire route is not
+    synthesizable.  The final mutation is a ground-truth red twin for the
+    archive verification registry, proving that a green convergence run does
+    not merely verify the generator's own bookkeeping.
+    """
+
+    registry = SchemaRegistry(storage_root=SCHEMA_DIR)
+    manifest = compile_inferred_corpus_manifest(registry=registry)
+    handoff = build_inferred_corpus_convergence_handoff(manifest)
+    assert handoff.specs
+    assert len(handoff.specs) == len(handoff.selections)
+    assert all(
+        all(construct.state == "supported" for construct in entry.key.construct_support)
+        for entry in manifest.entries
+        if entry.spec is not None
+    )
+    assert all(entry.unsupported is not None for entry in manifest.entries if entry.spec is None)
+
+    source_root = tmp_path / "inferred-source"
+    sources: list[Source] = []
+    for index, (spec, selection) in enumerate(zip(handoff.specs, handoff.selections, strict=True)):
+        output_dir = source_root / f"{index:03d}-{selection.provider}-{selection.element_kind or 'root'}"
+        written = SyntheticCorpus.write_selection_artifacts(
+            selection,
+            spec,
+            output_dir,
+            prefix=f"inferred-{index:03d}",
+        )
+        assert written.batch.report.generated_count == spec.count
+        assert written.files and all(path.stat().st_size > 0 for path in written.files)
+        sources.extend(Source(name=selection.provider, path=path.relative_to(source_root)) for path in written.files)
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.chdir(source_root)
+    ingest_result = asyncio.run(parse_sources_archive(archive_root, sources))
+    assert ingest_result.counts["sessions"] > 0
+    assert ingest_result.counts["messages"] > 0
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
+    states, _timings = DaemonConverger(
+        (make_fts_stage(archive_root / "index.db"), make_insights_stage(archive_root / "index.db"))
+    ).converge_sessions(session_ids)
+    assert states and all(state.converged and state.last_error is None for state in states.values())
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("ANALYZE")
+
+    green = verify_archive(archive_root)
+    green_summary = [(check.name, check.status.value, check.summary) for check in green.checks]
+    assert green.blocking is False, green_summary
+    assert all(check.status is OutcomeStatus.OK for check in green.checks), green_summary
+
+    broken_root = tmp_path / "broken"
+    shutil.copytree(archive_root, broken_root)
+    with sqlite3.connect(broken_root / "index.db") as conn:
+        conn.execute("UPDATE sessions SET message_count = message_count + 1 WHERE session_id = ?", (session_ids[0],))
+        conn.commit()
+    red = verify_archive(broken_root, checks=("message-count-projection",))
+    check = next(item for item in red.checks if item.name == "message-count-projection")
+    assert check.status is OutcomeStatus.ERROR
