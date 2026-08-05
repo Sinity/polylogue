@@ -454,7 +454,10 @@ def _orphan_message_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                1 AS has_vector
         FROM message_embedding_refs AS r
         WHERE NOT EXISTS (
-            SELECT 1 FROM idx.messages AS indexed WHERE indexed.message_id = r.message_id
+            SELECT 1
+            FROM idx.messages AS indexed
+            WHERE indexed.message_id = r.message_id
+              AND indexed.session_id = r.session_id
         )
         ORDER BY r.message_id
         """
@@ -467,7 +470,10 @@ def _delete_if_still_orphan_ref(conn: sqlite3.Connection, message_id: str) -> in
         DELETE FROM message_embedding_refs
         WHERE message_id = ?
           AND NOT EXISTS (
-              SELECT 1 FROM idx.messages WHERE idx.messages.message_id = message_embedding_refs.message_id
+              SELECT 1
+              FROM idx.messages
+              WHERE idx.messages.message_id = message_embedding_refs.message_id
+                AND idx.messages.session_id = message_embedding_refs.session_id
           )
         """,
         (message_id,),

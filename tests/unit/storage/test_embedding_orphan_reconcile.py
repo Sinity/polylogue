@@ -243,6 +243,47 @@ def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) -> 
     assert [item.session_id for item in pending] == [session_id]
 
 
+def test_reconcile_removes_ref_with_stale_session_identity_but_preserves_live_ref(tmp_path: Path) -> None:
+    """A ref is live only when both duplicated identities match the index row.
+
+    The session_id is denormalized in ``message_embedding_refs`` so the
+    cross-tier reconciler must validate it rather than treating message_id
+    presence alone as sufficient.
+    """
+    session_id = "codex-session:session-identity"
+    live_message_id = f"{session_id}:m1"
+    preserved_message_id = f"{session_id}:m2"
+    stale_session_id = "codex-session:deleted-session"
+
+    _connect_index(
+        tmp_path / "index.db",
+        sessions=[session_id],
+        messages={session_id: [live_message_id, preserved_message_id]},
+    )
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    _write_embedding(conn, message_id=preserved_message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
+    _write_embedding(conn, message_id=live_message_id, session_id=stale_session_id, embedded_at_ms=_OLD_MS)
+    conn.close()
+
+    report = reconcile_embedding_orphans(
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        quiet_window_ms=0,
+        mutation_authority="offline-exclusive",
+    )
+
+    assert report.orphan_message_rows == 1
+    assert report.removed_message_rows == 1
+    with _connect_embeddings(embeddings_db) as verify:
+        refs = verify.execute(
+            "SELECT message_id, session_id FROM message_embedding_refs ORDER BY session_id"
+        ).fetchall()
+    assert [(row["message_id"], row["session_id"]) for row in refs] == [(preserved_message_id, session_id)]
+
+
 def test_apply_accepts_generation_metadata_beside_external_pointer_anchor(tmp_path: Path) -> None:
     """A public archive symlink must use the anchor tier's generation metadata.
 
