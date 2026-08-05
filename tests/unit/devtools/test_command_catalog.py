@@ -102,6 +102,9 @@ def test_named_catalog_bypass_sites_are_registered_or_sanctioned() -> None:
     for site in CATALOG_BYPASS_SITES:
         source = (root / site.path).read_text(encoding="utf-8")
         assert site.marker in source
-        assert site.command_name in COMMANDS
         assert site.disposition in {"registered", "sanctioned-bypass"}
+        if site.command_name is not None:
+            assert site.command_name in COMMANDS
+        else:
+            assert site.disposition == "sanctioned-bypass"
         assert site.reason

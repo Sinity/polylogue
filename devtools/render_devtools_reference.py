@@ -83,16 +83,15 @@ def _render_workspace_dispositions() -> list[str]:
     lines.extend(
         [
             "",
-            "Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push route use registered commands; the generated test-economics provenance header is the sole declared sanctioned module-path exception.",
+            "Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push route use registered commands; direct hook adapters and generated provenance headers require declared sanctioned exceptions.",
             "",
             "| Site | Status | Registered command | Reason |",
             "| --- | --- | --- | --- |",
         ]
     )
     for site in CATALOG_BYPASS_SITES:
-        lines.append(
-            f"| `{site.path}` | `{site.disposition}` | `{control_plane_command(site.command_name)}` | {site.reason} |"
-        )
+        command = control_plane_command(site.command_name) if site.command_name is not None else "hook adapter"
+        lines.append(f"| `{site.path}` | `{site.disposition}` | `{command}` | {site.reason} |")
     lines.append("")
     return lines
 

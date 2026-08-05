@@ -113,7 +113,7 @@ The utf.1 triage retains workspace commands with operator history, reusable outp
 | `devtools workspace cli-surface-audit` | `retain` | Focused tests cover bounded output and stale-artifact pruning; the audit shelf is reusable. | Keep the registered command as the current CLI surface audit entrypoint. |
 | `devtools demo real-slice-screen` | `retain` | Focused privacy-screening tests cover redaction, PII review, and report generation. | Keep the registered command as the read-only real-archive screening entrypoint. |
 
-Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push route use registered commands; the generated test-economics provenance header is the sole declared sanctioned module-path exception.
+Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push route use registered commands; direct hook adapters and generated provenance headers require declared sanctioned exceptions.
 
 | Site | Status | Registered command | Reason |
 | --- | --- | --- | --- |
@@ -121,6 +121,8 @@ Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push r
 | `.github/workflows/nightly-scale.yml` | `registered` | `devtools bench nightly-compare` | CI invokes the catalog command so the nightly comparison is discoverable and checked. |
 | `devtools/pre_push_gate.py` | `registered` | `devtools lab policy backlog-hygiene` | The intentional Beads-only route remains narrow while using the registered policy command. |
 | `docs/test-economics.md` | `sanctioned-bypass` | `devtools lab test-economics` | The generated provenance header preserves the module that emitted the document; operators use the catalog command. |
+| `.githooks/pre-push` | `sanctioned-bypass` | `hook adapter` | The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate. |
+| `.beads-hooks/pre-push` | `sanctioned-bypass` | `hook adapter` | The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs. |
 
 ### Core
 
@@ -212,6 +214,7 @@ Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push r
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
+| `devtools verify catalog-bypasses` | Reject direct devtools module or script execution outside sanctioned adapters. |
 | `devtools verify ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
 | `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |

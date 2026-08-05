@@ -112,7 +112,7 @@ class WorkspaceCommandDisposition:
 class CatalogBypassSite:
     path: str
     marker: str
-    command_name: str
+    command_name: str | None
     disposition: str
     reason: str
 
@@ -1696,6 +1696,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify ci-workflows", "devtools verify ci-workflows --json"),
     ),
     CommandSpec(
+        "verify catalog-bypasses",
+        "verification",
+        "Reject direct devtools module or script execution outside sanctioned adapters.",
+        "devtools.verify_catalog_bypasses",
+        use_when=(
+            "Check workflow run blocks, repository hooks, and devtools process-launch sites for direct "
+            "python -m devtools.X or python devtools/X.py execution that bypasses the command catalog."
+        ),
+        examples=("devtools verify catalog-bypasses", "devtools verify catalog-bypasses --json"),
+    ),
+    CommandSpec(
         "verify test-infra-currency",
         "verification",
         "Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION.",
@@ -2418,6 +2429,20 @@ CATALOG_BYPASS_SITES: tuple[CatalogBypassSite, ...] = (
         "lab test-economics",
         "sanctioned-bypass",
         "The generated provenance header preserves the module that emitted the document; operators use the catalog command.",
+    ),
+    CatalogBypassSite(
+        ".githooks/pre-push",
+        "python -m devtools.pre_push_gate",
+        None,
+        "sanctioned-bypass",
+        "The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate.",
+    ),
+    CatalogBypassSite(
+        ".beads-hooks/pre-push",
+        "python -m devtools.pre_push_gate",
+        None,
+        "sanctioned-bypass",
+        "The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs.",
     ),
 )
 
