@@ -18,16 +18,18 @@ cache impossible to observe returning a verdict that disagrees with what
 ``project_raw_authority_verdicts`` would compute right now for the same
 cohort shape.
 
-This module only fills the cache lazily on read
-(:func:`get_or_compute_raw_authority_verdicts`). Wiring a ``DaemonConverger``
-stage to keep it warm proactively ahead of reads is deliberately deferred --
-see polylogue-tw4ar's own notes for why that needs its own careful staging
-rather than landing bundled with the cache table itself.
+The read-through entry point remains available for consumers, while the
+daemon's bounded ``raw_authority_verdict_cache`` stage calls
+:func:`warm_raw_authority_verdict_cache` proactively ahead of reads. Both
+paths share the same content-keyed freshness check, so a warm cohort never
+re-enters the byte-proof projection.
 """
 
 from __future__ import annotations
 
 import hashlib
+import sqlite3
+from dataclasses import dataclass
 
 from polylogue.core.enums import RawAuthorityVerdict
 from polylogue.storage.raw_authority_verdict_projection import (
@@ -36,11 +38,26 @@ from polylogue.storage.raw_authority_verdict_projection import (
 )
 
 
-def _current_cohort_rows(
-    store: RawAuthorityVerdictProjectionHost, logical_source_key: str
+@dataclass(frozen=True, slots=True)
+class RawAuthorityVerdictCacheWork:
+    """Bounded cache-warming work discovered from one source-tier snapshot."""
+
+    pending_logical_source_keys: tuple[str, ...]
+    skipped_append_cohorts: int
+
+
+@dataclass(frozen=True, slots=True)
+class RawAuthorityVerdictCacheWarmup:
+    """Outcome of one bounded proactive cache-warming pass."""
+
+    warmed_cohorts: int
+    skipped_append_cohorts: int
+    pending_cohorts: bool
+
+
+def _current_cohort_rows_from_connection(
+    conn: sqlite3.Connection, logical_source_key: str
 ) -> list[tuple[str, str, str]]:
-    """Return every ``(raw_id, revision_kind, blob_hash_hex)`` row for a cohort."""
-    conn = store._ensure_source_conn()
     rows = conn.execute(
         """
         SELECT raw_id, revision_kind, lower(hex(blob_hash))
@@ -50,6 +67,71 @@ def _current_cohort_rows(
         (logical_source_key,),
     ).fetchall()
     return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+
+def _read_cached_raw_authority_verdicts_from_connection(
+    conn: sqlite3.Connection, logical_source_key: str
+) -> dict[str, RawAuthorityVerdict] | None:
+    current_rows = _current_cohort_rows_from_connection(conn, logical_source_key)
+    if not current_rows:
+        return None
+    fingerprint = _cohort_fingerprint(current_rows)
+    cached_rows = conn.execute(
+        "SELECT raw_id, verdict, cohort_fingerprint FROM raw_authority_verdicts WHERE logical_source_key = ?",
+        (logical_source_key,),
+    ).fetchall()
+    if not cached_rows or len(cached_rows) != len(current_rows):
+        return None
+
+    verdicts: dict[str, RawAuthorityVerdict] = {}
+    for raw_id, verdict, cached_fingerprint in cached_rows:
+        if bytes(cached_fingerprint) != fingerprint:
+            return None
+        verdicts[str(raw_id)] = RawAuthorityVerdict(str(verdict))
+    return verdicts
+
+
+def find_raw_authority_verdict_cache_work(
+    conn: sqlite3.Connection, *, max_cohorts: int | None = None
+) -> RawAuthorityVerdictCacheWork:
+    """Find stale full/unknown cohorts without reading blob payloads.
+
+    Append cohorts are deliberately excluded because the Phase 2 projection
+    has a different proof shape for contiguous append authority. They are
+    counted so the daemon can report that they were intentionally skipped.
+    ``max_cohorts`` bounds returned work, while the skip count still covers
+    the complete source-tier snapshot.
+    """
+    rows = conn.execute(
+        """
+        SELECT logical_source_key,
+               MAX(CASE WHEN revision_kind = 'append' THEN 1 ELSE 0 END) AS has_append
+        FROM raw_sessions
+        WHERE logical_source_key IS NOT NULL
+          AND logical_source_key != ''
+        GROUP BY logical_source_key
+        ORDER BY logical_source_key
+        """
+    ).fetchall()
+    pending: list[str] = []
+    skipped_append_cohorts = 0
+    for logical_source_key, has_append in rows:
+        key = str(logical_source_key)
+        if bool(has_append):
+            skipped_append_cohorts += 1
+            continue
+        if _read_cached_raw_authority_verdicts_from_connection(conn, key) is not None:
+            continue
+        if max_cohorts is None or len(pending) < max_cohorts:
+            pending.append(key)
+    return RawAuthorityVerdictCacheWork(tuple(pending), skipped_append_cohorts)
+
+
+def _current_cohort_rows(
+    store: RawAuthorityVerdictProjectionHost, logical_source_key: str
+) -> list[tuple[str, str, str]]:
+    """Return every ``(raw_id, revision_kind, blob_hash_hex)`` row for a cohort."""
+    return _current_cohort_rows_from_connection(store._ensure_source_conn(), logical_source_key)
 
 
 def _cohort_fingerprint(rows: list[tuple[str, str, str]]) -> bytes:
@@ -83,25 +165,7 @@ def read_cached_raw_authority_verdicts(
     (or just call :func:`get_or_compute_raw_authority_verdicts`, which does
     exactly that and persists the result).
     """
-    current_rows = _current_cohort_rows(store, logical_source_key)
-    if not current_rows:
-        return None
-    fingerprint = _cohort_fingerprint(current_rows)
-
-    conn = store._ensure_source_conn()
-    cached_rows = conn.execute(
-        "SELECT raw_id, verdict, cohort_fingerprint FROM raw_authority_verdicts WHERE logical_source_key = ?",
-        (logical_source_key,),
-    ).fetchall()
-    if not cached_rows or len(cached_rows) != len(current_rows):
-        return None
-
-    verdicts: dict[str, RawAuthorityVerdict] = {}
-    for raw_id, verdict, cached_fingerprint in cached_rows:
-        if bytes(cached_fingerprint) != fingerprint:
-            return None
-        verdicts[str(raw_id)] = RawAuthorityVerdict(str(verdict))
-    return verdicts
+    return _read_cached_raw_authority_verdicts_from_connection(store._ensure_source_conn(), logical_source_key)
 
 
 def write_raw_authority_verdict_cache(
@@ -165,8 +229,35 @@ def get_or_compute_raw_authority_verdicts(
     return verdicts
 
 
+def warm_raw_authority_verdict_cache(
+    store: RawAuthorityVerdictProjectionHost,
+    *,
+    max_cohorts: int,
+    now_ms: int,
+) -> RawAuthorityVerdictCacheWarmup:
+    """Warm at most ``max_cohorts`` stale eligible cohorts, then report residue."""
+    if max_cohorts <= 0:
+        raise ValueError("max_cohorts must be positive")
+
+    conn = store._ensure_source_conn()
+    work = find_raw_authority_verdict_cache_work(conn, max_cohorts=max_cohorts)
+    for logical_source_key in work.pending_logical_source_keys:
+        get_or_compute_raw_authority_verdicts(store, logical_source_key, now_ms=now_ms)
+
+    remaining = find_raw_authority_verdict_cache_work(conn, max_cohorts=1)
+    return RawAuthorityVerdictCacheWarmup(
+        warmed_cohorts=len(work.pending_logical_source_keys),
+        skipped_append_cohorts=work.skipped_append_cohorts,
+        pending_cohorts=bool(remaining.pending_logical_source_keys),
+    )
+
+
 __all__ = [
+    "RawAuthorityVerdictCacheWarmup",
+    "RawAuthorityVerdictCacheWork",
+    "find_raw_authority_verdict_cache_work",
     "get_or_compute_raw_authority_verdicts",
     "read_cached_raw_authority_verdicts",
+    "warm_raw_authority_verdict_cache",
     "write_raw_authority_verdict_cache",
 ]

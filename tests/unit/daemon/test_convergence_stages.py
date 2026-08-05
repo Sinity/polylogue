@@ -15,6 +15,7 @@ import pytest
 
 import polylogue.daemon.convergence_stages as stages
 from polylogue.archive.message.roles import Role
+from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.convergence import StageExecutionResult
 from polylogue.daemon.convergence_stages import (
@@ -22,6 +23,7 @@ from polylogue.daemon.convergence_stages import (
     make_embed_stage,
     make_fts_stage,
     make_insights_stage,
+    make_raw_authority_verdict_cache_stage,
 )
 from polylogue.scenarios import (
     WorkloadPhaseObservation,
@@ -33,7 +35,8 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.insights.session import storage as session_storage
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
@@ -67,6 +70,75 @@ def test_default_convergence_stages_retry_bounded_false_results(tmp_path: Path) 
     assert stages_by_name["fts"].false_means_pending is True
     assert stages_by_name["embed"].false_means_pending is True
     assert stages_by_name["insights"].false_means_pending is True
+
+
+def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_readiness(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(stages._DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS + 1):
+            raw_id = f"full-{index}"
+            written_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f"payload-{index}".encode(),
+                source_path="session.jsonl",
+                acquired_at_ms=1,
+                raw_id=raw_id,
+            )
+            archive.bind_raw_revision(
+                written_id,
+                RawRevisionEnvelope(f"codex:full-{index}", RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+            )
+        append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"append-payload",
+            source_path="session.jsonl",
+            acquired_at_ms=1,
+            raw_id="append-only",
+        )
+        archive.bind_raw_revision(
+            append_id,
+            RawRevisionEnvelope(
+                "codex:append",
+                RawRevisionKind.APPEND,
+                "revision-append",
+                0,
+                predecessor_source_revision="revision-base",
+                predecessor_raw_id="base",
+                baseline_raw_id="base",
+                append_start_offset=0,
+                append_end_offset=1,
+            ),
+        )
+
+    stage = make_raw_authority_verdict_cache_stage(tmp_path / "index.db")
+    assert stage.check_many is not None
+    assert stage.execute_many is not None
+    assert stage.false_means_pending is True
+    path = tmp_path / "source.jsonl"
+    with caplog.at_level("INFO"):
+        assert stage.check(path) is True
+        assert stage.execute_many((path,)) is False
+        assert stage.check(path) is True
+        assert stage.execute_many((path,)) is True
+        assert stage.check(path) is False
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        cached_cohorts = {
+            str(row[0]) for row in conn.execute("SELECT DISTINCT logical_source_key FROM raw_authority_verdicts")
+        }
+    assert len(cached_cohorts) == stages._DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS + 1
+    assert "codex:append" not in cached_cohorts
+    assert "skipped append cohorts=1" in caplog.text
+
+    import polylogue.storage.raw_authority_verdict_cache as cache_module
+
+    def _fail_projection(*args: object, **kwargs: object) -> dict[str, object]:
+        raise AssertionError("warm cache was recomputed")
+
+    monkeypatch.setattr(cache_module, "project_raw_authority_verdicts", _fail_projection)
+    assert stage.execute_many((path,)) is True
 
 
 def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
@@ -1153,6 +1225,7 @@ def test_default_convergence_stages_always_register_embed_stage(
 
     assert stage_names == [
         "raw_parse_recovery",
+        "raw_authority_verdict_cache",
         "fts",
         "embed",
         "claude_workflow",

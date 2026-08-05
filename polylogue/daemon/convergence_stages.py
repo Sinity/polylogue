@@ -25,6 +25,11 @@ from polylogue.core.enums import Provider
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import get_logger
+from polylogue.operations.raw_authority_verdict_cache import (
+    RawAuthorityVerdictCacheWork,
+    find_raw_authority_verdict_cache_work,
+    warm_raw_authority_verdict_cache,
+)
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -49,6 +54,7 @@ _DAEMON_EMBED_MAX_MESSAGES = 2_500
 _DAEMON_EMBED_STOP_AFTER_SECONDS = 30
 _DAEMON_EMBED_MAX_ERRORS = 3
 _ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS = 120_000
+_DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS = 8
 
 
 def _is_transient_sqlite_lock(exc: BaseException) -> bool:
@@ -957,6 +963,75 @@ def make_raw_parse_recovery_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
+def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
+    """Warm the content-keyed raw-authority verdict cache in bounded cohorts."""
+
+    def work() -> RawAuthorityVerdictCacheWork | None:
+        return find_raw_authority_verdict_cache_work(db_path.parent)
+
+    def log_skipped_append_cohorts(discovered: RawAuthorityVerdictCacheWork) -> None:
+        if discovered.skipped_append_cohorts:
+            logger.info(
+                "raw_authority_verdict_cache: skipped append cohorts=%d; append authority uses a separate proof",
+                discovered.skipped_append_cohorts,
+            )
+
+    def check(_path: Path) -> bool:
+        try:
+            discovered = work()
+        except Exception:
+            logger.warning("raw_authority_verdict_cache: readiness probe failed", exc_info=True)
+            return True
+        if discovered is None:
+            return False
+        log_skipped_append_cohorts(discovered)
+        return bool(discovered.pending_logical_source_keys)
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        if not paths:
+            return set()
+        try:
+            discovered = work()
+        except Exception:
+            logger.warning("raw_authority_verdict_cache: batch readiness probe failed", exc_info=True)
+            return set(paths)
+        if discovered is None:
+            return set()
+        log_skipped_append_cohorts(discovered)
+        return set(paths) if discovered.pending_logical_source_keys else set()
+
+    def execute(_path: Path) -> StageExecuteReturn:
+        return execute_many((_path,))
+
+    def execute_many(_paths: Sequence[Path]) -> StageExecuteReturn:
+        try:
+            outcome = warm_raw_authority_verdict_cache(
+                db_path.parent,
+                max_cohorts=_DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS,
+                now_ms=int(time.time() * 1000),
+            )
+        except Exception:
+            logger.warning("raw_authority_verdict_cache: bounded warmup failed", exc_info=True)
+            return False
+        logger.info(
+            "raw_authority_verdict_cache: warmed cohorts=%d skipped_append=%d pending=%s",
+            outcome.warmed_cohorts,
+            outcome.skipped_append_cohorts,
+            outcome.pending_cohorts,
+        )
+        return not outcome.pending_cohorts
+
+    return ConvergenceStage(
+        name="raw_authority_verdict_cache",
+        description="Warm content-keyed raw-authority verdicts for full/unknown cohorts",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
+        false_means_pending=True,
+    )
+
+
 def make_default_convergence_stages(
     db_path: Path,
     *,
@@ -988,6 +1063,7 @@ def make_default_convergence_stages(
     stages.extend(
         (
             make_raw_parse_recovery_stage(db_path),
+            make_raw_authority_verdict_cache_stage(db_path),
             make_fts_stage(db_path),
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
@@ -2238,6 +2314,7 @@ __all__ = [
     "make_embed_stage",
     "make_fts_stage",
     "make_insights_stage",
+    "make_raw_authority_verdict_cache_stage",
     "make_raw_parse_recovery_stage",
     "make_sinex_publication_stage",
     "make_standing_query_stage",
