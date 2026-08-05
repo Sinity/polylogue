@@ -1482,6 +1482,8 @@ def _status_ok(status: dict[str, Any], *, require_fresh_snapshot: bool = False) 
         return False
     if isinstance(snapshot, dict) and snapshot.get("state") not in {None, "fresh"}:
         return False
+    if status.get("raw_failure_lifecycle_available") is False:
+        return False
     return ok and raw_frontier_integrity_is_proven_healthy(status.get("raw_frontier_integrity"))
 
 
@@ -1587,6 +1589,9 @@ def _compact_raw_failure_status(status: dict[str, Any]) -> dict[str, Any]:
         "terminal_rejections": "raw_terminal_rejections",
         "unexplained": "raw_unexplained_failures",
         "detection_warnings": "raw_detection_warnings",
+        "lifecycle_available": "raw_failure_lifecycle_available",
+        "lifecycle_state": "raw_failure_lifecycle_state",
+        "lifecycle_reason": "raw_failure_lifecycle_reason",
     }
     failures = {label: status[key] for label, key in keys.items() if key in status}
     samples = status.get("raw_failure_samples")
@@ -1608,6 +1613,9 @@ def _direct_raw_failure_status(root: Path) -> dict[str, Any]:
         "raw_deferred_failures": _safe_int(info.get("deferred_failures")),
         "raw_terminal_rejections": _safe_int(info.get("terminal_rejections")),
         "raw_unexplained_failures": _safe_int(info.get("unexplained_failures")),
+        "raw_failure_lifecycle_available": info.get("raw_failure_lifecycle_available"),
+        "raw_failure_lifecycle_state": info.get("raw_failure_lifecycle_state"),
+        "raw_failure_lifecycle_reason": info.get("raw_failure_lifecycle_reason"),
         "raw_failure_samples": info.get("samples", []),
     }
 
@@ -1666,6 +1674,7 @@ def _show_direct_json(
     )
     raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
     raw_frontier_integrity = _direct_raw_frontier_integrity(active_root, raw_materialization_readiness)
+    raw_failure_status = _direct_raw_failure_status(root)
     component_readiness = _direct_component_readiness(
         env,
         active_root=active_root,
@@ -1681,7 +1690,8 @@ def _show_direct_json(
     )
     schema_drift = schema_drift_status(active_root, now_ms=int(time.time() * 1000))
     payload: dict[str, Any] = {
-        "ok": _direct_status_ok(component_readiness),
+        "ok": _direct_status_ok(component_readiness)
+        and raw_failure_status.get("raw_failure_lifecycle_available") is not False,
         "daemon_liveness": False,
         "archive_root": str(root),
         "active_archive_root": str(active_root),
@@ -1714,7 +1724,7 @@ def _show_direct_json(
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
-    payload.update(_direct_raw_failure_status(root))
+    payload.update(raw_failure_status)
     if active_db is not None and active_db.exists():
         payload["active_db_path"] = str(active_db)
         try:

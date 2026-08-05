@@ -11,10 +11,13 @@ import pytest
 from pydantic import ValidationError
 
 from polylogue.core.enums import ArtifactSupportStatus
+from polylogue.core.json import JSONDocument
 from polylogue.daemon.status import (
     DaemonStatus,
     RawFailureSample,
     _raw_failure_info,
+    format_daemon_status_lines,
+    raw_failure_info_for_root,
 )
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -566,6 +569,52 @@ class TestRawFailureInfoProducesTypedSamples:
         assert info["deferred_failures"] == snapshot.deferred == 1
         assert info["terminal_rejections"] == snapshot.terminal == 1
         assert info["unexplained_failures"] == snapshot.unexplained == 0
+
+    @pytest.mark.parametrize("source_state", ["missing", "malformed"])
+    def test_status_fails_closed_when_source_lifecycle_is_unavailable(
+        self,
+        tmp_path: Path,
+        source_state: str,
+    ) -> None:
+        """An index fallback cannot turn unavailable source evidence into zero failures."""
+        source_db = tmp_path / "source.db"
+        if source_state == "malformed":
+            source_db.write_bytes(b"not a sqlite database")
+
+        with patch("polylogue.daemon.status.archive_root", return_value=tmp_path):
+            info = _raw_failure_info()
+            root_info = raw_failure_info_for_root(tmp_path)
+
+        for status in (info, root_info):
+            assert status["raw_failure_lifecycle_available"] is False
+            assert status["raw_failure_lifecycle_state"] == "unavailable"
+            assert status["raw_failure_lifecycle_reason"]
+            rendered = "\n".join(
+                format_daemon_status_lines(
+                    cast(
+                        JSONDocument,
+                        {
+                            "raw_failure_lifecycle_available": status["raw_failure_lifecycle_available"],
+                            "raw_failure_lifecycle_state": status["raw_failure_lifecycle_state"],
+                            "raw_failure_lifecycle_reason": status["raw_failure_lifecycle_reason"],
+                        },
+                    )
+                )
+            )
+            assert "unavailable" in rendered
+            assert "no raw failures" not in rendered
+
+    def test_status_reports_healthy_zero_failure_lifecycle_for_valid_source(self, tmp_path: Path) -> None:
+        initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+
+        with patch("polylogue.daemon.status.archive_root", return_value=tmp_path):
+            info = raw_failure_info_for_root(tmp_path)
+
+        assert info["raw_failure_lifecycle_available"] is True
+        assert info["raw_failure_lifecycle_state"] == "healthy"
+        assert info["parse_failures"] == 0
+        assert info["validation_failures"] == 0
+        assert info["unexplained_failures"] == 0
 
     def test_raw_failure_info_streams_lifecycle_counts_beyond_sample_cap(self, tmp_path: Path) -> None:
         """Lifecycle counts cover every failed raw without bulk-fetching rows."""

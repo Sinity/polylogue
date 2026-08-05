@@ -670,6 +670,16 @@ def _check_raw_failures_medium() -> HealthAlert:
         from polylogue.daemon.status import _raw_failure_info
 
         info = _raw_failure_info()
+        if info.get("raw_failure_lifecycle_available") is False:
+            reason = str(info.get("raw_failure_lifecycle_reason") or "source.db evidence is unavailable")
+            return HealthAlert(
+                check_name="raw_failures",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.ERROR,
+                message=f"raw failure lifecycle unavailable: {reason}",
+                checked_at=now,
+                consecutive_failures=_record_failure("raw_failures", False),
+            )
         raw_parse = info.get("parse_failures", 0)
         parse = int(raw_parse) if isinstance(raw_parse, (int, float)) else 0
         raw_val = info.get("validation_failures", 0)

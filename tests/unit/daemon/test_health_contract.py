@@ -30,7 +30,7 @@ from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -648,6 +648,74 @@ class TestReadinessProbeContract:
 # ---------------------------------------------------------------------------
 # 5. JSON-shape sanity for downstream consumers (#1236 OCI HEALTHCHECK)
 # ---------------------------------------------------------------------------
+
+
+class TestArchiveHealthRouteRawFailureLifecycle:
+    """The health route preserves source-tier lifecycle failures as errors."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_failures(self) -> Iterator[None]:
+        health_module._failure_counts.clear()
+        yield
+        health_module._failure_counts.clear()
+
+    def _patch_route_checks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(health_module, "resolve_health_tiers", lambda _value: {HealthTier.MEDIUM})
+        monkeypatch.setattr(health_module, "_run_fast_checks", lambda: [])
+        monkeypatch.setattr(
+            health_module,
+            "_run_medium_checks",
+            lambda: [health_module._check_raw_failures_medium()],
+        )
+        monkeypatch.setattr(health_module, "_run_expensive_checks", lambda: [])
+
+    def _call_health_route(self) -> tuple[HTTPStatus, dict[str, object]]:
+        handler = _make_handler("GET", "/api/health/check")
+        _, send_json = _capture_responses(handler)
+        handler._handle_health_check()
+        status, payload = send_json.call_args.args
+        return status, cast(dict[str, object], payload)
+
+    @pytest.mark.parametrize("source_state", ["missing", "malformed", "unreadable"])
+    def test_health_route_blocks_unavailable_source_lifecycle(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        source_state: str,
+    ) -> None:
+        root = tmp_path / "archive"
+        root.mkdir()
+        source_db = root / "source.db"
+        if source_state == "malformed":
+            source_db.write_bytes(b"not a sqlite database")
+        elif source_state == "unreadable":
+            source_db.mkdir()
+        self._patch_route_checks(monkeypatch)
+
+        with patch("polylogue.daemon.status.archive_root", return_value=root):
+            status, payload = self._call_health_route()
+
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+        assert payload["ok"] is False
+        assert payload["status"] == "error"
+        assert payload["alerts"] == 1
+
+    def test_health_route_reports_healthy_zero_failure_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "archive"
+        root.mkdir()
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+        self._patch_route_checks(monkeypatch)
+
+        with patch("polylogue.daemon.status.archive_root", return_value=root):
+            status, payload = self._call_health_route()
+
+        assert status == HTTPStatus.OK
+        assert payload == {"ok": True, "status": "healthy"}
 
 
 @pytest.mark.contract
