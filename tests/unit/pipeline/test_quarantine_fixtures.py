@@ -246,6 +246,21 @@ def test_validation_off_fast_path_repairs_session_shaped_workflow_journal(tmp_pa
     assert result.sessions[0].parsed_session.messages[0].text == "hello"
 
 
+def test_validation_advisory_stream_repairs_session_shaped_workflow_journal(tmp_path: Path) -> None:
+    """The normal worker stream plan must classify decoded journal records first."""
+    record = _make_raw_record(
+        claude_code_malformed_jsonl_bytes(),
+        "claude-code",
+        "/tmp/.claude/projects/project/subagents/workflows/wf-run-1/journal.jsonl",
+    ).model_copy(update={"source_name": "claude-code"})
+
+    result = ingest_record(record, str(tmp_path / "archive"), "advisory")
+
+    assert result.error is None
+    assert len(result.sessions) == 1
+    assert result.sessions[0].parsed_session.messages[0].text == "hello"
+
+
 # ---------------------------------------------------------------------------
 # Persistence lifecycle — ingest_record → mark_raw_parsed → quarantined
 # ---------------------------------------------------------------------------

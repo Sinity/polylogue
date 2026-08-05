@@ -351,11 +351,15 @@ def _build_stream_parse_plan(
             return None
         runtime_provider = detected_provider
 
-    artifact = classify_artifact(
+    decoded_artifact = classify_artifact(
         sample_payloads,
         provider=runtime_provider,
-        source_path=context.raw_record.source_path,
     )
+    path_artifact = classify_artifact_path(
+        context.raw_record.source_path,
+        provider=runtime_provider,
+    )
+    artifact = decoded_artifact if decoded_artifact.parse_as_session else path_artifact or decoded_artifact
     return _build_parse_plan(
         provider=runtime_provider,
         payload_provider=str(runtime_provider),
