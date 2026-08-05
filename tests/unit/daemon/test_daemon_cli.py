@@ -4117,9 +4117,11 @@ def test_bulk_rebuild_routing_resumable_transaction_drives_pass_even_below_thres
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: True
-    )
+
+    async def fake_in_flight() -> bool:
+        return True
+
+    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", fake_in_flight)
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fake_run_pass)
 
     counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
@@ -4144,9 +4146,11 @@ def test_bulk_rebuild_routing_pass_failure_never_propagates(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: True
-    )
+
+    async def fake_in_flight() -> bool:
+        return True
+
+    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", fake_in_flight)
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fail_run_pass)
 
     counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
@@ -4168,6 +4172,14 @@ def test_daemon_bulk_rebuild_transaction_in_flight_delegates(
         return True
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.maintenance.schema_inference_gate.resolve_schema_inference_receipt_reference",
+        lambda _root: tmp_path / "receipt.json",
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.schema_inference_gate.validate_schema_inference_receipt",
+        lambda _root, _receipt: {},
+    )
     monkeypatch.setattr(
         "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fake_has_resumable
     )

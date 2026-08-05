@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
+from polylogue.maintenance.sharded_rebuild import shard_raw_ids
 from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
 from polylogue.storage.archive_identity import OwnedArchiveLocation
-from polylogue.storage.index_generation import IndexGenerationStore
+from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
@@ -48,6 +53,17 @@ def _seed(root: Path, count: int = 2) -> None:
 
 def _active_bytes(root: Path) -> bytes:
     return root.joinpath("index.db").read_bytes()
+
+
+def _generation_ids(root: Path) -> set[str]:
+    generations = root / ".index-generations"
+    return {path.name for path in generations.glob("gen-*")} if generations.exists() else set()
+
+
+def _same_shard_raw_ids(root: Path) -> tuple[str, ...]:
+    with sqlite3.connect(root / "source.db") as conn:
+        raw_ids = [str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id")]
+    return tuple(next(bucket for bucket in shard_raw_ids(root, raw_ids, 2) if len(bucket) >= 2))
 
 
 def _interpose_receipt_mutation(monkeypatch: pytest.MonkeyPatch, receipt_path: Path, *, expire: bool) -> None:
@@ -228,3 +244,93 @@ def test_deadline_checkpoint_revalidates_receipt_before_persisting_state(
         )
 
     assert transaction_path.read_bytes() == before
+
+
+def test_sharded_replay_revalidates_expired_receipt_before_candidate_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shard replay must fail before its first index write and clean scratch generations.
+
+    Anti-vacuity: the real sharded rebuild route calls the real replay engine. The
+    wrapper expires the receipt immediately before that engine starts. Removing
+    the shard replay provenance guard lets the engine write the shard candidate,
+    which makes ``replayed_rows`` nonzero before the route fails later.
+    """
+    root = tmp_path / "archive"
+    _seed(root, count=4)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    raw_ids = _same_shard_raw_ids(root)
+    replayed_rows: list[int] = []
+
+    from polylogue.maintenance import replay as replay_module
+
+    original_replay = cast(Callable[..., Any], replay_module.rebuild_index_from_source)
+
+    async def expire_before_replay(*args: Any, **kwargs: Any) -> dict[str, object]:
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["generated_at"] = "2000-01-01T00:00:00Z"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            return cast(dict[str, object], await original_replay(*args, **kwargs))
+        finally:
+            config = cast(Config, args[0])
+            index_path = Path(config.db_path)
+            with sqlite3.connect(index_path) as conn:
+                replayed_rows.append(int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]))
+
+    monkeypatch.setattr(replay_module, "rebuild_index_from_source", expire_before_replay)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                raw_ids=raw_ids,
+                promote=False,
+                shard_count=2,
+                schema_inference_receipt_path=receipt_path,
+            )
+        )
+
+    assert replayed_rows == [0]
+    assert _generation_ids(root) == set()
+
+
+def test_sharded_target_creation_cleans_candidate_when_receipt_expires_after_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Receipt failure immediately after target creation cannot strand the target."""
+    root = tmp_path / "archive"
+    _seed(root, count=4)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    raw_ids = _same_shard_raw_ids(root)
+    original_create = IndexGenerationStore.create
+    create_count = 0
+
+    def expire_after_target_create(
+        store: IndexGenerationStore, *, owner_id: str | None = None, source_snapshot: str
+    ) -> IndexGeneration:
+        nonlocal create_count
+        generation = original_create(store, owner_id=owner_id, source_snapshot=source_snapshot)
+        create_count += 1
+        if create_count == 1:
+            payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+            payload["generated_at"] = "2000-01-01T00:00:00Z"
+            receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        return generation
+
+    monkeypatch.setattr(IndexGenerationStore, "create", expire_after_target_create)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                raw_ids=raw_ids,
+                promote=False,
+                shard_count=2,
+                schema_inference_receipt_path=receipt_path,
+            )
+        )
+
+    assert create_count == 1
+    assert _generation_ids(root) == set()

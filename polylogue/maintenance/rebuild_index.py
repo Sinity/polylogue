@@ -55,6 +55,36 @@ _PLANNER_STATS_ANALYZE_STATEMENTS = (
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class RebuildProvenanceContext:
+    """Validated evidence shared by every mutation in one rebuild pass.
+
+    ``validate`` is the guard for operations that consume source evidence.
+    Cleanup has a narrower contract: it may remove only a generation that was
+    created under this already-validated context, and never reads or writes
+    source evidence.  Keeping that distinction lets a failed receipt still
+    clean up non-promotable scratch generations without treating the stale
+    receipt as authorization to continue replaying.
+    """
+
+    root: Path
+    receipt_path: Path | None
+    source_snapshot: str
+    consumed_evidence: dict[str, object]
+
+    def validate(self) -> None:
+        _validate_rebuild_provenance_receipt(self.root, self.receipt_path)
+        from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
+
+        if rebuild_source_revision_snapshot(self.root) != self.source_snapshot:
+            raise RuntimeError("rebuild schema-inference preflight gate failed: source evidence changed during replay")
+
+    def validate_cleanup(self) -> None:
+        """Authorize failure cleanup from the immutable pre-mutation proof."""
+        if not self.consumed_evidence or not self.source_snapshot:
+            raise RuntimeError("rebuild cleanup has no validated provenance context")
+
+
 def _validate_rebuild_provenance_receipt(root: Path, receipt_path: Path | None) -> dict[str, object]:
     """Validate rebuild provenance at the current ownership boundary."""
     from polylogue.maintenance.schema_inference_gate import (
@@ -837,10 +867,24 @@ async def _rebuild_index_from_source_owned(
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
-            _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
-            generation = generation_store.create(source_snapshot=rebuild_source_revision_snapshot(root))
+            source_snapshot = rebuild_source_revision_snapshot(root)
+            precreate_provenance = RebuildProvenanceContext(
+                root=root,
+                receipt_path=request.schema_inference_receipt_path,
+                source_snapshot=source_snapshot,
+                consumed_evidence=consumed_evidence,
+            )
+            precreate_provenance.validate()
+            generation = generation_store.create(source_snapshot=source_snapshot)
+        provenance = RebuildProvenanceContext(
+            root=root,
+            receipt_path=request.schema_inference_receipt_path,
+            source_snapshot=generation.source_snapshot,
+            consumed_evidence=consumed_evidence,
+        )
         source_drifted = False
         try:
+            provenance.validate()
             generation_root = Path(generation.index_path).parent
             config = Config(
                 archive_root=generation_root,
@@ -908,6 +952,7 @@ async def _rebuild_index_from_source_owned(
                     raw_batch_size=request.raw_batch_size,
                     shard_count=request.shard_count,
                     prefetch_cache=effective_prefetch_cache,
+                    provenance=provenance,
                 )
             else:
                 # polylogue-uhgm: the pass deadline used to be checked only AFTER
@@ -1317,7 +1362,10 @@ async def _rebuild_index_from_source_owned(
                     )
             else:
                 with contextlib.suppress(Exception):
-                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+                    try:
+                        provenance.validate()
+                    except Exception:
+                        provenance.validate_cleanup()
                     generation_store.discard_if_inactive(generation)
             raise
     final_receipt = RebuildIndexReceipt(

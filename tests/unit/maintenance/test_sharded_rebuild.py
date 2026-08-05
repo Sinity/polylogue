@@ -22,20 +22,42 @@ both drive the real rebuild engine end to end and are slower.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+from typing import cast
+
+import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, BranchType, Provider
+from polylogue.maintenance.rebuild_index import RebuildProvenanceContext
+from polylogue.maintenance.schema_inference_gate import (
+    rebuild_source_revision_snapshot,
+    validate_schema_inference_receipt,
+)
 from polylogue.maintenance.sharded_rebuild import (
     merge_shards_into_target,
     resolve_cross_shard_session_graph,
     shard_raw_ids,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+
+
+class _NoopProvenance:
+    def validate(self) -> None:
+        return
+
+    def validate_cleanup(self) -> None:
+        return
+
+
+_NOOP_PROVENANCE = _NoopProvenance()
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -146,8 +168,8 @@ def test_cross_shard_parent_child_resolves_after_merge(tmp_path: Path) -> None:
     conn_target.commit()
     conn_target.close()
 
-    merge_shards_into_target(target, [shard_a, shard_b])
-    resolve_cross_shard_session_graph(target)
+    merge_shards_into_target(target, [shard_a, shard_b], provenance=cast(RebuildProvenanceContext, _NOOP_PROVENANCE))
+    resolve_cross_shard_session_graph(target, provenance=cast(RebuildProvenanceContext, _NOOP_PROVENANCE))
 
     with sqlite3.connect(target) as conn:
         conn.row_factory = sqlite3.Row
@@ -206,4 +228,54 @@ def test_merge_shards_into_target_raises_on_foreign_key_violation(tmp_path: Path
     conn_target.close()
 
     with pytest.raises(RuntimeError, match="foreign-key violations"):
-        merge_shards_into_target(target, [shard_a])
+        merge_shards_into_target(target, [shard_a], provenance=cast(RebuildProvenanceContext, _NOOP_PROVENANCE))
+
+
+def test_merge_revalidates_external_evidence_before_target_mutation(tmp_path: Path) -> None:
+    """A source-evidence change at the merge boundary leaves the target empty.
+
+    Anti-vacuity: this invokes the production ``merge_shards_into_target`` with
+    real index rows and a real receipt context. Removing its pre-insert
+    provenance validation lets the shard row reach ``target`` before the
+    caller can observe the drift.
+    """
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"receipt-source"}}\n',
+            source_path="receipt-source.jsonl",
+            acquired_at_ms=1,
+        )
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    evidence = validate_schema_inference_receipt(root, receipt_path)
+    provenance = RebuildProvenanceContext(
+        root=root,
+        receipt_path=receipt_path,
+        source_snapshot=rebuild_source_revision_snapshot(root),
+        consumed_evidence=evidence,
+    )
+
+    shard = tmp_path / "shard" / "index.db"
+    shard.parent.mkdir(parents=True)
+    conn = _connect(shard)
+    write_parsed_session_to_archive(conn, _parent_session(), bulk_fts=True, bulk_build=True)
+    conn.commit()
+    conn.close()
+    target = tmp_path / "target" / "index.db"
+    target.parent.mkdir(parents=True)
+    conn = _connect(target)
+    conn.commit()
+    conn.close()
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    origin = receipt["ground_truth_inputs"]["origins"]["codex-session"]
+    external_path = Path(origin["declared_roots"][0]) / origin["external_inventory"][0]["relative_path"]
+    external_path.write_bytes(b"drifted-before-merge")
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        merge_shards_into_target(target, [shard], provenance=provenance)
+
+    with sqlite3.connect(target) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0

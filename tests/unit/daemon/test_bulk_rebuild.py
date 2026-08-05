@@ -31,6 +31,7 @@ Two claims this file proves:
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,7 @@ from polylogue.daemon.bulk_rebuild import (
 )
 from polylogue.daemon.parse_prefetch import DaemonParseStage
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore, source_revision_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
@@ -198,6 +199,82 @@ def test_resolve_or_start_creates_resumes_and_retires_transaction(
     assert restarted.generation_id != first.generation_id
     assert restarted.last_raw_id is None
     assert restarted.processed_raw_count == 0
+
+
+def test_resumability_probe_is_pure_for_an_invalid_pointer(tmp_path: Path) -> None:
+    """A poisoned pointer cannot trigger lock acquisition, repair, or bootstrap."""
+    pointer = tmp_path / ".index-active-pointer"
+    poisoned_target = tmp_path / ".index-generations" / "gen-poison" / "index.db"
+    poisoned_target.parent.mkdir(parents=True)
+    poisoned_target.write_bytes(b"poison")
+    pointer.write_text(f"{poisoned_target}\n", encoding="utf-8")
+    before = pointer.read_bytes()
+
+    assert has_resumable_daemon_bulk_rebuild_transaction(tmp_path) is False
+    assert pointer.read_bytes() == before
+    assert not (tmp_path / ".archive-ownership.lock").exists()
+    assert [path.name for path in (tmp_path / ".index-generations").iterdir()] == ["gen-poison"]
+    assert not (tmp_path / ".index-rebuild-transactions").exists()
+
+
+def test_transaction_creation_cleans_candidate_when_receipt_expires_after_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-create receipt failure cannot strand a daemon candidate or cursor."""
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    _seed_corpus(tmp_path, count=1)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path / "receipt.json")
+    original_create = IndexGenerationStore.create
+
+    def expire_after_create(
+        store: IndexGenerationStore, *, owner_id: str | None = None, source_snapshot: str
+    ) -> IndexGeneration:
+        generation = original_create(store, owner_id=owner_id, source_snapshot=source_snapshot)
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["generated_at"] = "2000-01-01T00:00:00Z"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        return generation
+
+    monkeypatch.setattr(IndexGenerationStore, "create", expire_after_create)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        resolve_or_start_daemon_bulk_rebuild_transaction(tmp_path, schema_inference_receipt_path=receipt_path)
+
+    assert not has_resumable_daemon_bulk_rebuild_transaction(tmp_path)
+    generations_root = tmp_path / ".index-generations"
+    if generations_root.exists():
+        assert not list(generations_root.glob("gen-*"))
+    assert not (tmp_path / ".index-rebuild-transactions" / f"{DAEMON_BULK_REBUILD_OPERATION_ID}.json").exists()
+
+
+def test_route_probe_rejects_expired_receipt_without_calling_stateful_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon route validates evidence before asking the pure transaction probe."""
+    from polylogue.daemon import cli as daemon_cli
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    _seed_corpus(tmp_path, count=1)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path / "receipt.json")
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload["generated_at"] = "2000-01-01T00:00:00Z"
+    receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    pointer = tmp_path / ".index-active-pointer"
+    pointer_before = pointer.read_bytes() if pointer.exists() else None
+    lock = tmp_path / ".archive-ownership.lock"
+    lock_before = lock.read_bytes() if lock.exists() else None
+
+    def fail_stateful_probe(_root: Path) -> bool:
+        pytest.fail("expired evidence must stop route probing before transaction inspection")
+
+    monkeypatch.setattr(
+        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fail_stateful_probe
+    )
+
+    assert asyncio.run(daemon_cli._daemon_bulk_rebuild_transaction_in_flight()) is False
+    assert (pointer.read_bytes() if pointer.exists() else None) == pointer_before
+    assert (lock.read_bytes() if lock.exists() else None) == lock_before
 
 
 def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(

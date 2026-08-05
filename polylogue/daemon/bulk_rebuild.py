@@ -39,6 +39,7 @@ Two properties this module adds on top of the existing rebuild engine:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -69,6 +70,29 @@ def _validate_rebuild_provenance_receipt(root: Path, receipt_path: Path | None) 
         validate_schema_inference_receipt(root, receipt_path)
     except SchemaInferenceGateError as exc:
         raise RuntimeError(f"daemon bulk rebuild schema-inference preflight gate failed: {exc}") from exc
+
+
+def _discard_daemon_transaction_after_provenance_failure(
+    store: IndexGenerationStore, transaction: IndexRebuildTransaction
+) -> None:
+    """Best-effort cleanup after a post-create provenance failure.
+
+    The caller still owns the archive location. Cleanup does not consume source
+    evidence, so it must remain available even when the receipt that authorized
+    candidate creation has just expired or the source snapshot has drifted.
+    Each record is retired independently so one failed cleanup step cannot
+    strand the other record.
+    """
+    try:
+        generation = store.load(transaction.generation_id)
+        if generation.state == "inactive":
+            store.discard_if_inactive(generation)
+    except Exception:
+        logger.warning("bulk-rebuild: failed to discard post-validation candidate", exc_info=True)
+    try:
+        store.discard_transaction(transaction.operation_id)
+    except Exception:
+        logger.warning("bulk-rebuild: failed to discard post-validation transaction", exc_info=True)
 
 
 #: Fixed operation id for the daemon's own bulk-rebuild transaction. Exactly
@@ -159,10 +183,19 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
             store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
 
         _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
-        return store.create_transaction(
-            source_snapshot=rebuild_source_revision_snapshot(root),
+        source_snapshot = rebuild_source_revision_snapshot(root)
+        transaction = store.create_transaction(
+            source_snapshot=source_snapshot,
             operation_id=DAEMON_BULK_REBUILD_OPERATION_ID,
         )
+        try:
+            _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+            if rebuild_source_revision_snapshot(root) != source_snapshot:
+                raise RuntimeError("daemon bulk rebuild source evidence changed during transaction creation")
+        except Exception:
+            _discard_daemon_transaction_after_provenance_failure(store, transaction)
+            raise
+        return transaction
     finally:
         owned.release()
 
@@ -179,20 +212,17 @@ def has_resumable_daemon_bulk_rebuild_transaction(root: Path) -> bool:
     anchor = root / ".index-active-pointer"
     if not anchor.exists() and not anchor.is_symlink():
         return False
-    location = ArchiveLocation.resolve(root)
-    owned = OwnedArchiveLocation.acquire(location)
     try:
-        assert_owns_archive_location(owned, location)
-        store = IndexGenerationStore(location)
-        try:
-            transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
-        except FileNotFoundError:
+        pointer_target = Path(anchor.read_text(encoding="utf-8").strip())
+        if not pointer_target.is_absolute() or pointer_target.name != "index.db":
             return False
-        except (OSError, ValueError, TypeError, KeyError):
-            return False
-        return transaction.status not in _TERMINAL_NOT_RESUMABLE
-    finally:
-        owned.release()
+        transaction_path = (
+            pointer_target.parent / ".index-rebuild-transactions" / f"{DAEMON_BULK_REBUILD_OPERATION_ID}.json"
+        )
+        transaction = IndexRebuildTransaction(**json.loads(transaction_path.read_text(encoding="utf-8")))
+    except (FileNotFoundError, OSError, ValueError, TypeError, KeyError):
+        return False
+    return transaction.status not in _TERMINAL_NOT_RESUMABLE
 
 
 async def run_daemon_bulk_rebuild_pass(

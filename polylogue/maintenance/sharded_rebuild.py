@@ -66,6 +66,7 @@ from polylogue.paths import render_root
 from polylogue.storage.sqlite.connection_profile import BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
 
 if TYPE_CHECKING:
+    from polylogue.maintenance.rebuild_index import RebuildProvenanceContext
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
     from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 
@@ -251,11 +252,16 @@ async def _build_one_shard(
     raw_ids: list[str],
     raw_batch_size: int,
     prefetch_cache: RawParsePrefetchCache | None,
+    provenance: RebuildProvenanceContext,
+    created_generations: list[IndexGeneration],
 ) -> tuple[IndexGeneration, ShardBuildStats]:
     """Replay one shard's raw ids into its own owned inactive generation."""
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
 
+    provenance.validate()
     generation = generation_store.create(source_snapshot=source_snapshot)
+    created_generations.append(generation)
+    provenance.validate()
     generation_root = Path(generation.index_path).parent
     config = Config(
         archive_root=generation_root,
@@ -275,7 +281,9 @@ async def _build_one_shard(
         bulk_fts=True,
         bulk_build=True,
         prefetch_cache=prefetch_cache,
+        deadline_check=provenance.validate,
     )
+    provenance.validate()
     build_s = time.perf_counter() - started_at
     return generation, ShardBuildStats(
         generation_id=generation.generation_id,
@@ -325,7 +333,12 @@ def _non_generated_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [str(row[1]) for row in conn.execute(f"PRAGMA table_xinfo({table})").fetchall() if int(row[6]) not in (2, 3)]
 
 
-def merge_shards_into_target(target_index_path: Path, shard_index_paths: list[Path]) -> dict[str, int]:
+def merge_shards_into_target(
+    target_index_path: Path,
+    shard_index_paths: list[Path],
+    *,
+    provenance: RebuildProvenanceContext,
+) -> dict[str, int]:
     """ATTACH every shard's ``index.db`` and fold its rows into the target.
 
     Returns per-table total row counts written (across all shards, before
@@ -339,6 +352,7 @@ def merge_shards_into_target(target_index_path: Path, shard_index_paths: list[Pa
 
     row_counts: dict[str, int] = dict.fromkeys(MERGE_TABLES, 0)
     aliases = [f"shard{i}" for i in range(len(shard_index_paths))]
+    provenance.validate()
     with contextlib.closing(_open_merge_connection(target_index_path, timeout=600)) as conn:
         conn.execute("PRAGMA busy_timeout = 600000")
         attached: list[str] = []
@@ -360,20 +374,25 @@ def merge_shards_into_target(target_index_path: Path, shard_index_paths: list[Pa
             # terminal `_repopulate_bulk_build_derived_state` stage), so that
             # stage's `resume_from_empty_message_index=True` precondition
             # holds for the sharded path too.
+            provenance.validate()
             conn.execute(
                 "INSERT OR IGNORE INTO derived_refresh_guard (guard_name) VALUES (?)", (FTS_BULK_SESSION_WRITE_GUARD,)
             )
             for alias, shard_path in zip(aliases, shard_index_paths, strict=True):
+                provenance.validate()
                 conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(shard_path),))
                 attached.append(alias)
             for table in MERGE_TABLES:
                 columns = _non_generated_columns(conn, table)
                 column_list = ", ".join(columns)
                 for alias in aliases:
+                    provenance.validate()
                     cursor = conn.execute(
                         f"INSERT OR REPLACE INTO {table} ({column_list}) SELECT {column_list} FROM {alias}.{table}"
                     )
                     row_counts[table] += cursor.rowcount if cursor.rowcount > 0 else 0
+                    provenance.validate()
+            provenance.validate()
             conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = ?", (FTS_BULK_SESSION_WRITE_GUARD,))
             conn.commit()
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()
@@ -391,7 +410,11 @@ def merge_shards_into_target(target_index_path: Path, shard_index_paths: list[Pa
     return row_counts
 
 
-def resolve_cross_shard_session_graph(target_index_path: Path) -> float:
+def resolve_cross_shard_session_graph(
+    target_index_path: Path,
+    *,
+    provenance: RebuildProvenanceContext,
+) -> float:
     """Re-run per-session graph resolution over every merged session.
 
     Each shard's own replay already resolved links whose OTHER endpoint
@@ -413,6 +436,7 @@ def resolve_cross_shard_session_graph(target_index_path: Path) -> float:
     """
     from polylogue.storage.sqlite.archive_tiers.write import _resolve_session_graph
 
+    provenance.validate()
     started_at = time.perf_counter()
     with contextlib.closing(_open_merge_connection(target_index_path, timeout=600)) as conn:
         conn.execute("PRAGMA busy_timeout = 600000")
@@ -420,6 +444,7 @@ def resolve_cross_shard_session_graph(target_index_path: Path) -> float:
         rows = conn.execute("SELECT session_id, native_id, origin FROM sessions ORDER BY session_id").fetchall()
         signature_cache: dict[str, list[tuple[str, str]]] = {}
         for session_id, native_id, origin in rows:
+            provenance.validate()
             _resolve_session_graph(
                 conn,
                 session_id,
@@ -430,6 +455,7 @@ def resolve_cross_shard_session_graph(target_index_path: Path) -> float:
                 bulk_fts=True,
                 bulk_build=True,
             )
+        provenance.validate()
         conn.commit()
     return time.perf_counter() - started_at
 
@@ -443,6 +469,7 @@ async def replay_selected_raw_ids_sharded(
     raw_batch_size: int,
     shard_count: int,
     prefetch_cache: RawParsePrefetchCache | None,
+    provenance: RebuildProvenanceContext,
 ) -> dict[str, object]:
     """Replay ``selected_raw_ids`` into ``generation`` via ``shard_count`` parallel shards.
 
@@ -483,6 +510,7 @@ async def replay_selected_raw_ids_sharded(
         shard_count=len(buckets),
         selected_raw_count=len(selected_raw_ids),
     )
+    created_generations: list[IndexGeneration] = []
     build_results = await asyncio.gather(
         *[
             _build_one_shard(
@@ -491,23 +519,38 @@ async def replay_selected_raw_ids_sharded(
                 raw_ids=bucket,
                 raw_batch_size=raw_batch_size,
                 prefetch_cache=prefetch_cache,
+                provenance=provenance,
+                created_generations=created_generations,
             )
             for bucket in buckets
-        ]
+        ],
+        return_exceptions=True,
     )
-    shard_generations = [pair[0] for pair in build_results]
-    shard_stats = [pair[1] for pair in build_results]
+    failures = [result for result in build_results if isinstance(result, BaseException)]
+    if failures:
+        for shard_generation in created_generations:
+            try:
+                provenance.validate()
+            except Exception:
+                provenance.validate_cleanup()
+            generation_store.discard_if_inactive(shard_generation)
+        raise failures[0]
+    shard_generations = [cast(tuple[IndexGeneration, ShardBuildStats], result)[0] for result in build_results]
+    shard_stats = [cast(tuple[IndexGeneration, ShardBuildStats], result)[1] for result in build_results]
     try:
         merge_started_at = time.perf_counter()
         row_counts = merge_shards_into_target(
-            Path(generation.index_path), [Path(sg.index_path) for sg in shard_generations]
+            Path(generation.index_path), [Path(sg.index_path) for sg in shard_generations], provenance=provenance
         )
         merge_s = time.perf_counter() - merge_started_at
-        graph_resolve_s = resolve_cross_shard_session_graph(Path(generation.index_path))
+        graph_resolve_s = resolve_cross_shard_session_graph(Path(generation.index_path), provenance=provenance)
     finally:
         for shard_generation in shard_generations:
-            with contextlib.suppress(Exception):
-                generation_store.discard_if_inactive(shard_generation)
+            try:
+                provenance.validate()
+            except Exception:
+                provenance.validate_cleanup()
+            generation_store.discard_if_inactive(shard_generation)
     logger.info(
         "sharded_rebuild_merge_complete",
         generation_id=generation.generation_id,
