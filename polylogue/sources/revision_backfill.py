@@ -52,7 +52,7 @@ from polylogue.sources.dispatch import (
     require_positive_conversational_evidence,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.raw_authority import (
@@ -2577,6 +2577,21 @@ def _parse_one_raw(
     archive_root: Path | None = None,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
+    if provider is Provider.ANTIGRAVITY and Path(source_path).suffix.lower() == ".pb":
+        trajectory_path = Path(source_path)
+        root = trajectory_path.parent.parent
+        if trajectory_path.parent.name != "conversations" or not trajectory_path.is_file():
+            raise RuntimeError(
+                f"Antigravity raw replay requires its original conversations/<cascade_id>.pb trajectory: {source_path}"
+            )
+        cascade_id = trajectory_path.stem
+        sessions = list(antigravity.iter_language_server_exports(root, only_cascade_ids=frozenset({cascade_id})))
+        if len(sessions) != 1 or sessions[0].provider_session_id != cascade_id:
+            raise RuntimeError(
+                "Antigravity raw replay did not reproduce exactly one requested trajectory "
+                f"{cascade_id!r} from {source_path}"
+            )
+        return sessions
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
     if is_stream_record_provider(source_path, str(provider)):

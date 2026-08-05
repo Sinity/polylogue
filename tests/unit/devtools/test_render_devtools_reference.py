@@ -36,6 +36,7 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
         "| `.github/workflows/mutation-testing.yml` | `registered` | `devtools verify mutation-freshness` |" in rendered
     )
     assert "| `devtools verify pytest-timeout-overrides` |" in rendered
+    assert "| `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate" in rendered
     assert "Common forms: `devtools status`" in rendered
 
 

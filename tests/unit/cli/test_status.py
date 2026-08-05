@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from click.exceptions import Exit as ClickExit
 from click.testing import CliRunner
 
 from polylogue.api import Polylogue
@@ -148,14 +149,15 @@ def test_status_command_reads_a_real_daemon_http_status_route() -> None:
         env = _make_app_env()
         callback = getattr(status_command.callback, "__wrapped__", None)
         assert callable(callback)
-        callback(
-            env,
-            daemon_url=f"http://127.0.0.1:{server.server_port}",
-            output_format="json",
-            json_alias=False,
-            full_payload=False,
-            exact_archive_readiness=False,
-        )
+        with pytest.raises(ClickExit):
+            callback(
+                env,
+                daemon_url=f"http://127.0.0.1:{server.server_port}",
+                output_format="json",
+                json_alias=False,
+                full_payload=False,
+                exact_archive_readiness=False,
+            )
     finally:
         server.shutdown()
         worker.join()
@@ -195,14 +197,15 @@ def test_status_command_reports_live_daemon_with_unavailable_status_snapshot() -
         env = _make_app_env()
         callback = getattr(status_command.callback, "__wrapped__", None)
         assert callable(callback)
-        callback(
-            env,
-            daemon_url=f"http://127.0.0.1:{server.server_port}",
-            output_format="json",
-            json_alias=False,
-            full_payload=False,
-            exact_archive_readiness=False,
-        )
+        with pytest.raises(ClickExit):
+            callback(
+                env,
+                daemon_url=f"http://127.0.0.1:{server.server_port}",
+                output_format="json",
+                json_alias=False,
+                full_payload=False,
+                exact_archive_readiness=False,
+            )
     finally:
         server.shutdown()
         worker.join()
@@ -653,6 +656,9 @@ class TestNoArchiveStatus:
             "deferred_retryable": 1,
             "terminal_rejections": 0,
             "unexplained": 0,
+            "lifecycle_available": True,
+            "lifecycle_state": "degraded",
+            "lifecycle_reason": None,
             "sample_count": 1,
         }
 
@@ -2046,10 +2052,53 @@ class TestNoArchiveStatus:
         assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
 
     @pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+    @pytest.mark.parametrize(
+        ("lifecycle_available", "lifecycle_state", "unexplained", "expected_exit"),
+        [
+            (False, "unavailable", 0, 1),
+            (True, "blocked", 1, 1),
+            (True, "degraded", 0, 1),
+            (True, "healthy", 0, 0),
+        ],
+    )
+    def test_root_status_json_exit_matches_raw_failure_lifecycle(
+        self,
+        lifecycle_available: bool,
+        lifecycle_state: str,
+        unexplained: int,
+        expected_exit: int,
+        frozen_clock: FrozenClock,
+    ) -> None:
+        env = _make_app_env()
+        daemon_payload = {
+            "ok": True,
+            "daemon_liveness": True,
+            "status_snapshot": _fresh_status_snapshot(frozen_clock),
+            "raw_frontier_integrity": _healthy_raw_frontier_integrity(),
+            "raw_failure_lifecycle_available": lifecycle_available,
+            "raw_failure_lifecycle_state": lifecycle_state,
+            "raw_failure_lifecycle_reason": "source evidence test state",
+            "raw_parse_failures": 1 if lifecycle_state == "degraded" else 0,
+            "raw_validation_failures": 0,
+            "raw_unexplained_failures": unexplained,
+        }
+        with patch("polylogue.cli.commands.status.urlopen", return_value=_FakeDaemonResponse(daemon_payload)):
+            result = CliRunner().invoke(
+                status_command,
+                ["--daemon-url", "http://127.0.0.1:8765", "--json"],
+                obj=env,
+            )
+
+        assert result.exit_code == expected_exit
+        rendered = _combined_calls(env)
+        payload = json.loads(rendered)
+        assert payload["ok"] is (expected_exit == 0)
+
+    @pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
     def test_status_ok_requires_complete_fresh_frontier_authority(self, frozen_clock: FrozenClock) -> None:
         assert _status_ok({"ok": True, "daemon_liveness": True}) is False
         healthy = _healthy_raw_frontier_integrity()
-        assert _status_ok({"ok": True, "raw_frontier_integrity": healthy}) is True
+        assert _status_ok({"ok": True, "raw_frontier_integrity": healthy}) is False
         assert (
             _status_ok(
                 {"ok": True, "raw_frontier_integrity": healthy},
@@ -2063,6 +2112,11 @@ class TestNoArchiveStatus:
                     "ok": True,
                     "status_snapshot": _fresh_status_snapshot(frozen_clock),
                     "raw_frontier_integrity": healthy,
+                    "raw_failure_lifecycle_available": True,
+                    "raw_failure_lifecycle_state": "healthy",
+                    "raw_parse_failures": 0,
+                    "raw_validation_failures": 0,
+                    "raw_unexplained_failures": 0,
                 },
                 require_fresh_snapshot=True,
             )
@@ -2075,6 +2129,11 @@ class TestNoArchiveStatus:
                     "daemon_liveness": True,
                     "status_snapshot": {"state": "stale"},
                     "raw_frontier_integrity": healthy,
+                    "raw_failure_lifecycle_available": True,
+                    "raw_failure_lifecycle_state": "healthy",
+                    "raw_parse_failures": 0,
+                    "raw_validation_failures": 0,
+                    "raw_unexplained_failures": 0,
                 }
             )
             is False
@@ -2196,7 +2255,7 @@ class TestNoArchiveStatus:
                 obj=env,
             )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(_combined_calls(env))
         assert payload["daemon_liveness"] is True
         assert payload["live_cursor"] == full_payload["live_cursor"]
@@ -2220,7 +2279,7 @@ class TestNoArchiveStatus:
                 obj=env,
             )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(_combined_calls(env))
         assert payload["source"] == "daemon"
         assert "live_cursor" not in payload
@@ -2253,7 +2312,7 @@ class TestNoArchiveStatus:
                     obj=env,
                 )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert requested_urls == [
             "http://127.0.0.1:8766/api/status",
             "http://127.0.0.1:8786/api/status",

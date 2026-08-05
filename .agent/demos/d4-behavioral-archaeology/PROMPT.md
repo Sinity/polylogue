@@ -8,7 +8,7 @@ coding sessions — each impossible to answer from a chat UI transcript view.
 Product primitives only (`polylogue` CLI query DSL); no bespoke scripts.
 
 1. **SEQ thrash-loop hunt** — repeated shell-tool calls in a row:
-   `polylogue find "sessions where seq(action:shell -> action:shell)" then select --json`
+   `polylogue find "sessions where seq(action:shell -> action:shell)" then select --format json`
 2. **Tool call volume** — which tools are actually used:
    `polylogue "actions where exit_code:>=0 | group by tool | count"`
 3. **Which tools break** — failure count by tool:

@@ -87,6 +87,20 @@ def test_only_flags_quarantined_no_lsk_raws_byte_identical_to_an_indexed_twin(tm
             payload=duplicate_payload,
             source_path=str(tmp_path / "dup-twin.jsonl"),
         )
+        # A parser-failed raw can share bytes with a materialized twin, but
+        # parse failure is evidence to recover, not duplicate authority to
+        # supersede away.
+        _write_quarantined_no_lsk_raw(
+            archive,
+            raw_id="raw-parser-failed-dup",
+            payload=duplicate_payload,
+            source_path=str(tmp_path / "parser-failed-dup.jsonl"),
+        )
+        archive.mark_raw_parse_failed(
+            "raw-parser-failed-dup",
+            provider=Provider.CLAUDE_CODE,
+            error=ValueError("deliberate parser failure"),
+        )
         # Quarantined, no logical_source_key, but genuinely unique bytes --
         # no indexed twin exists anywhere. Must be left alone (novel; in
         # scope for lkrc/hjpx's reconciler, not this bead).
@@ -141,6 +155,7 @@ def test_only_flags_quarantined_no_lsk_raws_byte_identical_to_an_indexed_twin(tm
     # WHERE clause -- but it must not appear as a "duplicate OF itself").
     assert plan.scanned_count == 5
     assert {c.raw_id for c in plan.duplicates} == {"raw-dup"}
+    assert "raw-parser-failed-dup" not in {c.raw_id for c in plan.duplicates}
     duplicate = next(c for c in plan.duplicates if c.raw_id == "raw-dup")
     assert duplicate.duplicate_of_raw_id == "raw-dup-indexed-twin"
     assert duplicate.duplicate_of_session_id == "claude-code-session:native-dup-indexed-twin"

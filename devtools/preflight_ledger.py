@@ -14,6 +14,7 @@ from pathlib import Path
 from polylogue.config import Config
 from polylogue.storage.archive_readiness import probe_archive_tier, raw_materialization_readiness_snapshot
 from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.raw_retention import raw_frontier_integrity_projection
 from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -496,6 +497,31 @@ def _convergence_preflight(root: Path) -> dict[str, object]:
     )
 
 
+def _raw_failure_preflight(root: Path, *, limit: int) -> dict[str, object]:
+    """Project typed lifecycle evidence into the stopped-daemon ledger."""
+    snapshot = read_raw_failure_lifecycle(root / "source.db", sample_limit=limit)
+    if not snapshot.available:
+        return _status(
+            state="unknown",
+            reason=snapshot.reason or "raw failure lifecycle unavailable",
+            available=False,
+            evidence=snapshot.to_dict(),
+        )
+    state = "fail" if snapshot.unexplained else "warn" if snapshot.deferred or snapshot.terminal else "pass"
+    return _status(
+        state=state,
+        reason=(
+            "raw failures lack typed lifecycle evidence"
+            if snapshot.unexplained
+            else "raw failures are classified as deferred or terminal"
+            if snapshot.deferred or snapshot.terminal
+            else None
+        ),
+        available=True,
+        evidence=snapshot.to_dict(),
+    )
+
+
 def build_preflight_ledger(root: Path, *, limit: int = 10, now: datetime | None = None) -> dict[str, object]:
     """Build a read-only preflight ledger from the deployed archive relations."""
     checks = {
@@ -506,6 +532,7 @@ def build_preflight_ledger(root: Path, *, limit: int = 10, now: datetime | None 
         "source_frontier": _frontier_preflight(root),
         "replay_backlog": _replay_preflight(root, limit=limit),
         "cursor_failures": _cursor_preflight(root, now=now, limit=limit),
+        "raw_failure_lifecycle": _raw_failure_preflight(root, limit=limit),
         "convergence_debt": _convergence_preflight(root),
     }
     states = [str(value.get("state")) for value in checks.values()]
