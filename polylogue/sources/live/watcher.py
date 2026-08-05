@@ -516,10 +516,13 @@ class LiveWatcher:
                     )
                     if metrics is not None:
                         _log_ingest_metrics(f"live.watcher: catch-up chunk {chunk_index}/{len(chunks)}", metrics)
-                        attempted += metrics.needed_file_count
-                        ingested += metrics.succeeded_file_count
-                        failed += metrics.failed_file_count
-                        for stage, elapsed_s in metrics.stage_timings_s.items():
+                        # Keep the catch-up coordinator compatible with older
+                        # metrics objects and focused test doubles.  The chunk
+                        # itself is the authoritative fallback denominator.
+                        attempted += int(getattr(metrics, "needed_file_count", len(chunk_paths)) or len(chunk_paths))
+                        ingested += int(getattr(metrics, "succeeded_file_count", 0) or 0)
+                        failed += int(getattr(metrics, "failed_file_count", 0) or 0)
+                        for stage, elapsed_s in getattr(metrics, "stage_timings_s", {}).items():
                             stage_timings_s[stage] = stage_timings_s.get(stage, 0.0) + elapsed_s
                         if (
                             getattr(metrics, "succeeded_file_count", 0) == 0
