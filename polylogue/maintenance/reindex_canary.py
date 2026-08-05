@@ -629,16 +629,22 @@ def write_canary_report(
 
 
 def _validate_selection_binding(
-    selection: CanarySelection, comparison: CanaryDiffReport, receipt: dict[str, object]
+    selection: CanarySelection,
+    comparison: CanaryDiffReport,
+    receipt: dict[str, object],
+    *,
+    archive_root: Path | None = None,
 ) -> None:
     if selection.index_path.resolve() != comparison.current_index.resolve():
         raise UnclassifiedCanaryDiffError("canary report selection index does not match the compared current index")
     if selection.selected_session_ids != comparison.session_ids:
         raise UnclassifiedCanaryDiffError("canary report selection sessions do not match the comparison")
-    _validate_selection_evidence(receipt, selection.selected_raw_ids)
+    _validate_selection_evidence(receipt, selection.selected_raw_ids, archive_root=archive_root)
 
 
-def _validate_selection_evidence(receipt: dict[str, object], selected_raw_ids: Iterable[str]) -> None:
+def _validate_selection_evidence(
+    receipt: dict[str, object], selected_raw_ids: Iterable[str], *, archive_root: Path | None = None
+) -> None:
     """Match report selection to the rebuild-owned candidate commitment."""
 
     from polylogue.maintenance.rebuild_index import rebuild_selection_evidence
@@ -656,9 +662,17 @@ def _validate_selection_evidence(receipt: dict[str, object], selected_raw_ids: I
     )
     if not all(isinstance(value, str) and value for value in required):
         raise UnclassifiedCanaryDiffError("canary report has incomplete authoritative rebuild selection evidence")
+    receipt_archive_root = cast(str, receipt["archive_root"])
+    evidence_root = Path(receipt_archive_root)
+    if archive_root is not None:
+        evidence_root = archive_root.resolve()
+        if Path(receipt_archive_root).resolve() != evidence_root:
+            raise UnclassifiedCanaryDiffError(
+                "canary report rebuild receipt belongs to a different configured archive root"
+            )
     expected = rebuild_selection_evidence(
         tuple(selected_raw_ids),
-        archive_root=Path(cast(str, receipt["archive_root"])),
+        archive_root=evidence_root,
         generation_id=cast(str, generation["generation_id"]),
         generation_owner_id=cast(str, generation["owner_id"]),
         candidate_index=Path(cast(str, generation["index_path"])),
@@ -701,6 +715,7 @@ def _validate_rebuild_receipt(
     *,
     selected_raw_ids: Iterable[str],
     candidate_index: Path | str,
+    configured_archive_root: Path | None = None,
 ) -> None:
     if not isinstance(receipt, dict):
         raise UnclassifiedCanaryDiffError("canary report has no rebuild receipt")
@@ -738,9 +753,16 @@ def _validate_rebuild_receipt(
         raise UnclassifiedCanaryDiffError("canary report has incomplete candidate generation provenance")
     if Path(archive_root).resolve() != Path(generation_archive_root).resolve():
         raise UnclassifiedCanaryDiffError("canary report rebuild receipt and candidate archive roots disagree")
+    if (
+        configured_archive_root is not None
+        and Path(cast(str, receipt["archive_root"])).resolve() != configured_archive_root.resolve()
+    ):
+        raise UnclassifiedCanaryDiffError(
+            "canary report rebuild receipt belongs to a different configured archive root"
+        )
     if Path(generation_index).resolve() != Path(candidate_index).resolve():
         raise UnclassifiedCanaryDiffError("canary report rebuild receipt does not identify the compared candidate")
-    _validate_selection_evidence(receipt, selected_raw_ids)
+    _validate_selection_evidence(receipt, selected_raw_ids, archive_root=configured_archive_root)
 
 
 def _validate_authoritative_rebuild_receipt(receipt: dict[str, object], candidate_index: Path) -> None:
@@ -964,6 +986,28 @@ def _validate_archive_provenance(
         raise UnclassifiedCanaryDiffError("archive-owned source evidence no longer matches the rebuild receipt")
 
 
+def _validate_report_archive_root(payload: dict[str, object], *, configured_archive_root: Path) -> Path:
+    """Bind report and receipt roots before reading any archive evidence."""
+
+    root = configured_archive_root.resolve()
+    receipt = payload.get("rebuild_receipt")
+    if not isinstance(receipt, dict):
+        raise UnclassifiedCanaryDiffError("canary report has no rebuild receipt")
+    receipt_root = receipt.get("archive_root")
+    if not isinstance(receipt_root, str) or not receipt_root:
+        raise UnclassifiedCanaryDiffError("canary report has invalid rebuild receipt archive root")
+    provenance = payload.get("archive_provenance")
+    if Path(receipt_root).resolve() != root:
+        raise UnclassifiedCanaryDiffError(
+            "canary report rebuild receipt belongs to a different configured archive root"
+        )
+    if isinstance(provenance, dict):
+        report_root = provenance.get("archive_root")
+        if isinstance(report_root, str) and report_root and Path(report_root).resolve() != root:
+            raise UnclassifiedCanaryDiffError("canary report belongs to a different configured archive root")
+    return root
+
+
 def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[str, object]:
     """Read and structurally revalidate a durable report's review coverage."""
 
@@ -972,6 +1016,11 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         raise UnclassifiedCanaryDiffError("canary report root must be an object")
     if payload.get("schema_version") != 7:
         raise UnclassifiedCanaryDiffError("canary report has no authoritative rebuild receipt schema")
+    configured_root = (
+        _validate_report_archive_root(payload, configured_archive_root=Path(archive_root))
+        if archive_root is not None
+        else None
+    )
     comparison = payload.get("comparison")
     if not isinstance(comparison, dict):
         raise UnclassifiedCanaryDiffError("canary report has no comparison object")
@@ -1005,6 +1054,7 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         payload.get("rebuild_receipt"),
         selected_raw_ids=cast(list[str], selected_raw_ids),
         candidate_index=candidate_index,
+        configured_archive_root=configured_root,
     )
     selection_sessions = selection.get("selected_session_ids")
     if not isinstance(selection_sessions, list) or not all(isinstance(value, str) for value in selection_sessions):
@@ -1062,13 +1112,16 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         differences=differences,
     )
     _validate_selection_binding(
-        persisted_selection, persisted_comparison, cast(dict[str, object], payload["rebuild_receipt"])
+        persisted_selection,
+        persisted_comparison,
+        cast(dict[str, object], payload["rebuild_receipt"]),
+        archive_root=configured_root,
     )
     from polylogue.config import resolve_archive_root
 
     _validate_archive_provenance(
         payload.get("archive_provenance"),
-        configured_archive_root=Path(archive_root) if archive_root is not None else resolve_archive_root(),
+        configured_archive_root=configured_root if configured_root is not None else resolve_archive_root(),
         current_index=persisted_comparison.current_index,
         candidate_index=persisted_comparison.candidate_index,
         receipt=cast(dict[str, object], payload["rebuild_receipt"]),

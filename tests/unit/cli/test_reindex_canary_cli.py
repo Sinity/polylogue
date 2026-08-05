@@ -327,7 +327,10 @@ def test_cli_rejects_swapped_real_receipt_before_comparison(tmp_path: Path, monk
     )
 
     assert consumed.exit_code == 1
-    assert "does not identify the compared candidate" in consumed.output
+    assert (
+        "does not identify the compared candidate" in consumed.output
+        or "different configured archive root" in consumed.output
+    )
     assert not comparison_called
 
 
@@ -467,6 +470,56 @@ def test_cli_consumes_valid_reviewed_real_report(tmp_path: Path, monkeypatch: py
     approved = json.loads(consumed.stdout)
     assert approved["decision"] == "evidence-approved"
     assert approved["promotion_authorized"] is False
+
+
+def test_cli_rejects_foreign_receipt_root_before_opening_foreign_source_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A forged report root fails before selection evidence can read a foreign source tier."""
+
+    canary_root, report_path, _payload = _write_reviewed_real_canary_report(
+        tmp_path, monkeypatch, name="foreign-root-canary"
+    )
+    foreign_root = tmp_path / "foreign-archive"
+    foreign_root.mkdir()
+    (foreign_root / "source.db").touch()
+    forged = json.loads(report_path.read_text(encoding="utf-8"))
+    receipt = forged["rebuild_receipt"]
+    provenance = forged["archive_provenance"]
+    assert isinstance(receipt, dict)
+    assert isinstance(provenance, dict)
+    generation = receipt["generation"]
+    assert isinstance(generation, dict)
+    receipt["archive_root"] = str(foreign_root)
+    generation["archive_root"] = str(foreign_root)
+    provenance["archive_root"] = str(foreign_root)
+    forged_path = tmp_path / "foreign-root-forged.json"
+    forged_path.write_text(json.dumps(forged), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sqlite3,
+        "connect",
+        lambda *args, **kwargs: pytest.fail("foreign source.db was opened"),
+    )
+    consumed = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(canary_root),
+            "--report",
+            str(forged_path),
+            "--consume-report",
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert consumed.exit_code == 1
+    assert "different configured archive root" in consumed.output
 
 
 def test_cli_consumes_reviewed_report_after_parsed_state_mutation(
@@ -1323,7 +1376,11 @@ def test_cli_canary_report_red_twin_rejects_arbitrary_copied_indexes(
         catch_exceptions=False,
     )
     assert consumed.exit_code == 1
-    assert "archive-owned" in consumed.output or "authoritative rebuild receipt" in consumed.output
+    assert (
+        "archive-owned" in consumed.output
+        or "authoritative rebuild receipt" in consumed.output
+        or "different configured archive root" in consumed.output
+    )
 
 
 def test_cli_canary_report_red_twin_rejects_replaced_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
