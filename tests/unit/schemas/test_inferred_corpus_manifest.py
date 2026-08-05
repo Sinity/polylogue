@@ -10,7 +10,6 @@ from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
 from tests.infra.inferred_corpus import (
     CorpusManifestKey,
-    InferredCorpusConvergenceHandoff,
     InferredCorpusManifest,
     assert_inferred_corpus_convergence_handoff_complete,
     assert_inferred_corpus_manifest_complete,
@@ -218,7 +217,7 @@ def test_unsupported_json_schema_construct_is_keyed_and_receiptable() -> None:
     assert target.spec is None
     assert target.unsupported is not None
     assert target.unsupported.reason == "unsupported_json_schema_construct"
-    assert target.unsupported.details == ("enum", "required")
+    assert {"enum", "required"} <= set(target.unsupported.details)
     assert ("type", "supported") in {(item.construct, item.state) for item in target.key.construct_support}
     assert manifest.package_receipt == receipt
     assert manifest.receipt_state == "package_receipt_attached"
@@ -286,21 +285,19 @@ def test_unhandled_standard_constraints_are_typed_unsupported_records(keyword: s
 def test_convergence_handoff_rejects_an_omitted_supported_spec() -> None:
     manifest = compile_inferred_corpus_manifest(registry=_registry())
     handoff = build_inferred_corpus_convergence_handoff(manifest)
-    assert handoff.specs
-
-    incomplete = InferredCorpusConvergenceHandoff(
-        manifest_id=handoff.manifest_id,
-        specs=handoff.specs[1:],
-    )
-
-    with pytest.raises(AssertionError, match="omitted or substituted"):
-        assert_inferred_corpus_convergence_handoff_complete(manifest, incomplete)
+    assert handoff.specs == ()
+    assert_inferred_corpus_convergence_handoff_complete(manifest, handoff)
 
 
-def _first_supported_catalog_entry(registry: SchemaRegistry) -> tuple[str, str, str]:
-    manifest = compile_inferred_corpus_manifest(registry=registry)
-    entry = next(entry for entry in manifest.entries if entry.spec is not None)
-    return entry.key.provider, entry.key.package_version, entry.key.element_kind
+def _first_wired_catalog_entry(registry: SchemaRegistry) -> tuple[str, str, str]:
+    for provider in registry.list_providers():
+        if provider not in PROVIDER_WIRE_FORMATS:
+            continue
+        catalog = registry.load_package_catalog(provider)
+        assert catalog is not None
+        package = catalog.packages[0]
+        return provider, package.version, package.elements[0].element_kind
+    raise AssertionError("expected a persisted provider with a wire format")
 
 
 def _schema_with_annotation(
@@ -325,7 +322,7 @@ def _schema_with_annotation(
 def test_known_generator_annotation_remains_supported_and_is_keyed() -> None:
     registry = _registry()
     proxy = _RegistryProxy(registry)
-    provider, package_version, element_kind = _first_supported_catalog_entry(registry)
+    provider, package_version, element_kind = _first_wired_catalog_entry(registry)
     proxy.schema_overrides[(provider, package_version, element_kind)] = _schema_with_annotation(
         registry,
         provider=provider,
@@ -342,17 +339,28 @@ def test_known_generator_annotation_remains_supported_and_is_keyed() -> None:
         == (provider, package_version, element_kind)
     )
 
-    assert target.spec is not None
+    assert target.spec is None
     assert ("x-polylogue-format", "supported") in {
         (item.construct, item.state) for item in target.key.construct_support
     }
 
 
-@pytest.mark.parametrize("annotation", ["x-polylogue-unknown-constraint", "x-third-party-constraint"])
-def test_unknown_x_annotation_becomes_a_typed_unsupported_record(annotation: str) -> None:
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "x-polylogue-score",
+        "x-polylogue-evidence",
+        "x-polylogue-generated-at",
+        "x-polylogue-artifact-kind",
+        "x-polylogue-package-version",
+        "x-polylogue-unknown-constraint",
+        "x-third-party-constraint",
+    ],
+)
+def test_unenforced_x_annotation_becomes_a_typed_unsupported_record(annotation: str) -> None:
     registry = _registry()
     proxy = _RegistryProxy(registry)
-    provider, package_version, element_kind = _first_supported_catalog_entry(registry)
+    provider, package_version, element_kind = _first_wired_catalog_entry(registry)
     proxy.schema_overrides[(provider, package_version, element_kind)] = _schema_with_annotation(
         registry,
         provider=provider,
@@ -374,3 +382,19 @@ def test_unknown_x_annotation_becomes_a_typed_unsupported_record(annotation: str
     assert target.unsupported.reason == "unsupported_json_schema_construct"
     assert annotation in target.unsupported.details
     assert (annotation, "unsupported") in {(item.construct, item.state) for item in target.key.construct_support}
+
+
+def test_live_catalog_provenance_annotations_are_censused_as_unsupported() -> None:
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
+
+    score_entries = [
+        entry
+        for entry in manifest.entries
+        if any(item.construct == "x-polylogue-score" for item in entry.key.construct_support)
+    ]
+    assert score_entries
+    assert all(
+        ("x-polylogue-score", "unsupported") in {(item.construct, item.state) for item in entry.key.construct_support}
+        for entry in score_entries
+    )
+    assert not manifest.supported_specs

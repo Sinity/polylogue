@@ -173,38 +173,6 @@ _SUPPORTED_SYNTHETIC_ANNOTATIONS = frozenset(
     }
 )
 
-# These package annotations are consumed by registry/profile loading or retain
-# provenance only. They do not constrain an emitted instance, so recognizing
-# them cannot claim synthetic schema conformance. Shape-affecting annotations
-# without a synthetic consumer, such as ``x-polylogue-ref`` and dynamic-key
-# markers, are deliberately absent and fail closed below.
-_SUPPORTED_CATALOG_METADATA_ANNOTATIONS = frozenset(
-    {
-        "x-polylogue-anchor-profile-family-id",
-        "x-polylogue-artifact-kind",
-        "x-polylogue-element-bundle-scope-count",
-        "x-polylogue-element-first-seen",
-        "x-polylogue-element-kind",
-        "x-polylogue-element-last-seen",
-        "x-polylogue-evidence",
-        "x-polylogue-evidence-confidence",
-        "x-polylogue-exact-structure-ids",
-        "x-polylogue-generated-at",
-        "x-polylogue-generator",
-        "x-polylogue-observed-artifact-count",
-        "x-polylogue-package-profile-family-ids",
-        "x-polylogue-package-version",
-        "x-polylogue-profile-family-ids",
-        "x-polylogue-profile-tokens",
-        "x-polylogue-promoted-at",
-        "x-polylogue-registered-at",
-        "x-polylogue-sample-count",
-        "x-polylogue-sample-granularity",
-        "x-polylogue-score",
-        "x-polylogue-version",
-    }
-)
-
 
 @dataclass(frozen=True, order=True)
 class ConstructSupport:
@@ -345,11 +313,7 @@ def _schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
             if not isinstance(key, str):
                 continue
             if key.startswith("x-"):
-                found[key] = (
-                    "supported"
-                    if key in _SUPPORTED_SYNTHETIC_ANNOTATIONS | _SUPPORTED_CATALOG_METADATA_ANNOTATIONS
-                    else "unsupported"
-                )
+                found[key] = "supported" if key in _SUPPORTED_SYNTHETIC_ANNOTATIONS else "unsupported"
                 continue
             if key in _SUPPORTED_SCHEMA_CONSTRUCTS:
                 found[key] = "supported"
