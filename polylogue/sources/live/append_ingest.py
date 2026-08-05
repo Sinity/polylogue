@@ -9,7 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
-from polylogue.archive.artifact_taxonomy import classify_artifact_path
+from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -103,24 +103,10 @@ def _ingest_append_plans_archive(
                 raw_id: str | None = None
                 try:
                     provider = Provider.from_string(plan.source_name)
-                    artifact_classification = classify_artifact_path(
+                    path_artifact = classify_artifact_path(
                         str(plan.path),
                         provider=provider,
                     )
-                    if artifact_classification is not None and not artifact_classification.parse_as_session:
-                        artifact_result = archive.admit_raw_artifact_payload(
-                            provider=provider,
-                            payload=plan.payload,
-                            source_path=str(plan.path),
-                            source_index=-1,
-                            acquired_at_ms=acquired_at_ms,
-                            classification=artifact_classification,
-                        )
-                        if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
-                            raise RuntimeError(f"unexpected append artifact admission arm: {artifact_result.arm!r}")
-                        raw_id = artifact_result.raw_id
-                        succeeded.append(plan)
-                        continue
                     json_stream_started = time.perf_counter()
                     try:
                         payloads = list(_iter_json_stream(BytesIO(plan.payload), plan.path.name))
@@ -130,10 +116,15 @@ def _ingest_append_plans_archive(
                         payloads = None
                     _add_timing(timings, "append.json_stream", json_stream_started)
                     if payloads is not None:
-                        classification = _declared_non_session_artifact_classification(
-                            provider,
-                            str(plan.path),
-                            sample=payloads[:64],
+                        decoded_artifact = classify_artifact(payloads[:64], provider=provider)
+                        classification = (
+                            _declared_non_session_artifact_classification(
+                                provider,
+                                str(plan.path),
+                                sample=payloads[:64],
+                            )
+                            if not decoded_artifact.parse_as_session
+                            else None
                         )
                         if classification is not None:
                             artifact_result = archive.admit_raw_artifact_payload(
@@ -148,6 +139,20 @@ def _ingest_append_plans_archive(
                                 raise RuntimeError(f"unexpected append artifact admission arm: {artifact_result.arm!r}")
                             succeeded.append(plan)
                             continue
+                    elif path_artifact is not None and not path_artifact.parse_as_session:
+                        artifact_result = archive.admit_raw_artifact_payload(
+                            provider=provider,
+                            payload=plan.payload,
+                            source_path=str(plan.path),
+                            source_index=-1,
+                            acquired_at_ms=acquired_at_ms,
+                            classification=path_artifact,
+                        )
+                        if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
+                            raise RuntimeError(f"unexpected append artifact admission arm: {artifact_result.arm!r}")
+                        raw_id = artifact_result.raw_id
+                        succeeded.append(plan)
+                        continue
                     t0 = time.perf_counter()
                     raw_id = archive.write_raw_payload(
                         provider=provider,

@@ -1380,7 +1380,7 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
 
 
 def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp_path: Path) -> None:
-    """The live append route admits sidecar bytes before JSON decoding."""
+    """Malformed journals remain typed evidence when decoding cannot recover them."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
     path.parent.mkdir(parents=True)
     payload = b'{"contentKey":"broken"\n'
@@ -1404,6 +1404,32 @@ def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp
     assert all("OriginSpec" in row[1] for row in artifacts)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path: Path) -> None:
+    """Decoded session evidence bypasses path-only workflow-journal admission."""
+    path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
+    path.parent.mkdir(parents=True)
+    payload = (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
+        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    path.write_bytes(payload)
+    plan = replace(_append_plan(path, payload, payload_hash="session-shaped"), source_name="claude-code")
+
+    result = ingest_append_plans(cast(Any, _append_owner(tmp_path)), [plan])
+
+    assert result.succeeded == []
+    assert result.failed == []
+    assert result.deferred == [plan]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+        assert conn.execute("SELECT revision_kind, revision_authority FROM raw_sessions").fetchall() == [
+            ("append", "quarantined")
+        ]
 
 
 def _write_plain_sqlite_db(path: Path) -> None:

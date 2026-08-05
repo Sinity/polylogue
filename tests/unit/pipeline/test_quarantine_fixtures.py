@@ -28,7 +28,6 @@ visible at PR time, not after a live archive run silently drops data.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -225,42 +224,26 @@ def test_malformed_jsonl_tolerated_in_validation_off_mode(tmp_path: Path) -> Non
     assert result.sessions, "valid surrounding records should still parse"
 
 
-def test_validation_off_fast_path_refuses_session_shaped_workflow_journal(tmp_path: Path) -> None:
-    """A fact-artifact path must win over the validation-off stream shortcut.
+def test_validation_off_fast_path_repairs_session_shaped_workflow_journal(tmp_path: Path) -> None:
+    """Decoded session evidence must outrank a workflow-journal path.
 
-    This drives the real ``ingest_record`` worker route with a workflow journal
-    record that is deliberately shaped like a conversational Claude Code
-    record. Before the guard in ``_build_fast_stream_parse_plan``, validation
-    ``off`` assigned every known Claude JSONL path a session artifact directly,
-    so this payload produced one session despite the OriginSpec
-    ``workflow_journal`` rule declaring ``parse_policy=\"fact\"``. The test
-    therefore fails if that production classification line is removed or if
-    the shortcut is allowed to outrank the path classifier again.
+    This drives the validation-off worker route with a journal path containing
+    one recoverable Claude Code session record and one malformed line. It must
+    enter the stream parser, which repairs the usable record, rather than
+    reporting a successful sidecar admission from the path alone.
     """
-    payload = (
-        json.dumps(
-            {
-                "type": "user",
-                "sessionId": "wf-run-1",
-                "uuid": "journal-message-1",
-                "message": {
-                    "role": "user",
-                    "content": "workflow journal evidence is not a conversation",
-                },
-            }
-        )
-        + "\n"
-    ).encode()
+    payload = claude_code_malformed_jsonl_bytes()
     record = _make_raw_record(
         payload,
         "claude-code",
         "/tmp/.claude/projects/project/subagents/workflows/wf-run-1/journal.jsonl",
-    )
+    ).model_copy(update={"source_name": "claude-code"})
 
     result = ingest_record(record, str(tmp_path / "archive"), "off")
 
     assert result.error is None
-    assert result.sessions == []
+    assert len(result.sessions) == 1
+    assert result.sessions[0].parsed_session.messages[0].text == "hello"
 
 
 # ---------------------------------------------------------------------------

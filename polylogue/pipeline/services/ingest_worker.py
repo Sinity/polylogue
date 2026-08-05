@@ -390,6 +390,38 @@ def _build_fast_stream_parse_plan(
         provider=runtime_provider,
     )
     if path_artifact is not None and not path_artifact.parse_as_session:
+        from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
+
+        try:
+            sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
+                context.raw_source,
+                max_samples=64,
+                jsonl_dict_only=True,
+                scan_full=False,
+            )
+        except Exception:
+            logger.exception(
+                "JSONL sample probe failed for %s; retaining path-declared artifact",
+                context.raw_record.source_path or context.raw_record.raw_id,
+            )
+        else:
+            decoded_artifact = classify_artifact(
+                sample_payloads,
+                provider=runtime_provider,
+            )
+            if decoded_artifact.parse_as_session:
+                return _build_parse_plan(
+                    provider=runtime_provider,
+                    payload_provider=str(runtime_provider),
+                    artifact=decoded_artifact,
+                    source_path=context.raw_record.source_path,
+                    mode="stream",
+                    payload=sample_payloads,
+                    schema_payload_source=sample_payloads,
+                    stream_name=context.raw_record.source_path or context.raw_record.raw_id,
+                    malformed_jsonl_lines=malformed_lines,
+                    malformed_jsonl_detail=malformed_detail,
+                )
         return _build_parse_plan(
             provider=runtime_provider,
             payload_provider=str(runtime_provider),
