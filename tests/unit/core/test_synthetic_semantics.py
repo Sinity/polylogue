@@ -530,7 +530,7 @@ class TestSemanticFallback:
 class TestWireFormatShape:
     """Validate the wire format configuration data structure."""
 
-    EXPECTED_PROVIDERS = {"chatgpt", "claude-code", "claude-ai", "codex", "gemini", "antigravity"}
+    EXPECTED_PROVIDERS = {"chatgpt", "claude-code", "claude-ai", "codex", "gemini"}
 
     def test_all_expected_providers_have_entries(self) -> None:
         """Every known provider has a wire format config."""
@@ -547,7 +547,7 @@ class TestWireFormatShape:
         """JSON-encoded providers have either tree or messages_path."""
         for name, wf in PROVIDER_WIRE_FORMATS.items():
             if wf.encoding == "json":
-                has_structure = wf.tree is not None or wf.messages_path is not None or name == "antigravity"
+                has_structure = wf.tree is not None or wf.messages_path is not None
                 assert has_structure, f"{name}: JSON provider needs tree or messages_path"
 
     def test_chatgpt_has_tree_with_container(self) -> None:
