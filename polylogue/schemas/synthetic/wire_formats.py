@@ -7,6 +7,7 @@ tree vs. linear vs. JSONL, and message location paths.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from collections.abc import Collection, Mapping, Sequence
@@ -17,6 +18,7 @@ from polylogue.archive.raw_payload.decode import JSONValue
 
 if TYPE_CHECKING:
     from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticGenerationBatch
+    from polylogue.sources.parsers.base_models import ParsedSession
 
 WireEncoding: TypeAlias = Literal["json", "jsonl"]
 WireCapabilityStatus: TypeAlias = Literal["supported", "unsupported"]
@@ -96,17 +98,16 @@ class WireParserWitness:
     parsed_session_count: int
     parsed_message_count: int
     validation_error: str | None = None
+    artifact_kind: Literal["baseline", "coverage"] = "coverage"
+    artifact_evidence: tuple[str, ...] = ()
 
     @property
     def healthy(self) -> bool:
         return (
             bool(self.exercised_keywords)
-            # Some valid provider-wire witnesses describe envelope metadata
-            # that the parser preserves as a session while intentionally
-            # yielding no conversational message.  The ordinary baseline
-            # artifact still supplies the route-level positive message proof;
-            # each witness must prove parser admission independently.
             and self.parsed_session_count > 0
+            and self.parsed_message_count > 0
+            and bool(self.artifact_evidence)
             and self.validation_error is None
         )
 
@@ -191,6 +192,8 @@ class WireSupportReceipt:
                             "parsed_session_count": witness.parsed_session_count,
                             "parsed_message_count": witness.parsed_message_count,
                             "validation_error": witness.validation_error,
+                            "artifact_kind": witness.artifact_kind,
+                            "artifact_evidence": list(witness.artifact_evidence),
                             "healthy": witness.healthy,
                         }
                         for witness in entry.parser_witnesses
@@ -887,13 +890,165 @@ def construct_coverage(
     )
 
 
+def _payload_string_values(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Mapping):
+        return tuple(text for child in value.values() for text in _payload_string_values(child))
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(text for child in value for text in _payload_string_values(child))
+    return ()
+
+
+def _normalise_evidence_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _parser_evidence_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[str, JSONValue], ...]:
+    """Return the route-owned conversational nodes from one wire artifact."""
+    nodes: list[Mapping[str, JSONValue]] = []
+    if isinstance(payload, dict):
+        session = payload.get("session")
+        turns = session.get("turns") if isinstance(session, dict) else None
+        if isinstance(turns, list):
+            nodes.extend(
+                turn
+                for turn in turns
+                if isinstance(turn, dict)
+                and isinstance(turn.get("provider_turn_id"), str)
+                and isinstance(turn.get("role"), str)
+                and isinstance(turn.get("text"), str)
+            )
+        raw_provider_payload = payload.get("raw_provider_payload")
+        if isinstance(raw_provider_payload, (dict, list)):
+            nodes.extend(_parser_evidence_nodes(provider, raw_provider_payload))
+    if provider == "chatgpt" and isinstance(payload, dict):
+        mapping = payload.get("mapping")
+        if isinstance(mapping, dict):
+            for node in mapping.values():
+                if not isinstance(node, dict):
+                    continue
+                message = node.get("message")
+                if (
+                    isinstance(message, dict)
+                    and isinstance(message.get("author"), dict)
+                    and isinstance(message.get("content"), dict)
+                ):
+                    nodes.append(node)
+    if provider == "claude-ai" and isinstance(payload, dict):
+        messages = payload.get("chat_messages")
+        if isinstance(messages, list):
+            nodes.extend(
+                message
+                for message in messages
+                if isinstance(message, dict)
+                and isinstance(message.get("uuid"), str)
+                and isinstance(message.get("sender"), str)
+                and isinstance(message.get("text"), str)
+            )
+    if provider == "gemini" and isinstance(payload, dict):
+        prompt = payload.get("chunkedPrompt")
+        chunks = prompt.get("chunks") if isinstance(prompt, dict) else None
+        if isinstance(chunks, list):
+            nodes.extend(
+                chunk
+                for chunk in chunks
+                if isinstance(chunk, dict) and isinstance(chunk.get("role"), str) and isinstance(chunk.get("text"), str)
+            )
+    if provider in {"claude-code", "codex"} and isinstance(payload, list):
+        for record in payload:
+            if not isinstance(record, dict):
+                continue
+            if provider == "claude-code":
+                if record.get("type") in {"user", "assistant", "system"} and isinstance(record.get("message"), dict):
+                    nodes.append(record)
+                continue
+            record_type = record.get("type")
+            if record_type == "message" and isinstance(record.get("id"), str):
+                nodes.append(record)
+                continue
+            nested = record.get("payload")
+            if (
+                record_type == "response_item"
+                and isinstance(nested, dict)
+                and nested.get("type") == "message"
+                and isinstance(nested.get("id"), str)
+            ) or (
+                record_type == "event_msg"
+                and isinstance(nested, dict)
+                and nested.get("type") in {"user_message", "agent_message"}
+            ):
+                nodes.append(nested)
+    return tuple(nodes)
+
+
+def _parser_artifact_evidence(
+    sessions: Sequence[ParsedSession],
+    provider: str,
+    payload: JSONValue,
+    fallback_id: str,
+) -> tuple[str, ...]:
+    """Return materialized-message evidence found in this exact artifact.
+
+    Parser counts are deliberately insufficient here. A misrouted parser can
+    return a valid session from another artifact, which would otherwise let
+    one witness borrow another witness's success. The evidence digest is
+    emitted only when meaningful parsed message/block text is present in the
+    artifact being validated.
+    """
+
+    from polylogue.sources.dispatch import message_carries_authored_content
+
+    evidence_nodes = _parser_evidence_nodes(provider, payload)
+    evidence: list[str] = []
+    seen: set[str] = set()
+    for session in sessions:
+        session_identity = session.provider_session_id
+        session_is_bound = session_identity == fallback_id or session_identity in _payload_string_values(payload)
+        if not session_is_bound:
+            continue
+        for message in session.messages:
+            if not message_carries_authored_content(message):
+                continue
+            message_identity = message.provider_message_id
+            candidates = [message.text, *(block.text for block in message.blocks)]
+            for candidate in candidates:
+                if not isinstance(candidate, str) or not candidate.strip():
+                    continue
+                normalized = _normalise_evidence_text(candidate)
+                if not normalized:
+                    continue
+                for node in evidence_nodes:
+                    node_texts = tuple(_normalise_evidence_text(text) for text in _payload_string_values(node))
+                    identity_bound = not message_identity or message_identity in node_texts
+                    content_bound = normalized in node_texts
+                    structured_content_bound = (
+                        bool(message.blocks) and bool(message_identity) and identity_bound and bool(node_texts)
+                    )
+                    if not identity_bound or not (content_bound or structured_content_bound):
+                        continue
+                    node_bytes = json.dumps(node, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    digest = hashlib.sha256(node_bytes).hexdigest()
+                    token = f"{session_identity}:message:{message_identity or 'unidentified'}:sha256:{digest}"
+                    if token not in seen:
+                        seen.add(token)
+                        evidence.append(token)
+                    break
+                if evidence and evidence[-1].startswith(
+                    f"{session_identity}:message:{message_identity or 'unidentified'}:"
+                ):
+                    break
+    return tuple(evidence)
+
+
 def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20260805) -> WireSupportReceipt:
     """Validate executable routes through the selected schema and parser.
 
     The provider set comes from the package registry.  The parser call is the
-    public ``parse_payload`` entry point used by production dispatch, so a
-    route is healthy only when its generated artifact validates and produces a
-    non-empty parsed session.
+    public ``parse_payload`` entry point used by production dispatch. Every
+    artifact, including the baseline, must pass the production
+    positive-conversational-evidence filter and carry artifact-local
+    materialized content evidence.
     """
 
     if registry is None:
@@ -903,7 +1058,7 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
     from polylogue.schemas.synthetic.core import SyntheticCorpus
     from polylogue.schemas.synthetic.selection import select_synthetic_schema
     from polylogue.schemas.validator import SchemaValidator, ValidationResult
-    from polylogue.sources.dispatch import parse_payload
+    from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 
     catalog_providers = tuple(sorted(registry.list_providers()))  # type: ignore[attr-defined]
     entries: list[WireSupportEntry] = []
@@ -969,6 +1124,7 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
         validation_error: str | None = None
         selection = None
         parser_witnesses: list[WireParserWitness] = []
+        parser_errors: list[str] = []
         try:
             selection = select_synthetic_schema(
                 provider,
@@ -1019,50 +1175,66 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
                 parse_error: str | None = None
                 artifact_sessions = []
                 try:
-                    artifact_sessions = parse_payload(
+                    parser_payload = payload
+                    if provider == "chatgpt" and isinstance(payload, dict):
+                        # Validate and account for the complete envelope, but
+                        # keep the optional native subpayload from selecting a
+                        # second schema-shaped tree during parser dispatch.
+                        parser_payload = dict(payload)
+                        parser_payload.pop("raw_provider_payload", None)
+                    parsed_sessions_for_artifact = parse_payload(
                         provider,
-                        payload,
+                        parser_payload,
                         f"synthetic-wire-receipt:{provider}:{index}",
                         schema_resolution=schema_resolution,
                     )
+                    artifact_sessions = require_positive_conversational_evidence(
+                        parsed_sessions_for_artifact,
+                        provider=provider,
+                        source_path=f"synthetic-wire-receipt:{provider}:{index}",
+                    )
                 except Exception as exc:  # Keep the witness failure in the receipt.
                     parse_error = f"{type(exc).__name__}: {exc}"
+                artifact_evidence = _parser_artifact_evidence(
+                    artifact_sessions,
+                    provider,
+                    payload,
+                    f"synthetic-wire-receipt:{provider}:{index}",
+                )
                 parsed_sessions.extend(artifact_sessions)
-                if index == 0:
-                    if (
-                        artifact_sessions
-                        and any(session.messages for session in artifact_sessions)
-                        and artifact_validation_error is None
-                    ):
-                        payloads.extend(payload_items)
-                    continue
-
+                artifact_kind: Literal["baseline", "coverage"] = "baseline" if index == 0 else "coverage"
                 parser_witnesses.append(
                     WireParserWitness(
-                        index=index - 1,
+                        index=-1 if index == 0 else index - 1,
                         exercised_keywords=artifact_coverage.exercised_keywords,
                         parsed_session_count=len(artifact_sessions),
                         parsed_message_count=sum(len(session.messages) for session in artifact_sessions),
                         validation_error=parse_error or artifact_validation_error,
+                        artifact_kind=artifact_kind,
+                        artifact_evidence=artifact_evidence,
                     )
                 )
-                # A parser route must earn the right to contribute its raw
-                # witness to aggregate schema coverage.  Otherwise a dropped
-                # witness can be masked by another artifact's parsed counts.
                 if (
                     artifact_sessions
-                    and any(session.messages for session in artifact_sessions)
+                    and artifact_evidence
                     and artifact_validation_error is None
                     and parse_error is None
                 ):
                     payloads.extend(payload_items)
+                if parse_error is not None:
+                    label = "baseline" if index == 0 else f"coverage witness {index - 1}"
+                    parser_errors.append(f"{label} parser: {parse_error}")
             schema_valid = bool(validation_results) and all(result.is_valid for result in validation_results)
             if not schema_valid:
-                validation_error = "; ".join(error for result in validation_results for error in result.errors) or (
-                    "selected package schema rejected generated payload"
+                parser_errors.append(
+                    "; ".join(error for result in validation_results for error in result.errors)
+                    or "selected package schema rejected generated payload"
                 )
         except Exception as exc:  # Receipt records route failures instead of hiding them.
             validation_error = f"{type(exc).__name__}: {exc}"
+
+        if parser_errors:
+            validation_error = "; ".join(parser_errors)
 
         if selection is not None:
             witnessed = construct_coverage(selection.schema, payloads)

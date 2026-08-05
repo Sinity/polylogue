@@ -150,9 +150,11 @@ def _ensure_wire_chatgpt(
 
     msg.setdefault("create_time", ts)
     if self._coverage_witness_mode:
-        raw_provider_payload = data.get("raw_provider_payload")
-        if isinstance(raw_provider_payload, dict):
-            raw_provider_payload.pop("mapping", None)
+        # Coverage generation may choose arbitrary schema-valid enum values;
+        # keep the message discriminator on the parser-owned conversational
+        # branch so every schema witness still proves parser materialization.
+        author["role"] = role
+        content["content_type"] = "text"
 
 
 def _ensure_wire_claude_ai(

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, Role
 from polylogue.core.json import JSONValue
 from polylogue.schemas import validator as validator_module
 from polylogue.schemas.packages import SchemaResolution
@@ -23,7 +23,7 @@ from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRouteError
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.sources import dispatch as dispatch_module
-from polylogue.sources.parsers.base_models import ParsedSession
+from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 
 
@@ -51,6 +51,11 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
     assert all(entry.parsed_session_count > 0 for entry in supported)
     assert all(entry.parsed_message_count > 0 for entry in supported)
     assert all(entry.construct_coverage is not None and entry.construct_coverage.complete for entry in supported)
+    assert all(
+        any(witness.artifact_kind == "baseline" and witness.healthy for witness in entry.parser_witnesses)
+        for entry in supported
+    )
+    assert all(all(witness.artifact_evidence for witness in entry.parser_witnesses) for entry in supported)
     assert receipt.complete
 
 
@@ -86,6 +91,137 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
     assert dropped.parsed_session_count == 0
     assert dropped.parsed_message_count == 0
     assert not dropped.healthy
+    assert not entry.healthy
+    assert not receipt.complete
+
+
+@pytest.mark.parametrize("returned_session", ["empty", "unrelated", "metadata"])
+def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    returned_session: str,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+
+    def return_non_evidence_for_first_coverage_witness(
+        provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        if provider == "chatgpt" and fallback_id.endswith(":1"):
+            if returned_session == "empty":
+                return [ParsedSession(source_name=Provider.CHATGPT, provider_session_id="empty", messages=[])]
+            if returned_session == "metadata":
+                payload_record = payload if isinstance(payload, Mapping) else {}
+                metadata_id = str(payload_record.get("id", "metadata-session"))
+                metadata_text = str(payload_record.get("title", "metadata title"))
+                return [
+                    ParsedSession(
+                        source_name=Provider.CHATGPT,
+                        provider_session_id=metadata_id,
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id=metadata_id,
+                                role=Role.ASSISTANT,
+                                text=metadata_text,
+                            )
+                        ],
+                    )
+                ]
+            return [
+                ParsedSession(
+                    source_name=Provider.CHATGPT,
+                    provider_session_id="unrelated",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="unrelated",
+                            role=Role.ASSISTANT,
+                            text="content from another artifact",
+                        )
+                    ],
+                )
+            ]
+        return original_parse_payload(
+            provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", return_non_evidence_for_first_coverage_witness)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+
+    entry = next(item for item in receipt.entries if item.provider == "chatgpt")
+    witness = next(item for item in entry.parser_witnesses if item.artifact_kind == "coverage" and item.index == 0)
+    assert witness.parsed_session_count == (0 if returned_session == "empty" else 1)
+    assert witness.artifact_evidence == ()
+    assert not witness.healthy
+    assert not entry.healthy
+    assert not receipt.complete
+
+
+def test_baseline_parser_failure_reaches_support_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+
+    def fail_baseline(
+        provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        if provider == "chatgpt" and fallback_id.endswith(":0"):
+            raise RuntimeError("baseline parser failure")
+        return original_parse_payload(
+            provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", fail_baseline)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+
+    entry = next(item for item in receipt.entries if item.provider == "chatgpt")
+    baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
+    assert baseline.validation_error == "RuntimeError: baseline parser failure"
+    assert entry.validation_error is not None
+    assert "baseline parser: RuntimeError: baseline parser failure" in entry.validation_error
+    assert not baseline.healthy
+    assert not entry.healthy
+    assert not receipt.complete
+
+
+def test_baseline_schema_failure_reaches_support_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_validate = validator_module.SchemaValidator.validate
+    failed_baseline = False
+
+    def fail_chatgpt_baseline(self: SchemaValidator, payload: JSONValue) -> validator_module.ValidationResult:
+        nonlocal failed_baseline
+        if not failed_baseline and isinstance(payload, dict) and isinstance(payload.get("mapping"), dict):
+            failed_baseline = True
+            return validator_module.ValidationResult(is_valid=False, errors=["baseline schema failure"])
+        return original_validate(self, payload)
+
+    monkeypatch.setattr(validator_module.SchemaValidator, "validate", fail_chatgpt_baseline)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+
+    entry = next(item for item in receipt.entries if item.provider == "chatgpt")
+    baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
+    assert failed_baseline
+    assert entry.schema_valid is False
+    assert baseline.validation_error == "baseline schema failure"
+    assert entry.validation_error is not None
+    assert "baseline schema failure" in entry.validation_error
     assert not entry.healthy
     assert not receipt.complete
 
