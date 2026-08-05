@@ -530,6 +530,38 @@ def _require_generation_binding(
         raise IndexFastForwardError("prepared generation source snapshot changed since preparation")
     if generation.source_snapshot != expected_source_snapshot:
         raise IndexFastForwardError("prepared generation source snapshot changed since preparation")
+    current_metadata = asdict(generation)
+    expected_metadata = dict(generation_payload)
+    current_metadata.pop("state", None)
+    expected_metadata.pop("state", None)
+    if current_metadata != expected_metadata:
+        raise IndexFastForwardError("prepared generation metadata changed since preparation")
+
+
+def _require_active_receipt_binding(
+    store: IndexGenerationStore,
+    receipt: dict[str, object],
+    generation_payload: dict[str, object],
+    generation: IndexGeneration,
+    generation_index: Path,
+) -> None:
+    """Prove an activated receipt still describes the live generation."""
+    if generation.state != "active":
+        raise IndexFastForwardError(f"activated receipt generation is not active: {generation.state}")
+    if asdict(generation) != generation_payload:
+        raise IndexFastForwardError("activated receipt generation metadata changed")
+    try:
+        pointer_target = store.active_pointer.resolve(strict=True)
+        generation_target = generation_index.resolve(strict=True)
+    except OSError as exc:
+        raise IndexFastForwardError("activated receipt active index pointer is not resolvable") from exc
+    if pointer_target != generation_target:
+        raise IndexFastForwardError("activated receipt generation no longer owns the active index pointer")
+    expected_identity = receipt.get("active_identity_after")
+    if not isinstance(expected_identity, dict):
+        raise IndexFastForwardError("activated receipt active pointer identity is missing")
+    if _file_identity(store.active_pointer) != expected_identity:
+        raise IndexFastForwardError("activated receipt active pointer identity changed")
 
 
 def _require_recovery_evidence(
@@ -626,8 +658,6 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
     status = receipt.get("status")
     if status not in {"prepared", "activating", "activated"}:
         raise IndexFastForwardError(f"receipt is not prepared: {status}")
-    if status == "activated":
-        return receipt
     archive_root = Path(str(receipt["archive_root"])).resolve(strict=True)
     _require_daemon_stopped(archive_root)
     store = IndexGenerationStore.for_archive_root(archive_root)
@@ -655,6 +685,10 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
             else:
                 generation = store.recover_promotion(generation.generation_id)
         if generation.state == "active":
+            if status == "activated":
+                _require_active_receipt_binding(store, receipt, generation_payload, generation, clone)
+                _require_recovery_evidence(archive_root, receipt, generation, clone)
+                return receipt
             if store.active_pointer.resolve(strict=True) != clone.resolve(strict=True):
                 raise IndexFastForwardError("active generation does not own the active index pointer")
             receipt.update(
@@ -662,6 +696,7 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
                     "status": "activated",
                     "activated_at_ms": receipt.get("activated_at_ms", _now_ms()),
                     "generation": asdict(generation),
+                    "active_identity_after": _file_identity(store.active_pointer),
                 }
             )
             _write_receipt(receipt_path, receipt)
