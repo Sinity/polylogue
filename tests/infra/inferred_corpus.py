@@ -309,11 +309,18 @@ def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _number(value: object) -> int | float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    return None
+
+
 def _valid_pair(value: object, *, integral: bool = False, nonnegative: bool = False) -> bool:
     if not isinstance(value, list) or len(value) < 2:
         return False
-    first, second = value[:2]
-    if not _is_number(first) or not _is_number(second):
+    first = _number(value[0])
+    second = _number(value[1])
+    if first is None or second is None:
         return False
     if integral and (not isinstance(first, int) or not isinstance(second, int)):
         return False
@@ -329,11 +336,12 @@ def _valid_observed_distribution(value: object) -> bool:
         if not isinstance(distribution, Mapping):
             continue
         histogram = distribution.get("histogram")
-        log_base = distribution.get("log_base")
+        log_base = _number(distribution.get("log_base"))
         if (
             isinstance(histogram, list)
             and histogram
             and _is_number(log_base)
+            and log_base is not None
             and log_base > 1
             and all(
                 isinstance(bucket, list)
@@ -348,16 +356,17 @@ def _valid_observed_distribution(value: object) -> bool:
     return False
 
 
-def _valid_relation_records(value: object, required: tuple[str, ...]) -> bool:
-    return (
-        isinstance(value, list)
-        and bool(value)
-        and all(
-            isinstance(record, Mapping)
-            and all(isinstance(record.get(field), str) and record[field].strip() for field in required)
-            for record in value
-        )
-    )
+def _relation_records(value: object, required: tuple[str, ...]) -> list[dict[str, object]] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    records: list[dict[str, object]] = []
+    for record in value:
+        if not isinstance(record, dict):
+            return None
+        if not all(isinstance(record.get(field), str) and record[field].strip() for field in required):
+            return None
+        records.append(record)
+    return records
 
 
 def _synthetic_annotation_is_enforced(key: str, value: object) -> bool:
@@ -370,7 +379,8 @@ def _synthetic_annotation_is_enforced(key: str, value: object) -> bool:
     if key == "x-polylogue-semantic-role":
         return isinstance(value, str) and value in _SUPPORTED_SEMANTIC_ROLE_VALUES
     if key == "x-polylogue-frequency":
-        return _is_number(value) and 0 <= value <= 1
+        frequency = _number(value)
+        return frequency is not None and 0 <= frequency <= 1
     if key == "x-polylogue-multiline":
         return isinstance(value, bool)
     if key == "x-polylogue-values":
@@ -382,29 +392,29 @@ def _synthetic_annotation_is_enforced(key: str, value: object) -> bool:
     if key == "x-polylogue-observed-distribution":
         return _valid_observed_distribution(value)
     if key == "x-polylogue-foreign-keys":
-        return _valid_relation_records(value, ("source", "target"))
+        return _relation_records(value, ("source", "target")) is not None
     if key == "x-polylogue-time-deltas":
-        return _valid_relation_records(value, ("field_a", "field_b")) and all(
-            _is_number(record.get(field))
-            for record in value
-            if isinstance(record, Mapping)
+        records = _relation_records(value, ("field_a", "field_b"))
+        return records is not None and all(
+            _number(record.get(field)) is not None
+            for record in records
             for field in ("min_delta", "max_delta", "avg_delta")
         )
     if key == "x-polylogue-mutually-exclusive":
-        return _valid_relation_records(value, ("parent",)) and all(
-            isinstance(record.get("fields"), list)
-            and len(record["fields"]) >= 2
-            and all(isinstance(field, str) and field for field in record["fields"])
-            for record in value
-            if isinstance(record, Mapping)
+        records = _relation_records(value, ("parent",))
+        return records is not None and all(
+            isinstance(fields := record.get("fields"), list)
+            and len(fields) >= 2
+            and all(isinstance(field, str) and field for field in fields)
+            for record in records
         )
     if key == "x-polylogue-string-lengths":
-        return _valid_relation_records(value, ("path",)) and all(
+        records = _relation_records(value, ("path",))
+        return records is not None and all(
             _valid_pair([record.get("min"), record.get("max")], integral=True, nonnegative=True)
-            and _is_number(record.get("avg"))
-            and _is_number(record.get("stddev"))
-            for record in value
-            if isinstance(record, Mapping)
+            and _number(record.get("avg")) is not None
+            and _number(record.get("stddev")) is not None
+            for record in records
         )
     raise AssertionError(f"missing annotation validator for {key}")
 
