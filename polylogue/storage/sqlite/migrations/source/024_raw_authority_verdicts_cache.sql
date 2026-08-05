@@ -13,11 +13,14 @@
 -- fingerprint and the previously-cached rows read as stale on the next
 -- lookup rather than being trusted past their true validity window.
 --
--- No write-side actuator populates this table proactively yet --
--- get_or_compute_raw_authority_verdicts() (raw_authority_verdict_cache.py)
--- fills it lazily on first read. Wiring a DaemonConverger stage to keep it
--- warm ahead of reads is deferred to a follow-up within polylogue-tw4ar's own
--- scope, not attempted in this migration.
+-- The daemon's bounded raw_authority_verdict_cache convergence stage also
+-- warms eligible full/unknown cohorts ahead of reads. The read-through
+-- get_or_compute_raw_authority_verdicts() path remains the fallback for a
+-- cold or invalidated cohort. Cohorts containing append revisions are
+-- explicitly skipped because their authority has a separate proof shape;
+-- absence from this cache is not an assertion that the raw evidence is absent.
+-- This cache never controls raw retention or index rebuild selection; those
+-- decisions continue to use direct source-tier evidence and their own proofs.
 CREATE TABLE IF NOT EXISTS raw_authority_verdicts (
     raw_id                TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     logical_source_key    TEXT NOT NULL,

@@ -471,11 +471,13 @@ WHERE resolved_at_ms IS NULL;
 -- cohort's own (raw_id, revision_kind, blob_hash) rows, so any membership or
 -- content change to the logical_source_key cohort changes the fingerprint and
 -- the cached rows read as stale on the next lookup (see
--- polylogue.storage.raw_authority_verdict_cache). No write-side actuator
--- writes here yet -- polylogue.storage.raw_authority_verdict_cache's
--- get_or_compute_raw_authority_verdicts() populates it lazily on read;
--- DaemonConverger convergence-stage wiring to keep it warm proactively is
--- deferred, see polylogue-tw4ar.
+-- polylogue.storage.raw_authority_verdict_cache). The daemon's bounded
+-- raw_authority_verdict_cache convergence stage warms eligible full/unknown
+-- cohorts proactively; get_or_compute_raw_authority_verdicts() remains the
+-- read-through fallback for cold or invalidated cohorts. Cohorts containing
+-- append revisions are explicitly skipped because their authority uses a
+-- separate proof shape, so this cache is never the retention or rebuild
+-- authority for those source rows.
 CREATE TABLE IF NOT EXISTS raw_authority_verdicts (
     raw_id                TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     logical_source_key    TEXT NOT NULL,
