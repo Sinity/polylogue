@@ -1836,6 +1836,110 @@ async def test_get_actions_batch_derives_from_archive_blocks(tmp_path: Path) -> 
         await archive.close()
 
 
+async def test_get_actions_batch_pairs_session_wide_and_exposes_result_state(tmp_path: Path) -> None:
+    archive = _archive(tmp_path)
+    with ArchiveStore(archive.config.archive_root) as archive_db:
+        archive_db.write_parsed(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="session-wide-action-results",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m-use-1",
+                        role=Role.ASSISTANT,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id="repeat",
+                                tool_input={"command": "first"},
+                            ),
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id="absent",
+                                tool_input={"command": "absent"},
+                            ),
+                        ],
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m-use-2",
+                        role=Role.ASSISTANT,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id="repeat",
+                                tool_input={"command": "second"},
+                            )
+                        ],
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m-result-1",
+                        role=Role.ASSISTANT,
+                        blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeat", text="unknown")],
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m-result-2",
+                        role=Role.ASSISTANT,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="repeat",
+                                text="failed",
+                                is_error=True,
+                                exit_code=2,
+                            )
+                        ],
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m-success-use",
+                        role=Role.ASSISTANT,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id="success",
+                                tool_input={"command": "success"},
+                            )
+                        ],
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m-success-result",
+                        role=Role.ASSISTANT,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="success",
+                                text="ok",
+                                is_error=False,
+                                exit_code=0,
+                            )
+                        ],
+                    ),
+                ],
+            )
+        )
+    try:
+        summaries = await archive.list_summaries()
+        native_id = str(summaries[0].id)
+        actions = (await archive.get_actions_batch([native_id]))[native_id]
+    finally:
+        await archive.close()
+
+    by_command = {action.command: action for action in actions}
+    assert [(action.command, action.output_text, action.result_state) for action in actions] == [
+        ("first", "unknown", "outcome_unknown"),
+        ("absent", None, "no_result"),
+        ("second", "failed", "outcome_reported"),
+        ("success", "ok", "outcome_reported"),
+    ]
+    assert by_command["first"].tool_success is None
+    assert by_command["absent"].tool_success is None
+    assert by_command["second"].tool_success is False
+    assert by_command["success"].tool_success is True
+
+
 # ---------------------------------------------------------------------------
 # 6. Error envelope: SessionNotFoundError is a typed PolylogueError
 # ---------------------------------------------------------------------------

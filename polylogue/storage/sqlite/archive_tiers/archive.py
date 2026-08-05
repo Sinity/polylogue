@@ -7712,46 +7712,40 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         placeholders = ", ".join("?" for _ in normalized_session_ids)
+        prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+            session_ids=normalized_session_ids,
+            include_followup=False,
+        )
         rows = self._conn.execute(
             f"""
+            {prefix_sql}
             SELECT
-                u.session_id,
-                u.message_id,
+                a.session_id,
+                a.message_id,
                 s.origin,
                 s.title,
-                u.block_id AS tool_use_block_id,
-                r.block_id AS tool_result_block_id,
-                u.tool_name,
-                u.semantic_type,
-                {_action_command_expression("u")} AS tool_command,
-                u.tool_path,
+                a.tool_use_block_id,
+                a.tool_result_block_id,
+                a.tool_name,
+                a.semantic_type,
+                {_action_command_expression("a")} AS tool_command,
+                a.tool_path,
                 m.occurred_at_ms,
-                r.search_text AS output_text,
-                r.tool_result_is_error AS is_error,
-                r.tool_result_exit_code AS exit_code,
-                CASE
-                    WHEN r.block_id IS NULL THEN 'no_result'
-                    WHEN r.tool_result_is_error IS NULL AND r.tool_result_exit_code IS NULL THEN 'outcome_unknown'
-                    ELSE 'outcome_reported'
-                END AS result_state,
+                a.output_text,
+                a.is_error,
+                a.exit_code,
+                a.result_state,
                 NULL AS followup_class,
                 NULL AS followup_message_ref
-            FROM blocks u INDEXED BY idx_blocks_session_position
-            JOIN sessions s ON s.session_id = u.session_id
-            JOIN messages m ON m.message_id = u.message_id
-            LEFT JOIN blocks r INDEXED BY idx_blocks_tool_id
-             ON r.tool_id = u.tool_id
-             AND r.session_id = u.session_id
-             AND r.block_type = 'tool_result'
-             AND r.tool_id IS NOT NULL
-             AND r.tool_id != ''
-            WHERE u.session_id IN ({placeholders})
-              AND u.block_type = 'tool_use'
+            FROM {action_relation_name} a
+            JOIN sessions s ON s.session_id = a.session_id
+            JOIN messages m ON m.message_id = a.message_id
+            WHERE a.session_id IN ({placeholders})
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction},
-                     u.block_id {order_direction}
+                     a.tool_use_block_id {order_direction}
             LIMIT ? OFFSET ?
             """,
-            [*normalized_session_ids, normalized_limit, normalized_offset],
+            [*relation_params, *normalized_session_ids, normalized_limit, normalized_offset],
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
 

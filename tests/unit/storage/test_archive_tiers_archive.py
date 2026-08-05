@@ -334,6 +334,66 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
     assert rows_by_command["absent-linkage"].output_text is None
 
 
+def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pairing(
+    tmp_path: Path,
+) -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-repeated-action-occurrences",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m-use-1",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="repeated",
+                        tool_input={"command": "first"},
+                    )
+                ],
+            ),
+            ParsedMessage(
+                provider_message_id="m-use-2",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="repeated",
+                        tool_input={"command": "second"},
+                    )
+                ],
+            ),
+            ParsedMessage(
+                provider_message_id="m-result-1",
+                role=Role.ASSISTANT,
+                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-one")],
+            ),
+            ParsedMessage(
+                provider_message_id="m-result-2",
+                role=Role.ASSISTANT,
+                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-two")],
+            ),
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        all_rows = facade.query_session_action_occurrences([session_id], limit=10)
+        first_page = facade.query_session_action_occurrences([session_id], limit=1, offset=0)
+        second_page = facade.query_session_action_occurrences([session_id], limit=1, offset=1)
+
+    assert [(row.tool_command, row.output_text) for row in all_rows] == [
+        ("first", "result-one"),
+        ("second", "result-two"),
+    ]
+    assert [(row.tool_command, row.output_text) for row in first_page] == [("first", "result-one")]
+    assert [(row.tool_command, row.output_text) for row in second_page] == [("second", "result-two")]
+
+
 def test_exact_session_action_count_bounds_pairing_before_global_ranking(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
