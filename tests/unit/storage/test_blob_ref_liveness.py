@@ -427,13 +427,19 @@ def test_real_prepared_failure_rolls_back_and_recovery_records_exact_state(
     assert recovered_rows[-1]["deleted_count"] == 0
 
 
-def test_apply_rejects_post_staging_legacy_hook_before_deleting_any_candidate(
+def test_apply_rejects_post_staging_duplicate_known_hash_hooks_before_deleting_any_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
-    orphan_count = 2_000
+    orphan_count = liveness_reconciliation.BATCH_SIZE + 1
     source_path = "/hooks/post-staging.jsonl"
+    duplicate_index = 0
+    duplicate_hash = duplicate_index.to_bytes(4, "big") + b"o" * 28
+    duplicate_native_id = "post-staging-native"
+    duplicate_ref_id = deterministic_raw_session_id(
+        "codex-session", source_path, 0, duplicate_hash, duplicate_native_id
+    )
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.executemany(
             """
@@ -441,7 +447,11 @@ def test_apply_rejects_post_staging_legacy_hook_before_deleting_any_candidate(
             VALUES (?, ?, 'raw_payload', ?, 1, 1)
             """,
             (
-                (index.to_bytes(4, "big") + b"o" * 28, f"raw-orphan-{index}", source_path)
+                (
+                    index.to_bytes(4, "big") + b"o" * 28,
+                    duplicate_ref_id if index == duplicate_index else f"raw-orphan-{index}",
+                    source_path,
+                )
                 for index in range(orphan_count)
             ),
         )
@@ -450,13 +460,16 @@ def test_apply_rejects_post_staging_legacy_hook_before_deleting_any_candidate(
 
     def stage_then_insert_hook(conn: sqlite3.Connection) -> BlobRefLivenessStagedPlan:
         staged = real_stage(conn)
-        conn.execute(
+        conn.executemany(
             """
             INSERT INTO raw_hook_events (
-                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
-            ) VALUES ('post-staging-hook', 'codex-session', 'post-staging-native', ?, 'PostToolUse', '{}', 1)
+                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms, blob_hash
+            ) VALUES (?, 'codex-session', ?, ?, 'PostToolUse', '{}', 1, ?)
             """,
-            (source_path,),
+            (
+                ("post-staging-hook-1", duplicate_native_id, source_path, duplicate_hash),
+                ("post-staging-hook-2", duplicate_native_id, source_path, duplicate_hash),
+            ),
         )
         return staged
 
@@ -470,7 +483,7 @@ def test_apply_rejects_post_staging_legacy_hook_before_deleting_any_candidate(
     monkeypatch.setattr(liveness_reconciliation, "running_daemon_pid", lambda _config: None)
     receipt = tmp_path / "receipts" / "post-staging-hook.jsonl"
 
-    with pytest.raises(BlobRefLivenessReconciliationError, match="ambiguous legacy hook evidence"):
+    with pytest.raises(BlobRefLivenessReconciliationError, match="duplicate known-hash hook evidence"):
         reconcile_blob_ref_liveness(
             archive_root,
             backup_manifest=tmp_path / "backup" / "manifest.json",
@@ -480,7 +493,86 @@ def test_apply_rejects_post_staging_legacy_hook_before_deleting_any_candidate(
 
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (orphan_count,)
-        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (2,)
+
+
+def test_apply_fails_closed_if_source_changes_between_bounded_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    orphan_count = liveness_reconciliation.BATCH_SIZE + 1
+    source_path = "/hooks/inter-batch.jsonl"
+    target_index = orphan_count - 1
+    target_hash = target_index.to_bytes(4, "big") + b"o" * 28
+    target_native_id = "inter-batch-native"
+    target_ref_id = deterministic_raw_session_id("codex-session", source_path, 0, target_hash, target_native_id)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, 1, 1)
+            """,
+            (
+                (
+                    index.to_bytes(4, "big") + b"o" * 28,
+                    target_ref_id if index == target_index else f"!orphan-{index:04d}",
+                    source_path,
+                )
+                for index in range(orphan_count)
+            ),
+        )
+
+    def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        return path
+
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_manifest", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_live_fingerprint", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "running_daemon_pid", lambda _config: None)
+    real_append_footer = liveness_reconciliation._append_receipt_footer
+    committed_batches = 0
+
+    def append_footer_and_insert_hook(
+        receipt_path: Path, *, phase: str, deleted_count: int | None = None, error: str | None = None
+    ) -> None:
+        nonlocal committed_batches
+        real_append_footer(receipt_path, phase=phase, deleted_count=deleted_count, error=error)
+        if phase == "batch_committed":
+            committed_batches += 1
+            if committed_batches == 1:
+                with sqlite3.connect(archive_root / "source.db") as external_conn:
+                    external_conn.executemany(
+                        """
+                        INSERT INTO raw_hook_events (
+                            hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms,
+                            blob_hash
+                        ) VALUES (?, 'codex-session', ?, ?, 'PostToolUse', '{}', 1, ?)
+                        """,
+                        (
+                            ("inter-batch-hook-1", target_native_id, source_path, target_hash),
+                            ("inter-batch-hook-2", target_native_id, source_path, target_hash),
+                        ),
+                    )
+
+    monkeypatch.setattr(liveness_reconciliation, "_append_receipt_footer", append_footer_and_insert_hook)
+    receipt = tmp_path / "receipts" / "inter-batch.jsonl"
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="changed after locked hook snapshot"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup" / "manifest.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    assert committed_batches == 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (1,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'raw_payload' AND ref_id = ?", (target_ref_id,)
+        ).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (2,)
 
 
 def test_locked_plan_rejects_referent_that_appears_after_staging(tmp_path: Path) -> None:
@@ -582,9 +674,18 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
             """,
             (b"l" * 32,),
         )
+        assert conn.execute(
+            "SELECT 1 FROM pragma_index_list('raw_hook_events') WHERE name = 'idx_raw_hook_events_source_hash'"
+        ).fetchone() == (1,)
+        query_plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT 1 FROM raw_hook_events WHERE source_path = ? AND blob_hash = ?",
+            ("/hooks/0.jsonl", b"o" * 32),
+        ).fetchall()
+        assert any("idx_raw_hook_events_source_hash" in str(row[3]) for row in query_plan)
         conn.commit()
 
     calls = 0
+    snapshot_calls = 0
     original_id = hook_payload_ref_reconciliation._deterministic_raw_session_id_udf
 
     def count_udf(*args: object) -> str | None:
@@ -596,6 +697,15 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
         "polylogue.storage.hook_payload_ref_reconciliation._deterministic_raw_session_id_udf", count_udf
     )
     monkeypatch.setattr(liveness_reconciliation, "_deterministic_raw_session_id_udf", count_udf)
+
+    real_snapshot = liveness_reconciliation._stage_locked_hook_snapshot
+
+    def count_snapshot(conn: sqlite3.Connection, candidate_table: str) -> str:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return real_snapshot(conn, candidate_table)
+
+    monkeypatch.setattr(liveness_reconciliation, "_stage_locked_hook_snapshot", count_snapshot)
 
     def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
         assert connection.execute("SELECT 1").fetchone() == (1,)
@@ -635,6 +745,7 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
     # batch validations are all bounded by candidates, not all hook rows.
     assert calls <= orphan_count * 3
     assert calls < irrelevant_hook_count
+    assert snapshot_calls == 1
     assert batches == orphan_count // liveness_reconciliation.BATCH_SIZE
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (1,)

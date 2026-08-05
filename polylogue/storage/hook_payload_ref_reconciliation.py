@@ -117,7 +117,27 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         f"""
         CREATE TEMP TABLE {_HOOK_TABLE} AS
         SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
-        FROM raw_hook_events AS h
+        FROM (
+            SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
+            FROM raw_hook_events AS h
+            JOIN (
+                SELECT DISTINCT source_path, blob_hash
+                FROM {_ORPHAN_TABLE}
+                WHERE source_path IS NOT NULL
+            ) AS o
+              ON o.source_path IS h.source_path
+             AND o.blob_hash = h.blob_hash
+            UNION
+            SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
+            FROM raw_hook_events AS h
+            JOIN (
+                SELECT DISTINCT source_path
+                FROM {_ORPHAN_TABLE}
+                WHERE source_path IS NOT NULL
+            ) AS o
+              ON o.source_path IS h.source_path
+            WHERE h.blob_hash IS NULL
+        ) AS h
         WHERE NOT EXISTS (
             SELECT 1 FROM blob_refs AS b
             WHERE b.blob_hash = h.blob_hash

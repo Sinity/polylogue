@@ -21,7 +21,7 @@ over the `CREATE TABLE` statement.
 
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
-| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 26` |
+| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 28` |
 | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 53` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 4` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 10` |

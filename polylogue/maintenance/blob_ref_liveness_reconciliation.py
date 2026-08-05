@@ -32,6 +32,8 @@ from polylogue.storage.sqlite.migration_runner import (
 
 TOOL_VERSION = "blob-ref-liveness-reconciliation-v1"
 BATCH_SIZE = 1_000
+_LOCKED_HOOK_TABLE = "blob_ref_liveness_locked_hooks"
+_LOCKED_KNOWN_HOOK_MATCH_TABLE = "blob_ref_liveness_locked_known_hook_matches"
 _RECOVERY_TERMINAL_PHASES = {
     "committed",
     "aborted",
@@ -91,6 +93,13 @@ def _checkpoint_source_db(conn: sqlite3.Connection) -> None:
         raise BlobRefLivenessReconciliationError("could not checkpoint source.db before backup validation") from exc
     if row is None:
         raise BlobRefLivenessReconciliationError("could not checkpoint source.db before backup validation")
+
+
+def _source_data_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("PRAGMA data_version").fetchone()
+    if row is None:
+        raise BlobRefLivenessReconciliationError("could not read source.db data version")
+    return int(row[0])
 
 
 def _candidate_digest(candidates: Iterable[BlobRefLivenessCandidate]) -> str:
@@ -368,7 +377,67 @@ def _delete_candidate_batch(conn: sqlite3.Connection, candidate_table: str, batc
     return deleted_count
 
 
-def _validate_locked_candidate_plan(conn: sqlite3.Connection, candidate_table: str, expected_count: int) -> None:
+def _stage_locked_hook_snapshot(conn: sqlite3.Connection, candidate_table: str) -> str:
+    """Capture all hook evidence relevant to the complete staged plan once."""
+
+    conn.execute(f"DROP TABLE IF EXISTS temp.{_LOCKED_HOOK_TABLE}")
+    if _table_exists(conn, "raw_hook_events"):
+        conn.execute(
+            f"""
+            CREATE TEMP TABLE {_LOCKED_HOOK_TABLE} AS
+            SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
+            FROM (
+                SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
+                FROM raw_hook_events AS h
+                JOIN (
+                    SELECT DISTINCT source_path, blob_hash
+                    FROM {candidate_table}
+                    WHERE ref_type = 'raw_payload' AND source_path IS NOT NULL
+                ) AS c
+                  ON c.source_path IS h.source_path
+                 AND c.blob_hash = h.blob_hash
+                UNION
+                SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
+                FROM raw_hook_events AS h
+                JOIN (
+                    SELECT DISTINCT source_path
+                    FROM {candidate_table}
+                    WHERE ref_type = 'raw_payload' AND source_path IS NOT NULL
+                ) AS c
+                  ON c.source_path IS h.source_path
+                WHERE h.blob_hash IS NULL
+            ) AS h
+            WHERE NOT EXISTS (
+                SELECT 1 FROM blob_refs AS b
+                WHERE b.blob_hash = h.blob_hash
+                  AND b.ref_type = 'hook_payload'
+                  AND b.ref_id = h.hook_event_id
+            )
+            """
+        )
+    else:
+        conn.execute(
+            f"""
+            CREATE TEMP TABLE {_LOCKED_HOOK_TABLE} (
+                hook_event_id TEXT NOT NULL,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                blob_hash BLOB
+            )
+            """
+        )
+    conn.execute(f"CREATE INDEX {_LOCKED_HOOK_TABLE}_source_hash ON {_LOCKED_HOOK_TABLE}(source_path, blob_hash)")
+    return _LOCKED_HOOK_TABLE
+
+
+def _validate_locked_candidate_plan(
+    conn: sqlite3.Connection,
+    candidate_table: str,
+    expected_count: int,
+    *,
+    locked_hook_table: str | None = None,
+) -> None:
     present_count = int(
         conn.execute(
             f"""
@@ -407,44 +476,7 @@ def _validate_locked_candidate_plan(conn: sqlite3.Connection, candidate_table: s
             raise BlobRefLivenessReconciliationError(
                 f"prepared candidate referents became live under lock: {live_referent_count}"
             )
-    conn.execute("DROP TABLE IF EXISTS temp.blob_ref_liveness_locked_hooks")
-    if _table_exists(conn, "raw_hook_events"):
-        conn.execute(
-            f"""
-            CREATE TEMP TABLE blob_ref_liveness_locked_hooks AS
-            SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
-            FROM raw_hook_events AS h
-            WHERE EXISTS (
-                SELECT 1
-                FROM {candidate_table} AS c
-                WHERE c.ref_type = 'raw_payload'
-                  AND c.source_path IS h.source_path
-                  AND (h.blob_hash IS NULL OR h.blob_hash = c.blob_hash)
-            )
-              AND NOT EXISTS (
-                SELECT 1 FROM blob_refs AS b
-                WHERE b.blob_hash = h.blob_hash
-                  AND b.ref_type = 'hook_payload'
-                  AND b.ref_id = h.hook_event_id
-            )
-            """
-        )
-    else:
-        conn.execute(
-            """
-            CREATE TEMP TABLE blob_ref_liveness_locked_hooks (
-                hook_event_id TEXT NOT NULL,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB
-            )
-            """
-        )
-    conn.execute(
-        "CREATE INDEX blob_ref_liveness_locked_hooks_source_hash "
-        "ON blob_ref_liveness_locked_hooks(source_path, blob_hash)"
-    )
+    hook_table = locked_hook_table or _stage_locked_hook_snapshot(conn, candidate_table)
     legacy_ambiguous_path_count = int(
         conn.execute(
             f"""
@@ -459,7 +491,7 @@ def _validate_locked_candidate_plan(conn: sqlite3.Connection, candidate_table: s
                 ) AS candidates
                 JOIN (
                     SELECT source_path, COUNT(*) AS hook_count
-                    FROM blob_ref_liveness_locked_hooks
+                    FROM {hook_table}
                     WHERE blob_hash IS NULL
                     GROUP BY source_path
                 ) AS hooks
@@ -475,31 +507,57 @@ def _validate_locked_candidate_plan(conn: sqlite3.Connection, candidate_table: s
             f"{legacy_ambiguous_path_count} source path(s)"
         )
     conn.create_function("polylogue_deterministic_raw_session_id", 5, _deterministic_raw_session_id_udf)
+    conn.execute(f"DROP TABLE IF EXISTS temp.{_LOCKED_KNOWN_HOOK_MATCH_TABLE}")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {_LOCKED_KNOWN_HOOK_MATCH_TABLE} AS
+        SELECT c.blob_hash, c.ref_id, h.hook_event_id
+        FROM {candidate_table} AS c
+        JOIN {hook_table} AS h
+          ON h.source_path IS c.source_path
+         AND h.blob_hash = c.blob_hash
+         AND polylogue_deterministic_raw_session_id(h.origin, c.source_path, 0, c.blob_hash, h.native_id) = c.ref_id
+        WHERE c.ref_type = 'raw_payload'
+        """
+    )
+    duplicate_known_hash_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT blob_hash, ref_id
+                FROM {_LOCKED_KNOWN_HOOK_MATCH_TABLE}
+                GROUP BY blob_hash, ref_id
+                HAVING COUNT(DISTINCT hook_event_id) > 1
+            )
+            """
+        ).fetchone()[0]
+    )
+    if duplicate_known_hash_count:
+        raise BlobRefLivenessReconciliationError(
+            "prepared candidates have duplicate known-hash hook evidence under lock: "
+            f"{duplicate_known_hash_count} candidate(s)"
+        )
     rekeyable = int(
         conn.execute(
             f"""
             SELECT COUNT(*)
             FROM (
-                SELECT c.blob_hash, c.ref_id
-                FROM {candidate_table} AS c
-                JOIN blob_ref_liveness_locked_hooks AS h
-                  ON h.source_path IS c.source_path
-                 AND h.blob_hash = c.blob_hash
-                 AND polylogue_deterministic_raw_session_id(h.origin, c.source_path, 0, c.blob_hash, h.native_id) = c.ref_id
-                WHERE c.ref_type = 'raw_payload'
-                GROUP BY c.blob_hash, c.ref_id
+                SELECT blob_hash, ref_id
+                FROM {_LOCKED_KNOWN_HOOK_MATCH_TABLE}
+                GROUP BY blob_hash, ref_id
                 HAVING COUNT(*) = 1
                 UNION ALL
                 SELECT c.blob_hash, c.ref_id
                 FROM {candidate_table} AS c
-                JOIN blob_ref_liveness_locked_hooks AS h
+                JOIN {hook_table} AS h
                   ON h.source_path IS c.source_path
                  AND h.blob_hash IS NULL
                  AND polylogue_deterministic_raw_session_id(h.origin, c.source_path, 0, c.blob_hash, h.native_id) = c.ref_id
                 WHERE c.ref_type = 'raw_payload'
                   AND (SELECT COUNT(*) FROM {candidate_table} AS c2
                        WHERE c2.ref_type = 'raw_payload' AND c2.source_path IS c.source_path) = 1
-                  AND (SELECT COUNT(*) FROM blob_ref_liveness_locked_hooks AS h2
+                  AND (SELECT COUNT(*) FROM {hook_table} AS h2
                        WHERE h2.source_path IS h.source_path AND h2.blob_hash IS NULL) = 1
             )
             """
@@ -594,6 +652,8 @@ def reconcile_blob_ref_liveness(
     conn = pre_conn
     deleted_count = 0
     first_batch = True
+    source_data_version: int | None = None
+    locked_hook_table: str | None = None
     batch_table = "blob_ref_liveness_batch"
     try:
         while True:
@@ -613,12 +673,30 @@ def reconcile_blob_ref_liveness(
                     # full backup inventory, rehashing only if its stat
                     # signature changed since the pre-lock validation.
                     validate_migration_backup_live_fingerprint(backup_manifest, ArchiveTier.SOURCE, connection=conn)
-                    # Hook evidence is validated against the complete staged
-                    # population before any bounded delete can commit. Later
-                    # batches retain their own short lock-scoped validation.
-                    _validate_locked_candidate_plan(conn, staged_plan.candidate_table, expected_count)
+                    # Capture hook evidence against the complete staged
+                    # population before any bounded delete can commit. The
+                    # snapshot remains valid for later batches because apply
+                    # is offline-only and the same connection owns the plan.
+                    locked_hook_table = _stage_locked_hook_snapshot(conn, staged_plan.candidate_table)
+                    _validate_locked_candidate_plan(
+                        conn,
+                        staged_plan.candidate_table,
+                        expected_count,
+                        locked_hook_table=locked_hook_table,
+                    )
                 else:
-                    _validate_locked_candidate_plan(conn, batch_table, batch_count)
+                    assert locked_hook_table is not None
+                    assert source_data_version is not None
+                    if _source_data_version(conn) != source_data_version:
+                        raise BlobRefLivenessReconciliationError(
+                            "source.db changed after locked hook snapshot; refusing stale bounded plan"
+                        )
+                    _validate_locked_candidate_plan(
+                        conn,
+                        batch_table,
+                        batch_count,
+                        locked_hook_table=locked_hook_table,
+                    )
                 batch_deleted = _delete_candidate_batch(conn, staged_plan.candidate_table, batch_table)
             except Exception:
                 if conn.in_transaction:
@@ -628,6 +706,12 @@ def reconcile_blob_ref_liveness(
                 # commit, or partial-batch recovery without guessing.
                 raise
             else:
+                if first_batch:
+                    # Read the external-writer marker while write ownership is
+                    # still held. The local commit does not advance this
+                    # connection's PRAGMA data_version, so later batches can
+                    # detect writes in the gap after this commit.
+                    source_data_version = _source_data_version(conn)
                 conn.commit()
             deleted_count += batch_deleted
             first_batch = False

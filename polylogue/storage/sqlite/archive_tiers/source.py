@@ -21,7 +21,7 @@ from polylogue.core.enums import (
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
-SOURCE_SCHEMA_VERSION = 27
+SOURCE_SCHEMA_VERSION = 28
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -567,6 +567,9 @@ CREATE TABLE IF NOT EXISTS raw_hook_events (
 
 CREATE INDEX IF NOT EXISTS idx_raw_hook_events_session
 ON raw_hook_events(origin, session_native_id, observed_at_ms);
+
+CREATE INDEX IF NOT EXISTS idx_raw_hook_events_source_hash
+ON raw_hook_events(source_path, blob_hash);
 
 CREATE TABLE IF NOT EXISTS otlp_spans (
     span_id           TEXT PRIMARY KEY,
