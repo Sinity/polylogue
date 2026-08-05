@@ -598,9 +598,9 @@ def _pin_session_native_id(provider: str, data: JSONValue, native_id: str) -> JS
         for index, record in enumerate(data):
             if not isinstance(record, dict) or record.get("type") != "message":
                 continue
-            payload = dict(record)
-            payload["type"] = "message"
-            data[index] = {"type": "response_item", "payload": payload}
+            response_payload = dict(record)
+            response_payload["type"] = "message"
+            data[index] = {"type": "response_item", "payload": response_payload}
         for record in data:
             if not isinstance(record, dict) or record.get("type") != "session_meta":
                 continue
