@@ -1130,7 +1130,13 @@ def test_archive_cleanup_compacts_append_snapshot_without_session_events(tmp_pat
     assert conn.execute("SELECT 1 FROM blob_refs WHERE ref_id = ?", (current_raw,)).fetchone() is not None
 
 
-def _seed_ops_cursor(ops_db_path: Path, *, source_path: Path, byte_offset: int) -> None:
+def _seed_ops_cursor(
+    ops_db_path: Path,
+    *,
+    source_path: Path,
+    byte_offset: int,
+    deferred_end_offset: int | None = None,
+) -> None:
     initialize_archive_database(ops_db_path, ArchiveTier.OPS)
     with sqlite3.connect(ops_db_path) as conn:
         upsert_ingest_cursor(
@@ -1138,6 +1144,7 @@ def _seed_ops_cursor(ops_db_path: Path, *, source_path: Path, byte_offset: int) 
             source_path=str(source_path),
             updated_at_ms=1,
             byte_offset=byte_offset,
+            deferred_end_offset=deferred_end_offset,
         )
         conn.commit()
 
@@ -1837,6 +1844,18 @@ def test_raw_frontier_integrity_snapshot_surfaces_cursor_without_accepted_head(t
     source_path = tmp_path / "unmaterialized.jsonl"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-unmaterialized",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-0",
+            generation=0,
+            blob_size=10,
+        )
+        conn.commit()
     _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=42)
 
     with sqlite3.connect(source_db) as conn:
@@ -1847,7 +1866,57 @@ def test_raw_frontier_integrity_snapshot_surfaces_cursor_without_accepted_head(t
     assert snapshot.cursor_authority_gap_count == 1
     assert snapshot.cursor_authority_gap_samples[0].source_path == str(source_path)
     assert snapshot.cursor_authority_gap_samples[0].cursor_byte_offset == 42
-    assert "no accepted byte head" in snapshot.cursor_authority_gap_samples[0].reason
+    assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+    assert "source tier has raw evidence" in snapshot.cursor_authority_gap_samples[0].reason
+    assert snapshot.overall_status == "unknown"
+
+
+def test_raw_frontier_integrity_snapshot_classifies_deferred_cursor_separately_from_ahead(
+    tmp_path: Path,
+) -> None:
+    """A captured-but-unresolved cursor is blocking deferred authority, not a false violation."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "deferred.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-baseline",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-0",
+            generation=0,
+            blob_size=10,
+        )
+        conn.commit()
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-baseline",
+        accepted_raw_id="raw-baseline",
+        accepted_revision="revision-0",
+        generation=0,
+        frontier=10,
+        append_end_offset=None,
+    )
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=10, deferred_end_offset=20)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_ahead_count == 0
+    assert snapshot.cursor_head_comparison_count == 0
+    assert snapshot.cursor_authority_gap_count == 1
+    sample = snapshot.cursor_authority_gap_samples[0]
+    assert sample.state == "deferred"
+    assert sample.cursor_byte_offset == 10
+    assert "awaiting authority resolution" in sample.reason
     assert snapshot.overall_status == "unknown"
 
 

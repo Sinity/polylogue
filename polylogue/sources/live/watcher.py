@@ -31,7 +31,12 @@ from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import drain_hook_event_spool, hook_spool_root, pending_hook_spool_dir
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
-from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
+from polylogue.sources.live.batch import (
+    CursorAuthorityBlockedError,
+    LiveBatchEventEmitter,
+    LiveBatchProcessor,
+    fingerprint_file,
+)
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
     cursor_ctime_ns,
@@ -431,11 +436,21 @@ class LiveWatcher:
         plan_holder: list[CatchUpPlan] = []
 
         async def prepare_catch_up() -> None:
+            # The preflight must precede both cursor initialization and the
+            # planning pass. ``_plan_catch_up`` can reconcile missing cursors
+            # and rebase matching filesystem observations before ingestion has
+            # a chance to apply its own gate.
+            self._batch_processor.require_cursor_authority()
             await self._run_writer_sync("watcher.catch_up.cursor_initialize", self._cursor.initialize)
+            self._batch_processor.require_cursor_authority()
             logger.info("live.watcher: catch-up scan over %d file(s)", len(candidates))
             plan_holder.append(self._plan_catch_up(candidates))
 
-        await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
+        try:
+            await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
+        except CursorAuthorityBlockedError as exc:
+            logger.warning("live.watcher: catch-up planning refused by cursor authority: %s", exc)
+            return
         plan = plan_holder[0]
         if not plan.needed:
             return
@@ -545,6 +560,9 @@ class LiveWatcher:
                 operation_id, "cancelled", plan, attempted, ingested, failed, stage_timings_s, cycle_started
             )
             raise
+        except CursorAuthorityBlockedError as exc:
+            logger.warning("live.watcher: catch-up refused by cursor authority: %s", exc)
+            return
         except BaseException:
             await self._emit_catch_up_terminal(
                 operation_id, "failure", plan, attempted, ingested, failed, stage_timings_s, cycle_started
@@ -558,6 +576,12 @@ class LiveWatcher:
         large spool backlog cannot monopolize the single writer against
         live ingest and catch-up chunks.
         """
+
+        try:
+            self._batch_processor.require_cursor_authority()
+        except CursorAuthorityBlockedError as exc:
+            logger.warning("live.watcher: hook-spool drain refused by cursor authority: %s", exc)
+            return
 
         total_acknowledged = 0
         while True:
@@ -788,7 +812,12 @@ class LiveWatcher:
             self._pending_paths.clear()
 
         async def flush_batch() -> None:
+            # Filtering a changed-file batch invokes cursor reconciliation and
+            # lifecycle actuators, so the source-selection proof must be
+            # consumed before initialization or any stateful decision.
+            self._batch_processor.require_cursor_authority()
             await self._run_writer_sync("watcher.live_batch.cursor_initialize", self._cursor.initialize)
+            self._batch_processor.require_cursor_authority()
             # Filter to files that actually need work.
             cursor_records = self._cursor.get_records(paths)
             needed = []
@@ -822,6 +851,15 @@ class LiveWatcher:
 
         try:
             await self._run_coordinated("watcher.live_batch", flush_batch)
+        except CursorAuthorityBlockedError as exc:
+            logger.warning("live.watcher: changed-file batch refused by cursor authority: %s", exc)
+            # Authority denial must leave both durable cursor state and the
+            # in-memory work queue intact.  Otherwise the source is invisible
+            # until a later catch-up scan instead of retrying on the next
+            # authorized debounce flush.
+            async with self._batch_lock:
+                self._pending_paths.update(paths)
+            return True
         except sqlite3.OperationalError as exc:
             if not _is_database_locked(exc):
                 raise
@@ -1409,6 +1447,7 @@ class LiveWatcher:
         skipped_file_count: int = 0,
     ) -> LiveBatchMetrics:
         """Ingest files through the reusable daemon live batch processor."""
+        self._batch_processor.require_cursor_authority()
         async with self._ingest_lock:
 
             async def ingest() -> LiveBatchMetrics:

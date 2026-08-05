@@ -897,6 +897,12 @@ def reissue_stale_supersession_receipts(
 # it counts and samples it, so readiness and retention safety cannot drift.
 
 RawFrontierIntegrityStatus = Literal["healthy", "unknown", "violated"]
+CursorAuthorityGapState = Literal[
+    "deferred",
+    "source_raws_without_accepted_head",
+    "cursor_path_absent_from_source",
+    "accepted_head_missing_source",
+]
 """Typed check outcome. ``"unknown"`` means the check's authority tier could
 not be read — it is never collapsed into a false ``"healthy"`` zero."""
 
@@ -930,10 +936,22 @@ class CursorAheadSample:
 class CursorAuthorityGapSample:
     """One cursor/head that cannot be joined to comparable byte authority."""
 
+    state: CursorAuthorityGapState
     source_path: str | None
     logical_source_key: str | None
     cursor_byte_offset: int | None
     reason: str
+
+
+@dataclass(frozen=True)
+class _OpsCursorAuthority:
+    source_path: str
+    byte_offset: int
+    deferred_end_offset: int | None
+
+    @property
+    def is_deferred(self) -> bool:
+        return self.deferred_end_offset is not None and self.deferred_end_offset > self.byte_offset
 
 
 @dataclass(frozen=True)
@@ -1040,6 +1058,7 @@ class RawFrontierIntegrityProjection:
             "cursor_authority_gap_count": self.cursor_authority_gap_count,
             "cursor_authority_gap_samples": [
                 {
+                    "state": sample.state,
                     "source_path": sample.source_path,
                     "logical_source_key": sample.logical_source_key,
                     "cursor_byte_offset": sample.cursor_byte_offset,
@@ -1438,6 +1457,7 @@ def _check_cursor_ahead_of_accepted(
                 if len(gaps) < sample_limit:
                     gaps.append(
                         CursorAuthorityGapSample(
+                            state="accepted_head_missing_source",
                             source_path=None,
                             logical_source_key=head.logical_source_key,
                             cursor_byte_offset=None,
@@ -1454,7 +1474,29 @@ def _check_cursor_ahead_of_accepted(
     checked = 0
     comparison_count = 0
     ahead_comparison_count = 0
-    for path, cursor_offset in cursor_map.items():
+    try:
+        source_paths = _source_paths_for_paths(conn, set(cursor_map))
+    except sqlite3.Error as exc:
+        logger.warning("raw frontier integrity: cursor source path lookup failed: %s", exc)
+        return "unknown", 0, 0, 0, 0, (), 0, (), f"cursor source path lookup failed: {exc}"
+    for path, cursor in cursor_map.items():
+        cursor_offset = cursor.byte_offset
+        if cursor.is_deferred:
+            gap_count += 1
+            if len(gaps) < sample_limit:
+                gaps.append(
+                    CursorAuthorityGapSample(
+                        state="deferred",
+                        source_path=path,
+                        logical_source_key=None,
+                        cursor_byte_offset=cursor_offset,
+                        reason=(
+                            "ingest cursor has durably captured material awaiting authority resolution "
+                            f"through byte {cursor.deferred_end_offset}"
+                        ),
+                    )
+                )
+            continue
         comparable_heads = byte_heads_by_path.get(path)
         if not comparable_heads:
             # A path governed exclusively by membership authority has no
@@ -1465,10 +1507,19 @@ def _check_cursor_ahead_of_accepted(
             if len(gaps) < sample_limit:
                 gaps.append(
                     CursorAuthorityGapSample(
+                        state=(
+                            "source_raws_without_accepted_head"
+                            if path in source_paths
+                            else "cursor_path_absent_from_source"
+                        ),
                         source_path=path,
                         logical_source_key=None,
                         cursor_byte_offset=cursor_offset,
-                        reason="ingest cursor has no accepted byte head",
+                        reason=(
+                            "source tier has raw evidence but index has no accepted byte head"
+                            if path in source_paths
+                            else "ingest cursor path is absent from source tier"
+                        ),
                     )
                 )
             continue
@@ -1528,7 +1579,21 @@ def _source_paths_for_raw_ids(conn: sqlite3.Connection, raw_ids: set[str]) -> di
     return result
 
 
-def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, int]:
+def _source_paths_for_paths(conn: sqlite3.Connection, source_paths: set[str]) -> set[str]:
+    result: set[str] = set()
+    pending = set(source_paths)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT DISTINCT source_path FROM raw_sessions WHERE source_path IN ({placeholders})", batch
+        ).fetchall()
+        result.update(str(row[0]) for row in rows if row[0] is not None)
+    return result
+
+
+def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, _OpsCursorAuthority]:
     if not ops_db_path.is_file():
         raise RawRetentionSafetyError(f"ops tier is unavailable: {ops_db_path}")
     try:
@@ -1544,11 +1609,23 @@ def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, int]:
             # ingest authority. Their exclusion/failure state is surfaced by
             # the ordinary cursor workload status instead of frontier parity.
             rows = conn.execute(
-                "SELECT source_path, byte_offset FROM ingest_cursor WHERE excluded = 0 AND byte_offset IS NOT NULL",
+                """
+                SELECT source_path, byte_offset, deferred_end_offset
+                FROM ingest_cursor
+                WHERE COALESCE(excluded, 0) = 0 AND byte_offset IS NOT NULL
+                """,
             ).fetchall()
     except (OSError, sqlite3.Error) as exc:
         raise RawRetentionSafetyError(f"ops tier raw cursor authority is unreadable: {exc}") from exc
-    return {str(row[0]): int(row[1]) for row in rows if row[1] is not None}
+    return {
+        str(row[0]): _OpsCursorAuthority(
+            source_path=str(row[0]),
+            byte_offset=int(row[1]),
+            deferred_end_offset=int(row[2]) if row[2] is not None else None,
+        )
+        for row in rows
+        if row[1] is not None
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1922,6 +1999,7 @@ __all__ = [
     "BrokenAppendHeadSample",
     "CursorAheadSample",
     "CursorAuthorityGapSample",
+    "CursorAuthorityGapState",
     "RawFrontierIntegrityProjection",
     "RawFrontierIntegritySnapshot",
     "RawFrontierIntegrityStatus",
