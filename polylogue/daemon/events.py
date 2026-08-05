@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -27,6 +28,8 @@ CREATE TABLE IF NOT EXISTS daemon_events (
  ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind ON daemon_events(kind);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
+CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC);
+CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, operation_id, id DESC);
 """
 
 
@@ -86,6 +89,14 @@ class CatchUpCycleTerminalOutcome(StrEnum):
     FAILURE = "failure"
     CANCELLED = "cancelled"
     STOPPED = "stopped"
+
+
+@dataclass(frozen=True)
+class CatchUpLifecycleHistory:
+    """Bounded catch-up evidence with an explicit completeness result."""
+
+    events: tuple[dict[str, object], ...]
+    incomplete: bool
 
 
 def _iso_from_ms(value: object) -> str:
@@ -158,58 +169,74 @@ def query_daemon_events(
         conn.close()
 
 
-def query_recent_catch_up_lifecycles(*, limit: int = 20) -> Sequence[dict[str, object]]:
-    """Return complete event histories for the most recent catch-up operations.
+def query_recent_catch_up_lifecycles(*, limit: int = 32) -> CatchUpLifecycleHistory:
+    """Return bounded, complete histories for recent catch-up identities.
 
-    The bound applies to lifecycle identities, rather than arbitrary ledger
-    rows. Each selected operation returns every persisted start, end, and
-    terminal boundary so SLO projection can verify its own pairing even when
-    unrelated daemon traffic is busy. The newest bulk-import marker is included
-    as the other event source that changes the catch-up verdict.
+    A valid lifecycle writes at most start, end, and terminal receipts. The
+    indexed seed query therefore reads at most ``limit * 3 + 1`` catch-up
+    rows, then each selected identity receives at most four indexed receipts:
+    three valid boundaries plus one overflow detector. Any older tail, excess
+    identity, malformed operation id, or repeated identity receipt marks the
+    result incomplete so status cannot hide it behind a newer healthy cycle.
     """
     if limit < 1:
         raise ValueError("catch-up lifecycle limit must be positive")
     conn = _open_events_reader()
     if conn is None:
-        return []
+        return CatchUpLifecycleHistory(events=(), incomplete=False)
     try:
-        rows = conn.execute(
-            """
-            WITH recent_operations AS (
-                SELECT operation_id, MAX(id) AS latest_id
-                FROM daemon_events
-                WHERE kind = 'catch_up_cycle' AND operation_id IS NOT NULL
-                GROUP BY operation_id
-                ORDER BY latest_id DESC
-                LIMIT ?
-            ), latest_bulk_import_marker AS (
-                SELECT id, ts_ms, kind, operation_id, payload_json
-                FROM daemon_events
-                WHERE kind IN ('bulk_import_started', 'bulk_import_opened', 'bulk_import_completed', 'bulk_import_closed')
-                ORDER BY id DESC
-                LIMIT 1
-            )
-            SELECT event.id, event.ts_ms, event.kind, event.operation_id, event.payload_json
-            FROM daemon_events AS event
-            JOIN recent_operations AS recent USING (operation_id)
-            WHERE event.kind = 'catch_up_cycle'
-            UNION ALL
-            SELECT id, ts_ms, kind, operation_id, payload_json
-            FROM latest_bulk_import_marker
-            ORDER BY id DESC
-            """,
-            (limit,),
+        seed_limit = limit * 3
+        seed_rows = conn.execute(
+            "SELECT id, ts_ms, kind, operation_id, payload_json "
+            "FROM daemon_events WHERE kind = 'catch_up_cycle' "
+            "ORDER BY id DESC LIMIT ?",
+            (seed_limit + 1,),
         ).fetchall()
-        return [
-            {
-                "id": row[0],
-                "ts": _iso_from_ms(row[1]),
-                "kind": row[2],
-                "operation_id": row[3],
-                "payload": json.loads(row[4]),
-            }
-            for row in rows
-        ]
+        incomplete = len(seed_rows) > seed_limit
+        operation_ids: list[str] = []
+        for row in seed_rows[:seed_limit]:
+            operation_id = row[3]
+            if not isinstance(operation_id, str):
+                incomplete = True
+            elif operation_id not in operation_ids:
+                if len(operation_ids) == limit:
+                    incomplete = True
+                else:
+                    operation_ids.append(operation_id)
+
+        lifecycle_rows: list[tuple[object, ...]] = []
+        for operation_id in operation_ids:
+            rows = conn.execute(
+                "SELECT id, ts_ms, kind, operation_id, payload_json "
+                "FROM daemon_events WHERE kind = 'catch_up_cycle' AND operation_id = ? "
+                "ORDER BY id DESC LIMIT 4",
+                (operation_id,),
+            ).fetchall()
+            lifecycle_rows.extend(rows)
+            if len(rows) == 4:
+                incomplete = True
+
+        marker = conn.execute(
+            "SELECT id, ts_ms, kind, operation_id, payload_json FROM daemon_events "
+            "WHERE kind IN ('bulk_import_started', 'bulk_import_opened', 'bulk_import_completed', 'bulk_import_closed') "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if marker is not None:
+            lifecycle_rows.append(marker)
+        lifecycle_rows.sort(key=lambda row: int(cast(int | str | bytes | bytearray, row[0])), reverse=True)
+        return CatchUpLifecycleHistory(
+            events=tuple(
+                {
+                    "id": row[0],
+                    "ts": _iso_from_ms(row[1]),
+                    "kind": row[2],
+                    "operation_id": row[3],
+                    "payload": json.loads(cast(str | bytes | bytearray, row[4])),
+                }
+                for row in lifecycle_rows
+            ),
+            incomplete=incomplete,
+        )
     finally:
         conn.close()
 
@@ -468,6 +495,7 @@ def get_daemon_event_counts() -> dict[str, int]:
 
 
 __all__ = [
+    "CatchUpLifecycleHistory",
     "CatchUpCycleTerminalOutcome",
     "EVENT_SESSION_APPENDED",
     "EVENT_SESSION_UPDATED",

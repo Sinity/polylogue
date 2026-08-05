@@ -76,6 +76,12 @@ class BacklogWindow(BaseModel):
     bulk_import_suppressed: bool = False
 
 
+# Cancellation and a cooperative stop both leave the requested catch-up cycle
+# without a successful drain measurement. They share FAILED intentionally: the
+# operator action is the same as an execution failure, inspect and redrive the
+# outstanding backlog rather than treat the cycle as healthy or merely idle.
+
+
 class IngestSloStatus(BaseModel):
     """Status/readiness projection for the live ingest SLO."""
 
@@ -90,6 +96,7 @@ class IngestSloStatus(BaseModel):
     cursor_lag_stuck_file_count: int = 0
     cursor_lag_degraded_file_count: int = 0
     bulk_import_suppressed: bool = False
+    lifecycle_history_incomplete: bool = False
     latest_window: BacklogWindow | None = None
     reductions: dict[str, SloReduction] = Field(default_factory=dict)
 
@@ -122,10 +129,9 @@ def _event_observed_at_ms(event: Mapping[str, object]) -> int | None:
     return int(timestamp.timestamp() * 1000)
 
 
-def _event_order_key(index: int, event: Mapping[str, object]) -> tuple[int, int, int]:
-    """Order event projections by their persisted timestamp, then event id."""
-    observed_at_ms = _event_observed_at_ms(event)
-    return (observed_at_ms if observed_at_ms is not None else -1, _int(event, "id"), index)
+def _event_order_key(index: int, event: Mapping[str, object]) -> tuple[int, int]:
+    """Order lifecycle transitions by SQLite insertion identity, then input order."""
+    return (_int(event, "id"), index)
 
 
 def _events_newest_first(events: Sequence[Mapping[str, object]]) -> list[Mapping[str, object]]:
@@ -228,9 +234,9 @@ def project_backlog_windows(
 ) -> tuple[BacklogWindow, ...]:
     """Return bounded windows from the existing event stream, newest first."""
     suppressed = bulk_import_is_open(events) if bulk_import_suppressed is None else bulk_import_suppressed
-    completed: list[tuple[tuple[int, int, int], BacklogWindow]] = []
+    completed: list[tuple[tuple[int, int], BacklogWindow]] = []
     completed_lifecycles: set[str] = set()
-    active: dict[str, tuple[tuple[int, int, int], BacklogWindow]] = {}
+    active: dict[str, tuple[tuple[int, int], BacklogWindow]] = {}
     for index, event in sorted(enumerate(events), key=lambda item: _event_order_key(*item)):
         window = backlog_window_from_event(event, bulk_import_suppressed=suppressed)
         if window is None:
@@ -383,7 +389,14 @@ def slo_status_info(
     now_ms: int | None = None,
 ) -> IngestSloStatus:
     """Build status from existing event and cursor-lag sources only."""
-    resolved_events = list(events) if events is not None else list(query_recent_catch_up_lifecycles())
+    resolved_events: list[Mapping[str, object]]
+    if events is None:
+        history = query_recent_catch_up_lifecycles()
+        resolved_events = list(history.events)
+        history_incomplete = history.incomplete
+    else:
+        resolved_events = list(events)
+        history_incomplete = False
     suppressed = bulk_import_is_open(resolved_events)
     windows = project_backlog_windows(
         resolved_events,
@@ -391,6 +404,17 @@ def slo_status_info(
         now_ms=current_epoch_ms() if now_ms is None else now_ms,
     )
     latest = windows[0] if windows else None
+    if history_incomplete:
+        return IngestSloStatus(
+            available=latest is not None,
+            verdict=SloVerdict.UNKNOWN,
+            reason="catch-up lifecycle history is incomplete",
+            cursor_lag_stuck_file_count=cursor_lag.stuck_file_count,
+            cursor_lag_degraded_file_count=cursor_lag.degraded_file_count,
+            bulk_import_suppressed=suppressed,
+            lifecycle_history_incomplete=True,
+            latest_window=latest,
+        )
     if latest is None:
         return IngestSloStatus(
             cursor_lag_stuck_file_count=cursor_lag.stuck_file_count,
@@ -408,6 +432,7 @@ def slo_status_info(
         cursor_lag_stuck_file_count=cursor_lag.stuck_file_count,
         cursor_lag_degraded_file_count=cursor_lag.degraded_file_count,
         bulk_import_suppressed=latest.bulk_import_suppressed,
+        lifecycle_history_incomplete=False,
         latest_window=latest,
     )
 

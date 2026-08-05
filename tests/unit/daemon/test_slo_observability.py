@@ -21,6 +21,7 @@ from polylogue.daemon.events import (
     emit_catch_up_cycle,
     emit_daemon_event,
     query_daemon_events,
+    query_recent_catch_up_lifecycles,
 )
 from polylogue.daemon.slo import (
     CATCH_UP_ACTIVE_STALE_AFTER_MS,
@@ -51,10 +52,12 @@ def _cycle(
     operation_id: str = "cycle-1",
     phase: str = "end",
     timestamp_ms: int = 1_000,
+    event_id: int | None = None,
     terminal_outcome: str | None = None,
 ) -> dict[str, object]:
     return {
         "kind": "catch_up_cycle",
+        "id": timestamp_ms if event_id is None else event_id,
         "operation_id": operation_id,
         "ts": datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC).isoformat(),
         "payload": {
@@ -70,6 +73,33 @@ def _cycle(
             "terminal_outcome": terminal_outcome,
         },
     }
+
+
+def _emit_persisted_cycle(
+    operation_id: str,
+    *,
+    phase: str,
+    backlog_end: int,
+    terminal_outcome: str | None = None,
+) -> None:
+    emit_catch_up_cycle(
+        operation_id=operation_id,
+        phase=phase,
+        backlog_start=1,
+        backlog_end=backlog_end,
+        discovered=1,
+        attempted=1 if phase != "start" else 0,
+        skipped=0,
+        ingested=1 if backlog_end == 0 and phase != "start" else 0,
+        quarantine_count=0,
+        errors_by_kind={},
+        cursor_before=None,
+        cursor_after=None,
+        duration_ms=10.0,
+        stage_timings_s={},
+        repair=None,
+        terminal_outcome=terminal_outcome,
+    )
 
 
 def test_idle_backlog_is_not_reported_as_stalled() -> None:
@@ -121,6 +151,57 @@ def test_unmatched_terminal_receipt_is_unknown() -> None:
 
     assert windows[0].verdict is SloVerdict.UNKNOWN
     assert windows[0].reason == "catch-up cycle terminal receipt has no matching start"
+
+
+@pytest.mark.parametrize("outcome", ["cancelled", "stopped"])
+def test_cancelled_and_stopped_cycles_are_failed_until_redriven(outcome: str) -> None:
+    status = slo_status_info(
+        cursor_lag=CursorLagSummary(),
+        events=[
+            _cycle(backlog_start=3, backlog_end=3, discovered=3, phase="start", event_id=10),
+            _cycle(
+                backlog_start=3,
+                backlog_end=3,
+                discovered=3,
+                phase="terminal",
+                terminal_outcome=outcome,
+                event_id=11,
+            ),
+        ],
+        now_ms=2_000,
+    )
+
+    assert status.verdict is SloVerdict.FAILED
+    assert status.reason == f"catch-up cycle terminated: {outcome}"
+
+
+def test_lifecycle_pairing_uses_insertion_id_when_timestamps_rollback() -> None:
+    status = slo_status_info(
+        cursor_lag=CursorLagSummary(),
+        events=[
+            _cycle(
+                backlog_start=2,
+                backlog_end=0,
+                discovered=2,
+                ingested=2,
+                timestamp_ms=1_000,
+                event_id=12,
+            ),
+            _cycle(
+                backlog_start=2,
+                backlog_end=2,
+                discovered=2,
+                phase="start",
+                timestamp_ms=10_000,
+                event_id=11,
+            ),
+        ],
+        now_ms=10_500,
+    )
+
+    assert status.verdict is SloVerdict.HEALTHY
+    assert status.latest_window is not None
+    assert status.latest_window.observed_at_ms == 1_000
 
 
 def test_status_reuses_event_and_cursor_lag_sources() -> None:
@@ -374,6 +455,41 @@ def test_persisted_lifecycle_pair_survives_unrelated_event_traffic(workspace_env
     assert status.verdict is SloVerdict.HEALTHY
     assert status.latest_window is not None
     assert status.latest_window.operation_id == "paired-through-traffic"
+
+
+def test_bounded_history_fails_closed_when_older_active_cycle_is_outside_window(
+    workspace_env: dict[str, Path],
+) -> None:
+    del workspace_env
+    _emit_persisted_cycle("older-active", phase="start", backlog_end=1)
+    for index in range(33):
+        operation_id = f"recent-{index}"
+        _emit_persisted_cycle(operation_id, phase="start", backlog_end=1)
+        _emit_persisted_cycle(operation_id, phase="end", backlog_end=0)
+
+    history = query_recent_catch_up_lifecycles()
+    status = slo_status_info(cursor_lag=CursorLagSummary())
+
+    assert len(history.events) <= 32 * 4
+    assert history.incomplete is True
+    assert "older-active" not in {event["operation_id"] for event in history.events}
+    assert status.verdict is SloVerdict.UNKNOWN
+    assert status.lifecycle_history_incomplete is True
+    assert status.reason == "catch-up lifecycle history is incomplete"
+
+
+def test_repeated_operation_identity_makes_persisted_history_incomplete(workspace_env: dict[str, Path]) -> None:
+    del workspace_env
+    for phase, backlog_end in (("start", 1), ("end", 0), ("start", 1), ("end", 0)):
+        _emit_persisted_cycle("repeated", phase=phase, backlog_end=backlog_end)
+
+    history = query_recent_catch_up_lifecycles()
+    status = slo_status_info(cursor_lag=CursorLagSummary())
+
+    assert len(history.events) == 4
+    assert history.incomplete is True
+    assert status.verdict is SloVerdict.UNKNOWN
+    assert status.lifecycle_history_incomplete is True
 
 
 def test_live_tail_sampling_adds_latency_but_bulk_sampling_does_not(tmp_path: Path) -> None:
