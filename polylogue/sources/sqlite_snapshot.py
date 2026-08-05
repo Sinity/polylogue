@@ -191,15 +191,10 @@ def snapshot_sqlite_to_blob(
 ) -> SQLiteBlobSnapshot:
     """Back up *source*, then hash/store only those consistent snapshot bytes."""
     source_revision = sqlite_source_revision(source)
-    blob_store.root.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(
-        dir=blob_store.root,
+    temporary_path = blob_store.allocate_staging_path(
         prefix=".sqlite-snapshot.",
         suffix=source.suffix or ".db",
     )
-    os.close(fd)
-    temporary_path = Path(temporary_name)
-    temporary_path.unlink()
     try:
         snapshot_sqlite_database(source, temporary_path)
         blob_hash, blob_size = blob_store.write_from_path(temporary_path, heartbeat=heartbeat)
@@ -213,6 +208,8 @@ def snapshot_sqlite_to_blob(
         )
     finally:
         temporary_path.unlink(missing_ok=True)
+        for suffix in _SQLITE_SIDECAR_SUFFIXES:
+            temporary_path.with_name(f"{temporary_path.name}{suffix}").unlink(missing_ok=True)
 
 
 __all__ = [
