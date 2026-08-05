@@ -1873,6 +1873,10 @@ def rebuild_session_insights_sync(
         if chunk_info.max_estimated_session_messages >= _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD:
             chunk_degraded_ids = chunk
             chunk_full_ids = ()
+        t0 = time.perf_counter()
+        for session_id in chunk:
+            _refresh_provider_usage_rollup(conn, session_id)
+        add_timing("refresh_provider_usage_rollup", t0)
         if chunk_degraded_ids and not chunk_full_ids:
             t0 = time.perf_counter()
             degraded_session_ids.update(str(session_id) for session_id in chunk_degraded_ids)

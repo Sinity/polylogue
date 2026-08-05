@@ -42,6 +42,7 @@ from devtools import repo_root as _get_root
 
 ROOT = _get_root()
 SCHEMA_DDL_DIR = ROOT / "polylogue" / "storage" / "sqlite"
+SCHEMA_SUPPORT_DDL_FILES = (ROOT / "polylogue" / "storage" / "fts" / "sql.py",)
 TEST_INFRA_DIR = ROOT / "tests" / "infra"
 
 # Match CREATE TABLE [IF NOT EXISTS] <name>.
@@ -104,7 +105,7 @@ _SQLITE_BUILTIN_TABLES = frozenset(
 
 def _collect_schema_tables() -> frozenset[str]:
     tables: set[str] = set()
-    ddl_files = list((SCHEMA_DDL_DIR / "archive_tiers").glob("*.py"))
+    ddl_files = [*list((SCHEMA_DDL_DIR / "archive_tiers").glob("*.py")), *SCHEMA_SUPPORT_DDL_FILES]
     for ddl_file in ddl_files:
         text = ddl_file.read_text(encoding="utf-8")
         tables.update(name.lower() for name in _CREATE_TABLE_RE.findall(text))
