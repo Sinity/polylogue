@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import IO
 
@@ -130,8 +130,27 @@ class ZipEntryValidator:
         self._zip_path = zip_path
         self._aggregate_total = 0
 
-    def filter_entries(self, entries: list[zipfile.ZipInfo]) -> Iterable[zipfile.ZipInfo]:
-        """Yield safe, relevant entries and record failures in cursor state."""
+    def filter_entries(
+        self,
+        entries: list[zipfile.ZipInfo],
+        *,
+        on_rejected: Callable[[zipfile.ZipInfo, str], None] | None = None,
+    ) -> Iterable[zipfile.ZipInfo]:
+        """Yield safe, relevant entries and record failures in cursor state.
+
+        ``on_rejected`` lets read-only surfaces report the same admission
+        decisions without duplicating the security checks.
+        """
+
+        def reject(info: zipfile.ZipInfo, reason: str, *, cursor_reason: str | None = None) -> None:
+            _record_cursor_failure(
+                self._cursor_state,
+                f"{self._zip_path}:{info.filename}",
+                cursor_reason or reason,
+            )
+            if on_rejected is not None:
+                on_rejected(info, reason)
+
         for info in entries:
             if info.is_dir():
                 continue
@@ -147,10 +166,10 @@ class ZipEntryValidator:
                         self._zip_path,
                         ratio,
                     )
-                    _record_cursor_failure(
-                        self._cursor_state,
-                        f"{self._zip_path}:{name}",
-                        f"Suspicious compression ratio: {ratio:.1f}",
+                    reject(
+                        info,
+                        f"zip entry compression ratio {ratio:.1f} exceeds limit",
+                        cursor_reason=f"Suspicious compression ratio: {ratio:.1f}",
                     )
                     continue
 
@@ -161,10 +180,10 @@ class ZipEntryValidator:
                     self._zip_path,
                     info.file_size,
                 )
-                _record_cursor_failure(
-                    self._cursor_state,
-                    f"{self._zip_path}:{name}",
-                    f"File size {info.file_size} exceeds limit",
+                reject(
+                    info,
+                    f"zip entry file size {info.file_size} exceeds limit",
+                    cursor_reason=f"File size {info.file_size} exceeds limit",
                 )
                 continue
 
@@ -185,11 +204,14 @@ class ZipEntryValidator:
                         projected_total,
                         MAX_AGGREGATE_UNCOMPRESSED_SIZE,
                     )
-                    _record_cursor_failure(
-                        self._cursor_state,
-                        f"{self._zip_path}:{name}",
-                        f"Aggregate uncompressed size {projected_total} exceeds archive-wide limit "
+                    reject(
+                        info,
+                        f"aggregate uncompressed size {projected_total} exceeds archive-wide limit "
                         f"{MAX_AGGREGATE_UNCOMPRESSED_SIZE}",
+                        cursor_reason=(
+                            f"Aggregate uncompressed size {projected_total} exceeds archive-wide limit "
+                            f"{MAX_AGGREGATE_UNCOMPRESSED_SIZE}"
+                        ),
                     )
                     continue
 
