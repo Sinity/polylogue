@@ -263,13 +263,6 @@ entries:
   reason: 'Internal fallback: None triggers the local-DB query in the caller (_live_ingest_attempt_summary_info),
     which now logs on its own failure (fixed in this sweep).'
 - path: polylogue/daemon/status.py
-  function: <module>._archive_raw_failure_info
-  exceptions:
-  - Error
-  occurrence: 0
-  reason: 'Internal fallback: None triggers the local-DB query in the caller (_raw_failure_info), which
-    now logs on its own failure (fixed in this sweep).'
-- path: polylogue/daemon/status.py
   function: <module>._raw_replay_backlog_info
   exceptions:
   - Exception

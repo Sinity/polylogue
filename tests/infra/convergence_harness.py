@@ -2,6 +2,13 @@
 
 This module adapts the production archive writers, daemon stages, and ops
 ledger. It deliberately owns no alternate convergence state machine.
+
+The harness starts at the production ``ParsedSession`` boundary. Its
+deterministic JSON payload gives the raw writer real bytes to retain, but does
+not claim provider parser-byte fidelity or inferred-package selection. Those
+remain dependencies of the provider parser and corpus-inference lanes; this
+property surface must not fake either with a synthetic manifest or wire
+support.
 """
 
 from __future__ import annotations
@@ -107,9 +114,21 @@ class ArchiveSnapshot:
     blocks: tuple[FactRow, ...]
     session_links: tuple[FactRow, ...]
     profiles: tuple[FactRow, ...]
+    work_events: tuple[FactRow, ...]
+    phases: tuple[FactRow, ...]
+    threads: tuple[FactRow, ...]
+    thread_sessions: tuple[FactRow, ...]
     semantic_tables: tuple[tuple[str, tuple[FactRow, ...]], ...]
     fts_matches: tuple[tuple[str, object], ...]
     raw_authority: tuple[FactRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedReadinessSnapshot:
+    """Stable production derived-model and archive-readiness projections."""
+
+    derived_models_json: str
+    archive_readiness_json: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +327,10 @@ def archive_snapshot(root: Path) -> ArchiveSnapshot:
             """
         ).fetchall()
         profiles = _table_rows(conn, "session_profiles", order_by="session_id")
+        work_events = _table_rows(conn, "session_work_events", order_by="session_id, position")
+        phases = _table_rows(conn, "session_phases", order_by="session_id, position")
+        threads = _table_rows(conn, "threads", order_by="thread_id")
+        thread_sessions = _table_rows(conn, "thread_sessions", order_by="thread_id, session_id, position")
         semantic_tables = tuple(
             (table, _table_rows(conn, table, order_by=order_by)) for table, order_by in _SEMANTIC_TABLES
         )
@@ -319,6 +342,10 @@ def archive_snapshot(root: Path) -> ArchiveSnapshot:
         blocks=_fact_rows(blocks),
         session_links=_fact_rows(session_links),
         profiles=profiles,
+        work_events=work_events,
+        phases=phases,
+        threads=threads,
+        thread_sessions=thread_sessions,
         semantic_tables=semantic_tables,
         fts_matches=fts_matches,
         raw_authority=raw_authority,
@@ -331,6 +358,69 @@ def assert_archives_equivalent(left: ConvergenceArchive, right: ConvergenceArchi
     right_snapshot = archive_snapshot(right.root)
     if left_snapshot != right_snapshot:
         raise AssertionError(f"canonical archive snapshots differ:\nleft={left_snapshot!r}\nright={right_snapshot!r}")
+
+
+def derived_readiness_snapshot(root: Path) -> DerivedReadinessSnapshot:
+    """Capture production derived status and exact archive readiness facts.
+
+    The status/readiness helpers are read-only projections. Path-bearing
+    evidence is normalized so two otherwise equivalent temporary archives are
+    compared by facts rather than their unrelated temp-directory names.
+    """
+    from polylogue.storage.archive_readiness import archive_readiness_status
+    from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
+
+    with sqlite3.connect(root / "index.db") as conn:
+        derived_models = {name: status.to_dict() for name, status in collect_derived_model_statuses_sync(conn).items()}
+    readiness = archive_readiness_status(root)
+    return DerivedReadinessSnapshot(
+        derived_models_json=_stable_json(derived_models, root),
+        archive_readiness_json=_stable_json(readiness, root),
+    )
+
+
+def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
+    """Require derived model snapshots and readiness projections to agree."""
+    left_snapshot = derived_readiness_snapshot(left)
+    right_snapshot = derived_readiness_snapshot(right)
+    from polylogue.storage.archive_readiness import archive_readiness_status
+    from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
+
+    required_insight_models = frozenset(
+        {
+            "session_profile_rows",
+            "session_work_events",
+            "session_phases",
+            "threads",
+            "session_tag_rollups",
+        }
+    )
+    for root in (left, right):
+        with sqlite3.connect(root / "index.db") as conn:
+            derived_models = collect_derived_model_statuses_sync(conn)
+        missing_models = required_insight_models.difference(derived_models)
+        unready_models = sorted(
+            name for name in required_insight_models if name in derived_models and not derived_models[name].ready
+        )
+        if missing_models or unready_models:
+            raise AssertionError(
+                f"primary insight readiness is incomplete for {root}: "
+                f"missing={sorted(missing_models)}, unready={unready_models}"
+            )
+        # The status projection also reports secondary work-event FTS and
+        # retrieval surfaces. They remain in the equality snapshot, as does
+        # the production messages_fts status. The two-stage route owns
+        # messages-FTS repair for changed sessions, while the neutral parser
+        # fixture can expose archive-wide excess rows from provider-derived
+        # blocks. Keep that production readiness signal in the equality law
+        # instead of asserting a global repair this route does not promise.
+        readiness = archive_readiness_status(root)
+        if readiness.get("checked") is not True or readiness.get("blocked_surface_count") != 0:
+            raise AssertionError(f"archive readiness is incomplete for {root}: {readiness!r}")
+    if left_snapshot != right_snapshot:
+        raise AssertionError(
+            f"derived model/readiness snapshots differ:\nleft={left_snapshot!r}\nright={right_snapshot!r}"
+        )
 
 
 def _complete_session_order(pathology: ComposedPathology, order: Sequence[int] | None) -> tuple[int, ...]:
@@ -513,6 +603,9 @@ _SNAPSHOT_VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "insight_materialization": frozenset({"materialized_at_ms"}),
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "session_profiles": frozenset({"materialized_at", "priced_at_ms"}),
+    # Thread source_updated_at is derived from provider-backed member
+    # timestamps, unlike materialized_at.
+    "threads": frozenset({"materialized_at"}),
 }
 
 
@@ -717,14 +810,23 @@ def set_debt_retry_at(
 def make_messages_fts_stale(index_db: Path, *, session_id: str) -> int:
     """Delete only this session's real FTS rows to create unrelated stage debt."""
     with open_connection(index_db) as conn:
-        row_ids = [
-            int(row[0])
-            for row in conn.execute(
-                "SELECT rowid FROM blocks WHERE session_id = ? ORDER BY rowid",
-                (session_id,),
-            ).fetchall()
-        ]
+        block_ids = tuple(
+            str(row[0])
+            for row in conn.execute("SELECT block_id FROM blocks WHERE session_id = ? ORDER BY rowid", (session_id,))
+        )
+        row_ids = (
+            tuple(
+                int(row[0])
+                for row in conn.execute(
+                    f"SELECT rowid FROM messages_fts_identity WHERE block_id IN ({','.join('?' for _ in block_ids)})",
+                    block_ids,
+                )
+            )
+            if block_ids
+            else ()
+        )
         conn.executemany("DELETE FROM messages_fts WHERE rowid = ?", ((row_id,) for row_id in row_ids))
+        conn.executemany("DELETE FROM messages_fts_identity WHERE rowid = ?", ((row_id,) for row_id in row_ids))
         conn.commit()
     if not row_ids:
         raise AssertionError(f"session {session_id!r} has no indexed blocks")
@@ -929,18 +1031,27 @@ def _fact_rows(rows: list[tuple[object, ...]]) -> tuple[FactRow, ...]:
     return tuple(cast(FactRow, tuple(row)) for row in rows)
 
 
+def _stable_json(value: object, root: Path) -> str:
+    """Serialize JSON-shaped status evidence while masking temp-root paths."""
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return encoded.replace(str(root), "<archive-root>")
+
+
 __all__ = [
     "ArchiveSnapshot",
     "ConvergenceArchive",
     "DebtLedgerRow",
+    "DerivedReadinessSnapshot",
     "PartialConvergenceArchive",
     "SessionMaterializationFacts",
     "archive_snapshot",
     "assert_archive_verification_green",
     "assert_archives_equivalent",
+    "assert_derived_readiness_equivalent",
     "build_converged_archive",
     "converge_convergence_archive",
     "debt_ledger_row",
+    "derived_readiness_snapshot",
     "ingest_convergence_pathology",
     "initialize_active_archive",
     "make_messages_fts_stale",

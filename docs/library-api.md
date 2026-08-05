@@ -541,6 +541,7 @@ Route/tier class: `index-read`. CLI: `analyze`, `read`. MCP: `query`, `get`, `st
 | `Polylogue.pathology_report` | `async (self, spec: 'SessionQuerySpec | None' = None, *, limit: 'int | None' = None) -> 'PathologyReport'` |
 | `Polylogue.portfolio_bundle` | `async (self, spec: 'SessionQuerySpec | None' = None, *, limit: 'int | None' = None, top_n: 'int' = 10) -> 'PortfolioBundle'` |
 | `Polylogue.export_insight_bundle` | `async (self, request: 'InsightExportBundleRequest') -> 'InsightExportBundleResult'` |
+| `Polylogue.regenerate_private_fable_packet` | `async (self, *, seed: 'str', requested_size: 'int', schema_id: 'str' = 'delegation.discourse', schema_version: 'int' = 1, exact_template_cap: 'int' = 1) -> 'FableDelegationPacket'` |
 
 ### Context and evidence
 

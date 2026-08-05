@@ -130,6 +130,24 @@ def _referent_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def validated_blob_ref_liveness_joins() -> tuple[tuple[str, str, str], ...]:
+    """Return the closed ref-type map, rejecting duplicate meanings."""
+
+    seen: set[str] = set()
+    for ref_type, referent_table, referent_column in BLOB_REF_LIVENESS_JOIN:
+        if ref_type in seen:
+            raise BlobRefLivenessError(
+                f"ambiguous blob_refs ref_type mapping for {ref_type!r}: "
+                f"duplicate referent {referent_table}.{referent_column}"
+            )
+        if not ref_type or not referent_table or not referent_column:
+            raise BlobRefLivenessError(
+                f"invalid blob_refs ref_type mapping: {ref_type!r} -> {referent_table!r}.{referent_column!r}"
+            )
+        seen.add(ref_type)
+    return BLOB_REF_LIVENESS_JOIN
+
+
 def _candidate_from_row(row: sqlite3.Row | tuple[object, ...]) -> BlobRefLivenessCandidate:
     return BlobRefLivenessCandidate(
         blob_hash=cast(bytes, row[0]).hex(),
@@ -151,6 +169,7 @@ def stage_blob_ref_liveness(conn: sqlite3.Connection, *, sample_limit: int = 30)
     than materializing the same population in several Python lists.
     """
 
+    known_joins = validated_blob_ref_liveness_joins()
     if not table_exists(conn, "blob_refs"):
         return BlobRefLivenessStagedPlan(
             BlobRefLivenessClassification(0, {}, {}, (), (), (), 0, (), 0),
@@ -166,7 +185,7 @@ def stage_blob_ref_liveness(conn: sqlite3.Connection, *, sample_limit: int = 30)
         str(row[0]): int(row[1])
         for row in conn.execute("SELECT ref_type, COUNT(*) FROM blob_refs GROUP BY ref_type ORDER BY ref_type")
     }
-    known = {ref_type: (table, column) for ref_type, table, column in BLOB_REF_LIVENESS_JOIN}
+    known = {ref_type: (table, column) for ref_type, table, column in known_joins}
     unknown = tuple(sorted(set(ref_type_counts) - set(known)))
     unavailable: list[str] = []
     branches: list[str] = []
@@ -323,4 +342,5 @@ __all__ = [
     "classify_blob_ref_liveness",
     "stage_blob_ref_liveness",
     "BlobRefLivenessStagedPlan",
+    "validated_blob_ref_liveness_joins",
 ]

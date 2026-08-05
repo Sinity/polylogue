@@ -7,7 +7,7 @@ from pathlib import Path
 
 from devtools import schema_inference_gate
 from polylogue.maintenance.schema_inference_gate import RECEIPT_FILENAME
-from tests.unit.maintenance.test_schema_inference_gate import _seed_archive
+from tests.infra.schema_inference import seed_schema_inference_archive as _seed_archive
 
 
 def test_devtools_command_requires_caller_root_and_persists_receipt(tmp_path: Path) -> None:

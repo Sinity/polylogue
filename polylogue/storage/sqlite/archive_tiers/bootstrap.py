@@ -229,7 +229,13 @@ def _ensure_ops_cursor_lag_sample_columns(conn: sqlite3.Connection) -> None:
     )
 
 
-def initialize_archive_database(path: Path, tier: ArchiveTier, *, allow_create: bool = True) -> None:
+def initialize_archive_database(
+    path: Path,
+    tier: ArchiveTier,
+    *,
+    allow_create: bool = True,
+    expected_version: int | None = None,
+) -> None:
     """Create or initialize one archive tier database file."""
     if allow_create:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,8 +250,8 @@ def initialize_archive_database(path: Path, tier: ArchiveTier, *, allow_create: 
         conn = sqlite3.connect(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        expected_version = archive_tier_spec(tier).version
-        if current_version == expected_version:
+        required_version = archive_tier_spec(tier).version if expected_version is None else expected_version
+        if current_version == required_version:
             # ops.db is disposable and evolves through idempotent additive DDL
             # without version bumps. Re-apply it so existing same-version
             # archives receive newly introduced tables and indexes.
@@ -265,13 +271,13 @@ def initialize_archive_database(path: Path, tier: ArchiveTier, *, allow_create: 
                 conn.commit()
             return
         if current_version != 0:
-            if current_version < expected_version and tier in DURABLE_MIGRATION_TIERS:
+            if current_version < required_version and tier in DURABLE_MIGRATION_TIERS:
                 raise RuntimeError(
                     f"{path.name} schema version {current_version} is older than the current {tier.value} tier "
-                    f"version {expected_version}; run an explicit durable-tier migration with a verified backup "
+                    f"version {required_version}; run an explicit durable-tier migration with a verified backup "
                     "manifest"
                 )
-            if tier is ArchiveTier.INDEX and current_version < expected_version:
+            if tier is ArchiveTier.INDEX and current_version < required_version:
                 # index.db is rebuildable, but a bounded set of version gaps
                 # are DECLARED clone-safe (polylogue.storage.sqlite.lifecycle)
                 # -- no raw reparse, no consumer-visible semantic change. Apply
@@ -285,7 +291,7 @@ def initialize_archive_database(path: Path, tier: ArchiveTier, *, allow_create: 
                 )
                 from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
 
-                plan = index_fast_forward_plan(current_version, expected_version)
+                plan = index_fast_forward_plan(current_version, required_version)
                 if plan is not None:
                     apply_index_fast_forward(conn, plan)
                     return
@@ -296,7 +302,7 @@ def initialize_archive_database(path: Path, tier: ArchiveTier, *, allow_create: 
             )
             raise RuntimeError(
                 f"{path} schema version {current_version} is not the current {tier.value} tier version "
-                f"{expected_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
+                f"{required_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
         initialize_archive_tier(conn, tier)
     finally:

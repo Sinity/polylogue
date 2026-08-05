@@ -15,6 +15,10 @@ from typing import Literal, Protocol
 from polylogue.archive.query.expression import RefOperand, RelationGrain, ResolvedRefOperand
 from polylogue.core.query_identity import require_supported_definition_protocol_version
 from polylogue.core.refs import ObjectRef
+from polylogue.storage.sqlite.holdout_cohorts import (
+    HoldoutAccessError,
+    require_non_holdout_access,
+)
 from polylogue.storage.sqlite.query_objects import (
     EvaluationReceipt,
     QueryObject,
@@ -72,11 +76,13 @@ class DurableRefResolver:
         *,
         owner_query_hash: str | None = None,
         created_at_ms: int = 0,
+        declared_confirmation: bool = False,
     ) -> None:
         self._conn = conn
         self._evaluator = evaluator
         self._owner_query_hash = owner_query_hash
         self._created_at_ms = created_at_ms
+        self._declared_confirmation = declared_confirmation
 
     def resolve_ref_operand(self, operand: RefOperand) -> ResolvedRefOperand:
         reference = operand.reference
@@ -121,6 +127,14 @@ class DurableRefResolver:
         manifest = get_result_set(self._conn, result_set_id)
         if manifest is None:
             raise RetainedRelationUnavailableError(f"retained result-set:{result_set_id} is unavailable")
+        try:
+            require_non_holdout_access(
+                self._conn,
+                result_set_id,
+                declared_confirmation=self._declared_confirmation,
+            )
+        except HoldoutAccessError as exc:
+            raise RetainedRelationUnavailableError(str(exc)) from exc
         if extra_lineage:
             run = get_retained_query_run(self._conn, extra_lineage[0].object_id)
             if run is None or manifest.query_hash != run.query_hash:

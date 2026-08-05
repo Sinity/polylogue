@@ -229,6 +229,30 @@ def test_preflight_ignores_blank_parse_errors_in_origin_and_totals(tmp_path: Pat
     assert eligibility["actionable_count"] == 1
 
 
+def test_preflight_blocks_unexplained_raw_failure_lifecycle(tmp_path: Path) -> None:
+    _initialize_all_tiers(tmp_path)
+    _insert_raws(
+        tmp_path,
+        origin="codex-session",
+        quarantined_count=1,
+        missing_census=0,
+        missing_quarantine_count=0,
+        quarantined_bytes=1,
+        missing_census_bytes=0,
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parse_error = 'unexpected parser failure'")
+        conn.commit()
+
+    report = build_preflight_ledger(tmp_path)
+    lifecycle = _mapping(_mapping(report["checks"])["raw_failure_lifecycle"])
+
+    assert lifecycle["state"] == "fail"
+    assert "raw_failure_lifecycle" in _list(report["blocking_checks"])
+    evidence = _mapping(lifecycle["evidence"])
+    assert evidence["unexplained"] == 1
+
+
 def test_preflight_exposes_schema_and_convergence_failures_without_writing(tmp_path: Path) -> None:
     _initialize_all_tiers(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:

@@ -85,15 +85,16 @@ def _build_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
     return index_db, embeddings_db, session_id, orphan_message_id
 
 
-def test_reconcile_embedding_orphans_once_noop_when_config_disabled(tmp_path: Path) -> None:
+def test_reconcile_embedding_orphans_once_runs_without_embedding_provider(tmp_path: Path) -> None:
     index_db, _embeddings_db, _session_id, _orphan_id = _build_fixture(tmp_path)
 
     with patch("polylogue.daemon.convergence_stages.load_polylogue_config") as mock_cfg:
         mock_cfg.return_value.embedding_enabled = False
-        mock_cfg.return_value.voyage_api_key = "test-key"
+        mock_cfg.return_value.voyage_api_key = None
         result = reconcile_embedding_orphans_once(index_db)
 
-    assert result is None
+    assert result is not None
+    assert result.removed_message_rows == 1
 
 
 def test_reconcile_embedding_orphans_once_noop_when_index_missing(tmp_path: Path) -> None:

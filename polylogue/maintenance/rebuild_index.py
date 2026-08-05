@@ -810,6 +810,11 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
     validate_rebuild_index_request(request)
     root = request.archive_root
+    if count_source_raw_sessions(root):
+        from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+        if reason := raw_frontier_source_selection_block_reason(root):
+            raise RuntimeError(f"reindex source preflight gate failed: raw frontier integrity: {reason}")
     location = ArchiveLocation.resolve(root)
     active_config = Config(
         archive_root=root,

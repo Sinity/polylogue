@@ -33,7 +33,7 @@ Then every command below runs unmodified with that `POLYLOGUE_ARCHIVE_ROOT` expo
 File: [`01-find-query.txt`](01-find-query.txt)
 
 ```
-polylogue --origin codex-session find "sessions where origin:codex-session" then select --json
+polylogue --origin codex-session find "sessions where origin:codex-session" then select --format json
 polylogue find "actions where tool:bash | group by origin | count"
 ```
 
@@ -71,7 +71,7 @@ structured tool-result evidence (not reconstructed from prose).
 File: [`03-search.txt`](03-search.txt)
 
 ```
-polylogue find "clock" then select --json
+polylogue find "clock" then select --format json
 ```
 
 An unfielded, quoted free-text query runs through the same FTS5 index this

@@ -53,6 +53,36 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
     assert receipt.status == "empty-source"
 
 
+def test_rebuild_blocks_unsafe_cursor_authority_before_generation_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                source_revision, acquisition_generation, revision_authority
+            ) VALUES ('raw-1', 'codex-session', 'session-1', 'source.jsonl', 0, ?,
+                      1, 1, 'codex:session-1', 'full', 'revision-0', 0, 'byte_proven')
+            """,
+            (bytes(32),),
+        )
+        conn.commit()
+    monkeypatch.setattr(
+        "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
+        lambda _root: "1 ingest cursor row committed past accepted raw material",
+    )
+
+    with pytest.raises(RuntimeError, match="raw frontier integrity"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+
+    assert not (root / ".index-generations").exists()
+
+
 def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_creation(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     _init_empty_source(root)
@@ -66,6 +96,27 @@ def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_c
         )
 
     with pytest.raises(RuntimeError, match="reindex source preflight gate failed: blob-refs-liveness"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+
+    assert not (root / ".index-generations").exists()
+
+
+def test_rebuild_source_preflight_rejects_unexplained_raw_failure(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parse_error
+            ) VALUES ('raw-failed', 'codex-session', 'failed', '/x', ?, 10, 100, 'unexpected parser failure')
+            """,
+            (b"u" * 32,),
+        )
+        conn.commit()
+
+    with pytest.raises(RuntimeError, match="raw-failure-lifecycle"):
         rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
 
     assert not (root / ".index-generations").exists()

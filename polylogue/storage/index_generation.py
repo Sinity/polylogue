@@ -824,19 +824,38 @@ class IndexGenerationStore:
         return removed
 
     def recover_promotion(self, generation_id: str) -> IndexGeneration:
-        """Reconcile a crash after the pointer swap but before active metadata."""
+        """Reconcile an incomplete promotion without trusting the pointer alone.
+
+        A pointer swap is only one durable step in promotion.  When the
+        pointer already targets the promoting generation, leave the metadata
+        in ``promoting`` until the activation caller has revalidated the
+        candidate against the current archive and explicitly completes
+        recovery.  A pointer mismatch means the swap never became visible, so
+        the candidate can safely return to ``inactive``.
+        """
         generation = self.load(generation_id)
         if generation.state != "promoting":
             return generation
         pointer = self.active_pointer
-        state = "inactive"
-        if pointer.exists() or pointer.is_symlink():
-            state = (
-                "active"
-                if pointer.resolve(strict=True) == Path(generation.index_path).resolve(strict=True)
-                else "inactive"
-            )
-        recovered = IndexGeneration(**{**asdict(generation), "state": state})
+        if (pointer.exists() or pointer.is_symlink()) and pointer.resolve(strict=True) == Path(
+            generation.index_path
+        ).resolve(strict=True):
+            return generation
+        recovered = IndexGeneration(**{**asdict(generation), "state": "inactive"})
+        self._write(recovered)
+        return recovered
+
+    def complete_promotion_recovery(self, generation_id: str) -> IndexGeneration:
+        """Record a pointer-swapped promotion as active after external validation."""
+        generation = self.load(generation_id)
+        if generation.state != "promoting":
+            return generation
+        pointer = self.active_pointer
+        if not (pointer.exists() or pointer.is_symlink()):
+            raise RuntimeError("cannot complete promotion recovery without an active index pointer")
+        if pointer.resolve(strict=True) != Path(generation.index_path).resolve(strict=True):
+            raise RuntimeError("cannot complete promotion recovery for a non-active generation")
+        recovered = IndexGeneration(**{**asdict(generation), "state": "active"})
         self._write(recovered)
         return recovered
 
