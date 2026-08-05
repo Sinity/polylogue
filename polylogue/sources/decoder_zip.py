@@ -262,13 +262,11 @@ def process_zip(
             name = info.filename
             entry_provider_hint = zip_entry_provider_hint(name, provider_hint)
             path_classification = classify_artifact_path(name, provider=entry_provider_hint)
-            session_artifact = zip_entry_session_artifact(zf, info, provider=entry_provider_hint)
-            if (
-                path_classification is not None
-                and not path_classification.parse_as_session
-                and session_artifact is None
-            ):
-                continue
+            session_artifact: ArtifactClassification | None = None
+            if path_classification is not None and not path_classification.parse_as_session:
+                session_artifact = zip_entry_session_artifact(zf, info, provider=entry_provider_hint)
+                if session_artifact is None:
+                    continue
             entry_should_group = entry_provider_hint in GROUP_PROVIDERS
             ctx = _ParseContext(
                 provider_hint=entry_provider_hint,

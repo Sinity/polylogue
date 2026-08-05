@@ -465,7 +465,10 @@ def _admit_non_session_zip_artifacts(
     acquired_at_ms: int,
 ) -> int:
     """Retain ZIP member artifacts only after decoded JSONL evidence is absent."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
     admitted = 0
+    publisher = ArchiveBlobPublisher(archive.source_db_path, archive.archive_root / "blob")
     try:
         with zipfile.ZipFile(zip_path) as zf:
             validator = ZipEntryValidator(provider, cursor_state=None, zip_path=zip_path)
@@ -478,17 +481,24 @@ def _admit_non_session_zip_artifacts(
                 ):
                     continue
                 with open_bounded_zip_entry(zf, info.filename) as payload:
-                    archive.admit_raw_artifact_payload(
-                        provider=provider,
-                        payload=payload.read(),
-                        source_path=f"{zip_path}:{info.filename}",
-                        source_index=0,
-                        acquired_at_ms=acquired_at_ms,
-                        classification=classification,
-                    )
+                    blob_hash, blob_size = publisher.write_from_fileobj(payload)
+                receipt_id = publisher.receipt_id(blob_hash)
+                publisher.flush()
+                archive.admit_raw_artifact_blob_ref(
+                    provider=provider,
+                    blob_hash_hex=blob_hash,
+                    blob_size=blob_size,
+                    source_path=f"{zip_path}:{info.filename}",
+                    source_index=0,
+                    acquired_at_ms=acquired_at_ms,
+                    classification=classification,
+                    blob_publication_receipt_id=receipt_id,
+                )
                 admitted += 1
     except (OSError, ZipBombError, zipfile.BadZipFile):
         logger.error("Failed to admit configured ZIP artifacts from %s", zip_path, exc_info=True)
+    finally:
+        publisher.discard_pending()
     return admitted
 
 

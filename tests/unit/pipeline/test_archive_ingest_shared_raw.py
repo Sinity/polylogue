@@ -40,7 +40,7 @@ import sqlite3
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -50,6 +50,25 @@ from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+
+class _RejectUnboundedRead:
+    """ZIP handle proxy that rejects a full member read in archive admission."""
+
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+
+    def __enter__(self) -> _RejectUnboundedRead:
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._handle.__exit__(*args)
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            raise AssertionError("ZIP artifact admission must stream to the blob store")
+        return cast("bytes", self._handle.read(size))
 
 
 def _write_carryover_chain(root: Path, *, session_prefix: str = "") -> tuple[Path, Path]:
@@ -173,6 +192,14 @@ def _write_workflow_journal_zip(root: Path, *, malformed: bool = False) -> Path:
     return archive
 
 
+def _write_large_zip_member(root: Path, name: str, payload: bytes) -> Path:
+    archive = root / "large-export.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr(name, payload)
+    return archive
+
+
 @pytest.mark.asyncio
 async def test_archive_ingest_session_shaped_workflow_journal_reaches_parser_idempotently(
     tmp_path: Path, workspace_env: dict[str, Path]
@@ -265,6 +292,72 @@ async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evide
         )
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large ZIP journal artifact must not be read into an admission payload."""
+    from polylogue.sources.decoder_zip import _ZIP_READ_CHUNK_SIZE, MAX_UNCOMPRESSED_SIZE, open_bounded_zip_entry
+
+    archive_root = workspace_env["archive_root"]
+    payload = b'{"contentKey":"artifact","agentId":"workflow-agent","body":"' + b"x" * _ZIP_READ_CHUNK_SIZE + b'"}\n'
+    journal_zip = _write_large_zip_member(
+        tmp_path / "sessions",
+        "subagents/workflows/wf-archive/journal.jsonl",
+        payload,
+    )
+    original_open = open_bounded_zip_entry
+
+    def reject_unbounded_read(
+        zf: zipfile.ZipFile,
+        name: str,
+        *,
+        max_bytes: int = MAX_UNCOMPRESSED_SIZE,
+    ) -> _RejectUnboundedRead:
+        return _RejectUnboundedRead(original_open(zf, name, max_bytes=max_bytes))
+
+    monkeypatch.setattr(
+        "polylogue.pipeline.services.archive_ingest.open_bounded_zip_entry",
+        reject_unbounded_read,
+    )
+
+    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=journal_zip)], parse_workers=1)
+
+    assert result.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
+        assert conn.execute("SELECT blob_size FROM raw_sessions").fetchone() == (len(payload),)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_large_ordinary_zip_jsonl_skips_delayed_artifact_scan(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unclassified ZIP JSONL follows normal parsing without a second full scan."""
+    from polylogue.sources import decoder_zip
+
+    archive_root = workspace_env["archive_root"]
+    payload = (
+        b'{"sessionId":"ordinary-session","parentUuid":null,"type":"user",'
+        b'"message":{"role":"user","content":[{"type":"text","text":"' + b"x" * (1024 * 1024) + b'"}]},'
+        b'"uuid":"ordinary-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"sessionId":"ordinary-session","parentUuid":"ordinary-user","type":"assistant",'
+        b'"message":{"role":"assistant","content":[{"type":"text","text":"reply"}]},'
+        b'"uuid":"ordinary-assistant","timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    session_zip = _write_large_zip_member(tmp_path / "sessions", "nested/ordinary.jsonl", payload)
+
+    def fail_unexpected_scan(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ordinary ZIP JSONL must not receive a delayed artifact scan")
+
+    monkeypatch.setattr(decoder_zip, "zip_entry_session_artifact", fail_unexpected_scan)
+
+    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=session_zip)], parse_workers=1)
+
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] == 1
 
 
 @pytest.mark.asyncio
