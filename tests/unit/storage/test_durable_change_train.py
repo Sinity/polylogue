@@ -19,8 +19,10 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
+    _runtime_consumer_results,
     durable_change_train_manifest_path,
     durable_change_train_policy_report,
+    durable_migration_sidecar_for_slot,
     execute_durable_change_train,
     validate_durable_migration_sidecars,
 )
@@ -137,6 +139,29 @@ def _production_rider() -> DurableChangeRider:
             ),
         ),
         behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
+    )
+
+
+def _source_hook_event_production_rider() -> DurableChangeRider:
+    return DurableChangeRider(
+        rider_id="rider:source-hook-event",
+        owner_ref="owner:source-hook-event",
+        schema_objects=("table:raw_hook_events",),
+        runtime_consumers=(
+            DurableRuntimeConsumer(
+                "source-hook-event-writer",
+                "polylogue/storage/sqlite/archive_tiers/source_write.py:write_source_hook_event",
+                "proof:source-v27:raw-hook-events-origin-repair",
+                ("write",),
+            ),
+            DurableRuntimeConsumer(
+                "source-hook-event-bootstrap",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                "proof:source-v27:raw-hook-events-origin-repair",
+                ("read",),
+            ),
+        ),
+        behavior_proof_refs=("proof:source-v27:raw-hook-events-origin-repair",),
     )
 
 
@@ -260,6 +285,62 @@ def _runtime_results() -> tuple[DurableRuntimeConsumerResult, ...]:
         DurableRuntimeConsumerResult("consumer-0", "proof:behavior:0", True),
         DurableRuntimeConsumerResult("consumer-1", "proof:behavior:1", True),
     )
+
+
+def test_source_v27_sidecar_proves_the_real_hook_event_writer_against_fresh_schema(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    sidecar = durable_migration_sidecar_for_slot(ArchiveTier.SOURCE, 27)
+    assert sidecar is not None
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+
+    results = _runtime_consumer_results(sidecar.train, tmp_path)
+
+    hook_writer = next(result for result in results if result.consumer_id == "source-hook-event-writer")
+    assert hook_writer.passed is True
+    assert hook_writer.behavior_proof_ref == "proof:source-v27:raw-hook-events-origin-repair"
+    assert hook_writer.detail == "wrote and read back a hook payload in a fresh source tier"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (0,)
+
+
+def test_applied_train_release_requires_the_source_hook_event_writer_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
+    train = _admitted(ArchiveTier.SOURCE, rider=_source_hook_event_production_rider())
+    with sqlite3.connect(db_path) as conn:
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        train = apply_durable_change_train(conn, train)
+
+    train = record_durable_writer_release(train, evidence_ref="proof:source-hook-event-writer-release")
+    with sqlite3.connect(db_path) as restarted:
+        actual_parity = _parity(ArchiveTier.SOURCE)
+        runtime_results = _runtime_consumer_results(train, tmp_path)
+        restart = capture_durable_restart_convergence(
+            restarted,
+            train,
+            runtime_consumers=runtime_results,
+            evidence_ref="proof:source-hook-event-restart",
+        )
+    train = prove_durable_change_train(
+        train,
+        fresh_ddl_parity=actual_parity,
+        runtime_consumers=runtime_results,
+        restart_convergence=restart,
+    )
+    released = release_durable_change_train(train, evidence_ref="proof:source-hook-event-release")
+
+    assert released.state is DurableChangeTrainState.RELEASED
+    assert released.proof is not None
+    hook_writer = next(
+        result for result in released.proof.runtime_consumers if result.consumer_id == "source-hook-event-writer"
+    )
+    assert hook_writer.passed is True
 
 
 @pytest.mark.parametrize("tier", (ArchiveTier.SOURCE, ArchiveTier.USER))

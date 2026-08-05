@@ -342,12 +342,19 @@ def _runtime_consumer_results(
                 ) from exc
             if not callable(value):
                 raise DurableChangeTrainError(f"runtime consumer {consumer.consumer_id} is not callable: {reference}")
+            detail = f"resolved {reference}"
             try:
                 if reference.endswith(":initialize_archive_database"):
                     value(archive_root / f"{train.tier.value}.db", train.tier, allow_create=False)
                 elif reference.endswith(":initialize_archive_tier"):
                     with sqlite3.connect(":memory:") as probe:
                         value(probe, train.tier)
+                elif reference.endswith(":write_source_hook_event"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_source_hook_event_writer(cast(Callable[..., object], value))
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -369,10 +376,82 @@ def _runtime_consumer_results(
                     consumer_id=consumer.consumer_id,
                     behavior_proof_ref=consumer.behavior_proof_ref,
                     passed=True,
-                    detail=f"resolved {reference}",
+                    detail=detail,
                 )
             )
     return tuple(results)
+
+
+def _probe_source_hook_event_writer(writer: Callable[..., object]) -> str:
+    """Exercise the source hook writer against an isolated fresh source tier."""
+    from polylogue.core.enums import Origin
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.source_write import (
+        ArchiveHookEvent,
+        deterministic_blob_hash,
+    )
+
+    source_path = "/durable-change-train/source-v27-probe.jsonl"
+    payload = b'{"event":"PostToolUse","probe":"source-v27"}'
+    hook_event = ArchiveHookEvent(
+        hook_event_id="durable-change-train-source-v27-hook",
+        origin=Origin.CODEX_SESSION,
+        source_path=source_path,
+        event_type="PostToolUse",
+        payload={"event": "PostToolUse", "probe": "source-v27"},
+        observed_at_ms=1_780_000_000_000,
+        native_id="durable-change-train-source-v27-native",
+        session_native_id="durable-change-train-source-v27-session",
+    )
+    expected_blob_hash = deterministic_blob_hash(payload)
+    with sqlite3.connect(":memory:") as probe:
+        initialize_archive_tier(probe, ArchiveTier.SOURCE)
+        returned_raw_id = writer(
+            probe,
+            origin=hook_event.origin,
+            source_path=source_path,
+            payload=payload,
+            acquired_at_ms=hook_event.observed_at_ms,
+            raw_id="durable-change-train-source-v27-raw",
+            hook_event=hook_event,
+        )
+        hook_row = probe.execute(
+            """
+            SELECT origin, native_id, session_native_id, source_path, event_type,
+                   payload_json, observed_at_ms, blob_hash
+            FROM raw_hook_events
+            WHERE hook_event_id = ?
+            """,
+            (hook_event.hook_event_id,),
+        ).fetchone()
+        blob_ref_row = probe.execute(
+            "SELECT blob_hash, ref_type, ref_id, source_path, size_bytes, acquired_at_ms FROM blob_refs"
+        ).fetchone()
+        raw_session_count = probe.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()
+
+    expected_hook_row = (
+        Origin.CODEX_SESSION.value,
+        hook_event.native_id,
+        hook_event.session_native_id,
+        source_path,
+        hook_event.event_type,
+        '{"event":"PostToolUse","probe":"source-v27"}',
+        hook_event.observed_at_ms,
+        expected_blob_hash,
+    )
+    expected_blob_ref_row = (
+        expected_blob_hash,
+        "hook_payload",
+        hook_event.hook_event_id,
+        source_path,
+        len(payload),
+        hook_event.observed_at_ms,
+    )
+    if returned_raw_id != "durable-change-train-source-v27-raw":
+        raise DurableChangeTrainError("source hook writer probe returned the wrong raw identity")
+    if hook_row != expected_hook_row or blob_ref_row != expected_blob_ref_row or raw_session_count != (0,):
+        raise DurableChangeTrainError("source hook writer probe did not persist the expected hook payload contract")
+    return "wrote and read back a hook payload in a fresh source tier"
 
 
 def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
