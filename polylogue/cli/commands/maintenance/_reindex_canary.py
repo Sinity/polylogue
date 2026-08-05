@@ -49,6 +49,13 @@ import click
     required=True,
     help="Destination for the reviewed canary report.",
 )
+@click.option(
+    "--schema-inference-receipt",
+    "schema_inference_receipt_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
+    required=True,
+    help="Explicit fresh schema-inference PASS receipt consumed by the canary rebuild.",
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 @click.option(
     "--no-promote",
@@ -62,6 +69,7 @@ def reindex_canary_command(
     pathology_session_id: tuple[str, ...],
     sample_session_id: tuple[str, ...],
     report_path: Path,
+    schema_inference_receipt_path: Path,
     output_format: str,
     no_promote: bool,
 ) -> None:
@@ -88,6 +96,7 @@ def reindex_canary_command(
             pathology_session_ids=pathology_session_id,
             sample_session_ids=sample_session_id,
             no_promote=no_promote,
+            schema_inference_receipt_path=schema_inference_receipt_path,
         )
         durable = write_canary_report(
             report_path,
