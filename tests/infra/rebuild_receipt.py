@@ -48,11 +48,20 @@ def write_valid_rebuild_receipt(
             for raw_id, blob_hash in raw_rows:
                 (external_root / f"{raw_id}.bin").write_bytes(BlobStore(root / "blob").read_all(bytes(blob_hash).hex()))
             inventory = gate._external_inventory((external_root,))
+            inventory_records = [
+                {
+                    "root_index": item.root_index,
+                    "relative_path": item.relative_path,
+                    "hash": item.content_hash,
+                    "size": item.size,
+                }
+                for item in inventory
+            ]
             mapping = gate._raw_external_mapping(source, origin=origin, inventory=inventory, exempt=False)
             ground_truth_origins[origin] = {
                 "exempt": False,
                 "declared_roots": [str(external_root)],
-                "external_inventory": inventory,
+                "external_inventory": inventory_records,
                 "raw_external_mapping": mapping,
                 "passed": all(item["disposition"] == "matched-external" for item in mapping),
             }

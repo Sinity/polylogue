@@ -770,6 +770,18 @@ def _external_inventory(roots: Sequence[Path]) -> list[_ExternalGroundTruthFile]
     return inventory
 
 
+def _external_inventory_records(inventory: Sequence[_ExternalGroundTruthFile]) -> list[dict[str, object]]:
+    return [
+        {
+            "root_index": item.root_index,
+            "relative_path": item.relative_path,
+            "hash": item.content_hash,
+            "size": item.size,
+        }
+        for item in inventory
+    ]
+
+
 def _external_receipt(
     item: _ExternalGroundTruthFile,
     disposition: ExternalDisposition,
@@ -1081,15 +1093,7 @@ def _ground_truth_evidence(
                 "unmatched_external_files": unmatched_external_files[:DEFAULT_SAMPLE_LIMIT],
                 "cross_origin_mismatches": cross_origin_mismatches[:DEFAULT_SAMPLE_LIMIT],
                 "provenance": provenance,
-                "external_inventory": [
-                    {
-                        "root_index": item.root_index,
-                        "relative_path": item.relative_path,
-                        "hash": item.content_hash,
-                        "size": item.size,
-                    }
-                    for item in inventory
-                ],
+                "external_inventory": _external_inventory_records(inventory),
                 "raw_external_mapping": mapping,
                 "passed": not missing and not unmatched_mapping,
             }
@@ -1266,7 +1270,7 @@ def _current_external_ground_truth_digest(archive_root: Path, ground_truth: Mapp
             inventory = _external_inventory(resolved_roots)
             current[origin] = {
                 "declared_roots": [str(root) for root in resolved_roots],
-                "external_inventory": inventory,
+                "external_inventory": _external_inventory_records(inventory),
                 "raw_external_mapping": _raw_external_mapping(source, origin=origin, inventory=inventory, exempt=False),
             }
     return _canonical_external_ground_truth_digest(current)
