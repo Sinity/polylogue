@@ -619,6 +619,56 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     }
 
 
+def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The daemon route selects executable plans before calling the actuator."""
+    from polylogue.daemon import cli as daemon_cli
+
+    config = Config(
+        archive_root=tmp_path,
+        render_root=tmp_path / "render",
+        sources=[],
+        db_path=tmp_path / "index.db",
+    )
+    census = SimpleNamespace(
+        census_id="census-1",
+        items=(
+            SimpleNamespace(plan_id="safe-1", executable=True),
+            SimpleNamespace(plan_id="blocked-1", executable=False),
+            SimpleNamespace(plan_id="safe-2", executable=True),
+        ),
+    )
+    apply_calls: list[dict[str, object]] = []
+
+    def fake_apply(
+        _config: Config,
+        *,
+        preview_census_id: str,
+        selected_plan_ids: tuple[str, ...],
+    ) -> SimpleNamespace:
+        apply_calls.append(
+            {
+                "preview_census_id": preview_census_id,
+                "selected_plan_ids": selected_plan_ids,
+            }
+        )
+        return SimpleNamespace(
+            retryable_plan_count=0,
+            selected_plan_count=len(selected_plan_ids),
+            executed_plan_count=2,
+        )
+
+    monkeypatch.setattr("polylogue.product.raw_authority.inspect_frontier", lambda _config: census)
+    monkeypatch.setattr("polylogue.product.raw_authority.apply_frontier", fake_apply)
+
+    executed = daemon_cli._converge_raw_authority_frontier(config, limit=1)
+
+    assert executed == 2
+    assert apply_calls == [{"preview_census_id": "census-1", "selected_plan_ids": ("safe-1",)}]
+
+
 def test_maybe_recommend_bulk_rebuild_silent_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     """A backlog under both thresholds must not trigger the bulk-rebuild
     recommendation: this exercises the real threshold predicate
