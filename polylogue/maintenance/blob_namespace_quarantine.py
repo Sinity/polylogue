@@ -23,6 +23,7 @@ import stat
 import time
 import uuid
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from polylogue.config import Config
@@ -36,6 +37,12 @@ from polylogue.storage.sqlite.migration_runner import validate_migration_backup_
 TOOL_VERSION = "blob-namespace-quarantine-v1"
 _CHUNK_SIZE = 1024 * 1024
 _QUARANTINE_DIRNAME = "blob-namespace-quarantine"
+
+
+class BlobNamespaceMoveCapability(StrEnum):
+    """Filesystem movement capability granted by a namespace cleanup plan."""
+
+    NONE = "none"
 
 
 class BlobNamespaceQuarantineError(RuntimeError):
@@ -123,6 +130,7 @@ class BlobNamespaceCleanupPlan:
     backup_manifest: Path
     backup_verification_receipt: Path
     census: BlobNamespaceCensus
+    move_capability: BlobNamespaceMoveCapability = BlobNamespaceMoveCapability.NONE
     deletes_files: bool = False
     moves_files: bool = False
     mutates_sqlite: bool = False
@@ -133,6 +141,7 @@ class BlobNamespaceCleanupPlan:
             "blob_root": str(self.blob_root),
             "backup_manifest": str(self.backup_manifest),
             "backup_verification_receipt": str(self.backup_verification_receipt),
+            "move_capability": self.move_capability.value,
             "deletes_files": self.deletes_files,
             "moves_files": self.moves_files,
             "mutates_sqlite": self.mutates_sqlite,
@@ -895,6 +904,7 @@ __all__ = [
     "BlobNamespaceCanonicalEntry",
     "BlobNamespaceCensus",
     "BlobNamespaceCleanupPlan",
+    "BlobNamespaceMoveCapability",
     "BlobNamespaceQuarantineEntry",
     "BlobNamespaceQuarantineError",
     "BlobNamespaceQuarantineReport",

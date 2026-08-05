@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from polylogue.maintenance.blob_namespace_quarantine import (
     BlobNamespaceCleanupPlan,
+    BlobNamespaceMoveCapability,
     BlobNamespaceQuarantineError,
     BlobNamespaceQuarantineReport,
     BlobNamespaceRecoveryReport,
@@ -14,6 +15,7 @@ from polylogue.maintenance.blob_namespace_quarantine import (
 
 __all__ = [
     "BlobNamespaceCleanupPlan",
+    "BlobNamespaceMoveCapability",
     "BlobNamespaceQuarantineError",
     "BlobNamespaceQuarantineReport",
     "BlobNamespaceRecoveryReport",

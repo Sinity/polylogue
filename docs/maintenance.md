@@ -173,6 +173,11 @@ temporary files, and other invalid entries. It does not create receipts,
 checkpoint SQLite, move files, delete files, or change archive rows. Run this
 plan before any later offline quarantine decision.
 
+This plan is an offline safety prerequisite, not a production cleanup receipt
+or a complete bead-closure claim. The full-hash pristine receipt required by
+`r9xsj` remains a separate residual dependency, and production cleanup remains
+a separate operator-authorized residual dependency. No receipt is claimed here.
+
 Apply requires the daemon stopped, no archive writer lease, the archive-wide
 exclusive maintenance lease, a successful attested source-tier backup manifest
 whose live identity still matches `source.db`, and a clean WAL checkpoint. The

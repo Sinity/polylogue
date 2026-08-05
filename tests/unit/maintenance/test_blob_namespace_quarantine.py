@@ -16,6 +16,7 @@ from polylogue.cli.click_app import cli
 from polylogue.config import Source
 from polylogue.maintenance.blob_namespace_quarantine import (
     BlobNamespaceCleanupPlan,
+    BlobNamespaceMoveCapability,
     BlobNamespaceQuarantineError,
     classify_blob_namespace_quarantine_recovery,
     plan_blob_namespace_cleanup,
@@ -61,8 +62,8 @@ def _inject_invalid_entries(blob_root: Path) -> dict[str, bytes]:
     return entries
 
 
-def _filesystem_snapshot(root: Path) -> tuple[tuple[str, int, int, str | None, str | None], ...]:
-    snapshot: list[tuple[str, int, int, str | None, str | None]] = []
+def _filesystem_snapshot(root: Path) -> tuple[tuple[str, int, int, int, int, int, str | None, str | None], ...]:
+    snapshot: list[tuple[str, int, int, int, int, int, str | None, str | None]] = []
     for directory, dirnames, filenames in os.walk(root, followlinks=False):
         directory_path = Path(directory)
         names = sorted((*dirnames, *filenames))
@@ -76,7 +77,18 @@ def _filesystem_snapshot(root: Path) -> tuple[tuple[str, int, int, str | None, s
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
             elif stat.S_ISLNK(details.st_mode):
                 link_target = os.readlink(path)
-            snapshot.append((path.relative_to(root).as_posix(), mode, details.st_size, digest, link_target))
+            snapshot.append(
+                (
+                    path.relative_to(root).as_posix(),
+                    mode,
+                    details.st_dev,
+                    details.st_ino,
+                    details.st_mtime_ns,
+                    details.st_size,
+                    digest,
+                    link_target,
+                )
+            )
     return tuple(snapshot)
 
 
@@ -108,11 +120,16 @@ def test_backup_gated_cleanup_plan_is_typed_and_read_only(tmp_path: Path, monkey
     invalid = _inject_invalid_entries(store.root)
     source_before = hashlib.sha256((archive_root / "source.db").read_bytes()).hexdigest()
     manifest = _verified_source_backup(archive_root, tmp_path, monkeypatch)
-    before = _filesystem_snapshot(archive_root)
+    backup_root = manifest.parent
+    for suffix in ("-wal", "-shm", "-journal"):
+        (archive_root / f"source.db{suffix}").touch()
+    archive_before = _filesystem_snapshot(archive_root)
+    backup_before = _filesystem_snapshot(backup_root)
 
     plan = plan_blob_namespace_cleanup(archive_root, backup_manifest=manifest)
 
     assert isinstance(plan, BlobNamespaceCleanupPlan)
+    assert plan.move_capability is BlobNamespaceMoveCapability.NONE
     assert plan.census.safe_to_apply
     assert plan.deletes_files is False
     assert plan.moves_files is False
@@ -124,7 +141,11 @@ def test_backup_gated_cleanup_plan_is_typed_and_read_only(tmp_path: Path, monkey
         "cd/nested",
     }
     assert hashlib.sha256((archive_root / "source.db").read_bytes()).hexdigest() == source_before
-    assert _filesystem_snapshot(archive_root) == before
+    assert _filesystem_snapshot(archive_root) == archive_before
+    assert _filesystem_snapshot(backup_root) == backup_before
+    assert manifest.relative_to(backup_root).as_posix() == "manifest.json"
+    assert plan.backup_verification_receipt.relative_to(backup_root).as_posix() == "verification-receipt.json"
+    assert all((archive_root / f"source.db{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
     assert not (archive_root / "blob-namespace-quarantine").exists()
     assert all((store.root / relative).exists() for relative in invalid)
     assert (store.root / "cd" / "link").is_symlink()
@@ -150,6 +171,9 @@ def test_cleanup_plan_refuses_online_archive_without_touching_namespace(
     store.write_from_bytes(b"canonical payload")
     invalid = _inject_invalid_entries(store.root)
     manifest = _verified_source_backup(archive_root, tmp_path, monkeypatch)
+    backup_root = manifest.parent
+    archive_before = _filesystem_snapshot(archive_root)
+    backup_before = _filesystem_snapshot(backup_root)
     monkeypatch.setattr(
         "polylogue.maintenance.blob_namespace_quarantine.running_daemon_pid",
         lambda _config: 4242,
@@ -160,6 +184,8 @@ def test_cleanup_plan_refuses_online_archive_without_touching_namespace(
 
     assert all((store.root / relative).exists() for relative in invalid)
     assert not (archive_root / "blob-namespace-quarantine").exists()
+    assert _filesystem_snapshot(archive_root) == archive_before
+    assert _filesystem_snapshot(backup_root) == backup_before
 
 
 def test_cleanup_plan_cli_emits_typed_non_mutation_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,6 +218,7 @@ def test_cleanup_plan_cli_emits_typed_non_mutation_contract(tmp_path: Path, monk
     assert payload["deletes_files"] is False
     assert payload["moves_files"] is False
     assert payload["mutates_sqlite"] is False
+    assert payload["move_capability"] == "none"
     assert payload["invalid_namespace_entries"] == 6
 
 
