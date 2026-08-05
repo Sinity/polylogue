@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -74,8 +75,17 @@ def _open_events_reader() -> sqlite3.Connection | None:
     return conn
 
 
-def _now_ms() -> int:
+def current_epoch_ms() -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
+
+
+class CatchUpCycleTerminalOutcome(StrEnum):
+    """Typed terminal outcomes for a catch-up lifecycle."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLED = "cancelled"
+    STOPPED = "stopped"
 
 
 def _iso_from_ms(value: object) -> str:
@@ -100,7 +110,7 @@ def emit_daemon_event(
         conn.execute(
             "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
             (
-                _now_ms(),
+                current_epoch_ms(),
                 kind,
                 operation_id,
                 json.dumps(payload or {}),
@@ -235,6 +245,7 @@ def emit_catch_up_cycle(
     duration_ms: float,
     stage_timings_s: Mapping[str, float] | None,
     repair: Mapping[str, object] | None,
+    terminal_outcome: CatchUpCycleTerminalOutcome | str | None = None,
 ) -> None:
     """Emit one catch-up convergence cycle envelope.
 
@@ -242,9 +253,20 @@ def emit_catch_up_cycle(
     attempts taxonomy, errors, queue/backlog, repair state, per-stage timings)
     so downstream tooling can read durable evidence without scraping logs.
 
-    ``phase`` is ``"start"`` or ``"end"``; the same ``operation_id`` ties them
-    together. End events carry the realized counts and timings.
+    ``phase`` is ``"start"``, ``"end"``, or ``"terminal"``. Terminal events
+    require a typed outcome. The same ``operation_id`` ties every boundary
+    together, while an end event remains the realized backlog measurement.
     """
+    if phase not in {"start", "end", "terminal"}:
+        raise ValueError(f"unsupported catch-up cycle phase: {phase!r}")
+    if phase == "terminal":
+        if terminal_outcome is None:
+            raise ValueError("terminal catch-up cycle events require an outcome")
+        resolved_terminal_outcome = CatchUpCycleTerminalOutcome(terminal_outcome)
+    elif terminal_outcome is not None:
+        raise ValueError("only terminal catch-up cycle events may carry an outcome")
+    else:
+        resolved_terminal_outcome = None
     payload: dict[str, object] = {
         "phase": phase,
         "backlog_start": backlog_start,
@@ -262,6 +284,7 @@ def emit_catch_up_cycle(
             {key: round(float(value), 6) for key, value in stage_timings_s.items()} if stage_timings_s else {}
         ),
         "repair": dict(repair) if repair is not None else None,
+        "terminal_outcome": (resolved_terminal_outcome.value if resolved_terminal_outcome is not None else None),
     }
     emit_daemon_event("catch_up_cycle", operation_id=operation_id, payload=payload)
 
@@ -389,6 +412,7 @@ def get_daemon_event_counts() -> dict[str, int]:
 
 
 __all__ = [
+    "CatchUpCycleTerminalOutcome",
     "EVENT_SESSION_APPENDED",
     "EVENT_SESSION_UPDATED",
     "EVENT_MESSAGE_APPENDED",
@@ -402,6 +426,7 @@ __all__ = [
     "get_last_ingestion_batch",
     "get_latest_event_id",
     "get_recent_operations",
+    "current_epoch_ms",
     "query_daemon_events",
     "query_events_since",
 ]

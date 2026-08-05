@@ -16,8 +16,9 @@ import pytest
 import polylogue.operations.slo as slo_storage
 from polylogue.core.enums import SloSampleLabel
 from polylogue.daemon.cursor_lag_status import CursorLagSummary
-from polylogue.daemon.events import emit_catch_up_cycle, query_daemon_events
+from polylogue.daemon.events import CatchUpCycleTerminalOutcome, emit_catch_up_cycle, query_daemon_events
 from polylogue.daemon.slo import (
+    CATCH_UP_ACTIVE_STALE_AFTER_MS,
     SloVerdict,
     backlog_window_from_event,
     project_backlog_windows,
@@ -45,6 +46,7 @@ def _cycle(
     operation_id: str = "cycle-1",
     phase: str = "end",
     timestamp_ms: int = 1_000,
+    terminal_outcome: str | None = None,
 ) -> dict[str, object]:
     return {
         "kind": "catch_up_cycle",
@@ -60,6 +62,7 @@ def _cycle(
             "skipped": skipped,
             "quarantine_count": quarantine_count,
             "duration_ms": duration_ms,
+            "terminal_outcome": terminal_outcome,
         },
     }
 
@@ -85,6 +88,7 @@ def test_status_reuses_event_and_cursor_lag_sources() -> None:
     status = slo_status_info(
         cursor_lag=CursorLagSummary(stuck_file_count=2, degraded_file_count=1),
         events=[_cycle(backlog_start=5, backlog_end=3, discovered=2, attempted=2, ingested=2)],
+        now_ms=1_500,
     )
 
     assert status.verdict is SloVerdict.DRAINING
@@ -119,7 +123,7 @@ def test_newer_start_cycle_overrides_stale_completed_verdict() -> None:
         ),
     ]
 
-    status = slo_status_info(cursor_lag=CursorLagSummary(), events=list(reversed(events)))
+    status = slo_status_info(cursor_lag=CursorLagSummary(), events=list(reversed(events)), now_ms=2_500)
 
     assert status.verdict is SloVerdict.ACTIVE
     assert status.latest_window is not None
@@ -148,13 +152,84 @@ def test_newer_end_cycle_closes_its_matching_start_before_status_projection() ->
         ),
     ]
 
-    status = slo_status_info(cursor_lag=CursorLagSummary(), events=list(reversed(events)))
+    status = slo_status_info(cursor_lag=CursorLagSummary(), events=list(reversed(events)), now_ms=2_500)
 
     assert status.verdict is SloVerdict.HEALTHY
     assert status.latest_window is not None
     assert status.latest_window.operation_id == "completed"
     assert status.latest_window.in_progress is False
     assert status.latest_window.observed_at_ms == 2_000
+
+
+def test_terminal_failure_closes_matching_start_with_typed_failed_verdict() -> None:
+    events = [
+        _cycle(backlog_start=4, backlog_end=4, discovered=4, operation_id="failed", phase="start", timestamp_ms=1_000),
+        _cycle(
+            backlog_start=4,
+            backlog_end=4,
+            discovered=4,
+            operation_id="failed",
+            phase="terminal",
+            terminal_outcome="failure",
+            timestamp_ms=2_000,
+        ),
+    ]
+
+    status = slo_status_info(cursor_lag=CursorLagSummary(), events=events, now_ms=2_500)
+
+    assert status.verdict is SloVerdict.FAILED
+    assert status.latest_window is not None
+    assert status.latest_window.in_progress is False
+    assert status.latest_window.terminal_outcome is CatchUpCycleTerminalOutcome.FAILURE
+
+
+def test_terminal_success_preserves_the_matching_end_measurement() -> None:
+    events = [
+        _cycle(
+            backlog_start=4, backlog_end=4, discovered=4, operation_id="complete", phase="start", timestamp_ms=1_000
+        ),
+        _cycle(
+            backlog_start=4,
+            backlog_end=0,
+            discovered=4,
+            ingested=4,
+            operation_id="complete",
+            timestamp_ms=2_000,
+        ),
+        _cycle(
+            backlog_start=4,
+            backlog_end=0,
+            discovered=4,
+            ingested=4,
+            operation_id="complete",
+            phase="terminal",
+            terminal_outcome="success",
+            timestamp_ms=3_000,
+        ),
+    ]
+
+    status = slo_status_info(cursor_lag=CursorLagSummary(), events=events, now_ms=3_500)
+
+    assert status.verdict is SloVerdict.HEALTHY
+    assert status.latest_window is not None
+    assert status.latest_window.phase == "end"
+    assert status.latest_window.observed_at_ms == 2_000
+
+
+def test_unmatched_start_becomes_stale_from_its_persisted_timestamp() -> None:
+    start = _cycle(backlog_start=3, backlog_end=3, discovered=3, phase="start", timestamp_ms=1_000)
+
+    active = slo_status_info(cursor_lag=CursorLagSummary(), events=[start], now_ms=1_000)
+    stale = slo_status_info(
+        cursor_lag=CursorLagSummary(),
+        events=[start],
+        now_ms=1_000 + CATCH_UP_ACTIVE_STALE_AFTER_MS,
+    )
+
+    assert active.verdict is SloVerdict.ACTIVE
+    assert stale.verdict is SloVerdict.STALE
+    assert stale.latest_window is not None
+    assert stale.latest_window.in_progress is False
 
 
 def test_event_reader_timestamp_is_preserved_without_wall_clock_fallback(workspace_env: dict[str, Path]) -> None:

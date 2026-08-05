@@ -18,7 +18,8 @@ from pydantic import BaseModel, Field
 from polylogue.core.enums import SloSampleLabel
 from polylogue.core.stats import percentile
 from polylogue.daemon.cursor_lag_status import CursorLagSummary
-from polylogue.daemon.events import query_daemon_events
+from polylogue.daemon.events import CatchUpCycleTerminalOutcome, current_epoch_ms, query_daemon_events
+from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
 from polylogue.operations.slo import (
     ArchiveSloSample,
     list_slo_samples,
@@ -33,6 +34,8 @@ class SloVerdict(StrEnum):
     IDLE = "idle"
     DRAINING = "draining"
     STALLED = "stalled"
+    FAILED = "failed"
+    STALE = "stale"
     SUPPRESSED = "suppressed"
 
 
@@ -50,13 +53,17 @@ class SloReduction(BaseModel):
     confident: bool = False
 
 
+CATCH_UP_ACTIVE_STALE_AFTER_MS = DAEMON_HEARTBEAT_STALE_AFTER_SECONDS * 1000
+
+
 class BacklogWindow(BaseModel):
-    """One bounded catch-up window derived from a catch-up cycle end event."""
+    """One bounded catch-up window derived from the lifecycle event stream."""
 
     operation_id: str | None = None
     observed_at_ms: int | None = None
     phase: str = "end"
     in_progress: bool = False
+    terminal_outcome: CatchUpCycleTerminalOutcome | None = None
     duration_s: float = 0.0
     backlog_start: int = 0
     backlog_end: int = 0
@@ -152,7 +159,7 @@ def backlog_window_from_event(
     if not isinstance(payload, Mapping):
         return None
     phase = payload.get("phase")
-    if phase not in {"start", "end"}:
+    if phase not in {"start", "end", "terminal"}:
         return None
     duration_s = _float(payload, "duration_ms") / 1000.0
     backlog_start = _int(payload, "backlog_start")
@@ -163,12 +170,24 @@ def backlog_window_from_event(
     )
     drain_rate = drained_work / duration_s if duration_s > 0 else 0.0
     offered_rate = offered_work / duration_s if duration_s > 0 else 0.0
+    terminal_outcome: CatchUpCycleTerminalOutcome | None = None
+    if phase == "terminal":
+        raw_terminal_outcome = payload.get("terminal_outcome")
+        if not isinstance(raw_terminal_outcome, str):
+            return None
+        try:
+            terminal_outcome = CatchUpCycleTerminalOutcome(raw_terminal_outcome)
+        except ValueError:
+            return None
     if bulk_import_suppressed:
         verdict = SloVerdict.SUPPRESSED
         reason = "bulk-import marker is open"
     elif phase == "start":
         verdict = SloVerdict.ACTIVE
         reason = "catch-up cycle is in progress"
+    elif terminal_outcome is not None and terminal_outcome is not CatchUpCycleTerminalOutcome.SUCCESS:
+        verdict = SloVerdict.FAILED
+        reason = f"catch-up cycle terminated: {terminal_outcome.value}"
     elif backlog_end <= 0:
         verdict = SloVerdict.HEALTHY
         reason = "backlog drained"
@@ -187,6 +206,7 @@ def backlog_window_from_event(
         observed_at_ms=_event_observed_at_ms(event),
         phase=phase,
         in_progress=phase == "start",
+        terminal_outcome=terminal_outcome,
         duration_s=round(duration_s, 6),
         backlog_start=backlog_start,
         backlog_end=backlog_end,
@@ -204,10 +224,12 @@ def project_backlog_windows(
     events: Sequence[Mapping[str, object]],
     *,
     bulk_import_suppressed: bool | None = None,
+    now_ms: int | None = None,
 ) -> tuple[BacklogWindow, ...]:
     """Return bounded windows from the existing event stream, newest first."""
     suppressed = bulk_import_is_open(events) if bulk_import_suppressed is None else bulk_import_suppressed
     completed: list[tuple[tuple[int, int, int], BacklogWindow]] = []
+    completed_operations: set[str] = set()
     active: dict[str, tuple[tuple[int, int, int], BacklogWindow]] = {}
     for index, event in sorted(enumerate(events), key=lambda item: _event_order_key(*item)):
         window = backlog_window_from_event(event, bulk_import_suppressed=suppressed)
@@ -217,9 +239,35 @@ def project_backlog_windows(
         order_key = _event_order_key(index, event)
         if window.in_progress:
             active[key] = (order_key, window)
+        elif window.phase == "end":
+            active.pop(key, None)
+            completed.append((order_key, window))
+            completed_operations.add(key)
+        elif window.terminal_outcome is CatchUpCycleTerminalOutcome.SUCCESS:
+            active.pop(key, None)
+            if key not in completed_operations:
+                completed.append((order_key, window))
+                completed_operations.add(key)
         else:
             active.pop(key, None)
             completed.append((order_key, window))
+            completed_operations.add(key)
+    if now_ms is not None:
+        for key, (order_key, window) in tuple(active.items()):
+            if window.observed_at_ms is not None and now_ms - window.observed_at_ms >= CATCH_UP_ACTIVE_STALE_AFTER_MS:
+                active.pop(key)
+                completed.append(
+                    (
+                        order_key,
+                        window.model_copy(
+                            update={
+                                "verdict": SloVerdict.STALE,
+                                "reason": "catch-up cycle start exceeded the active timeout",
+                                "in_progress": False,
+                            }
+                        ),
+                    )
+                )
     windows = completed + list(active.values())
     return tuple(window for _key, window in sorted(windows, reverse=True)[:20])
 
@@ -297,11 +345,16 @@ def slo_status_info(
     *,
     cursor_lag: CursorLagSummary,
     events: Sequence[Mapping[str, object]] | None = None,
+    now_ms: int | None = None,
 ) -> IngestSloStatus:
     """Build status from existing event and cursor-lag sources only."""
     resolved_events = list(events) if events is not None else list(query_daemon_events(limit=50))
     suppressed = bulk_import_is_open(resolved_events)
-    windows = project_backlog_windows(resolved_events, bulk_import_suppressed=suppressed)
+    windows = project_backlog_windows(
+        resolved_events,
+        bulk_import_suppressed=suppressed,
+        now_ms=current_epoch_ms() if now_ms is None else now_ms,
+    )
     latest = windows[0] if windows else None
     if latest is None:
         return IngestSloStatus(
@@ -326,6 +379,7 @@ def slo_status_info(
 
 __all__ = [
     "BacklogWindow",
+    "CATCH_UP_ACTIVE_STALE_AFTER_MS",
     "IngestSloStatus",
     "SloReduction",
     "SloVerdict",
