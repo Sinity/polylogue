@@ -2,8 +2,10 @@
 
 The raw-authority census tables (``raw_authority_censuses`` and its
 ``plans``/``blockers``/``census_plans``/``census_post_plans`` children) are
-DERIVED convergence bookkeeping: each census chains to its predecessor
-(``sequence_no + 1``) and carries unresolved plans forward. The ACCEPTED
+DERIVED convergence bookkeeping: each census normally chains to its predecessor
+(``sequence_no + 1``), while bounded header retention may set the oldest
+retained header's predecessor to NULL as the explicit compaction boundary.
+The ledger also carries unresolved plans forward. The ACCEPTED
 materialization state — ``raw_sessions.revision_authority`` and the index's
 ``raw_revision_heads`` / ``raw_revision_applications`` — lives OUTSIDE these
 tables and is untouched here.

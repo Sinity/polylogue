@@ -59,13 +59,14 @@ RAW_AUTHORITY_DETAIL_CHUNK_CHARS = 16_384
 #: ~990 MB/day (polylogue-wkc6).
 RAW_AUTHORITY_CENSUS_PLAN_RETENTION = 8
 
-#: Minimum number of census HEADERS (``raw_authority_censuses``) to keep.
+#: Target number of newest census HEADERS (``raw_authority_censuses``) to keep.
 #:
 #: Deliberately much larger than the plan-row window: headers carry the
 #: convergence history that is actually worth reading back -- sequence,
-#: digests, ``fixed_point``, and the ``predecessor_census_id`` chain -- and a
-#: header is far cheaper than a plan set. An intact predecessor chain may
-#: extend this floor while its retained edges still require the older headers.
+#: digests, ``fixed_point``, and the retained portion of the
+#: ``predecessor_census_id`` chain -- and a header is far cheaper than a plan
+#: set. The oldest retained header has a NULL predecessor when compaction cuts
+#: the chain boundary. Open blocker references may retain additional headers.
 #: Headers are not free, though:
 #: ``residual_json`` and ``post_residual_json`` embed the full quarantined-raw
 #: id arrays and average ~144 KB each, so headers alone accrue ~28 MB/day at
@@ -895,7 +896,10 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
     see ``RAW_AUTHORITY_CENSUS_PLAN_RETENTION`` and
     ``RAW_AUTHORITY_CENSUS_HEADER_RETENTION``. Plan membership is dropped for
     older censuses while their headers survive, so convergence history stays
-    readable after the per-plan detail behind it is gone.
+    readable after the per-plan detail behind it is gone. Header compaction
+    cuts the predecessor edge at the oldest retained header by setting it to
+    NULL before deleting older headers. NULL is the explicit retained-lineage
+    boundary, not an unresolved reference.
 
     Deletes are keyed on ``sequence_no``, which is monotonic per archive, so
     this cannot race a concurrently-recorded newer census into deletion.
@@ -966,39 +970,52 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
     if header_floor_row is not None:
         # Same obligation guard, and additionally an FK guard:
         # raw_authority_blockers and predecessor_census_id both reference
-        # raw_authority_censuses(census_id). Keep the full predecessor closure
-        # of every header that survives the retention floor or remains pinned
-        # by a blocker. A direct predecessor check is insufficient: a stale
-        # header can itself survive because a newer retained header points to
-        # it, while still naming an older header as its predecessor.
+        # raw_authority_censuses(census_id). Keep the newest headers and every
+        # header named by a blocker. The predecessor chain is a bounded
+        # read-history convenience, so cut any surviving edge into the delete
+        # set before deleting it. The NULL edge is the compacted boundary.
         floor = int(header_floor_row[0])
         stale = [
             str(row[0])
             for row in conn.execute(
                 """
-                WITH RECURSIVE retained(census_id) AS (
-                    SELECT census_id
-                    FROM raw_authority_censuses
-                    WHERE sequence_no >= ?
-                    UNION
-                    SELECT census_id FROM raw_authority_blockers
-                    UNION
-                    SELECT c.predecessor_census_id
-                    FROM raw_authority_censuses AS c
-                    JOIN retained AS r ON r.census_id = c.census_id
-                    WHERE c.predecessor_census_id IS NOT NULL
-                )
                 SELECT c.census_id
                 FROM raw_authority_censuses AS c
                 WHERE c.sequence_no < ?
-                  AND c.census_id NOT IN (SELECT census_id FROM retained)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM raw_authority_blockers AS b
+                      WHERE b.census_id = c.census_id
+                  )
                 ORDER BY c.sequence_no DESC
                 """,
-                (floor, floor),
+                (floor,),
             )
         ]
-        # Delete newest-to-oldest so a stale predecessor chain is removed from
-        # the leaves upward while immediate foreign-key enforcement remains on.
+        # Cut only edges from surviving headers. Stale headers can still point
+        # at one another and are deleted newest-to-oldest below, preserving
+        # immediate foreign-key enforcement throughout the mutation.
+        conn.execute(
+            """
+            WITH stale(census_id) AS (
+                SELECT c.census_id
+                FROM raw_authority_censuses AS c
+                WHERE c.sequence_no < ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM raw_authority_blockers AS b
+                      WHERE b.census_id = c.census_id
+                  )
+            )
+            UPDATE raw_authority_censuses
+            SET predecessor_census_id = NULL
+            WHERE predecessor_census_id IN (SELECT census_id FROM stale)
+              AND census_id NOT IN (SELECT census_id FROM stale)
+            """,
+            (floor,),
+        )
+        # Delete newest-to-oldest so stale predecessor chains are removed from
+        # the leaves upward after surviving edges have been compacted.
         for census_id in stale:
             cursor = conn.execute(
                 "DELETE FROM raw_authority_censuses WHERE census_id = ?",
@@ -1030,6 +1047,10 @@ def record_raw_authority_census(
     scope_json = _canonical_json(scope)
     residual_json = _canonical_json(residual)
     with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+        # SQLite scopes foreign-key enforcement to each connection. Enable it
+        # before the transaction so header compaction preserves the declared
+        # self-FK and cascades its census-detail children as declared.
+        conn.execute("PRAGMA foreign_keys = ON")
         # A frontier preview authorizes an immutable execution exactly once.
         # Reserve the write transaction before reading existing claims.  A
         # deferred transaction would let two callers both observe no claim,

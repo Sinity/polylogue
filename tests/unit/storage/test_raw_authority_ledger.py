@@ -1796,13 +1796,12 @@ def test_census_retention_keeps_the_newest_censuses_readable(tmp_path: Path, mon
 def test_census_header_retention_preserves_predecessor_fk_and_prunes_safe_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The production census route must keep a retained child's predecessor.
+    """The production census route compacts lineage without breaking its FK.
 
-    A direct header filter deleted census 687 while retained census 688 still
-    named it as ``predecessor_census_id``, leaving the source tier with an FK
-    violation. The production route below builds that boundary shape, checks
-    the retained edge and foreign-key audit, then proves the same pruning
-    routine still removes an older header once no surviving census names it.
+    The production route below builds a retention boundary, keeps the newest
+    retained child-to-parent edge, cuts the oldest retained header's
+    predecessor to NULL, and proves that disconnected history is pruned while
+    foreign-key enforcement remains enabled.
     """
     monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 2)
     monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_HEADER_RETENTION", 2)
@@ -1828,11 +1827,16 @@ def test_census_header_retention_preserves_predecessor_fk_and_prunes_safe_histor
         conn.execute("PRAGMA foreign_keys = ON")
         child_predecessor = conn.execute(
             "SELECT predecessor_census_id FROM raw_authority_censuses WHERE census_id = ?",
+            (receipts[2].census_id,),
+        ).fetchone()[0]
+        boundary_predecessor = conn.execute(
+            "SELECT predecessor_census_id FROM raw_authority_censuses WHERE census_id = ?",
             (receipts[1].census_id,),
         ).fetchone()[0]
         retained_headers = {str(row[0]) for row in conn.execute("SELECT census_id FROM raw_authority_censuses")}
-        assert child_predecessor == receipts[0].census_id
-        assert retained_headers == {receipt.census_id for receipt in receipts}
+        assert child_predecessor == receipts[1].census_id
+        assert boundary_predecessor is None
+        assert retained_headers == {receipt.census_id for receipt in receipts[1:]}
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
     # A disconnected older header is safe to retire on the next production
@@ -1877,6 +1881,48 @@ def test_census_header_retention_preserves_predecessor_fk_and_prunes_safe_histor
         assert "census:detached:1" not in surviving
         assert "census:detached:2" in surviving
         assert later.census_id in surviving
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_census_header_retention_bounds_a_long_contiguous_production_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A continuous census chain stays bounded at an explicit NULL boundary."""
+    retention = 4
+    monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_HEADER_RETENTION", retention)
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="long-chain", source_path="long-chain.jsonl", acquired_at_ms=1)
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    census_count = retention + 12
+
+    receipts = [
+        record_raw_authority_census(
+            tmp_path,
+            (plan,),
+            selected_plan_ids=set(),
+            mode="dry_run",
+            quiescent=True,
+            scope={"test": f"long-chain-{index}"},
+            residual={},
+        )
+        for index in range(census_count)
+    ]
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        rows = conn.execute(
+            """
+            SELECT sequence_no, census_id, predecessor_census_id
+            FROM raw_authority_censuses
+            ORDER BY sequence_no
+            """
+        ).fetchall()
+        assert len(rows) == retention
+        assert [int(row[0]) for row in rows] == list(range(census_count - retention + 1, census_count + 1))
+        assert rows[0][1] == receipts[census_count - retention].census_id
+        assert rows[0][2] is None
+        assert [row[2] for row in rows[1:]] == [rows[index][1] for index in range(retention - 1)]
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
