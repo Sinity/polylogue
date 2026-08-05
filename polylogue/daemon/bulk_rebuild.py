@@ -48,7 +48,7 @@ from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLoca
 from polylogue.storage.index_generation import (
     IndexGenerationStore,
     IndexRebuildTransaction,
-    source_revision_snapshot,
+    rebuild_source_evidence_snapshot,
 )
 
 if TYPE_CHECKING:
@@ -135,7 +135,7 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(root: Path) -> IndexRebuild
             store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
 
         return store.create_transaction(
-            source_snapshot=source_revision_snapshot(root),
+            source_snapshot=rebuild_source_evidence_snapshot(root),
             operation_id=DAEMON_BULK_REBUILD_OPERATION_ID,
         )
     finally:
