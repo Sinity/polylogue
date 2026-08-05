@@ -890,6 +890,8 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
     """
     import hashlib
 
+    from polylogue.storage.blob_store import BlobStore
+
     digest = hashlib.sha256()
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
         rows = conn.execute(
@@ -913,6 +915,21 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
                     encoded = b"i" + str(value).encode()
                 digest.update(len(encoded).to_bytes(8, "big"))
                 digest.update(encoded)
+        raw_blob_hashes = {
+            bytes(row[0]).hex() if isinstance(row[0], (bytes, bytearray, memoryview)) else str(row[0])
+            for row in conn.execute("SELECT DISTINCT blob_hash FROM raw_sessions ORDER BY blob_hash")
+        }
+        blob_store = BlobStore(archive_root / "blob")
+        digest.update(b"raw_payload_bytes_verified\0")
+        for blob_hash in sorted(raw_blob_hashes):
+            if not blob_store.verify(blob_hash):
+                raise RuntimeError(f"raw payload blob bytes failed verification: {blob_hash}")
+            # ``BlobStore.verify`` has re-hashed the bytes at this point. Keep
+            # the verified content identity in the existing canonical digest,
+            # rather than introducing a second blob hashing implementation.
+            encoded = b"s" + blob_hash.encode()
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
         digest.update(b"raw_payload_refs\0")
         blob_refs = conn.execute(
             """

@@ -29,6 +29,8 @@ from polylogue.maintenance.reindex_canary import (
     load_canary_report,
     run_reindex_canary,
 )
+from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -58,7 +60,12 @@ def _codex_session(native_id: str) -> bytes:
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
-def _seed_isolated_canary(root: Path, *, session_names: tuple[str, ...] = ("isolated-canary",)) -> None:
+def _seed_isolated_canary(
+    root: Path,
+    *,
+    session_names: tuple[str, ...] = ("isolated-canary",),
+    membership_names: tuple[str, ...] = (),
+) -> None:
     initialize_active_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for acquired_at_ms, name in enumerate(session_names, start=1):
@@ -68,6 +75,24 @@ def _seed_isolated_canary(root: Path, *, session_names: tuple[str, ...] = ("isol
                 source_path=f"{name}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    if membership_names:
+        with sqlite3.connect(root / "source.db") as connection:
+            for name in membership_names:
+                raw_id, blob_hash = connection.execute(
+                    "SELECT raw_id, blob_hash FROM raw_sessions WHERE source_path = ?",
+                    (f"{name}.jsonl",),
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO raw_session_memberships(
+                        raw_id, logical_source_key, provider_session_id, source_revision,
+                        normalized_content_hash, message_count, predecessor_raw_id,
+                        acquisition_generation, revision_authority, decision, decided_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, 'quarantined', NULL, NULL)
+                    """,
+                    (raw_id, f"codex-session:{name}", name, "1", blob_hash, 2),
+                )
+            connection.commit()
     receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
     assert receipt.status == "replayed"
 
@@ -116,6 +141,66 @@ def _write_real_unreviewed_canary_report(
     assert result.exit_code == 1
     assert "unreviewed canary report written" in result.output
     return canary_root, report_path, json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def _write_reviewed_real_canary_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    name: str,
+    session_names: tuple[str, ...] = ("isolated-canary",),
+) -> tuple[Path, Path, dict[str, object]]:
+    canary_root, _observed_path, observed = _write_real_unreviewed_canary_report(
+        tmp_path, monkeypatch, name=name, session_names=session_names
+    )
+    comparison = observed["comparison"]
+    assert isinstance(comparison, dict)
+    differences = comparison["differences"]
+    assert isinstance(differences, list) and differences
+    review_path = tmp_path / f"{name}-reviews.json"
+    review_path.write_text(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        "table": difference["table"],
+                        "operation": difference["operation"],
+                        "identity": difference["identity"],
+                        "changed_columns": difference["changed_columns"],
+                        "classification": "expected",
+                        "reference": "polylogue-review",
+                        "rationale": "reviewed real canary difference",
+                    }
+                    for difference in differences
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    approved_path = tmp_path / f"{name}-approved.json"
+    generated = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(canary_root),
+            "--input",
+            str(canary_root / "index.db"),
+            "--report",
+            str(approved_path),
+            "--review-manifest",
+            str(review_path),
+            "--sample",
+            "1",
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+    assert generated.exit_code == 0, generated.output
+    return canary_root, approved_path, json.loads(approved_path.read_text(encoding="utf-8"))
 
 
 def test_real_report_preserves_receipt_and_independent_source_snapshots(
@@ -468,6 +553,269 @@ def test_cli_consumes_reviewed_report_after_parsed_state_mutation(
     assert approved["promotion_authorized"] is False
 
 
+def test_cli_rejects_membership_and_logical_key_expansion_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new durable cohort member invalidates the original replay closure."""
+
+    canary_root = tmp_path / "closure-drift-canary"
+    report_path = tmp_path / "closure-drift-canary.json"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(canary_root))
+    _seed_isolated_canary(
+        canary_root,
+        session_names=("selected", "unselected"),
+        membership_names=("selected",),
+    )
+    monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: tmp_path / "configured-live")
+    with sqlite3.connect(canary_root / "index.db") as connection:
+        connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+    generated = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(canary_root),
+            "--input",
+            str(canary_root / "index.db"),
+            "--report",
+            str(report_path),
+            "--sample",
+            "1",
+            "--no-promote",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert generated.exit_code == 1, generated.output
+    assert "unreviewed canary report written" in generated.output
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    selection = payload["selection"]
+    assert isinstance(selection, dict)
+    selected_raw_ids = selection["selected_raw_ids"]
+    assert isinstance(selected_raw_ids, list) and len(selected_raw_ids) == 1
+    with sqlite3.connect(canary_root / "source.db") as connection:
+        raw_ids = [str(row[0]) for row in connection.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id")]
+        selected_raw_id = str(selected_raw_ids[0])
+        unselected_raw_id = next(raw_id for raw_id in raw_ids if raw_id != selected_raw_id)
+        membership = connection.execute(
+            """
+            SELECT logical_source_key, provider_session_id, source_revision,
+                   normalized_content_hash, message_count, predecessor_raw_id,
+                   acquisition_generation, revision_authority, decision, decided_at_ms
+            FROM raw_session_memberships WHERE raw_id = ?
+            """,
+            (selected_raw_id,),
+        ).fetchone()
+        assert membership is not None
+        connection.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, predecessor_raw_id,
+                acquisition_generation, revision_authority, decision, decided_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'quarantined', NULL, NULL)
+            """,
+            (unselected_raw_id, *membership[:7]),
+        )
+        connection.commit()
+
+    consumed = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(canary_root),
+            "--report",
+            str(report_path),
+            "--consume-report",
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert consumed.exit_code == 1
+    assert "selection does not match the authoritative rebuild receipt" in consumed.output
+
+
+def test_cli_rejects_tampered_raw_payload_bytes_during_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live raw blob must still hash correctly when a reviewed report is consumed."""
+
+    canary_root, report_path, payload = _write_reviewed_real_canary_report(
+        tmp_path, monkeypatch, name="tampered-blob-canary"
+    )
+    selection = payload["selection"]
+    assert isinstance(selection, dict)
+    selected_raw_ids = selection["selected_raw_ids"]
+    assert isinstance(selected_raw_ids, list) and selected_raw_ids
+    with sqlite3.connect(canary_root / "source.db") as connection:
+        blob_hash = connection.execute(
+            "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?", (selected_raw_ids[0],)
+        ).fetchone()[0]
+    blob_path = canary_root / "blob" / str(blob_hash)[:2] / str(blob_hash)[2:]
+    blob_path.write_bytes(b"tampered raw payload bytes")
+
+    consumed = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(canary_root),
+            "--report",
+            str(report_path),
+            "--consume-report",
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert consumed.exit_code == 1
+    assert "blob bytes failed verification" in consumed.output
+
+
+def test_cli_rejects_source_mutation_between_approval_checks_and_preserves_active_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Approval revalidates source evidence after its initial report check."""
+
+    canary_root, report_path, payload = _write_reviewed_real_canary_report(
+        tmp_path, monkeypatch, name="approval-mutation-canary"
+    )
+    active_before = (canary_root / "index.db").read_bytes()
+    real_load = reindex_canary_module.load_canary_report
+    calls = 0
+
+    def mutate_after_initial_check(path: Path, *, archive_root: Path | None = None) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        result = real_load(path, archive_root=archive_root)
+        if calls == 1:
+            selection = payload["selection"]
+            assert isinstance(selection, dict)
+            selected_raw_ids = selection["selected_raw_ids"]
+            assert isinstance(selected_raw_ids, list) and selected_raw_ids
+            with sqlite3.connect(canary_root / "source.db") as connection:
+                connection.execute(
+                    "UPDATE raw_sessions SET source_index = source_index + 1 WHERE raw_id = ?",
+                    (selected_raw_ids[0],),
+                )
+                connection.commit()
+        return result
+
+    monkeypatch.setattr(reindex_canary_module, "load_canary_report", mutate_after_initial_check)
+    consumed = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(canary_root),
+            "--report",
+            str(report_path),
+            "--consume-report",
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert consumed.exit_code == 1
+    assert calls == 2
+    assert (canary_root / "index.db").read_bytes() == active_before
+
+
+def test_cli_rejects_candidate_promotion_between_approval_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A candidate promoted after the first check cannot receive approval."""
+
+    canary_root, report_path, payload = _write_reviewed_real_canary_report(
+        tmp_path, monkeypatch, name="approval-promotion-canary"
+    )
+    real_load = reindex_canary_module.load_canary_report
+    promoted = False
+
+    def promote_after_initial_check(path: Path, *, archive_root: Path | None = None) -> dict[str, object]:
+        nonlocal promoted
+        result = real_load(path, archive_root=archive_root)
+        if not promoted:
+            receipt = payload["rebuild_receipt"]
+            assert isinstance(receipt, dict)
+            generation = receipt["generation"]
+            assert isinstance(generation, dict)
+            location = ArchiveLocation.resolve(canary_root)
+            store = IndexGenerationStore(location)
+            store.promote(store.load(str(generation["generation_id"])))
+            promoted = True
+        return result
+
+    monkeypatch.setattr(reindex_canary_module, "load_canary_report", promote_after_initial_check)
+    consumed = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(canary_root),
+            "--report",
+            str(report_path),
+            "--consume-report",
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert consumed.exit_code == 1
+    assert promoted is True
+    assert (
+        "candidate generation" in consumed.output
+        or "active pointer" in consumed.output
+        or "stale for the current active generation" in consumed.output
+    )
+
+
+def test_cli_consumption_obeys_rebuild_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report consumption cannot race an active rebuild owner."""
+
+    canary_root, report_path, _payload = _write_reviewed_real_canary_report(
+        tmp_path, monkeypatch, name="approval-lock-canary"
+    )
+    with RebuildLease(canary_root):
+        consumed = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "reindex-canary",
+                "--archive-root",
+                str(canary_root),
+                "--report",
+                str(report_path),
+                "--consume-report",
+                "--no-promote",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert consumed.exit_code == 1
+    assert "rebuild lease" in consumed.output or "already held" in consumed.output
+
+
 def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> CanaryRunResult:
     selection = CanarySelection(
         index_path=index_path,
@@ -492,7 +840,7 @@ def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> Ca
         selection=selection,
         comparison=comparison,
         rebuild_receipt={
-            "receipt_schema_version": 3,
+            "receipt_schema_version": 4,
             "archive_root": str(index_path.parent),
             "selected_raw_count": len(selection.selected_raw_ids),
             "status": "replayed",
@@ -534,7 +882,7 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
         selection=result.selection,
         comparison=result.comparison,
         rebuild_receipt={
-            "receipt_schema_version": 3,
+            "receipt_schema_version": 4,
             "archive_root": str(index_path.parent),
             "selected_raw_count": 1,
             "status": "replayed",

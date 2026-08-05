@@ -334,7 +334,7 @@ polylogue ops maintenance reindex-canary \
   --output-format json
 ```
 
-After reviewing the observed identities printed by the failed run, persist the classifications and validate the report:
+After reviewing the observed identities printed by the failed run, persist the classifications and validate the report. Consumption acquires the same archive ownership and rebuild lease as the rebuild path, verifies referenced raw-payload bytes through `BlobStore`, and revalidates the source closure, candidate generation, receipt, and comparison immediately before approval. Membership rows and logical-source-key expansion are part of the receipt, so drift fails closed:
 
 ```bash
 polylogue ops maintenance reindex-canary \

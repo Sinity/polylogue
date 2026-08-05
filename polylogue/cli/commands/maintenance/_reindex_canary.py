@@ -58,7 +58,7 @@ import click
 @click.option(
     "--consume-report",
     is_flag=True,
-    help="Validate evidence only. This neither rebuilds nor authorizes promotion.",
+    help="Validate and approve evidence under archive/rebuild ownership. This never authorizes promotion.",
 )
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 @click.option(

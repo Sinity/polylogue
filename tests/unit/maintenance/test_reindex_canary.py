@@ -172,7 +172,7 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
         "source_snapshot": "snapshot",
     }
     return {
-        "receipt_schema_version": 3,
+        "receipt_schema_version": 4,
         "archive_root": str(comparison.candidate_index.parent),
         "selected_raw_count": len(selection.selected_raw_ids),
         "status": "replayed",
@@ -599,7 +599,7 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     assert isinstance(owner_id, str) and owner_id
     assert isinstance(source_snapshot, str) and source_snapshot
     assert source_snapshot == evidence_before == rebuild_source_evidence_snapshot(root)
-    assert receipt["receipt_schema_version"] == 3
+    assert receipt["receipt_schema_version"] == 4
     assert receipt["source_evidence_after"] == rebuild_source_evidence_snapshot(root)
     assert hashlib.sha256(external_index.read_bytes()).hexdigest() == active_digest
     assert json.loads((candidate_path.parent / "generation.json").read_text(encoding="utf-8")) == generation
@@ -998,7 +998,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert durable.unclassified_count == 0
     assert report_path.exists()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 6
+    assert payload["schema_version"] == 7
     comparison_payload = payload["comparison"]
     assert isinstance(comparison_payload, dict)
     summary = comparison_payload["summary"]
