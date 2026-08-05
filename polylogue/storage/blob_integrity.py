@@ -37,7 +37,6 @@ from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
-from polylogue.storage.sqlite.connection import open_read_connection
 
 logger = get_logger(__name__)
 
@@ -499,6 +498,13 @@ def _archive_source_blob_hashes_by_table(conn: sqlite3.Connection) -> dict[str, 
         ref_hashes = {hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None}
         if ref_hashes:
             hashes_by_table["blob_refs"] = sorted(ref_hashes)
+    for table in ("attachments", "blob_publication_reservations", "verified_blob_receipts"):
+        if not _table_exists(conn, table) or not _column_exists(conn, table, "blob_hash"):
+            continue
+        rows = conn.execute(f"SELECT blob_hash FROM {table}").fetchall()
+        table_hashes = {hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None}
+        if table_hashes:
+            hashes_by_table[table] = sorted(table_hashes)
     return hashes_by_table
 
 
@@ -516,8 +522,6 @@ def _referenced_blob_hashes(
     db_path: Path, conn: sqlite3.Connection, *, configured_root: Path | None = None
 ) -> list[str]:
     direct_archive_hashes = _archive_source_blob_hashes(conn)
-    if direct_archive_hashes:
-        return direct_archive_hashes
 
     source_db = (configured_root / "source.db") if configured_root is not None else db_path.with_name("source.db")
     if source_db != db_path and source_db.exists():
@@ -526,7 +530,7 @@ def _referenced_blob_hashes(
             try:
                 source_archive_hashes = _archive_source_blob_hashes(source_conn)
                 if source_archive_hashes:
-                    return source_archive_hashes
+                    return sorted(set(direct_archive_hashes) | set(source_archive_hashes))
             finally:
                 source_conn.close()
         except sqlite3.Error as exc:
@@ -538,6 +542,8 @@ def _referenced_blob_hashes(
                 "blob integrity: source.db referenced-hash query failed for %s: %s", source_db, exc, exc_info=True
             )
 
+    if direct_archive_hashes:
+        return direct_archive_hashes
     return _raw_session_hashes(conn)
 
 
@@ -545,8 +551,6 @@ def _reference_source_counts(
     db_path: Path, conn: sqlite3.Connection, *, configured_root: Path | None = None
 ) -> dict[str, int]:
     direct = _archive_source_blob_hashes_by_table(conn)
-    if direct:
-        return {table: len(hashes) for table, hashes in direct.items()}
 
     source_db = (configured_root / "source.db") if configured_root is not None else db_path.with_name("source.db")
     if source_db != db_path and source_db.exists():
@@ -555,13 +559,18 @@ def _reference_source_counts(
             try:
                 source = _archive_source_blob_hashes_by_table(source_conn)
                 if source:
-                    return {f"source.db:{table}": len(hashes) for table, hashes in source.items()}
+                    counts = {table: len(hashes) for table, hashes in direct.items()}
+                    counts.update({f"source.db:{table}": len(hashes) for table, hashes in source.items()})
+                    return counts
             finally:
                 source_conn.close()
         except sqlite3.Error as exc:
             logger.warning(
                 "blob integrity: source.db reference-count query failed for %s: %s", source_db, exc, exc_info=True
             )
+
+    if direct:
+        return {table: len(hashes) for table, hashes in direct.items()}
 
     fallback_count = len(_raw_session_hashes(conn))
     return {"raw_sessions.raw_id": fallback_count} if fallback_count else {}
@@ -2070,7 +2079,10 @@ def scan_blob_integrity(
 
     resolved_db_path = Path(db_path)
     blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
-    with open_read_connection(resolved_db_path) as conn:
+    # This is an evidence scan, not a read of the active archive API. It must
+    # remain usable while a candidate generation or an older active generation
+    # is being inspected, so do not impose the current canonical schema gate.
+    with closing(sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True)) as conn:
         referenced = _referenced_blob_hashes(resolved_db_path, conn, configured_root=configured_root)
 
     referenced_set = set(referenced)

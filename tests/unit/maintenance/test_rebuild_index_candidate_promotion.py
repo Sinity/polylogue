@@ -15,6 +15,7 @@ import polylogue.storage.sqlite.archive_tiers.revision_governance as revision_go
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -146,6 +147,67 @@ def test_cross_tier_user_reference_blocks_full_rebuild_candidate_promotion(
         rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
 
     assert store.active_pointer.resolve(strict=True) == active_before
+
+
+@pytest.mark.parametrize("mutation", ("missing", "corrupt", "orphan"))
+def test_rebuild_preflight_rejects_each_physical_blob_failure_before_candidate_creation(
+    tmp_path: Path, mutation: str
+) -> None:
+    """The source preflight catches physical debt before any new generation exists."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    _seed_raw(root, "active-session", "active generation remains exact")
+    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    assert initial.status == "replayed"
+
+    store = IndexGenerationStore.for_archive_root(root)
+    active_before = store.active_pointer.resolve(strict=True)
+    with sqlite3.connect(root / "source.db") as conn:
+        blob_hash = bytes(conn.execute("SELECT blob_hash FROM raw_sessions LIMIT 1").fetchone()[0]).hex()
+    blob_store = BlobStore(root / "blob")
+    if mutation == "missing":
+        blob_store.blob_path(blob_hash).unlink()
+    elif mutation == "corrupt":
+        blob_store.blob_path(blob_hash).write_bytes(b"corrupt raw bytes")
+    else:
+        blob_store.write_from_bytes(b"orphan physical bytes")
+    _seed_raw(root, "candidate-session", "candidate must never become active")
+
+    with pytest.raises(RuntimeError, match="reindex source preflight gate failed:.*blob-integrity"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+
+    assert store.active_pointer.resolve(strict=True) == active_before
+    assert len(list(store.generations_root.glob("gen-*/index.db"))) == 1
+
+
+def test_rebuild_preflight_rejects_acquired_unreachable_attachment_before_candidate_creation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    _seed_raw(root, "active-session", "active generation remains exact")
+    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    assert initial.status == "replayed"
+
+    blob_hash, size = BlobStore(root / "blob").write_from_bytes(b"unreachable attachment")
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
+            VALUES ('unreachable-attachment', ?, ?, 'acquired', 0)
+            """,
+            (bytes.fromhex(blob_hash), size),
+        )
+        conn.commit()
+    store = IndexGenerationStore.for_archive_root(root)
+    active_before = store.active_pointer.resolve(strict=True)
+    _seed_raw(root, "candidate-session", "candidate must never become active")
+
+    with pytest.raises(RuntimeError, match="reindex source preflight gate failed:.*attachment-acquisition-debt"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+
+    assert store.active_pointer.resolve(strict=True) == active_before
+    assert len(list(store.generations_root.glob("gen-*/index.db"))) == 1
 
 
 @pytest.mark.parametrize(

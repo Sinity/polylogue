@@ -10,7 +10,7 @@ import shutil
 import sqlite3
 from pathlib import Path
 from shutil import copytree
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -23,6 +23,7 @@ from polylogue.maintenance.archive_verification import (
     REINDEX_ACCEPTANCE_CHECKS,
     REINDEX_CANARY_ACCEPTANCE_CHECKS,
     REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+    REINDEX_SOURCE_PREFLIGHT_CHECKS,
     ArchiveVerificationCheck,
     ArchiveVerificationCheckClass,
     ArchiveVerificationReport,
@@ -31,6 +32,7 @@ from polylogue.maintenance.archive_verification import (
     verify_archive,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -46,6 +48,7 @@ def _seed_coherent_archive(root: Path) -> None:
     """Build a minimal but fully coherent 5-tier archive: one raw, one session."""
     initialize_active_archive_root(root)
 
+    blob_hash = BlobStore(root / "blob").write_from_bytes(b"coherent raw payload")[0]
     source_conn = _connect(root / "source.db")
     try:
         source_conn.execute(
@@ -53,7 +56,7 @@ def _seed_coherent_archive(root: Path) -> None:
             INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
             VALUES ('raw-1', 'codex-session', 'session', '/x', ?, 10, 100)
             """,
-            (b"a" * 32,),
+            (bytes.fromhex(blob_hash),),
         )
         source_conn.execute(
             """
@@ -756,6 +759,58 @@ def test_attachment_blob_ref_joins_its_parent_raw_session(tmp_path: Path) -> Non
     assert check.evidence["orphans_by_ref_type"]["attachment"] == 0
 
 
+@pytest.mark.parametrize("mutation", ("missing", "corrupt", "orphan"))
+def test_full_blob_integrity_red_twin(tmp_path: Path, mutation: str) -> None:
+    """Full archive verification rejects every physical blob failure class."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "source.db") as conn:
+        raw_hash = bytes(conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = 'raw-1'").fetchone()[0]).hex()
+    store = BlobStore(tmp_path / "blob")
+    if mutation == "missing":
+        store.blob_path(raw_hash).unlink()
+    elif mutation == "corrupt":
+        store.blob_path(raw_hash).write_bytes(b"corrupt bytes")
+    else:
+        store.write_from_bytes(b"orphan bytes")
+
+    report = verify_archive(tmp_path, checks=("blob-integrity",))
+
+    check = _check(report, "blob-integrity")
+    assert check.status is OutcomeStatus.ERROR
+    assert report.blocking
+    finding_kinds = set(cast(dict[str, object], check.evidence["finding_counts"]))
+    expected_kind = {
+        "missing": "missing_referenced_blobs",
+        "corrupt": "hash_mismatch",
+        "orphan": "orphan_blobs",
+    }[mutation]
+    assert expected_kind in finding_kinds
+    assert cast(dict[str, object], check.evidence["scan"])["full_scan"] is True
+
+
+def test_acquired_unreachable_attachment_debt_is_blocking(tmp_path: Path) -> None:
+    """Acquired bytes without an attachment_refs edge are not queryable."""
+    _seed_coherent_archive(tmp_path)
+    blob_hash, size = BlobStore(tmp_path / "blob").write_from_bytes(b"unreachable attachment")
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
+            VALUES ('unreachable-attachment', ?, ?, 'acquired', 0)
+            """,
+            (bytes.fromhex(blob_hash), size),
+        )
+        conn.commit()
+
+    report = verify_archive(tmp_path, checks=("attachment-acquisition-debt",))
+
+    check = _check(report, "attachment-acquisition-debt")
+    assert check.status is OutcomeStatus.ERROR
+    assert report.blocking
+    assert check.evidence["unreachable_count"] == 1
+    assert "unreachable-attachment" in check.details[0]
+
+
 def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "embeddings.db")
@@ -965,12 +1020,13 @@ def test_byte_dup_of_indexed_head_is_reported_as_evidence_not_hidden(tmp_path: P
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "source.db")
     try:
+        indexed_blob_hash = conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = 'raw-1'").fetchone()[0]
         conn.execute(
             """
             INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
             VALUES ('raw-dup', 'codex-session', 'session-dup', '/y', ?, 10, 200)
             """,
-            (b"a" * 32,),  # same blob_hash as raw-1, which IS indexed; defaults to quarantined
+            (indexed_blob_hash,),  # same blob_hash as raw-1, which IS indexed; defaults to quarantined
         )
         conn.commit()
     finally:
@@ -1466,6 +1522,9 @@ def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_
         "lineage-sanity",
         "session-lineage-acyclic",
         "blob-refs-liveness",
+        "blob-integrity",
+        "attachment-acquisition-debt",
+        "raw-failure-lifecycle",
         "embeddings-refs-liveness",
         "user-tier-refs",
         "session-fingerprint-stamps",
@@ -1480,6 +1539,7 @@ def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_
 
     assert expected <= set(REINDEX_ACCEPTANCE_CHECKS) | set(REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
     assert REINDEX_CANARY_ACCEPTANCE_CHECKS == ("pathology-zoo-invariants",)
+    assert set(REINDEX_SOURCE_PREFLIGHT_CHECKS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
 
 
 def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path: Path) -> None:
@@ -1530,6 +1590,8 @@ RED_TWIN_TESTS: dict[str, str] = {
     "lineage-sanity": "test_dangling_resolved_dst_trips_lineage_sanity",
     "enum-superset-check": "test_missing_enum_value_trips_enum_superset_check",
     "blob-refs-liveness": "test_blob_ref_with_no_referent_trips_blob_refs_liveness",
+    "blob-integrity": "test_full_blob_integrity_red_twin",
+    "attachment-acquisition-debt": "test_acquired_unreachable_attachment_debt_is_blocking",
     "raw-failure-lifecycle": "test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures",
     "pathology-zoo-invariants": "test_pathology_zoo_invariants_red_twin",
     "embeddings-refs-liveness": "test_orphaned_embedding_ref_trips_embeddings_refs_liveness",

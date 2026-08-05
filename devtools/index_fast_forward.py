@@ -28,6 +28,7 @@ from polylogue.config import Config
 from polylogue.maintenance.archive_verification import (
     REINDEX_ACCEPTANCE_CHECKS,
     REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+    REINDEX_SOURCE_PREFLIGHT_CHECKS,
     strict_acceptance_failures,
     verify_archive,
 )
@@ -504,6 +505,15 @@ def _require_candidate_strict_acceptance(archive_root: Path, candidate_index: Pa
         raise IndexFastForwardError(f"candidate strict acceptance gate failed: {failing}")
 
 
+def _require_source_preflight(archive_root: Path) -> dict[str, object]:
+    """Require a complete source/blob/attachment preflight before cloning."""
+    report = verify_archive(archive_root, checks=REINDEX_SOURCE_PREFLIGHT_CHECKS)
+    failures = strict_acceptance_failures(report, required_checks=REINDEX_SOURCE_PREFLIGHT_CHECKS)
+    if failures:
+        raise IndexFastForwardError(f"source strict preflight gate failed: {'; '.join(failures)}")
+    return cast(dict[str, object], report.to_json())
+
+
 def _require_generation_binding(
     archive_root: Path,
     receipt: dict[str, object],
@@ -602,6 +612,7 @@ def prepare_forward(
     archive_root = archive_root.resolve(strict=True)
     _require_daemon_stopped(archive_root)
     _require_receipt_destination_writable(receipt_path)
+    source_preflight = _require_source_preflight(archive_root)
     store = IndexGenerationStore.for_archive_root(archive_root)
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
@@ -644,6 +655,7 @@ def prepare_forward(
                 "proof": proof,
                 "postflight": postflight,
                 "raw_reparse": False,
+                "source_preflight": source_preflight,
             }
             _write_receipt(receipt_path, receipt)
             return receipt
@@ -719,6 +731,7 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
         if _fingerprints(origins) != receipt.get("fingerprints"):
             raise IndexFastForwardError("parser/materializer fingerprints changed since preparation")
         _require_candidate_strict_acceptance(archive_root, clone)
+        _require_source_preflight(archive_root)
         if source_revision_snapshot(archive_root) != receipt["source_snapshot"]:
             raise IndexFastForwardError("source evidence changed immediately before promotion")
         if _proven_clone_identity(clone) != receipt.get("clone_identity"):
