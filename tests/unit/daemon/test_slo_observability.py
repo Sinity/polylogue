@@ -16,7 +16,12 @@ import pytest
 import polylogue.operations.slo as slo_storage
 from polylogue.core.enums import SloSampleLabel
 from polylogue.daemon.cursor_lag_status import CursorLagSummary
-from polylogue.daemon.events import CatchUpCycleTerminalOutcome, emit_catch_up_cycle, query_daemon_events
+from polylogue.daemon.events import (
+    CatchUpCycleTerminalOutcome,
+    emit_catch_up_cycle,
+    emit_daemon_event,
+    query_daemon_events,
+)
 from polylogue.daemon.slo import (
     CATCH_UP_ACTIVE_STALE_AFTER_MS,
     SloVerdict,
@@ -68,7 +73,12 @@ def _cycle(
 
 
 def test_idle_backlog_is_not_reported_as_stalled() -> None:
-    windows = project_backlog_windows([_cycle(backlog_start=7, backlog_end=7, discovered=0)])
+    windows = project_backlog_windows(
+        [
+            _cycle(backlog_start=7, backlog_end=7, discovered=0, phase="start"),
+            _cycle(backlog_start=7, backlog_end=7, discovered=0),
+        ]
+    )
 
     assert len(windows) == 1
     assert windows[0].verdict is SloVerdict.IDLE
@@ -77,17 +87,49 @@ def test_idle_backlog_is_not_reported_as_stalled() -> None:
 
 
 def test_offered_work_without_drain_is_stalled() -> None:
-    windows = project_backlog_windows([_cycle(backlog_start=7, backlog_end=7, discovered=3, attempted=3)])
+    windows = project_backlog_windows(
+        [
+            _cycle(backlog_start=7, backlog_end=7, discovered=3, phase="start"),
+            _cycle(backlog_start=7, backlog_end=7, discovered=3, attempted=3),
+        ]
+    )
 
     assert windows[0].verdict is SloVerdict.STALLED
     assert windows[0].offered_work == 3
     assert windows[0].drained_work == 0
 
 
+def test_unmatched_end_is_unknown_not_healthy() -> None:
+    windows = project_backlog_windows([_cycle(backlog_start=3, backlog_end=0, discovered=3, ingested=3)])
+
+    assert windows[0].verdict is SloVerdict.UNKNOWN
+    assert windows[0].reason == "catch-up cycle end has no matching start"
+
+
+def test_unmatched_terminal_receipt_is_unknown() -> None:
+    windows = project_backlog_windows(
+        [
+            _cycle(
+                backlog_start=3,
+                backlog_end=3,
+                discovered=3,
+                phase="terminal",
+                terminal_outcome="cancelled",
+            )
+        ]
+    )
+
+    assert windows[0].verdict is SloVerdict.UNKNOWN
+    assert windows[0].reason == "catch-up cycle terminal receipt has no matching start"
+
+
 def test_status_reuses_event_and_cursor_lag_sources() -> None:
     status = slo_status_info(
         cursor_lag=CursorLagSummary(stuck_file_count=2, degraded_file_count=1),
-        events=[_cycle(backlog_start=5, backlog_end=3, discovered=2, attempted=2, ingested=2)],
+        events=[
+            _cycle(backlog_start=5, backlog_end=5, discovered=2, phase="start", timestamp_ms=500),
+            _cycle(backlog_start=5, backlog_end=3, discovered=2, attempted=2, ingested=2),
+        ],
         now_ms=1_500,
     )
 
@@ -102,6 +144,7 @@ def test_status_reuses_event_and_cursor_lag_sources() -> None:
 def test_bulk_import_marker_suppresses_ingest_slo() -> None:
     events: list[dict[str, object]] = [
         {"kind": "bulk_import_started", "payload": {}},
+        _cycle(backlog_start=4, backlog_end=4, discovered=4, phase="start"),
         _cycle(backlog_start=4, backlog_end=4, discovered=4, attempted=4),
     ]
 
@@ -259,6 +302,78 @@ def test_event_reader_timestamp_is_preserved_without_wall_clock_fallback(workspa
     assert isinstance(event["ts"], str)
     expected_ms = int(datetime.fromisoformat(event["ts"].replace("Z", "+00:00")).timestamp() * 1000)
     assert window.observed_at_ms == expected_ms
+
+
+def test_persisted_unmatched_end_fails_closed_in_status(workspace_env: dict[str, Path]) -> None:
+    del workspace_env
+    emit_catch_up_cycle(
+        operation_id="unmatched-end",
+        phase="end",
+        backlog_start=2,
+        backlog_end=0,
+        discovered=2,
+        attempted=2,
+        skipped=0,
+        ingested=2,
+        quarantine_count=0,
+        errors_by_kind={},
+        cursor_before=None,
+        cursor_after=None,
+        duration_ms=10.0,
+        stage_timings_s={},
+        repair=None,
+    )
+
+    status = slo_status_info(cursor_lag=CursorLagSummary())
+
+    assert status.verdict is SloVerdict.UNKNOWN
+    assert status.reason == "catch-up cycle end has no matching start"
+
+
+def test_persisted_lifecycle_pair_survives_unrelated_event_traffic(workspace_env: dict[str, Path]) -> None:
+    del workspace_env
+    emit_catch_up_cycle(
+        operation_id="paired-through-traffic",
+        phase="start",
+        backlog_start=2,
+        backlog_end=2,
+        discovered=2,
+        attempted=0,
+        skipped=0,
+        ingested=0,
+        quarantine_count=0,
+        errors_by_kind={},
+        cursor_before=None,
+        cursor_after=None,
+        duration_ms=0.0,
+        stage_timings_s={},
+        repair=None,
+    )
+    for index in range(60):
+        emit_daemon_event("unrelated", operation_id=f"unrelated-{index}")
+    emit_catch_up_cycle(
+        operation_id="paired-through-traffic",
+        phase="end",
+        backlog_start=2,
+        backlog_end=0,
+        discovered=2,
+        attempted=2,
+        skipped=0,
+        ingested=2,
+        quarantine_count=0,
+        errors_by_kind={},
+        cursor_before=None,
+        cursor_after=None,
+        duration_ms=10.0,
+        stage_timings_s={},
+        repair=None,
+    )
+
+    status = slo_status_info(cursor_lag=CursorLagSummary())
+
+    assert status.verdict is SloVerdict.HEALTHY
+    assert status.latest_window is not None
+    assert status.latest_window.operation_id == "paired-through-traffic"
 
 
 def test_live_tail_sampling_adds_latency_but_bulk_sampling_does_not(tmp_path: Path) -> None:

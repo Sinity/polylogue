@@ -158,6 +158,62 @@ def query_daemon_events(
         conn.close()
 
 
+def query_recent_catch_up_lifecycles(*, limit: int = 20) -> Sequence[dict[str, object]]:
+    """Return complete event histories for the most recent catch-up operations.
+
+    The bound applies to lifecycle identities, rather than arbitrary ledger
+    rows. Each selected operation returns every persisted start, end, and
+    terminal boundary so SLO projection can verify its own pairing even when
+    unrelated daemon traffic is busy. The newest bulk-import marker is included
+    as the other event source that changes the catch-up verdict.
+    """
+    if limit < 1:
+        raise ValueError("catch-up lifecycle limit must be positive")
+    conn = _open_events_reader()
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute(
+            """
+            WITH recent_operations AS (
+                SELECT operation_id, MAX(id) AS latest_id
+                FROM daemon_events
+                WHERE kind = 'catch_up_cycle' AND operation_id IS NOT NULL
+                GROUP BY operation_id
+                ORDER BY latest_id DESC
+                LIMIT ?
+            ), latest_bulk_import_marker AS (
+                SELECT id, ts_ms, kind, operation_id, payload_json
+                FROM daemon_events
+                WHERE kind IN ('bulk_import_started', 'bulk_import_opened', 'bulk_import_completed', 'bulk_import_closed')
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            SELECT event.id, event.ts_ms, event.kind, event.operation_id, event.payload_json
+            FROM daemon_events AS event
+            JOIN recent_operations AS recent USING (operation_id)
+            WHERE event.kind = 'catch_up_cycle'
+            UNION ALL
+            SELECT id, ts_ms, kind, operation_id, payload_json
+            FROM latest_bulk_import_marker
+            ORDER BY id DESC
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "ts": _iso_from_ms(row[1]),
+                "kind": row[2],
+                "operation_id": row[3],
+                "payload": json.loads(row[4]),
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
 def query_events_since(
     last_id: int,
     *,
@@ -429,4 +485,5 @@ __all__ = [
     "current_epoch_ms",
     "query_daemon_events",
     "query_events_since",
+    "query_recent_catch_up_lifecycles",
 ]

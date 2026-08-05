@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from polylogue.core.enums import SloSampleLabel
 from polylogue.core.stats import percentile
 from polylogue.daemon.cursor_lag_status import CursorLagSummary
-from polylogue.daemon.events import CatchUpCycleTerminalOutcome, current_epoch_ms, query_daemon_events
+from polylogue.daemon.events import CatchUpCycleTerminalOutcome, current_epoch_ms, query_recent_catch_up_lifecycles
 from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
 from polylogue.operations.slo import (
     ArchiveSloSample,
@@ -229,7 +229,7 @@ def project_backlog_windows(
     """Return bounded windows from the existing event stream, newest first."""
     suppressed = bulk_import_is_open(events) if bulk_import_suppressed is None else bulk_import_suppressed
     completed: list[tuple[tuple[int, int, int], BacklogWindow]] = []
-    completed_operations: set[str] = set()
+    completed_lifecycles: set[str] = set()
     active: dict[str, tuple[tuple[int, int, int], BacklogWindow]] = {}
     for index, event in sorted(enumerate(events), key=lambda item: _event_order_key(*item)):
         window = backlog_window_from_event(event, bulk_import_suppressed=suppressed)
@@ -240,18 +240,53 @@ def project_backlog_windows(
         if window.in_progress:
             active[key] = (order_key, window)
         elif window.phase == "end":
-            active.pop(key, None)
-            completed.append((order_key, window))
-            completed_operations.add(key)
-        elif window.terminal_outcome is CatchUpCycleTerminalOutcome.SUCCESS:
-            active.pop(key, None)
-            if key not in completed_operations:
+            if active.pop(key, None) is None:
+                completed.append(
+                    (
+                        order_key,
+                        window.model_copy(
+                            update={
+                                "verdict": SloVerdict.UNKNOWN,
+                                "reason": "catch-up cycle end has no matching start",
+                            }
+                        ),
+                    )
+                )
+            else:
                 completed.append((order_key, window))
-                completed_operations.add(key)
+                completed_lifecycles.add(key)
+        elif window.terminal_outcome is CatchUpCycleTerminalOutcome.SUCCESS:
+            if active.pop(key, None) is not None:
+                completed.append((order_key, window))
+                completed_lifecycles.add(key)
+            elif key not in completed_lifecycles:
+                completed.append(
+                    (
+                        order_key,
+                        window.model_copy(
+                            update={
+                                "verdict": SloVerdict.UNKNOWN,
+                                "reason": "catch-up cycle terminal receipt has no matching start",
+                            }
+                        ),
+                    )
+                )
         else:
-            active.pop(key, None)
-            completed.append((order_key, window))
-            completed_operations.add(key)
+            if active.pop(key, None) is None:
+                completed.append(
+                    (
+                        order_key,
+                        window.model_copy(
+                            update={
+                                "verdict": SloVerdict.UNKNOWN,
+                                "reason": "catch-up cycle terminal receipt has no matching start",
+                            }
+                        ),
+                    )
+                )
+            else:
+                completed.append((order_key, window))
+                completed_lifecycles.add(key)
     if now_ms is not None:
         for key, (order_key, window) in tuple(active.items()):
             if window.observed_at_ms is not None and now_ms - window.observed_at_ms >= CATCH_UP_ACTIVE_STALE_AFTER_MS:
@@ -348,7 +383,7 @@ def slo_status_info(
     now_ms: int | None = None,
 ) -> IngestSloStatus:
     """Build status from existing event and cursor-lag sources only."""
-    resolved_events = list(events) if events is not None else list(query_daemon_events(limit=50))
+    resolved_events = list(events) if events is not None else list(query_recent_catch_up_lifecycles())
     suppressed = bulk_import_is_open(resolved_events)
     windows = project_backlog_windows(
         resolved_events,
