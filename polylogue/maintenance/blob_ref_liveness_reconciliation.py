@@ -445,6 +445,35 @@ def _validate_locked_candidate_plan(conn: sqlite3.Connection, candidate_table: s
         "CREATE INDEX blob_ref_liveness_locked_hooks_source_hash "
         "ON blob_ref_liveness_locked_hooks(source_path, blob_hash)"
     )
+    legacy_ambiguous_path_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT candidates.source_path
+                FROM (
+                    SELECT source_path, COUNT(*) AS candidate_count
+                    FROM {candidate_table}
+                    WHERE ref_type = 'raw_payload'
+                    GROUP BY source_path
+                ) AS candidates
+                JOIN (
+                    SELECT source_path, COUNT(*) AS hook_count
+                    FROM blob_ref_liveness_locked_hooks
+                    WHERE blob_hash IS NULL
+                    GROUP BY source_path
+                ) AS hooks
+                  ON hooks.source_path IS candidates.source_path
+                WHERE candidates.candidate_count > 1 OR hooks.hook_count > 1
+            )
+            """
+        ).fetchone()[0]
+    )
+    if legacy_ambiguous_path_count:
+        raise BlobRefLivenessReconciliationError(
+            "prepared candidates have ambiguous legacy hook evidence under lock: "
+            f"{legacy_ambiguous_path_count} source path(s)"
+        )
     conn.create_function("polylogue_deterministic_raw_session_id", 5, _deterministic_raw_session_id_udf)
     rekeyable = int(
         conn.execute(
@@ -584,7 +613,12 @@ def reconcile_blob_ref_liveness(
                     # full backup inventory, rehashing only if its stat
                     # signature changed since the pre-lock validation.
                     validate_migration_backup_live_fingerprint(backup_manifest, ArchiveTier.SOURCE, connection=conn)
-                _validate_locked_candidate_plan(conn, batch_table, batch_count)
+                    # Hook evidence is validated against the complete staged
+                    # population before any bounded delete can commit. Later
+                    # batches retain their own short lock-scoped validation.
+                    _validate_locked_candidate_plan(conn, staged_plan.candidate_table, expected_count)
+                else:
+                    _validate_locked_candidate_plan(conn, batch_table, batch_count)
                 batch_deleted = _delete_candidate_batch(conn, staged_plan.candidate_table, batch_table)
             except Exception:
                 if conn.in_transaction:

@@ -427,6 +427,62 @@ def test_real_prepared_failure_rolls_back_and_recovery_records_exact_state(
     assert recovered_rows[-1]["deleted_count"] == 0
 
 
+def test_apply_rejects_post_staging_legacy_hook_before_deleting_any_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    orphan_count = 2_000
+    source_path = "/hooks/post-staging.jsonl"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, 1, 1)
+            """,
+            (
+                (index.to_bytes(4, "big") + b"o" * 28, f"raw-orphan-{index}", source_path)
+                for index in range(orphan_count)
+            ),
+        )
+
+    real_stage = stage_blob_ref_liveness
+
+    def stage_then_insert_hook(conn: sqlite3.Connection) -> BlobRefLivenessStagedPlan:
+        staged = real_stage(conn)
+        conn.execute(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES ('post-staging-hook', 'codex-session', 'post-staging-native', ?, 'PostToolUse', '{}', 1)
+            """,
+            (source_path,),
+        )
+        return staged
+
+    def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        return path
+
+    monkeypatch.setattr(liveness_reconciliation, "stage_blob_ref_liveness", stage_then_insert_hook)
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_manifest", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_live_fingerprint", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "running_daemon_pid", lambda _config: None)
+    receipt = tmp_path / "receipts" / "post-staging-hook.jsonl"
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="ambiguous legacy hook evidence"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup" / "manifest.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (orphan_count,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (1,)
+
+
 def test_locked_plan_rejects_referent_that_appears_after_staging(tmp_path: Path) -> None:
     archive_root = _source_archive(tmp_path)
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -474,6 +530,7 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
     orphan_count = 10_000
+    irrelevant_hook_count = orphan_count * 5
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute(
             """
@@ -496,6 +553,17 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
             ) VALUES (?, 'codex-session', ?, ?, 'PostToolUse', '{}', 1)
             """,
             ((f"hook-{index}", f"native-{index}", f"/hooks/{index}.jsonl") for index in range(orphan_count)),
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES (?, 'codex-session', ?, ?, 'PostToolUse', '{}', 1)
+            """,
+            (
+                (f"irrelevant-hook-{index}", f"irrelevant-native-{index}", f"/unrelated/{index}.jsonl")
+                for index in range(irrelevant_hook_count)
+            ),
         )
         conn.executemany(
             """
@@ -563,7 +631,10 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
 
     assert report.deleted_count == orphan_count
     assert report.classification.orphaned_count == orphan_count
-    assert calls <= orphan_count * 2
+    # Initial staging, one whole-plan ownership validation, and subsequent
+    # batch validations are all bounded by candidates, not all hook rows.
+    assert calls <= orphan_count * 3
+    assert calls < irrelevant_hook_count
     assert batches == orphan_count // liveness_reconciliation.BATCH_SIZE
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (1,)
