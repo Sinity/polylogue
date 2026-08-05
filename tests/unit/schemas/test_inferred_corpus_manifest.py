@@ -231,6 +231,44 @@ def test_campaign_rejects_fabricated_gate_digest_even_when_shape_is_valid(tmp_pa
         )
 
 
+def test_campaign_rejects_tampered_ground_truth_denominators_after_digest_recompute(tmp_path: Path) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    receipt = build_schema_inference_receipt(registry, provider="codex", gate_receipt_digest=gate_digest)
+
+    valid_manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=("codex",),
+        package_receipt=receipt.to_payload(),
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    assert valid_manifest.receipt_state == "package_receipt_attached"
+
+    tampered_gate = json.loads(gate_receipt_path.read_text(encoding="utf-8"))
+    denominators = dict(tampered_gate["ground_truth_denominators"])
+    denominators["documents_known"] += 1
+    tampered_gate["ground_truth_denominators"] = denominators
+    gate_receipt_path.write_text(json.dumps(tampered_gate, sort_keys=True) + "\n", encoding="utf-8")
+    tampered_digest = schema_inference_gate_receipt_digest(tampered_gate)
+    tampered_receipt = build_schema_inference_receipt(
+        registry,
+        provider="codex",
+        gate_receipt_digest=tampered_digest,
+    )
+
+    with pytest.raises(ValueError, match="ground-truth denominators changed"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=("codex",),
+            package_receipt=tampered_receipt.to_payload(),
+            campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
 def test_bundled_registry_relation_annotations_share_one_receipt_classification(tmp_path: Path) -> None:
     registry = _registry()
     provider = "chatgpt"

@@ -1199,6 +1199,8 @@ def validate_schema_inference_gate_receipt(
         recorded_fidelity.get(key) != live_fidelity.get(key) for key in fidelity_keys
     ):
         raise ValueError("schema-inference gate receipt corpus-fidelity evidence changed")
+    if payload.get("ground_truth_denominators") != live_fidelity.get("denominators"):
+        raise ValueError("schema-inference gate receipt ground-truth denominators changed")
 
     full_blob = payload.get("full_blob_hash_verification")
     if not isinstance(full_blob, Mapping) or full_blob.get("passed") is not True:
