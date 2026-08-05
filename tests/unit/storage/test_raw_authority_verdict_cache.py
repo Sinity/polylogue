@@ -14,12 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider, RawAuthorityVerdict
 from polylogue.storage import raw_authority_verdict_cache as cache_module
 from polylogue.storage.raw_authority_verdict_cache import (
+    find_raw_authority_verdict_cache_work,
     get_or_compute_raw_authority_verdicts,
     read_cached_raw_authority_verdicts,
+    warm_raw_authority_verdict_cache,
     write_raw_authority_verdict_cache,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -138,3 +140,77 @@ def test_missing_cohort_returns_no_verdicts_and_no_cache_write(tmp_path: Path) -
 
     assert verdicts == {}
     assert rows[0][0] == 0
+
+
+def test_warmup_is_bounded_and_skips_append_cohorts(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(2):
+            _bind_full(
+                archive,
+                raw_id=f"full-{index}",
+                payload=f"payload-{index}".encode(),
+                logical_source_key=f"codex:full-{index}",
+            )
+        append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"append-payload",
+            source_path="session.jsonl",
+            acquired_at_ms=1,
+            raw_id="append-only",
+        )
+        archive.bind_raw_revision(
+            append_id,
+            RawRevisionEnvelope(
+                "codex:append",
+                RawRevisionKind.APPEND,
+                "revision-append",
+                0,
+                predecessor_source_revision="revision-base",
+                predecessor_raw_id="base",
+                baseline_raw_id="base",
+                append_start_offset=0,
+                append_end_offset=1,
+                authority=RawRevisionAuthority.ASSERTED,
+            ),
+        )
+
+        work = find_raw_authority_verdict_cache_work(archive._ensure_source_conn(), max_cohorts=1)
+        assert work.pending_logical_source_keys == ("codex:full-0",)
+        assert work.skipped_append_cohorts == 1
+
+        first = warm_raw_authority_verdict_cache(archive, max_cohorts=1, now_ms=1000)
+        assert first.warmed_cohorts == 1
+        assert first.pending_cohorts is True
+        assert first.skipped_append_cohorts == 1
+
+        second = warm_raw_authority_verdict_cache(archive, max_cohorts=1, now_ms=2000)
+        assert second.warmed_cohorts == 1
+        assert second.pending_cohorts is False
+        assert second.skipped_append_cohorts == 1
+
+        cached_keys = {
+            str(row[0])
+            for row in archive._ensure_source_conn()
+            .execute("SELECT logical_source_key FROM raw_authority_verdicts")
+            .fetchall()
+        }
+
+    assert cached_keys == {"codex:full-0", "codex:full-1"}
+
+
+def test_warmup_does_not_recompute_fresh_cohorts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        _bind_full(archive, raw_id="only", payload=b"payload", logical_source_key="codex:s1")
+        warm_raw_authority_verdict_cache(archive, max_cohorts=1, now_ms=1000)
+
+        def _fail(*args: object, **kwargs: object) -> dict[str, RawAuthorityVerdict]:
+            raise AssertionError("a fresh cohort must not invoke the projection")
+
+        monkeypatch.setattr(cache_module, "project_raw_authority_verdicts", _fail)
+
+        outcome = warm_raw_authority_verdict_cache(archive, max_cohorts=1, now_ms=2000)
+
+    assert outcome.warmed_cohorts == 0
+    assert outcome.pending_cohorts is False
