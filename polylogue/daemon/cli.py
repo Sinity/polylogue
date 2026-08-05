@@ -2038,12 +2038,15 @@ async def run_live_watcher(
     sources: tuple[WatchSource, ...],
     debounce_s: float,
 ) -> None:
+    from polylogue.daemon.events import emit_catch_up_cycle
+
     async with Polylogue() as polylogue:
         watcher = LiveWatcher(
             polylogue,
             sources,
             debounce_s=debounce_s,
             event_emitter=_emit_live_batch_event,
+            catch_up_event_emitter=emit_catch_up_cycle,
             write_coordinator=daemon_write_coordinator(),
         )
         try:
@@ -2511,6 +2514,8 @@ async def run_daemon_services(
         # convergence coupling (polylogue-gbs02).
         try:
             if enable_watch and not watcher_creation_blocked:
+                from polylogue.daemon.events import emit_catch_up_cycle
+
                 async with Polylogue() as polylogue:
                     watcher = LiveWatcher(
                         polylogue,
@@ -2518,6 +2523,7 @@ async def run_daemon_services(
                         debounce_s=debounce_s,
                         converger=converger,
                         event_emitter=_emit_live_batch_event,
+                        catch_up_event_emitter=emit_catch_up_cycle,
                         write_coordinator=write_coordinator,
                     )
                     watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)

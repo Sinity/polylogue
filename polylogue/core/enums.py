@@ -26,6 +26,15 @@ class OperationStatus(PolylogueStrEnum):
     INTERRUPTED = "interrupted"
 
 
+class SloSampleLabel(PolylogueStrEnum):
+    """Closed labels for optional daemon steady-state telemetry."""
+
+    BACKLOG = "backlog"
+    OFFERED_WORK = "offered_work"
+    DRAIN_RATE = "drain_rate"
+    INGEST_LATENCY = "ingest_latency"
+
+
 OPERATION_LIFECYCLE_STATUSES: tuple[OperationStatus, ...] = (
     OperationStatus.RUNNING,
     OperationStatus.COMPLETED,

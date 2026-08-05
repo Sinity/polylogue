@@ -330,6 +330,15 @@ class RebuildPassCost:
     #: held a single session, with nothing durable recording where that time
     #: went.
     selection_s: float = 0.0
+    #: Time spent classifying byte and membership authority cohorts. This is
+    #: a diagnostic rollup over the replay stage ledger, retained separately
+    #: from the parse/apply split for phase-level receipts.
+    cohort_s: float = 0.0
+    #: Terminal insight materialization time. Deferred/paused passes carry
+    #: the explicit zero because they have not reached terminal stages.
+    insight_s: float = 0.0
+    #: Sum of terminal stages after replay, excluding raw selection.
+    terminal_s: float = 0.0
 
     @property
     def mib_per_s(self) -> float:
@@ -354,9 +363,12 @@ class RebuildPassCost:
         eta = self.eta_s
         return {
             "selection_s": round(self.selection_s, 3),
+            "cohort_s": round(self.cohort_s, 3),
             "replay_s": round(self.replay_s, 3),
             "parse_s": round(self.parse_s, 3),
             "apply_s": round(self.apply_s, 3),
+            "insight_s": round(self.insight_s, 3),
+            "terminal_s": round(self.terminal_s, 3),
             "checkpoint_s": round(self.checkpoint_s, 3),
             "pass_s": round(self.pass_s, 3),
             "raws": self.raws,
@@ -372,6 +384,51 @@ class RebuildPassCost:
             "free_threaded": self.free_threaded,
             "parse_workers": self.parse_workers,
         }
+
+
+_COHORT_TIMING_PREFIXES = ("replay.classify_cohort", "replay.adoptable_check", "membership.")
+
+
+def _cohort_seconds(stage_timings_s: object) -> float:
+    """Roll up the durable replay timing keys that decide authority cohorts."""
+    if not isinstance(stage_timings_s, dict):
+        return 0.0
+    return sum(
+        float(value)
+        for key, value in stage_timings_s.items()
+        if isinstance(key, str)
+        and key.startswith(_COHORT_TIMING_PREFIXES)
+        and isinstance(value, int | float)
+        and not isinstance(value, bool)
+    )
+
+
+def _receipt_timings(
+    *,
+    selection_s: float,
+    replay: dict[str, object],
+    terminal_timings_s: dict[str, float],
+) -> dict[str, float]:
+    """Build one stable phase vocabulary plus existing granular timings."""
+    stage_timings_s = replay.get("stage_timings_s", {})
+    parse_s = replay.get("parse_s", 0.0)
+    apply_s = replay.get("apply_s", 0.0)
+    resolved_parse_s = float(parse_s) if isinstance(parse_s, int | float) else 0.0
+    resolved_apply_s = float(apply_s) if isinstance(apply_s, int | float) else 0.0
+    insight_s = float(terminal_timings_s.get("terminal.session_insights", 0.0))
+    terminal_s = sum(float(value) for key, value in terminal_timings_s.items() if key != "selection_s")
+    rollups = {
+        "selection_s": float(selection_s),
+        "cohort_s": _cohort_seconds(stage_timings_s),
+        "parse_s": resolved_parse_s,
+        "apply_s": resolved_apply_s,
+        "insight_s": insight_s,
+        "terminal_s": terminal_s,
+    }
+    return {
+        **{key: round(value, 3) for key, value in rollups.items()},
+        **{key: round(float(value), 3) for key, value in terminal_timings_s.items()},
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -890,6 +947,7 @@ async def _rebuild_index_from_source_owned(
 
                     pass_cost = RebuildPassCost(
                         selection_s=selection_elapsed_s,
+                        cohort_s=0.0,
                         replay_s=pass_elapsed_s,
                         checkpoint_s=0.0,
                         pass_s=time.perf_counter() - pass_started_at_s,
@@ -990,6 +1048,7 @@ async def _rebuild_index_from_source_owned(
 
                     pass_cost = RebuildPassCost(
                         selection_s=selection_elapsed_s,
+                        cohort_s=_cohort_seconds(replay.get("stage_timings_s", {})),
                         replay_s=pass_elapsed_s,
                         checkpoint_s=0.0,
                         pass_s=time.perf_counter() - pass_started_at_s,
@@ -1199,7 +1258,11 @@ async def _rebuild_index_from_source_owned(
             transaction=transaction,
             recovery_state="promoted" if request.promote else "ready",
         ),
-        timings_s={key: round(value, 3) for key, value in terminal_timings_s.items()},
+        timings_s=_receipt_timings(
+            selection_s=selection_elapsed_s,
+            replay=replay,
+            terminal_timings_s=terminal_timings_s,
+        ),
     )
     if transaction is not None:
         generation_store.save_pass_receipt(transaction.operation_id, final_receipt.to_dict())

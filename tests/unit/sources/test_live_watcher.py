@@ -21,6 +21,8 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
+from polylogue.daemon.events import emit_catch_up_cycle, query_daemon_events
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
     _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
@@ -774,13 +776,23 @@ def _make_watcher(
     *,
     debounce_s: float = 0.01,
     event_emitter: MagicMock | None = None,
+    catch_up_event_emitter: Callable[..., None] | None = None,
+    write_coordinator: object | None = None,
     sources: tuple[WatchSource, ...] | None = None,
 ) -> tuple[LiveWatcher, _FullIngestMock]:
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     sources = sources or (WatchSource(name="test", root=root),)
-    watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor, event_emitter=event_emitter)
+    watcher = LiveWatcher(
+        polylogue,
+        sources,
+        debounce_s=debounce_s,
+        cursor=cursor,
+        event_emitter=event_emitter,
+        catch_up_event_emitter=catch_up_event_emitter,
+        write_coordinator=write_coordinator,
+    )
     full_ingest = _FullIngestMock()
     watcher._batch_processor._ingest_full_paths = full_ingest  # type: ignore[method-assign]
     return watcher, full_ingest
@@ -843,6 +855,135 @@ def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.M
     assert captured["paths"] == files
     assert captured["queued_file_count"] == 3
     assert captured["skipped_file_count"] == 0
+
+
+def test_real_catch_up_route_emits_coordinated_success_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    source = root / "session.jsonl"
+    source.write_text('{"role":"user","content":"a"}\n')
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    coordinator_events: list[DaemonWriteEvent] = []
+    coordinator = DaemonWriteCoordinator(observer=coordinator_events.append)
+    watcher, full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        catch_up_event_emitter=emit_catch_up_cycle,
+        write_coordinator=coordinator,
+    )
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert full_ingest.await_count == 1
+    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
+    payloads: list[dict[str, object]] = []
+    for event in events:
+        payload = event["payload"]
+        assert isinstance(payload, dict)
+        payloads.append(payload)
+    assert [payload["phase"] for payload in payloads] == ["start", "end", "terminal"]
+    start, end, terminal = events
+    assert start["operation_id"] == end["operation_id"] == terminal["operation_id"]
+    start_payload, end_payload, terminal_payload = payloads
+    assert start_payload["backlog_start"] == 1
+    assert end_payload["attempted"] == 1
+    assert end_payload["ingested"] == 1
+    assert end_payload["backlog_end"] == 0
+    assert terminal_payload["terminal_outcome"] == "success"
+    assert [
+        event.actor
+        for event in coordinator_events
+        if event.actor == "watcher.catch_up.event" and event.phase == "released"
+    ] == [
+        "watcher.catch_up.event",
+        "watcher.catch_up.event",
+        "watcher.catch_up.event",
+    ]
+
+
+@pytest.mark.parametrize(("outcome", "exception"), [("failure", RuntimeError), ("cancelled", asyncio.CancelledError)])
+def test_real_catch_up_route_emits_terminal_receipt_after_ingest_abort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    exception: type[BaseException],
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "session.jsonl").write_text('{"role":"user","content":"a"}\n')
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
+    coordinator_events: list[DaemonWriteEvent] = []
+    watcher, _ = _make_watcher(
+        tmp_path,
+        root,
+        catch_up_event_emitter=emit_catch_up_cycle,
+        write_coordinator=DaemonWriteCoordinator(observer=coordinator_events.append),
+    )
+
+    async def abort_ingest(
+        _paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> LiveBatchMetrics:
+        del queued_file_count, skipped_file_count
+        raise exception("abort")
+
+    watcher._ingest_files = abort_ingest  # type: ignore[assignment]
+
+    with pytest.raises(exception):
+        asyncio.run(watcher._catch_up([root]))
+
+    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
+    payloads = [cast(dict[str, object], event["payload"]) for event in events]
+    assert [payload["phase"] for payload in payloads] == ["start", "terminal"]
+    assert payloads[-1]["terminal_outcome"] == outcome
+    assert any(event.actor == "watcher.catch_up.event" and event.phase == "released" for event in coordinator_events)
+
+
+def test_real_catch_up_route_emits_terminal_receipt_when_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "session.jsonl").write_text('{"role":"user","content":"a"}\n')
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
+    coordinator_events: list[DaemonWriteEvent] = []
+    watcher, full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        catch_up_event_emitter=emit_catch_up_cycle,
+        write_coordinator=DaemonWriteCoordinator(observer=coordinator_events.append),
+    )
+    original_ingest = watcher._ingest_files
+
+    async def stop_after_ingest(
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> LiveBatchMetrics:
+        metrics = await original_ingest(
+            paths,
+            queued_file_count=queued_file_count,
+            skipped_file_count=skipped_file_count,
+        )
+        watcher.stop()
+        return metrics
+
+    watcher._ingest_files = stop_after_ingest  # type: ignore[method-assign]
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert full_ingest.await_count == 1
+    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
+    payloads = [cast(dict[str, object], event["payload"]) for event in events]
+    assert [payload["phase"] for payload in payloads] == ["start", "terminal"]
+    assert payloads[-1]["terminal_outcome"] == "stopped"
+    assert any(event.actor == "watcher.catch_up.event" and event.phase == "released" for event in coordinator_events)
 
 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
