@@ -108,7 +108,9 @@ def test_resume_revalidates_external_mapping_before_more_replay(tmp_path: Path) 
     assert first.status == "paused"
     assert first.transaction is not None
     operation_id = str(first.transaction["operation_id"])
-    processed_before = int(first.transaction["processed_raw_count"])
+    processed_value = first.transaction["processed_raw_count"]
+    assert isinstance(processed_value, int)
+    processed_before = processed_value
     active_before = _active_bytes(root)
 
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))

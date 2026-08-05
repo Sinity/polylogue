@@ -6,7 +6,6 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
 from polylogue.maintenance import schema_inference_gate as gate
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
@@ -62,7 +61,7 @@ def write_valid_rebuild_receipt(
         "passed": True,
         "origins": ground_truth_origins,
     }
-    digest = gate._canonical_external_ground_truth_digest(cast(dict[str, object], ground_truth_origins))
+    digest = gate._canonical_external_ground_truth_digest(ground_truth_origins)
     ground_truth["external_ground_truth_digest"] = digest
     query_results = {
         gate_id: {"gate": gate_id, "passed": True, "count": 0}

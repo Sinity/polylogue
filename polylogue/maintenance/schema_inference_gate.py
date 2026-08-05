@@ -648,7 +648,10 @@ def _canonical_external_ground_truth_digest(origins: Mapping[str, object]) -> st
             {
                 "origin": origin,
                 "roots": sorted(str(Path(root).expanduser().resolve()) for root in roots),
-                "files": sorted(files, key=lambda item: (int(item["root_index"]), str(item["relative_path"]))),
+                "files": sorted(
+                    files,
+                    key=lambda item: (int(cast(int, item["root_index"])), str(item["relative_path"])),
+                ),
                 "mapping": sorted(mappings, key=lambda item: str(item["raw_id"])),
             }
         )
@@ -1471,16 +1474,14 @@ def run_schema_inference_gate(
             "external_ground_truth_digest": None,
         }
 
+    source_snapshot: str | None = None
+    reasons_for_snapshot: str | None = None
     try:
         from polylogue.storage.index_generation import source_revision_snapshot
 
         source_snapshot = source_revision_snapshot(root)
     except (OSError, sqlite3.Error) as exc:
-        source_snapshot = None
         reasons_for_snapshot = f"source revision snapshot could not be read: {exc}"
-    else:
-        reasons_for_snapshot = None
-
     gate_results = _as_dict(source_gates.get("gates"))
     duplicate_gate = source_gates.get("duplicate_gate", {})
     if isinstance(duplicate_gate, dict):
