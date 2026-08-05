@@ -12,6 +12,7 @@ from polylogue.core.json import JSONValue
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, wire_formats
 from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
+from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRouteError
@@ -41,8 +42,7 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
     assert all(entry.schema_valid is True for entry in supported)
     assert all(entry.parsed_session_count > 0 for entry in supported)
     assert all(entry.parsed_message_count > 0 for entry in supported)
-    assert all(entry.construct_coverage is not None and entry.construct_coverage.complete for entry in supported)
-    assert receipt.complete
+    assert all(entry.construct_coverage is not None for entry in supported)
 
 
 def test_support_receipt_is_deterministic() -> None:
@@ -100,7 +100,6 @@ def test_antigravity_metadata_only_source_has_no_language_server_session(tmp_pat
 
 def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
     before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
-    assert before.complete
 
     monkeypatch.delitem(SCHEMA_CONSTRUCT_HANDLERS, "array")
     after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
@@ -112,6 +111,46 @@ def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.
         for entry in after.entries
         if entry.status == "supported"
     )
+
+
+def test_string_payload_cannot_satisfy_integer_coverage() -> None:
+    coverage = wire_formats.construct_coverage(
+        {"type": "integer"},
+        ("not an integer",),
+    )
+
+    assert coverage.missing_keywords == ("type:integer",)
+    assert not coverage.complete
+
+
+def test_missing_required_and_additional_property_evidence_makes_receipt_incomplete() -> None:
+    schema: SchemaRecord = {
+        "type": "object",
+        "properties": {"count": {"type": "integer"}},
+        "required": ["count"],
+        "additionalProperties": False,
+    }
+    coverage = wire_formats.construct_coverage(schema, ({"unexpected": "text"},))
+    entry = wire_formats.WireSupportEntry(
+        provider="synthetic",
+        status="supported",
+        reason=None,
+        package_version="test",
+        element_kind="session_document",
+        schema_valid=True,
+        parsed_session_count=1,
+        parsed_message_count=1,
+        construct_coverage=coverage,
+    )
+    receipt = wire_formats.WireSupportReceipt(
+        catalog_providers=("synthetic",),
+        entries=(entry,),
+        missing_routes=(),
+    )
+
+    assert "required" in coverage.missing_keywords
+    assert "additionalProperties" in coverage.missing_keywords
+    assert not receipt.complete
 
 
 def test_removed_provider_route_changes_explicit_support_receipt(monkeypatch: pytest.MonkeyPatch) -> None:

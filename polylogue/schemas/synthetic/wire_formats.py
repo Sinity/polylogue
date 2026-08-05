@@ -282,6 +282,58 @@ def _json_value_types(value: JSONValue, result: set[str] | None = None) -> set[s
     return result
 
 
+def _payload_structure_constructs(
+    schema: object,
+    payload: JSONValue,
+    result: set[str] | None = None,
+) -> set[str]:
+    if result is None:
+        result = set()
+    if not isinstance(schema, Mapping) or not isinstance(payload, dict):
+        return result
+
+    properties = schema.get("properties")
+    property_names = set(properties) if isinstance(properties, Mapping) else set()
+    if property_names & payload.keys():
+        result.add("properties")
+
+    required = schema.get("required")
+    required_names = {item for item in required if isinstance(item, str)} if isinstance(required, list) else set()
+    if "required" in schema and required_names <= payload.keys():
+        result.add("required")
+
+    if "additionalProperties" in schema:
+        extra_names = payload.keys() - property_names
+        if schema.get("additionalProperties") is False:
+            if not extra_names:
+                result.add("additionalProperties")
+        elif extra_names:
+            result.add("additionalProperties")
+
+    if isinstance(properties, Mapping):
+        for name, child_schema in properties.items():
+            if isinstance(name, str) and name in payload:
+                _payload_structure_constructs(child_schema, payload[name], result)
+
+    items = schema.get("items")
+    if isinstance(items, Mapping) and isinstance(payload, list):
+        for item in payload:
+            _payload_structure_constructs(items, item, result)
+
+    additional_schema = schema.get("additionalProperties")
+    if isinstance(additional_schema, Mapping):
+        for name, item in payload.items():
+            if name not in property_names:
+                _payload_structure_constructs(additional_schema, item, result)
+
+    for keyword in ("anyOf", "oneOf"):
+        variants = schema.get(keyword)
+        if isinstance(variants, list):
+            for variant in variants:
+                _payload_structure_constructs(variant, payload, result)
+    return result
+
+
 def construct_coverage(
     schema: SchemaRecord,
     payloads: Sequence[JSONValue],
@@ -302,22 +354,18 @@ def construct_coverage(
     handlers = set(handler_names)
     schema_keywords = _schema_constructs(schema)
     value_types: set[str] = set()
+    structure_constructs: set[str] = set()
     for payload in payloads:
         _json_value_types(payload, value_types)
+        _payload_structure_constructs(schema, payload, structure_constructs)
 
     exercised: set[str] = set()
     for construct in schema_keywords:
         if construct.startswith("type:"):
             type_name = construct.removeprefix("type:")
-            if type_name in handlers and payloads:
+            if type_name in handlers and type_name in value_types:
                 exercised.add(construct)
-        elif (
-            (construct in handlers and payloads)
-            or (construct == "properties" and "object" in value_types)
-            or (construct == "items" and "array" in value_types)
-            or (construct == "required" and "object" in value_types)
-            or (construct == "additionalProperties" and "object" in value_types)
-        ):
+        elif (construct in handlers and payloads) or construct in structure_constructs:
             exercised.add(construct)
 
     return ConstructCoverage(
