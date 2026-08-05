@@ -187,6 +187,21 @@ class SyntheticCorpus:
     @classmethod
     def generate_batch_for_spec(cls, spec: CorpusSpec) -> SyntheticGenerationBatch:
         corpus = cls.from_spec(spec)
+        return cls._generate_batch_for_corpus(corpus, spec)
+
+    @classmethod
+    def generate_batch_for_selection(
+        cls,
+        selection: SyntheticSchemaSelection,
+        spec: CorpusSpec,
+    ) -> SyntheticGenerationBatch:
+        """Generate a spec through an already-resolved persisted schema route."""
+
+        corpus = cls.from_selection(selection)
+        return cls._generate_batch_for_corpus(corpus, spec)
+
+    @staticmethod
+    def _generate_batch_for_corpus(corpus: SyntheticCorpus, spec: CorpusSpec) -> SyntheticGenerationBatch:
         return corpus.generate_batch(
             count=spec.count,
             messages_per_session=spec.messages_per_session,
@@ -209,9 +224,36 @@ class SyntheticCorpus:
         index_width: int = 2,
     ) -> SyntheticWrittenBatch:
         corpus = cls.from_spec(spec)
+        return cls._write_batch_artifacts(corpus, spec, output_dir, prefix=prefix, index_width=index_width)
+
+    @classmethod
+    def write_selection_artifacts(
+        cls,
+        selection: SyntheticSchemaSelection,
+        spec: CorpusSpec,
+        output_dir: Path,
+        *,
+        prefix: str,
+        index_width: int = 2,
+    ) -> SyntheticWrittenBatch:
+        """Write artifacts from the exact schema selection carried by a manifest."""
+
+        corpus = cls.from_selection(selection)
+        return cls._write_batch_artifacts(corpus, spec, output_dir, prefix=prefix, index_width=index_width)
+
+    @classmethod
+    def _write_batch_artifacts(
+        cls,
+        corpus: SyntheticCorpus,
+        spec: CorpusSpec,
+        output_dir: Path,
+        *,
+        prefix: str,
+        index_width: int,
+    ) -> SyntheticWrittenBatch:
         output_dir.mkdir(parents=True, exist_ok=True)
         ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        batch = cls.generate_batch_for_spec(spec)
+        batch = cls._generate_batch_for_corpus(corpus, spec)
         written_files: list[Path] = []
         for idx, artifact in enumerate(batch.artifacts):
             if corpus.provider == "antigravity":
