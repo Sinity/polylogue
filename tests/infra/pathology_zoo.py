@@ -14,6 +14,7 @@ import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from unittest.mock import patch
 
 from polylogue.config import Source
 from polylogue.maintenance.pathology_zoo import (
@@ -29,6 +30,7 @@ from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +387,7 @@ def _write_generated_members(root: Path, *, indexes: tuple[int, ...] | None = No
             messages_min=2,
             messages_max=2,
             seed=37,
+            session_native_ids=("zoo-06-00:zoo-06-00.md",),
             origin="test.pathology-zoo",
             tags=("pathology-zoo",),
         ),
@@ -404,6 +407,8 @@ def _bind_durable_paths(
             member,
             durable_paths=(str(hook_event_path),)
             if member.member_id == "hook-event"
+            else (str(wire_root / "generated" / "conversations" / "zoo-06-00:zoo-06-00.md.pb"),)
+            if member.member_id == "non-stream-safe"
             else tuple(str(wire_root / raw_path) for raw_path in member.raw_paths),
         )
         for member in manifest
@@ -439,13 +444,21 @@ def build_pathology_zoo(archive_root: Path) -> PathologyZoo:
     _write_generated_members(wire_root, indexes=(0, 1, 3, 5, 6))
     _write_manual_members(wire_root)
     sources = [Source(name="pathology-zoo", path=wire_root), Source(name="antigravity", path=wire_root / "generated")]
-    asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
+    with patch(
+        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+        SyntheticAntigravityLanguageServerClient,
+    ):
+        asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
     _write_generated_members(wire_root, indexes=(2, 4))
     _write_jsonl(
         wire_root / "manual" / "lineage-cycle-z-a-update.jsonl",
         _codex_records("zoo-cycle-a", ("cycle A", "cycle A revised"), parent="zoo-cycle-b", subagent=True),
     )
-    asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
+    with patch(
+        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+        SyntheticAntigravityLanguageServerClient,
+    ):
+        asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
     hook_event_path = enqueue_hook_event(
         event_id="zoo-hook-event",
         provider="claude-code",

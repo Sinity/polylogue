@@ -582,12 +582,25 @@ def _pin_session_native_id(provider: str, data: JSONValue, native_id: str) -> JS
     if provider == "gemini" and isinstance(data, dict):
         data["id"] = native_id
         return data
+    if provider == "antigravity" and isinstance(data, dict):
+        data["cascadeId"] = native_id
+        return data
     if provider == "claude-code" and isinstance(data, list):
         for record in data:
             if isinstance(record, dict):
                 record["sessionId"] = native_id
         return data
     if provider == "codex" and isinstance(data, list):
+        # A native id is only authoritative in Codex's session_meta envelope.
+        # Convert generated flat messages before adding that header so the
+        # result remains one supported stream shape instead of mixing direct
+        # messages with envelope records, which the parser rejects.
+        for index, record in enumerate(data):
+            if not isinstance(record, dict) or record.get("type") != "message":
+                continue
+            payload = dict(record)
+            payload["type"] = "message"
+            data[index] = {"type": "response_item", "payload": payload}
         for record in data:
             if not isinstance(record, dict) or record.get("type") != "session_meta":
                 continue
