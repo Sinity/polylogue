@@ -20,7 +20,7 @@ from tests.infra.convergence_harness import (
 
 @settings(
     max_examples=8,
-    phases=(Phase.explicit, Phase.reuse, Phase.generate, Phase.target),
+    phases=(Phase.explicit, Phase.reuse, Phase.generate, Phase.target, Phase.shrink),
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )

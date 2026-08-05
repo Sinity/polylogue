@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,28 @@ def test_convergence_property_raw_replay_mutation_red_twin(tmp_path: Path, monke
         converge_after_each=False,
     )
     converge_convergence_archive(mutated)
+
+    with pytest.raises(AssertionError, match="canonical archive snapshots differ"):
+        assert_archives_equivalent(canonical, mutated)
+
+
+def test_convergence_property_materialized_content_mutation_red_twin(tmp_path: Path) -> None:
+    """Changing a materialized insight row cannot pass the semantic comparator."""
+    pathology = rich_convergence_pathology()
+    canonical = build_converged_archive(tmp_path / "canonical", pathology)
+    mutated = build_converged_archive(tmp_path / "mutated", pathology)
+
+    with sqlite3.connect(mutated.root / "index.db") as conn:
+        cursor = conn.execute(
+            """
+            UPDATE session_work_events
+            SET summary = summary || ' [materialized-content-mutation]'
+            WHERE event_id = (SELECT event_id FROM session_work_events ORDER BY event_id LIMIT 1)
+            """
+        )
+        if cursor.rowcount != 1:
+            raise AssertionError("materialized-content mutation did not change one work-event row")
+        conn.commit()
 
     with pytest.raises(AssertionError, match="canonical archive snapshots differ"):
         assert_archives_equivalent(canonical, mutated)

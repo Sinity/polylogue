@@ -114,6 +114,10 @@ class ArchiveSnapshot:
     blocks: tuple[FactRow, ...]
     session_links: tuple[FactRow, ...]
     profiles: tuple[FactRow, ...]
+    work_events: tuple[FactRow, ...]
+    phases: tuple[FactRow, ...]
+    threads: tuple[FactRow, ...]
+    thread_sessions: tuple[FactRow, ...]
     semantic_tables: tuple[tuple[str, tuple[FactRow, ...]], ...]
     fts_matches: tuple[tuple[str, object], ...]
     raw_authority: tuple[FactRow, ...]
@@ -323,6 +327,10 @@ def archive_snapshot(root: Path) -> ArchiveSnapshot:
             """
         ).fetchall()
         profiles = _table_rows(conn, "session_profiles", order_by="session_id")
+        work_events = _table_rows(conn, "session_work_events", order_by="session_id, position")
+        phases = _table_rows(conn, "session_phases", order_by="session_id, position")
+        threads = _table_rows(conn, "threads", order_by="thread_id")
+        thread_sessions = _table_rows(conn, "thread_sessions", order_by="thread_id, session_id, position")
         semantic_tables = tuple(
             (table, _table_rows(conn, table, order_by=order_by)) for table, order_by in _SEMANTIC_TABLES
         )
@@ -334,6 +342,10 @@ def archive_snapshot(root: Path) -> ArchiveSnapshot:
         blocks=_fact_rows(blocks),
         session_links=_fact_rows(session_links),
         profiles=profiles,
+        work_events=work_events,
+        phases=phases,
+        threads=threads,
+        thread_sessions=thread_sessions,
         semantic_tables=semantic_tables,
         fts_matches=fts_matches,
         raw_authority=raw_authority,
@@ -591,6 +603,7 @@ _SNAPSHOT_VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "insight_materialization": frozenset({"materialized_at_ms"}),
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "session_profiles": frozenset({"materialized_at", "priced_at_ms"}),
+    "threads": frozenset({"materialized_at", "source_updated_at"}),
 }
 
 
