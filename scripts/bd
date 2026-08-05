@@ -68,6 +68,13 @@ for _bd_path_entry in $PATH; do
   if [ -x "$_bd_python_candidate" ] && [ ! -d "$_bd_python_candidate" ]; then
     _bd_python_candidate_real=$(readlink -f "$_bd_python_candidate" 2>/dev/null || true)
     if [ -n "$_bd_python_candidate_real" ] && [ "$_bd_python_candidate_real" != "$_bd_wrapper_real" ]; then
+      # A PATH entry implemented as a script can trampoline back through this
+      # wrapper when it is used as python3. Skip launchers and continue to the
+      # real interpreter instead of allowing indirect recursion.
+      _bd_python_candidate_header=$(dd if="$_bd_python_candidate_real" bs=2 count=1 2>/dev/null || true)
+      case "$_bd_python_candidate_header" in
+        '#!'*) continue ;;
+      esac
       _bd_python=$_bd_python_candidate_real
       break
     fi

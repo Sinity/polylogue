@@ -164,7 +164,7 @@ def _execute_historical_envrc(lane: Path, env: dict[str, str], tmp_path: Path, i
     historical_env = env.copy()
     environment_dump = tmp_path / "historical-environment"
     historical_env["HISTORICAL_USE_FLAKE"] = str(historical_use_flake)
-    historical_env["POLYLOGUE_BD_REAL"] = installed_bd
+    historical_env["PATH"] = os.pathsep.join((str(Path(installed_bd).parent), historical_env["PATH"]))
     _run(
         [
             "bash",
@@ -180,6 +180,7 @@ def _execute_historical_envrc(lane: Path, env: dict[str, str], tmp_path: Path, i
         if entry:
             key, _, value = entry.partition(b"=")
             historical_env[key.decode()] = value.decode()
+    assert historical_env.get("POLYLOGUE_BD_REAL") == installed_bd
 
     # The old shell hook wrote a relative value through git config --local.
     # The worktree-level common-dir pin must still select the deployed hook.
@@ -430,3 +431,61 @@ def test_bd_wrapper_survives_interpreter_path_alias_to_wrapper(tmp_path: Path, i
 
     assert result.returncode == 0, result.stderr
     assert (common_dir / "polylogue-bd-guard.lock").exists()
+
+
+def test_bd_wrapper_skips_indirect_python3_trampoline(tmp_path: Path) -> None:
+    """A python3 launcher that invokes the wrapper cannot recurse indefinitely."""
+    env, repo, lane, common_dir = _setup_guard_linked_worktree(tmp_path)
+    wrapper = repo / "scripts" / "bd"
+    alias_dir = tmp_path / "interpreter-trampoline"
+    alias_dir.mkdir()
+    trampoline = alias_dir / "python3"
+    trampoline.write_text(f'#!/bin/sh\nexec {wrapper!s} "$@"\n')
+    trampoline.chmod(0o755)
+    env["PATH"] = os.pathsep.join((str(alias_dir), env["PATH"]))
+    true_binary = shutil.which("true", path=env["PATH"])
+    assert true_binary is not None
+    env["POLYLOGUE_BD_REAL"] = true_binary
+
+    result = subprocess.run([str(wrapper), "--help"], cwd=lane, env=env, capture_output=True, text=True, timeout=10)
+
+    assert result.returncode == 0, result.stderr
+    assert (common_dir / "polylogue-bd-guard.lock").exists()
+
+
+@pytest.mark.parametrize(
+    ("label", "export_payload"),
+    [
+        ("malformed", '{"id":"guard-a"}\nnot-json\n'),
+        ("missing-id", '{"title":"guard-a"}\n'),
+        ("duplicate", '{"id":"guard-a"}\n{"id":"guard-a"}\n'),
+    ],
+)
+def test_bd_wrapper_fails_closed_on_invalid_successful_export(tmp_path: Path, label: str, export_payload: str) -> None:
+    """The real wrapper refuses invalid successful exports before import or delegation."""
+    env, repo, lane, _common_dir = _setup_guard_linked_worktree(tmp_path)
+    wrapper = repo / "scripts" / "bd"
+    (lane / ".beads").mkdir()
+    (lane / ".beads" / "issues.jsonl").write_text('{"id":"candidate"}\n')
+
+    # Point the wrapper at the real Python ELF and provide command-named Python
+    # programs in the invocation directory. This exercises the wrapper and
+    # guard subprocess route without requiring a second installed Beads binary.
+    marker = tmp_path / f"{label}-delegated"
+    (lane / "export").write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "import sys\n"
+        "output = sys.argv[sys.argv.index('-o') + 1]\n"
+        "Path(output).write_text(os.environ['FAKE_EXPORT_PAYLOAD'] + '\\n')\n"
+    )
+    for command in ("import", "show"):
+        (lane / command).write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('delegated\\n')\n")
+    env["POLYLOGUE_BD_REAL"] = sys.executable
+    env["FAKE_EXPORT_PAYLOAD"] = export_payload
+
+    result = subprocess.run([str(wrapper), "show"], cwd=lane, env=env, capture_output=True, text=True, timeout=10)
+
+    assert result.returncode == 125, result.stderr
+    assert "failed validation" in result.stderr
+    assert not marker.exists(), "invalid export must stop before import or delegated bd execution"

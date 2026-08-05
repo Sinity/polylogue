@@ -450,7 +450,7 @@ def parse_and_validate_jsonl(text: str) -> dict[str, dict[str, Any]]:
             row = json.loads(line)
         except json.JSONDecodeError as exc:
             raise InvalidJsonlError(f"line {lineno}: invalid JSON ({exc})") from exc
-        if not isinstance(row, dict) or not row.get("id"):
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
             raise InvalidJsonlError(f"line {lineno}: row missing a non-empty 'id'")
         issue_id = row["id"]
         if issue_id in rows:
@@ -513,20 +513,7 @@ def _export_live_state(
         )
         if process_result.returncode != 0:
             raise RuntimeError(f"bd export failed ({process_result.returncode}): {process_result.stderr.strip()}")
-        result: dict[str, dict[str, Any]] = {}
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                issue_id = row.get("id")
-                if issue_id:
-                    result[issue_id] = row
-        return result
+        return parse_and_validate_jsonl(Path(path).read_text())
     finally:
         Path(path).unlink(missing_ok=True)
 
@@ -607,7 +594,9 @@ def _preflight_invocation(
         live = _export_live_state(bd_command=bd_command, env=safe_env, cwd=cwd)
         candidate = parse_and_validate_jsonl(candidate_path.read_text())
         merged, outcomes = merge_rows(live, candidate)
-    except (OSError, InvalidJsonlError, RuntimeError, subprocess.SubprocessError) as exc:
+    except InvalidJsonlError:
+        raise
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"bd guard: skipped automatic JSONL reconciliation: {exc}", file=sys.stderr)
         return
 
@@ -642,7 +631,11 @@ def cmd_invoke(args: list[str]) -> int:
     invocation_dir = _invocation_directory(bd_args)
     candidate_path = _find_candidate_jsonl(invocation_dir)
     lock = _acquire_invocation_lock(invocation_dir)
-    _preflight_invocation(bd_command, candidate_path, cwd=invocation_dir)
+    try:
+        _preflight_invocation(bd_command, candidate_path, cwd=invocation_dir)
+    except InvalidJsonlError as exc:
+        print(f"bd guard: refusing invocation: exported JSONL failed validation: {exc}", file=sys.stderr)
+        return 125
     safe_env = os.environ.copy()
     safe_env["BD_IMPORT_AUTO"] = "false"
     os.set_inheritable(lock.fileno(), True)
