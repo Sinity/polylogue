@@ -1013,6 +1013,16 @@ async def _rebuild_index_from_source_owned(
                     # a raw/cohort; it can only redo bounded work.
                     assert transaction is not None  # deadline_check is only wired when transaction is not None
                     pass_elapsed_s = time.perf_counter() - pass_started_at_s
+                    if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
+                        generation_store.checkpoint_transaction(
+                            transaction,
+                            status="stale",
+                            error="source evidence changed during deadline-interrupted rebuild pass",
+                        )
+                        source_drifted = True
+                        raise RuntimeError(
+                            f"rebuild operation {transaction.operation_id} is stale because source evidence changed"
+                        ) from exc
                     transaction = generation_store.checkpoint_transaction(
                         transaction,
                         status="deferred",

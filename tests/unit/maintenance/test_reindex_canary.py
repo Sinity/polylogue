@@ -41,6 +41,7 @@ from polylogue.maintenance.reindex_canary import (
     select_canary_sessions,
     write_canary_report,
 )
+from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
 from polylogue.storage.index_generation import rebuild_source_evidence_snapshot, source_revision_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
@@ -689,6 +690,29 @@ def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
         run_reindex_canary(root, sessions_per_origin=1, no_promote=True)
 
     assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
+
+
+def test_rebuild_rejects_evidence_mutation_in_deadline_interrupted_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deferred resumable pass cannot preserve a mutated source proof."""
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+
+    from polylogue.maintenance import replay as rebuild_replay
+
+    async def mutate_source_then_interrupt(*args: Any, **kwargs: Any) -> dict[str, object]:
+        with sqlite3.connect(root / "source.db") as connection:
+            connection.execute("UPDATE raw_sessions SET source_path = source_path || '.mutated'")
+        raise RebuildDeadlineExceededError("synthetic deadline")
+
+    monkeypatch.setattr(rebuild_replay, "rebuild_index_from_source", mutate_source_then_interrupt)
+
+    with pytest.raises(RuntimeError, match="stale because source evidence changed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, raw_batch_size=10, pass_deadline_seconds=30.0)
+        )
 
 
 def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
