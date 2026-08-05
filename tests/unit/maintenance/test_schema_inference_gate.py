@@ -30,6 +30,7 @@ class _OriginGroundTruthReceipt(TypedDict):
     external_files: int
     unverified_source_blob_hashes: int
     provenance: list[_RawGroundTruthProvenance]
+    raw_external_mapping: list[dict[str, object]]
     unmatched_external_files: list[object]
     cross_origin_mismatches: list[object]
     count_discrepancy: bool
