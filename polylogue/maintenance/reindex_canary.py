@@ -275,7 +275,7 @@ def run_reindex_canary(
     archive_root: Path,
     *,
     input_index: Path | None = None,
-    schema_inference_receipt_path: Path,
+    schema_inference_receipt_path: Path | None,
     sessions_per_origin: int = 100,
     pathology_session_ids: Iterable[str] = (),
     sample_session_ids: Iterable[str] = (),
@@ -288,6 +288,8 @@ def run_reindex_canary(
     canary never falls back to ambient process configuration.
     """
 
+    if schema_inference_receipt_path is None:
+        raise CanarySelectionError("reindex canary requires an explicit schema-inference receipt path")
     if not no_promote:
         raise CanarySelectionError("reindex canary requires --no-promote")
     from polylogue.config import resolve_archive_root
