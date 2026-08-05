@@ -99,6 +99,14 @@ def claude_code_malformed_jsonl_bytes() -> bytes:
     return good_a + b"\n" + bad + b"\n" + good_b + b"\n"
 
 
+def delayed_claude_code_session_jsonl_bytes() -> bytes:
+    """Thirty-two workflow rows precede the recoverable Claude session."""
+    prefix = b"".join(
+        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(32)
+    )
+    return prefix + claude_code_malformed_jsonl_bytes()
+
+
 def codex_malformed_jsonl_bytes() -> bytes:
     """Valid codex JSONL with one record that is not valid JSON.
 
@@ -232,7 +240,7 @@ def test_validation_off_fast_path_repairs_session_shaped_workflow_journal(tmp_pa
     enter the stream parser, which repairs the usable record, rather than
     reporting a successful sidecar admission from the path alone.
     """
-    payload = claude_code_malformed_jsonl_bytes()
+    payload = delayed_claude_code_session_jsonl_bytes()
     record = _make_raw_record(
         payload,
         "claude-code",
@@ -249,7 +257,7 @@ def test_validation_off_fast_path_repairs_session_shaped_workflow_journal(tmp_pa
 def test_validation_advisory_stream_repairs_session_shaped_workflow_journal(tmp_path: Path) -> None:
     """The normal worker stream plan must classify decoded journal records first."""
     record = _make_raw_record(
-        claude_code_malformed_jsonl_bytes(),
+        delayed_claude_code_session_jsonl_bytes(),
         "claude-code",
         "/tmp/.claude/projects/project/subagents/workflows/wf-run-1/journal.jsonl",
     ).model_copy(update={"source_name": "claude-code"})

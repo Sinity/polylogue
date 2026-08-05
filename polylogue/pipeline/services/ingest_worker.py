@@ -26,7 +26,11 @@ from polylogue.archive.artifact_taxonomy import (
     classify_artifact_path,
 )
 from polylogue.archive.artifact_taxonomy.support import is_subagent_path
-from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
+from polylogue.archive.raw_payload.decode import (
+    RawPayloadEnvelope,
+    _sample_jsonl_payload_with_detail,
+    jsonl_session_artifact,
+)
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
 from polylogue.logging import get_logger
@@ -315,7 +319,6 @@ def _build_stream_parse_plan(
     *,
     payload_provider: str | None,
 ) -> _ParsePlan | None:
-    from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
     from polylogue.sources.dispatch import detect_provider
 
     stream_name = context.raw_record.source_path or context.raw_record.raw_id
@@ -359,7 +362,14 @@ def _build_stream_parse_plan(
         context.raw_record.source_path,
         provider=runtime_provider,
     )
-    artifact = decoded_artifact if decoded_artifact.parse_as_session else path_artifact or decoded_artifact
+    session_artifact = (
+        jsonl_session_artifact(context.raw_source, provider=runtime_provider, jsonl_dict_only=True)
+        if path_artifact is not None and not path_artifact.parse_as_session
+        else None
+    )
+    artifact = session_artifact or (
+        decoded_artifact if decoded_artifact.parse_as_session else path_artifact or decoded_artifact
+    )
     return _build_parse_plan(
         provider=runtime_provider,
         payload_provider=str(runtime_provider),
@@ -394,8 +404,6 @@ def _build_fast_stream_parse_plan(
         provider=runtime_provider,
     )
     if path_artifact is not None and not path_artifact.parse_as_session:
-        from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
-
         try:
             sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
                 context.raw_source,
@@ -409,10 +417,11 @@ def _build_fast_stream_parse_plan(
                 context.raw_record.source_path or context.raw_record.raw_id,
             )
         else:
-            decoded_artifact = classify_artifact(
-                sample_payloads,
+            decoded_artifact = jsonl_session_artifact(
+                context.raw_source,
                 provider=runtime_provider,
-            )
+                jsonl_dict_only=True,
+            ) or classify_artifact(sample_payloads, provider=runtime_provider)
             if decoded_artifact.parse_as_session:
                 return _build_parse_plan(
                     provider=runtime_provider,

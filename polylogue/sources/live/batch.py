@@ -18,12 +18,12 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
-from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
+from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.archive.revision_authority import (
     HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
@@ -318,16 +318,10 @@ def _blob_jsonl_has_session_evidence(
 ) -> bool:
     if Path(source_path).suffix.lower() != ".jsonl":
         return False
-    records = []
     try:
-        with blob_store.open(blob_hash) as handle:
-            for record in _iter_json_stream(handle, Path(source_path).name):
-                records.append(record)
-                if len(records) >= 64:
-                    break
-    except OSError:
+        return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=provider) is not None
+    except (OSError, ValueError):
         return False
-    return bool(records) and classify_artifact(records, provider=provider).parse_as_session
 
 
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:

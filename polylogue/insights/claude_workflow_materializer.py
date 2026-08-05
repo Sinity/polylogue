@@ -18,8 +18,9 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
+from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.json import JSONDecodeError, JSONValue
+from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.claude_workflow_evidence import (
@@ -265,18 +266,7 @@ def _raw_payload_has_session_evidence(blob_store: BlobStore, row: sqlite3.Row) -
     except (OSError, ValueError):
         return False
     if path.suffix.lower() == ".jsonl":
-        records: list[JSONValue] = []
-        for line in payload.splitlines():
-            if len(records) >= 64:
-                break
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                records.append(json_loads(raw))
-            except JSONDecodeError:
-                continue
-        return bool(records) and classify_artifact(records, provider=Provider.CLAUDE_CODE).parse_as_session
+        return jsonl_session_artifact(payload, provider=Provider.CLAUDE_CODE) is not None
     if path.suffix.lower() != ".json":
         return False
     try:

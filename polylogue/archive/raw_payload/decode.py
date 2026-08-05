@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias, cast
@@ -180,6 +181,47 @@ def _sample_jsonl_payload_with_detail(
     if valid_records == 0:
         raise ValueError("No valid JSONL records found")
     return samples, malformed_lines, malformed_detail
+
+
+def jsonl_session_artifact(
+    raw: Path | bytes | str,
+    *,
+    provider: Provider,
+    jsonl_dict_only: bool = False,
+) -> ArtifactClassification | None:
+    """Stream JSONL until one decoded record proves session eligibility.
+
+    Terminal artifact admission must not let an arbitrary prefix of
+    non-conversational records hide a later session record. This retains a
+    rolling 32-record window, including for blob-backed multi-gigabyte JSONL.
+    """
+    records: deque[JSONValue] = deque(maxlen=32)
+    first_line = True
+    with raw_line_stream(raw) as stream:
+        for raw_line in stream:
+            try:
+                line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
+            except UnicodeDecodeError:
+                continue
+            if first_line:
+                line = line.lstrip("\ufeff")
+                first_line = False
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = _load_json_record(line)
+            except (JSONDecodeError, ValueError):
+                continue
+            if jsonl_dict_only and not isinstance(payload, dict):
+                continue
+            records.append(payload)
+            window = list(records)
+            for start in range(len(window)):
+                artifact = classify_artifact(window[start:], provider=provider)
+                if artifact.parse_as_session:
+                    return artifact
+    return None
 
 
 def sample_jsonl_payload(
@@ -437,5 +479,6 @@ __all__ = [
     "RawPayloadEnvelope",
     "WireFormat",
     "build_raw_payload_envelope",
+    "jsonl_session_artifact",
     "sample_jsonl_payload",
 ]

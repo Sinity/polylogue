@@ -1408,7 +1408,9 @@ def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path:
     """Decoded session evidence bypasses path-only workflow-journal admission."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
     path.parent.mkdir(parents=True)
-    payload = (
+    payload = b"".join(
+        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(32)
+    ) + (
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
         b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
         b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
@@ -3995,12 +3997,18 @@ def test_large_full_batch_session_shaped_workflow_journal_reaches_parser_idempot
     source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
     source.parent.mkdir(parents=True)
     source.write_bytes(
-        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
+        b'{"contentKey":"artifact-0","agentId":"workflow-agent","summary":"'
+        + b"x" * _STREAMING_FULL_INGEST_BYTES
+        + b'"}\n'
+        + b"".join(
+            b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
+            for index in range(1, 32)
+        )
+        + b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
         b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
-        b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
+        + b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
         b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
         b'"timestamp":"2025-01-01T00:00:01Z"}\n'
-        b'{"type":"summary","summary":"' + b"x" * _STREAMING_FULL_INGEST_BYTES + b'"}\n'
     )
     assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
     processor = LiveBatchProcessor(

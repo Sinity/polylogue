@@ -5,11 +5,11 @@ from __future__ import annotations
 import sqlite3
 import time
 from datetime import UTC, datetime
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail, jsonl_session_artifact
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -79,7 +79,6 @@ def _ingest_append_plans_archive(
         _add_timing(timings, "append.archive_init", t0)
 
     t0 = time.perf_counter()
-    from polylogue.sources.decoders import _iter_json_stream
     from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
     from polylogue.sources.revision_backfill import (
         _declared_non_session_artifact_classification,
@@ -109,21 +108,31 @@ def _ingest_append_plans_archive(
                     )
                     json_stream_started = time.perf_counter()
                     try:
-                        payloads = list(_iter_json_stream(BytesIO(plan.payload), plan.path.name))
+                        payloads, _malformed_lines, _malformed_detail = _sample_jsonl_payload_with_detail(
+                            plan.payload,
+                            max_samples=64,
+                            jsonl_dict_only=True,
+                            scan_full=False,
+                        )
+                        session_artifact = jsonl_session_artifact(
+                            plan.payload,
+                            provider=provider,
+                            jsonl_dict_only=True,
+                        )
                     except Exception:
                         # Preserve the pre-parse raw capture for malformed input;
                         # the normal parser path below records the typed failure.
                         payloads = None
                     _add_timing(timings, "append.json_stream", json_stream_started)
                     if payloads is not None:
-                        decoded_artifact = classify_artifact(payloads[:64], provider=provider)
+                        decoded_artifact = session_artifact or classify_artifact(payloads, provider=provider)
                         classification = (
                             _declared_non_session_artifact_classification(
                                 provider,
                                 str(plan.path),
                                 sample=payloads[:64],
                             )
-                            if not decoded_artifact.parse_as_session
+                            if session_artifact is None and not decoded_artifact.parse_as_session
                             else None
                         )
                         if classification is not None:

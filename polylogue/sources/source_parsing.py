@@ -7,9 +7,10 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.config import Source
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDecodeError, JSONValue
+from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
@@ -35,22 +36,7 @@ _decoders.logger = logger
 def has_decoded_session_evidence(path: Path, *, provider: Provider) -> bool:
     """Return whether decoded JSON content outranks a non-session path rule."""
     if path.suffix.lower() == ".jsonl":
-        records: list[JSONValue] = []
-        try:
-            with path.open("rb") as handle:
-                for line in handle:
-                    if len(records) >= 64:
-                        break
-                    raw = line.strip()
-                    if not raw:
-                        continue
-                    try:
-                        records.append(json_loads(raw))
-                    except JSONDecodeError:
-                        continue
-        except OSError:
-            return False
-        return bool(records) and classify_artifact(records, provider=provider).parse_as_session
+        return jsonl_session_artifact(path, provider=provider) is not None
 
     if path.suffix.lower() != ".json":
         return False
