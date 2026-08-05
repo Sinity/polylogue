@@ -549,6 +549,28 @@ def _parse_receipt_datetime(value: object, *, field: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def rebuild_source_revision_snapshot(archive_root: Path) -> str:
+    """Hash immutable source-row revision fields used by a derived rebuild."""
+
+    digest = hashlib.sha256()
+    source_path = Path(archive_root) / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
+    with open_readonly_connection(source_path) as source:
+        for row in source.execute(
+            """
+            SELECT raw_id, origin, native_id, source_path,
+                   acquired_at_ms, blob_hash, blob_size, validation_status
+            FROM raw_sessions
+            ORDER BY raw_id
+            """
+        ):
+            for value in row:
+                encoded = value.hex() if isinstance(value, bytes) else str(value)
+                digest.update(encoded.encode("utf-8"))
+                digest.update(b"\0")
+            digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _canonical_external_ground_truth_digest(origins: Mapping[str, object]) -> str:
     """Digest the complete external corpus inventory recorded in a receipt."""
 
@@ -1330,10 +1352,8 @@ def validate_schema_inference_receipt(
         if not source_path.exists():
             errors.append("source.db is missing")
         else:
-            from polylogue.storage.index_generation import source_revision_snapshot
-
             expected_snapshot = document.get("source_snapshot")
-            actual_snapshot = source_revision_snapshot(root)
+            actual_snapshot = rebuild_source_revision_snapshot(root)
             if not isinstance(expected_snapshot, str) or expected_snapshot != actual_snapshot:
                 errors.append("receipt source snapshot does not match source.db")
     except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
@@ -1481,9 +1501,7 @@ def run_schema_inference_gate(
     source_snapshot: str | None = None
     reasons_for_snapshot: str | None = None
     try:
-        from polylogue.storage.index_generation import source_revision_snapshot
-
-        source_snapshot = source_revision_snapshot(root)
+        source_snapshot = rebuild_source_revision_snapshot(root)
     except (OSError, sqlite3.Error) as exc:
         reasons_for_snapshot = f"source revision snapshot could not be read: {exc}"
     gate_results = _as_dict(source_gates.get("gates"))
@@ -1561,6 +1579,7 @@ __all__ = [
     "SCHEMA_INFERENCE_RECEIPT_ENV",
     "SchemaInferenceGateError",
     "SchemaInferenceGateResult",
+    "rebuild_source_revision_snapshot",
     "resolve_schema_inference_receipt_reference",
     "run_schema_inference_gate",
     "validate_schema_inference_receipt",

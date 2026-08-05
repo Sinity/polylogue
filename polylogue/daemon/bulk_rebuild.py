@@ -44,11 +44,11 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import Config
 from polylogue.logging import get_logger
+from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.index_generation import (
     IndexGenerationStore,
     IndexRebuildTransaction,
-    source_revision_snapshot,
 )
 
 if TYPE_CHECKING:
@@ -146,7 +146,7 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
             store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
 
         return store.create_transaction(
-            source_snapshot=source_revision_snapshot(root),
+            source_snapshot=rebuild_source_revision_snapshot(root),
             operation_id=DAEMON_BULK_REBUILD_OPERATION_ID,
         )
     finally:

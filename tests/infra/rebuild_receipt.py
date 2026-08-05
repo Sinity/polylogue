@@ -10,7 +10,6 @@ from pathlib import Path
 from polylogue.maintenance import schema_inference_gate as gate
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.index_generation import source_revision_snapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -92,7 +91,7 @@ def write_valid_rebuild_receipt(
             "durable_id": identity.durable_id,
             "source_tier": identity.tier("source").as_dict(),
         },
-        "source_snapshot": source_revision_snapshot(root),
+        "source_snapshot": gate.rebuild_source_revision_snapshot(root),
         "external_ground_truth_digest": digest,
         "source_schema_identity": source_entry,
         "query_results": query_results,
