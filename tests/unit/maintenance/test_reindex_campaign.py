@@ -176,7 +176,8 @@ def test_restart_debt_converges_to_uninterrupted_campaign_state(tmp_path: Path) 
     session_id = uninterrupted.manifest.restart_session_ids[0]
     restarted_session_id = restarted.manifest.restart_session_ids[0]
 
-    make_messages_fts_stale(uninterrupted.root / "index.db", session_id=session_id)
+    uninterrupted_removed_fts = make_messages_fts_stale(uninterrupted.root / "index.db", session_id=session_id)
+    assert uninterrupted_removed_fts > 0
     with sqlite3.connect(uninterrupted.root / "index.db") as conn:
         conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
         conn.commit()
@@ -187,7 +188,14 @@ def test_restart_debt_converges_to_uninterrupted_campaign_state(tmp_path: Path) 
 
     source_path = _source_path_for_session(restarted, restarted_session_id)
     assert source_path.is_file()
-    make_messages_fts_stale(restarted.root / "index.db", session_id=restarted_session_id)
+    restarted_removed_fts = make_messages_fts_stale(restarted.root / "index.db", session_id=restarted_session_id)
+    assert restarted_removed_fts > 0
+    with sqlite3.connect(restarted.root / "index.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM messages_fts_identity AS f "
+            "JOIN blocks AS b ON b.block_id = f.block_id WHERE b.session_id = ?",
+            (restarted_session_id,),
+        ).fetchone() == (0,)
     with sqlite3.connect(restarted.root / "index.db") as conn:
         conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (restarted_session_id,))
         conn.commit()
@@ -272,6 +280,12 @@ def test_restart_debt_converges_to_uninterrupted_campaign_state(tmp_path: Path) 
         )
         is None
     )
+    with sqlite3.connect(restarted.root / "index.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM messages_fts_identity AS f "
+            "JOIN blocks AS b ON b.block_id = f.block_id WHERE b.session_id = ?",
+            (restarted_session_id,),
+        ).fetchone() == (restarted_removed_fts,)
 
     uninterrupted_snapshot = _snapshot(uninterrupted)
     restarted_snapshot = _snapshot(restarted)
