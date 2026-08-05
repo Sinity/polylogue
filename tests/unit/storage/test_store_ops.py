@@ -277,7 +277,7 @@ def _record_query(**kwargs: Unpack[RecordQueryKwargs]) -> SessionRecordQuery:
 
 
 @pytest.mark.asyncio
-async def test_aggregate_message_stats_reports_role_counts_and_words(workspace_env: dict[str, Path]) -> None:
+async def test_aggregate_message_stats_reports_public_contract(workspace_env: dict[str, Path]) -> None:
     from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
     from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -313,7 +313,10 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(workspace_e
     assert unfiltered["words_approx"] == 9
     assert unfiltered["attachment_refs"] == 1
     assert unfiltered["distinct_attachments"] == 1
-    assert unfiltered["origins"] == {"chatgpt-export": 1, "codex-session": 1}
+    assert unfiltered["origins"] == {
+        Origin.CHATGPT_EXPORT.value: 1,
+        Origin.CODEX_SESSION.value: 1,
+    }
 
     assert filtered["total"] == 2
     assert filtered["user"] == 1
@@ -322,7 +325,7 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(workspace_e
     assert filtered["words_approx"] == 5
     assert filtered["attachment_refs"] == 1
     assert filtered["distinct_attachments"] == 1
-    assert filtered["origins"] == {"chatgpt-export": 1}
+    assert filtered["origins"] == {Origin.CHATGPT_EXPORT.value: 1}
 
 
 def _file_read_block(*, message_id: str, session_id: str, path: str, block_index: int = 0) -> BlockRecord:
