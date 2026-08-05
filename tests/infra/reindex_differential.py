@@ -17,6 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import FTS_FRESHNESS_STATE_DDL, INDEX_DDL
 
@@ -136,7 +137,7 @@ def snapshot_derived_model(
         tables = tuple((table, _project_table(conn, table)) for table in census)
         markers = _marker_rows(conn)
         fts_ledger = _fts_ledger_rows(conn)
-        source_rows = int(conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0])
+        source_rows = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
         indexed_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
     with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
         public_reads = _public_reads(archive, session_ids)

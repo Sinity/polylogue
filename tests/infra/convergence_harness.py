@@ -717,14 +717,23 @@ def set_debt_retry_at(
 def make_messages_fts_stale(index_db: Path, *, session_id: str) -> int:
     """Delete only this session's real FTS rows to create unrelated stage debt."""
     with open_connection(index_db) as conn:
-        row_ids = [
-            int(row[0])
-            for row in conn.execute(
-                "SELECT rowid FROM blocks WHERE session_id = ? ORDER BY rowid",
-                (session_id,),
-            ).fetchall()
-        ]
+        block_ids = tuple(
+            str(row[0])
+            for row in conn.execute("SELECT block_id FROM blocks WHERE session_id = ? ORDER BY rowid", (session_id,))
+        )
+        row_ids = (
+            tuple(
+                int(row[0])
+                for row in conn.execute(
+                    f"SELECT rowid FROM messages_fts_identity WHERE block_id IN ({','.join('?' for _ in block_ids)})",
+                    block_ids,
+                )
+            )
+            if block_ids
+            else ()
+        )
         conn.executemany("DELETE FROM messages_fts WHERE rowid = ?", ((row_id,) for row_id in row_ids))
+        conn.executemany("DELETE FROM messages_fts_identity WHERE rowid = ?", ((row_id,) for row_id in row_ids))
         conn.commit()
     if not row_ids:
         raise AssertionError(f"session {session_id!r} has no indexed blocks")
