@@ -561,6 +561,18 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     assert captured_receipt_path == receipt_path
 
 
+def test_run_reindex_canary_rejects_missing_receipt_even_with_ambient_valid_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    ambient_receipt = write_valid_rebuild_receipt(root, tmp_path / "ambient-schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(ambient_receipt))
+
+    with pytest.raises(CanarySelectionError, match="requires an explicit schema-inference receipt path"):
+        run_reindex_canary(root, schema_inference_receipt_path=None, sessions_per_origin=1, no_promote=True)
+
+
 def test_run_reindex_canary_rejects_input_index_outside_archive_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
