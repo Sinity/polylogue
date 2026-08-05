@@ -335,20 +335,20 @@ def run_reindex_canary(
             candidate_acceptance_checks=REINDEX_CANARY_ACCEPTANCE_CHECKS,
         )
     )
+    receipt_payload = receipt.to_dict()
+    _validate_selection_evidence(receipt_payload, selection.selected_raw_ids)
     candidate_path = _validate_canary_candidate(
         root,
         current_index=current_index,
         selection=selection,
         receipt=receipt,
     )
+    _validate_authoritative_rebuild_receipt(receipt_payload, candidate_path)
     comparison = compare_reindex_generations(
         current_index,
         candidate_path,
         session_ids=selection.selected_session_ids,
     )
-    receipt_payload = receipt.to_dict()
-    receipt_payload["selected_raw_ids"] = list(selection.selected_raw_ids)
-    receipt_payload["selected_session_ids"] = list(selection.selected_session_ids)
     return CanaryRunResult(
         selection=selection,
         comparison=comparison,
@@ -503,7 +503,7 @@ class DurableCanaryReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "selection": self.selection.to_dict(),
             "comparison": self.comparison.to_dict(),
             "rebuild_receipt": self.rebuild_receipt,
@@ -635,17 +635,37 @@ def _validate_selection_binding(
         raise UnclassifiedCanaryDiffError("canary report selection index does not match the compared current index")
     if selection.selected_session_ids != comparison.session_ids:
         raise UnclassifiedCanaryDiffError("canary report selection sessions do not match the comparison")
-    raw_ids = receipt.get("selected_raw_ids")
-    session_ids = receipt.get("selected_session_ids")
-    if (
-        not isinstance(raw_ids, list)
-        or not all(isinstance(value, str) for value in raw_ids)
-        or not isinstance(session_ids, list)
-        or not all(isinstance(value, str) for value in session_ids)
-        or tuple(raw_ids) != selection.selected_raw_ids
-        or tuple(session_ids) != selection.selected_session_ids
-    ):
-        raise UnclassifiedCanaryDiffError("canary report rebuild evidence does not match the selected identities")
+    _validate_selection_evidence(receipt, selection.selected_raw_ids)
+
+
+def _validate_selection_evidence(receipt: dict[str, object], selected_raw_ids: Iterable[str]) -> None:
+    """Match report selection to the rebuild-owned candidate commitment."""
+
+    from polylogue.maintenance.rebuild_index import rebuild_selection_evidence
+
+    generation = receipt.get("generation")
+    evidence = receipt.get("selection_evidence")
+    if not isinstance(generation, dict) or not isinstance(evidence, dict):
+        raise UnclassifiedCanaryDiffError("canary report has no authoritative rebuild selection evidence")
+    required = (
+        generation.get("generation_id"),
+        generation.get("owner_id"),
+        generation.get("index_path"),
+        generation.get("source_snapshot"),
+        receipt.get("archive_root"),
+    )
+    if not all(isinstance(value, str) and value for value in required):
+        raise UnclassifiedCanaryDiffError("canary report has incomplete authoritative rebuild selection evidence")
+    expected = rebuild_selection_evidence(
+        tuple(selected_raw_ids),
+        archive_root=Path(cast(str, receipt["archive_root"])),
+        generation_id=cast(str, generation["generation_id"]),
+        generation_owner_id=cast(str, generation["owner_id"]),
+        candidate_index=Path(cast(str, generation["index_path"])),
+        source_snapshot=cast(str, generation["source_snapshot"]),
+    )
+    if evidence != expected:
+        raise UnclassifiedCanaryDiffError("canary report selection does not match the authoritative rebuild receipt")
 
 
 def _comparison_fingerprint(comparison: CanaryDiffReport) -> str:
@@ -716,6 +736,19 @@ def _validate_rebuild_receipt(
         raise UnclassifiedCanaryDiffError("canary report rebuild receipt and candidate archive roots disagree")
     if Path(generation_index).resolve() != Path(candidate_index).resolve():
         raise UnclassifiedCanaryDiffError("canary report rebuild receipt does not identify the compared candidate")
+    _validate_selection_evidence(receipt, selected_raw_ids)
+
+
+def _validate_authoritative_rebuild_receipt(receipt: dict[str, object], candidate_index: Path) -> None:
+    """Reject report receipts that differ from rebuild-owned candidate evidence."""
+
+    path = candidate_index.parent / "rebuild-receipt.json"
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UnclassifiedCanaryDiffError("archive-owned rebuild receipt is unreadable") from exc
+    if not isinstance(stored, dict) or stored != receipt:
+        raise UnclassifiedCanaryDiffError("archive-owned rebuild receipt does not match the report")
 
 
 def _generation_root(location: object) -> Path:
@@ -912,8 +945,8 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise UnclassifiedCanaryDiffError("canary report root must be an object")
-    if payload.get("schema_version") != 3:
-        raise UnclassifiedCanaryDiffError("canary report has no archive-owned provenance schema")
+    if payload.get("schema_version") != 4:
+        raise UnclassifiedCanaryDiffError("canary report has no authoritative rebuild receipt schema")
     comparison = payload.get("comparison")
     if not isinstance(comparison, dict):
         raise UnclassifiedCanaryDiffError("canary report has no comparison object")
@@ -1015,6 +1048,9 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         candidate_index=persisted_comparison.candidate_index,
         receipt=cast(dict[str, object], payload["rebuild_receipt"]),
     )
+    _validate_authoritative_rebuild_receipt(
+        cast(dict[str, object], payload["rebuild_receipt"]), persisted_comparison.candidate_index
+    )
     recomputed_comparison = compare_reindex_generations(
         persisted_comparison.current_index,
         persisted_comparison.candidate_index,
@@ -1049,7 +1085,7 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
 
 
 def approve_canary_report(path: Path, *, archive_root: Path) -> dict[str, object]:
-    """Consume a fresh durable report and return it only when approvable."""
+    """Approve evidence only. This cannot authorize or perform promotion."""
 
     payload = load_canary_report(path, archive_root=archive_root)
     if payload.get("review_status") != "reviewed":

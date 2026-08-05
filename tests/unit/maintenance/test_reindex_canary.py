@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from polylogue.maintenance import reindex_canary as reindex_canary_module
+from polylogue.maintenance.rebuild_index import rebuild_selection_evidence
 from polylogue.maintenance.reindex_canary import (
     CanaryDifferenceReview,
     CanaryDiffReport,
@@ -57,6 +58,11 @@ def _synthetic_report_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         reindex_canary_module,
         "_validate_archive_provenance",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        reindex_canary_module,
+        "_validate_authoritative_rebuild_receipt",
         lambda *args, **kwargs: None,
     )
 
@@ -149,21 +155,28 @@ def _empty_comparison(current: Path, candidate: Path, session_ids: tuple[str, ..
 
 
 def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -> dict[str, object]:
+    generation = {
+        "generation_id": "gen-canary",
+        "owner_id": "owner",
+        "archive_root": str(comparison.candidate_index.parent),
+        "index_path": str(comparison.candidate_index),
+        "state": "inactive",
+        "source_snapshot": "snapshot",
+    }
     return {
         "archive_root": str(comparison.candidate_index.parent),
         "selected_raw_count": len(selection.selected_raw_ids),
-        "selected_raw_ids": list(selection.selected_raw_ids),
-        "selected_session_ids": list(selection.selected_session_ids),
         "status": "replayed",
         "materialized": True,
-        "generation": {
-            "generation_id": "gen-canary",
-            "owner_id": "owner",
-            "archive_root": str(comparison.candidate_index.parent),
-            "index_path": str(comparison.candidate_index),
-            "state": "inactive",
-            "source_snapshot": "snapshot",
-        },
+        "generation": generation,
+        "selection_evidence": rebuild_selection_evidence(
+            selection.selected_raw_ids,
+            archive_root=comparison.candidate_index.parent,
+            generation_id="gen-canary",
+            generation_owner_id="owner",
+            candidate_index=comparison.candidate_index,
+            source_snapshot="snapshot",
+        ),
     }
 
 
@@ -504,6 +517,9 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
 
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
     monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_canary_candidate", lambda *args, **kwargs: current
     )
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
@@ -623,9 +639,15 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
     )
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
     monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_canary_candidate", lambda *args, **kwargs: current
     )
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
+    )
 
     result = run_reindex_canary(tmp_path, input_index=current, no_promote=True)
 
@@ -669,6 +691,9 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
         "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
     )
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", lambda request: Receipt())
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
+    )
 
     def fake_compare(current_path: Path, candidate_path: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
         captured.update({"paths": (current_path, candidate_path), "session_ids": session_ids})
@@ -703,10 +728,16 @@ def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, m
             "source_snapshot": "snapshot",
         }
 
+        def to_dict(self) -> dict[str, object]:
+            return {"generation": self.generation}
+
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
     )
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", lambda request: Receipt())
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
+    )
 
     with pytest.raises(CanarySelectionError, match="outside this archive's generation root"):
         run_reindex_canary(tmp_path, input_index=current, no_promote=True)
@@ -838,7 +869,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert durable.unclassified_count == 0
     assert report_path.exists()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     comparison_payload = payload["comparison"]
     assert isinstance(comparison_payload, dict)
     summary = comparison_payload["summary"]
@@ -926,7 +957,7 @@ def test_loading_canary_report_rejects_tampered_candidate_provenance(tmp_path: P
     (
         ("index", "selection index"),
         ("sessions", "selection sessions"),
-        ("raw-ids", "rebuild evidence"),
+        ("raw-ids", "selection does not match the authoritative rebuild receipt"),
     ),
 )
 def test_loading_canary_report_rejects_tampered_selection_binding(tmp_path: Path, tamper: str, message: str) -> None:
@@ -956,7 +987,7 @@ def test_loading_canary_report_rejects_tampered_selection_binding(tmp_path: Path
     elif tamper == "sessions":
         payload["selection"]["selected_session_ids"] = ["codex-session:foreign"]
     else:
-        payload["rebuild_receipt"]["selected_raw_ids"] = ["raw-foreign"]
+        payload["selection"]["selected_raw_ids"] = ["raw-foreign"]
     report_path.write_text(json.dumps(payload))
     with pytest.raises(UnclassifiedCanaryDiffError, match=message):
         load_canary_report(report_path)

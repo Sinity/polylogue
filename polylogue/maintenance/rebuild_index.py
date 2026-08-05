@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import os
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -394,6 +397,12 @@ class RebuildIndexReceipt:
     # compatible full checkpoint payload; this compact view is the stable
     # operator contract for ownership, heartbeat, cursor, delta, and recovery.
     operation: dict[str, object] = field(default_factory=dict)
+    # Rebuild-owned evidence for the exact raw selection replayed into this
+    # candidate. The IDs themselves are deliberately not duplicated in every
+    # receipt; the stable commitment is enough for a verifier holding the
+    # requested IDs to prove the set, count, source snapshot, and candidate
+    # identity all agree.
+    selection_evidence: dict[str, object] = field(default_factory=dict)
     #: Wall-clock seconds per rebuild stage for THIS pass.
     #:
     #: Three full rebuilds ran without this, so the only cost breakdown
@@ -418,9 +427,60 @@ class RebuildIndexReceipt:
             "readiness": self.readiness,
             "transaction": self.transaction,
             "operation": self.operation,
+            "selection_evidence": self.selection_evidence,
             "timings_s": self.timings_s,
             **self.replay,
         }
+
+
+def rebuild_selection_evidence(
+    raw_ids: list[str] | tuple[str, ...],
+    *,
+    archive_root: Path,
+    generation_id: str,
+    generation_owner_id: str,
+    candidate_index: Path,
+    source_snapshot: str,
+) -> dict[str, object]:
+    """Commit the actual rebuild selection to its source and inactive candidate."""
+
+    canonical = {
+        "archive_root": str(archive_root.resolve()),
+        "candidate_generation_id": generation_id,
+        "candidate_index_path": str(candidate_index.resolve()),
+        "candidate_owner_id": generation_owner_id,
+        "raw_ids": sorted(raw_ids),
+        "source_snapshot": source_snapshot,
+    }
+    encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return {
+        "algorithm": "sha256-canonical-json-v1",
+        "raw_id_count": len(raw_ids),
+        "raw_ids_sha256": sha256(encoded).hexdigest(),
+        **{key: value for key, value in canonical.items() if key != "raw_ids"},
+    }
+
+
+def _persist_candidate_receipt(generation: IndexGeneration, receipt: dict[str, object]) -> None:
+    """Atomically retain the completed rebuild receipt with its candidate."""
+
+    path = Path(generation.index_path).parent / "rebuild-receipt.json"
+    temporary = path.with_suffix(".json.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(receipt, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _operation_evidence(
@@ -745,6 +805,14 @@ async def _rebuild_index_from_source_owned(
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
             generation = generation_store.create(source_snapshot=source_revision_snapshot(root))
+        selection_evidence = rebuild_selection_evidence(
+            selected_raw_ids,
+            archive_root=root,
+            generation_id=generation.generation_id,
+            generation_owner_id=generation.owner_id,
+            candidate_index=Path(generation.index_path),
+            source_snapshot=generation.source_snapshot,
+        )
         source_drifted = False
         try:
             generation_root = Path(generation.index_path).parent
@@ -945,6 +1013,7 @@ async def _rebuild_index_from_source_owned(
                         operation=_operation_evidence(
                             root, generation=generation, transaction=transaction, recovery_state="deferred"
                         ),
+                        selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
@@ -1024,6 +1093,7 @@ async def _rebuild_index_from_source_owned(
                         operation=_operation_evidence(
                             root, generation=generation, transaction=transaction, recovery_state=status
                         ),
+                        selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
@@ -1199,8 +1269,10 @@ async def _rebuild_index_from_source_owned(
             transaction=transaction,
             recovery_state="promoted" if request.promote else "ready",
         ),
+        selection_evidence=selection_evidence,
         timings_s={key: round(value, 3) for key, value in terminal_timings_s.items()},
     )
+    _persist_candidate_receipt(generation, final_receipt.to_dict())
     if transaction is not None:
         generation_store.save_pass_receipt(transaction.operation_id, final_receipt.to_dict())
     return final_receipt
