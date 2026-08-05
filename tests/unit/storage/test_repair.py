@@ -512,74 +512,110 @@ def test_raw_materialization_retries_typed_transient_lock_failure(tmp_path: Path
         ).fetchone() == (1, None)
 
 
-def test_raw_materialization_retries_membership_replay_conflict_failure(tmp_path: Path) -> None:
+def test_raw_materialization_retries_legacy_frontier_authority_failures(tmp_path: Path) -> None:
     """polylogue-5iz4: a MembershipReplayConflictError parse_error is retryable.
 
-    ``apply_raw_membership_classification``'s two head-conflict guards
-    (storage/sqlite/archive_tiers/revision_governance.py) are explicitly
-    transient/retry-eligible refusals, not proof a raw is unparseable -- a
-    later pass over the same durable bytes can succeed once sibling evidence
-    resolves or the accepted head changes. But the raw materialization
-    candidate query only recognizes retry-eligible parse_error text through a
-    literal allowlist; a plain ``RuntimeError`` message (the type both guards
-    raised before this fix, and the type a real production Codex session's
-    parse_error was frozen as under PR #2718's now-superseded wording) is
-    indistinguishable from a genuinely terminal parse failure and is silently
-    excluded from every future rebuild attempt forever. Anti-vacuity: a
-    sibling row carrying the OLD plain-``RuntimeError`` text must remain
-    excluded -- this test would pass vacuously (0 candidates either way) if
-    the candidate query's parse_error filter were simply deleted instead of
-    extended.
+    The durable raw rows use the exact legacy strings observed in the live
+    frontier: a stale accepted-frontier CAS and the old membership-replay
+    guard.  They are authority refusals, so the real repair selector must
+    reconsider them against the current head.  An unrelated RuntimeError
+    remains excluded, which prevents a broad RuntimeError retry from making
+    the check vacuous.
     """
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
-    blob_store = BlobStore(tmp_path / "blob")
-    retryable_raw_id, retryable_size = blob_store.write_from_bytes(b'{"mapping":{}}')
-    stale_raw_id, stale_size = blob_store.write_from_bytes(b'{"mapping":{"stale":{}}}')
+    initialize_active_archive_root(tmp_path)
+    payloads = {
+        "retryable": b'{"mapping":{}}',
+        "cas": b'{"mapping":{"cas":{}}}',
+        "membership": b'{"mapping":{"membership":{}}}',
+        "stale": b'{"mapping":{"stale":{}}}',
+    }
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = {
+            name: archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=f"{name}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            for index, (name, payload) in enumerate(payloads.items())
+        }
+    sizes = {name: len(payload) for name, payload in payloads.items()}
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.executemany(
             """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
-                acquired_at_ms, parsed_at_ms, parse_error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            UPDATE raw_sessions SET parsed_at_ms = ?, parse_error = ? WHERE raw_id = ?
             """,
             [
                 (
-                    retryable_raw_id,
-                    "codex-session",
-                    "native-membership-conflict",
-                    "whale.jsonl",
-                    0,
-                    bytes.fromhex(retryable_raw_id),
-                    retryable_size,
-                    2,
                     3,
                     "MembershipReplayConflictError: membership replay cannot replace a head "
                     "with unresolved byte-append evidence: logical_source_key='codex:whale'",
+                    raw_ids["retryable"],
                 ),
-                (
-                    stale_raw_id,
-                    "codex-session",
-                    "native-stale-plain-runtime-error",
-                    "stale.jsonl",
-                    0,
-                    bytes.fromhex(stale_raw_id),
-                    stale_size,
-                    1,
-                    4,
-                    "RuntimeError: membership replay cannot replace an unconvertible byte head",
-                ),
+                (4, "RuntimeError: raw revision CAS rejected an older accepted frontier", raw_ids["cas"]),
+                (4, "RuntimeError: membership replay cannot replace an unconvertible byte head", raw_ids["membership"]),
+                (4, "RuntimeError: unrelated parser failure", raw_ids["stale"]),
             ],
         )
         source_conn.commit()
 
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
 
-    assert result.metrics["raw_materialization_candidate_count"] == 1.0
-    assert result.metrics["raw_materialization_total_blob_bytes"] == float(retryable_size)
+    assert result.metrics["raw_materialization_candidate_count"] == 3.0
+    assert result.metrics["raw_materialization_total_blob_bytes"] == float(
+        sizes["retryable"] + sizes["cas"] + sizes["membership"]
+    )
+
+
+def test_raw_materialization_repairs_legacy_stale_frontier_failure(tmp_path: Path) -> None:
+    """The legacy CAS failure reaches the real replay actuator and clears only on success."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.raw_retention import raw_frontier_integrity_projection
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"legacy-frontier-repair"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"repair durable frontier evidence"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="legacy-frontier-repair.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
+            ("RuntimeError: raw revision CAS rejected an older accepted frontier", raw_id),
+        )
+        source_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=False)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute(
+            "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (1, None)
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        assert index_conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone() == (1,)
+    frontier = raw_frontier_integrity_projection(
+        tmp_path,
+        {"available": True, "lost_source_evidence_count": 0, "lost_source_evidence_samples": []},
+    )
+    assert frontier.overall_status == "healthy"
+    assert frontier.broken_head_count == 0
 
 
 def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_blob(tmp_path: Path) -> None:
