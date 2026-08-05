@@ -344,6 +344,41 @@ def test_deleted_fts_row_trips_message_fts_parity(tmp_path: Path) -> None:
     assert check.evidence["messages_fts"]["worst_sessions"][0]["session_id"] == "codex-session:session"
 
 
+def test_missing_fts_trigger_trips_message_fts_parity(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute("DROP TRIGGER messages_fts_ai")
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("fts-parity",))
+
+    check = _check(report, "fts-parity")
+    assert check.status is OutcomeStatus.ERROR
+    assert "messages_fts triggers missing" in check.summary
+    assert check.evidence["messages_fts"]["triggers_present"] is False
+
+
+def test_excess_fts_row_trips_message_fts_parity(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute("DROP TRIGGER messages_fts_ad")
+        conn.execute("DELETE FROM blocks")
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("fts-parity",))
+
+    check = _check(report, "fts-parity")
+    assert check.status is OutcomeStatus.ERROR
+    assert "messages_fts excess_rows=1" in check.summary
+    assert check.evidence["messages_fts"]["excess_rows"] == 1
+
+
 def test_missing_trigram_row_trips_trigram_parity(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "index.db")
