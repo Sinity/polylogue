@@ -76,12 +76,18 @@ def _seed_archive(root: Path) -> Path:
     return ground_truth
 
 
-def _run(root: Path, tmp_path: Path, *, ground_truth: Path | None = None) -> dict[str, Any]:
+def _run(
+    root: Path,
+    tmp_path: Path,
+    *,
+    ground_truth: Path | None = None,
+    ground_truth_roots: dict[str, tuple[Path, ...]] | None = None,
+) -> dict[str, Any]:
     external_root = ground_truth or root.parent / f"{root.name}-codex-ground-truth"
     result = run_schema_inference_gate(
         root,
         receipt_path=tmp_path / RECEIPT_FILENAME,
-        ground_truth_roots={"codex-session": (external_root,)},
+        ground_truth_roots=ground_truth_roots or {"codex-session": (external_root,)},
     )
     return cast(dict[str, Any], result.payload)
 
@@ -96,6 +102,23 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
     assert payload["verdict"] == "PASS"
     assert payload["ground_truth_inputs"]["origins"]["codex-session"]["external_files"] == 1
     assert payload["ground_truth_inputs"]["origins"]["codex-session"]["unverified_source_blob_hashes"] == 0
+    provenance = payload["ground_truth_inputs"]["origins"]["codex-session"]["provenance"]
+    expected_hash = hashlib.sha256(b"actual external codex raw").hexdigest()
+    assert provenance == [
+        {
+            "raw_id": "raw-1",
+            "origin": "codex-session",
+            "native_id": "session",
+            "logical_source_key": "codex:session",
+            "source_path": str(ground_truth / "session.jsonl"),
+            "blob_hash": expected_hash,
+            "blob_size": len(b"actual external codex raw"),
+            "matched_external_relative_path": "session.jsonl",
+            "matched_external_hash": expected_hash,
+            "matched_external_size": len(b"actual external codex raw"),
+            "disposition": "materialized",
+        }
+    ]
     full = payload["full_blob_hash_verification"]
     assert full["passed"] is True
     assert full["verifier"]["identity"] == "polylogue.storage.blob_store.BlobStore.verify_all"
@@ -140,6 +163,108 @@ def test_unavailable_or_unverified_external_ground_truth_is_a_hard_failure(tmp_p
     unverified = _run(root, tmp_path, ground_truth=wrong_root)
     assert unverified["verdict"] == "FAIL"
     assert unverified["ground_truth_inputs"]["origins"]["codex-session"]["unverified_source_blob_hashes"] == 1
+
+
+def test_extra_external_file_is_rejected_by_bidirectional_reconciliation(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    (ground_truth / "extra-session.jsonl").write_bytes(b"external-only")
+
+    payload = _run(root, tmp_path, ground_truth=ground_truth)
+
+    origin = payload["ground_truth_inputs"]["origins"]["codex-session"]
+    assert payload["verdict"] == "FAIL"
+    assert origin["unmatched_external_files"] == [
+        {
+            "root_index": 0,
+            "relative_path": "extra-session.jsonl",
+            "hash": hashlib.sha256(b"external-only").hexdigest(),
+            "size": len(b"external-only"),
+            "disposition": "unmatched-external-file",
+        }
+    ]
+    assert origin["count_discrepancy"] is True
+    assert origin["byte_discrepancy"] is True
+    assert any("external file(s) have no source raw match" in reason for reason in payload["pass_fail_reasons"])
+
+
+def test_cross_origin_external_source_is_rejected_and_recorded(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        blob_hash, blob_size = conn.execute(
+            "SELECT blob_hash, blob_size FROM raw_sessions WHERE raw_id = 'raw-1'"
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, logical_source_key, revision_authority
+            ) VALUES ('raw-cross-origin', 'claude-code-session', 'session', ?, ?, ?, 101,
+                      'claude:session', 'byte_proven')
+            """,
+            (str(ground_truth / "session.jsonl"), blob_hash, blob_size),
+        )
+
+    payload = _run(
+        root,
+        tmp_path,
+        ground_truth_roots={
+            "codex-session": (ground_truth,),
+            "claude-code-session": (ground_truth,),
+        },
+    )
+
+    claude = payload["ground_truth_inputs"]["origins"]["claude-code-session"]
+    assert payload["verdict"] == "FAIL"
+    assert claude["cross_origin_mismatches"] == [
+        {
+            "root_index": 0,
+            "relative_path": "session.jsonl",
+            "hash": hashlib.sha256(b"actual external codex raw").hexdigest(),
+            "size": len(b"actual external codex raw"),
+            "disposition": "cross-origin-source",
+            "other_origins": ["codex-session"],
+        }
+    ]
+    assert any("claimed by multiple origins" in reason for reason in payload["pass_fail_reasons"])
+
+
+def test_stale_acquisition_path_is_preserved_while_content_matches_external_file(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    stale_path = "/retired/archive-root/session.jsonl"
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-1'", (stale_path,))
+
+    payload = _run(root, tmp_path, ground_truth=ground_truth)
+    provenance = payload["ground_truth_inputs"]["origins"]["codex-session"]["provenance"][0]
+
+    assert payload["verdict"] == "PASS"
+    assert provenance["source_path"] == stale_path
+    assert provenance["matched_external_relative_path"] == "session.jsonl"
+    with sqlite3.connect(root / "source.db") as conn:
+        assert conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = 'raw-1'").fetchone()[0] == stale_path
+
+
+def test_receipt_rerun_keeps_deterministic_external_provenance(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    first = run_schema_inference_gate(
+        root,
+        receipt_path=tmp_path / "first" / RECEIPT_FILENAME,
+        ground_truth_roots={"codex-session": (ground_truth,)},
+    ).payload
+    second = run_schema_inference_gate(
+        root,
+        receipt_path=tmp_path / "second" / RECEIPT_FILENAME,
+        ground_truth_roots={"codex-session": (ground_truth,)},
+    ).payload
+
+    first_origin = first["ground_truth_inputs"]["origins"]["codex-session"]
+    second_origin = second["ground_truth_inputs"]["origins"]["codex-session"]
+    assert first_origin["provenance"] == second_origin["provenance"]
+    assert first_origin["unmatched_external_files"] == second_origin["unmatched_external_files"] == []
 
 
 def test_full_blob_hash_evidence_is_not_a_caller_claim(tmp_path: Path) -> None:
