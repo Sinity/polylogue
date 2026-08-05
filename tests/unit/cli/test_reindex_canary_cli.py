@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import IO, Any
 
 import pytest
+from click import Command
 from click.testing import CliRunner as _ClickCliRunner
+from click.testing import Result
 
 from polylogue.cli.click_app import cli
 from polylogue.core.enums import Provider
@@ -43,10 +47,20 @@ def _schema_receipt_path(root: Path) -> Path:
 class _CanaryCliRunner(_ClickCliRunner):
     """Supply the fixture's explicit receipt to legacy route invocations."""
 
-    def invoke(self, cli, args=None, **kwargs):  # type: ignore[no-untyped-def]
-        command_args = list(args or ())
+    def invoke(
+        self,
+        cli: Command,
+        args: str | Sequence[str] | None = None,
+        input: str | bytes | IO[Any] | None = None,
+        env: Mapping[str, str | None] | None = None,
+        catch_exceptions: bool | None = None,
+        color: bool = False,
+        **extra: Any,
+    ) -> Result:
+        command_args = list(args) if args is not None and not isinstance(args, str) else args
         if (
-            "reindex-canary" in command_args
+            isinstance(command_args, list)
+            and "reindex-canary" in command_args
             and "--consume-report" not in command_args
             and "--schema-inference-receipt" not in command_args
             and "--archive-root" in command_args
@@ -55,7 +69,15 @@ class _CanaryCliRunner(_ClickCliRunner):
             receipt_path = _schema_receipt_path(archive_root)
             if receipt_path.is_file():
                 command_args.extend(("--schema-inference-receipt", str(receipt_path)))
-        return super().invoke(cli, command_args, **kwargs)
+        return super().invoke(
+            cli,
+            command_args,
+            input=input,
+            env=env,
+            catch_exceptions=catch_exceptions,
+            color=color,
+            **extra,
+        )
 
 
 CliRunner = _CanaryCliRunner
