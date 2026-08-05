@@ -869,15 +869,10 @@ def source_revision_snapshot(archive_root: Path) -> str:
 
     digest = hashlib.sha256()
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
-        for raw_id, acquired_at_ms, blob_hash, blob_size, validation_status in conn.execute(
-            """
-            SELECT raw_id, acquired_at_ms, blob_hash, blob_size, validation_status
-            FROM raw_sessions
-            ORDER BY acquired_at_ms, raw_id
-            """
-        ):
-            for value in (raw_id, acquired_at_ms, bytes(blob_hash).hex(), blob_size, validation_status):
-                digest.update(str(value).encode())
+        for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id"):
+            for value in row:
+                encoded = value.hex() if isinstance(value, bytes) else str(value)
+                digest.update(encoded.encode())
                 digest.update(b"\0")
             digest.update(b"\n")
     return digest.hexdigest()

@@ -589,18 +589,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace index-v37-fast-forward",
+        "workspace index-fast-forward",
         "workspace",
-        "Clone-forward index v36 to v37 by retiring derived caches without raw replay.",
-        "devtools.index_v37_fast_forward",
+        "Plan and prove a declared index fast-forward against retained raw replay.",
+        "devtools.index_fast_forward",
         use_when=(
-            "Advance a stopped exact-shape v36 index to v37. The actuator reflink-clones the active generation, "
-            "drops only the three retired run-projection caches, proves surviving schema and row-count parity, "
-            "then separately atomically activates the proven generation."
+            "Advance a stopped index generation across a declared clone-safe schema gap. The actuator clones the "
+            "active generation, applies lifecycle operations, proves a deterministic retained-raw sample through "
+            "the production parser/materializer route, then atomically activates the proven generation."
         ),
         examples=(
-            "devtools workspace index-v37-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
-            "devtools workspace index-v37-fast-forward activate --receipt /path/to/receipt.json",
+            "devtools workspace index-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
+            "devtools workspace index-fast-forward activate --receipt /path/to/receipt.json",
         ),
     ),
     CommandSpec(

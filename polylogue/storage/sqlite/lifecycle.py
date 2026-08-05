@@ -85,6 +85,7 @@ class FastForwardOperationKind(StrEnum):
     CREATE_INDEX = "create-index"
     REBUILD_FTS = "rebuild-fts"
     DROP_TABLE = "drop-table"
+    REPAIR_ORPHAN_ATTACHMENT_NATIVE_IDS = "repair-orphan-attachment-native-ids"
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +290,11 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
                     ("table", "session_observed_events"),
                     ("table", "session_context_snapshots"),
                 ),
+            ),
+            FastForwardOperation(
+                name="v37-repair-orphan-attachment-native-ids",
+                kind=FastForwardOperationKind.REPAIR_ORPHAN_ATTACHMENT_NATIVE_IDS,
+                objects=(("table", "attachment_native_ids"),),
             ),
         ),
     ),

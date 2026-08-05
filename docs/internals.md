@@ -149,6 +149,18 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `messages_fts_identity` declaration existed but had no consumer: a freshly
   promoted v42 archive could not be opened by v43 code at all before this
   executor existed.
+- **Index transition ownership map** (polylogue-9rw0 / polylogue-b5l.3):
+  `storage/sqlite/lifecycle.py` owns version declarations and generated
+  operations; `storage/sqlite/archive_tiers/index_fast_forward_executor.py`
+  owns generic operation execution; `devtools/index_fast_forward.py` owns
+  stopped-root clone, retained-raw sample replay, receipt, and atomic
+  promotion. The actuator has no per-version branch. Every eligible plan
+  records raw and session sample IDs, parser/lowering/materializer
+  fingerprints, structural hashes, canonical replay hashes, mismatch details,
+  and an equivalent verdict. Activation refuses absent proof, changed source,
+  changed fingerprints, changed schema, or changed clone bytes. The old
+  former version-specific actuator was the only surviving duplicate and was
+  removed after its v37 cleanup became a declared lifecycle operation.
 - **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
   helpers for daemon telemetry because the tier is disposable.
 - **Index-tier benign-DDL convergence** (polylogue-jc1b): a registered set of

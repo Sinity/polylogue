@@ -95,6 +95,18 @@ def _apply_drop_table(conn: sqlite3.Connection, name: str) -> None:
     conn.execute(f'DROP TABLE IF EXISTS "{name}"')
 
 
+def _apply_repair_orphan_attachment_native_ids(conn: sqlite3.Connection) -> None:
+    """Apply the retained v37 cleanup as a declared generic operation."""
+    conn.execute(
+        """
+        DELETE FROM attachment_native_ids
+        WHERE NOT EXISTS (
+            SELECT 1 FROM attachment_refs WHERE attachment_refs.ref_id = attachment_native_ids.ref_id
+        )
+        """
+    )
+
+
 def _apply_drop_trigger(conn: sqlite3.Connection, name: str) -> None:
     conn.execute(f'DROP TRIGGER IF EXISTS "{name}"')
 
@@ -212,6 +224,11 @@ def _apply_operation(
 ) -> None:
     if operation.kind is FastForwardOperationKind.REBUILD_FTS:
         _apply_rebuild_fts(conn, operation)
+        return
+    if operation.kind is FastForwardOperationKind.REPAIR_ORPHAN_ATTACHMENT_NATIVE_IDS:
+        if operation.objects != (("table", "attachment_native_ids"),):
+            raise RuntimeError("orphan attachment repair operation has an unexpected object set")
+        _apply_repair_orphan_attachment_native_ids(conn)
         return
     for object_type, name in operation.objects:
         if operation.kind is FastForwardOperationKind.DROP_TABLE:
