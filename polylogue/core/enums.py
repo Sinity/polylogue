@@ -453,7 +453,8 @@ class ActionResultState(PolylogueStrEnum):
 
     NO_RESULT = "no_result"
     OUTCOME_UNKNOWN = "outcome_unknown"
-    OUTCOME_REPORTED = "outcome_reported"
+    OUTCOME_SUCCESS = "outcome_success"
+    OUTCOME_ERROR = "outcome_error"
 
 
 class SessionRefKind(PolylogueStrEnum):

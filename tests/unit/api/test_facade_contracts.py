@@ -1931,8 +1931,8 @@ async def test_get_actions_batch_pairs_session_wide_and_exposes_result_state(tmp
     assert [(action.command, action.output_text, action.result_state) for action in actions] == [
         ("first", "unknown", "outcome_unknown"),
         ("absent", None, "no_result"),
-        ("second", "failed", "outcome_reported"),
-        ("success", "ok", "outcome_reported"),
+        ("second", "failed", "outcome_error"),
+        ("success", "ok", "outcome_success"),
     ]
     assert by_command["first"].tool_success is None
     assert by_command["absent"].tool_success is None

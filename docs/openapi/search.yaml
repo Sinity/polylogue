@@ -1799,7 +1799,8 @@ components:
       enum:
       - no_result
       - outcome_unknown
-      - outcome_reported
+      - outcome_success
+      - outcome_error
       title: ActionResultState
       type: string
     AssertionKind:

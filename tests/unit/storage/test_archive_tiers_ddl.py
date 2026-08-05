@@ -589,9 +589,9 @@ def test_actions_view_distinguishes_result_presence_and_outcome(tmp_path: Path) 
     ).fetchall()
 
     assert [dict(row) for row in rows] == [
-        {"tool_command": "failed", "tool_result_block_id": f"{message_id}:6", "result_state": "outcome_reported"},
+        {"tool_command": "failed", "tool_result_block_id": f"{message_id}:6", "result_state": "outcome_error"},
         {"tool_command": "no-result", "tool_result_block_id": None, "result_state": "no_result"},
-        {"tool_command": "successful", "tool_result_block_id": f"{message_id}:5", "result_state": "outcome_reported"},
+        {"tool_command": "successful", "tool_result_block_id": f"{message_id}:5", "result_state": "outcome_success"},
         {
             "tool_command": "unknown-outcome",
             "tool_result_block_id": f"{message_id}:4",

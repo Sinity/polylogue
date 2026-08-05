@@ -50,7 +50,7 @@ def test_project_query_unit_rows_to_otel_preserves_polylogue_refs() -> None:
                 tool_command="pytest tests/unit/telemetry",
                 tool_path="/realm/project/polylogue/secrets.txt",
                 output_text="sensitive terminal output",
-                result_state=ActionResultState.OUTCOME_REPORTED,
+                result_state=ActionResultState.OUTCOME_SUCCESS,
             ),
             ObservedEventQueryRowPayload(
                 event_ref="observed-event:codex-session:root:permission",

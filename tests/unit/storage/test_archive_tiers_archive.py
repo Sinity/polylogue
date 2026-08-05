@@ -246,8 +246,8 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
     payloads = [ActionQueryRowPayload.from_row(row) for row in rows]
     assert {row.tool_command: row.result_state for row in rows} == {
         "unknown": ActionResultState.OUTCOME_UNKNOWN,
-        "success": ActionResultState.OUTCOME_REPORTED,
-        "error": ActionResultState.OUTCOME_REPORTED,
+        "success": ActionResultState.OUTCOME_SUCCESS,
+        "error": ActionResultState.OUTCOME_ERROR,
         "absent": ActionResultState.NO_RESULT,
         "empty": ActionResultState.NO_RESULT,
     }
@@ -259,8 +259,8 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
     occurrence_by_command = {row.tool_command: row for row in occurrence_rows}
     assert {row.tool_command: row.result_state for row in occurrence_rows} == {
         "unknown": ActionResultState.OUTCOME_UNKNOWN,
-        "success": ActionResultState.OUTCOME_REPORTED,
-        "error": ActionResultState.OUTCOME_REPORTED,
+        "success": ActionResultState.OUTCOME_SUCCESS,
+        "error": ActionResultState.OUTCOME_ERROR,
         "absent": ActionResultState.NO_RESULT,
         "empty": ActionResultState.NO_RESULT,
     }

@@ -1033,7 +1033,9 @@ SELECT
     CASE
         WHEN ap.tool_result_block_id IS NULL THEN 'no_result'
         WHEN ap.is_error IS NULL AND ap.exit_code IS NULL THEN 'outcome_unknown'
-        ELSE 'outcome_reported'
+        WHEN ap.exit_code IS NOT NULL AND ap.exit_code != 0 THEN 'outcome_error'
+        WHEN ap.exit_code IS NULL AND ap.is_error = 1 THEN 'outcome_error'
+        ELSE 'outcome_success'
     END AS result_state
 FROM action_pairs ap
 JOIN blocks tu ON tu.block_id = ap.tool_use_block_id

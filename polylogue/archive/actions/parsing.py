@@ -192,7 +192,9 @@ def build_tool_calls_from_content_blocks(
             if result_block is None
             else ActionResultState.OUTCOME_UNKNOWN
             if outcome == "unknown"
-            else ActionResultState.OUTCOME_REPORTED
+            else ActionResultState.OUTCOME_SUCCESS
+            if outcome == "ok"
+            else ActionResultState.OUTCOME_ERROR
         )
         success = {"ok": True, "failed": False, "unknown": None}[outcome]
         output = result_block.get("text") if result_block is not None else None

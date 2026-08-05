@@ -66,7 +66,7 @@ export type ActionQueryRowPayload = {
   readonly unit?: "action";
 };
 
-export type ActionResultState = "no_result" | "outcome_unknown" | "outcome_reported";
+export type ActionResultState = "no_result" | "outcome_unknown" | "outcome_success" | "outcome_error";
 
 export type ActionSafetyPayload = {
   readonly confirmation_command?: string | null;

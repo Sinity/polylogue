@@ -85,7 +85,9 @@ SELECT
     CASE
         WHEN ranked_results.tool_result_block_id IS NULL THEN 'no_result'
         WHEN ranked_results.is_error IS NULL AND ranked_results.exit_code IS NULL THEN 'outcome_unknown'
-        ELSE 'outcome_reported'
+        WHEN ranked_results.exit_code IS NOT NULL AND ranked_results.exit_code != 0 THEN 'outcome_error'
+        WHEN ranked_results.exit_code IS NULL AND ranked_results.is_error = 1 THEN 'outcome_error'
+        ELSE 'outcome_success'
     END AS result_state
 FROM ranked_uses
 LEFT JOIN ranked_results
