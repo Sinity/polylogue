@@ -34,6 +34,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
+from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -384,6 +385,8 @@ def write_parsed_session_to_archive(
     origin = origin_from_provider(session.source_name)
     native_id = _stored_session_native_id(session.provider_session_id)
     session_id = archive_session_id(origin.value, native_id)
+    parser_semantic_fingerprint = parser_fingerprint_for_origin(origin)
+    lowering_semantic_fingerprint = lowering_fingerprint()
     # This session's own rows are about to be rewritten; drop any stale memoized
     # own-signatures so the batch cache never serves pre-write rows for it.
     if signature_cache is not None:
@@ -550,7 +553,8 @@ def write_parsed_session_to_archive(
             conn.execute(
                 """
                 INSERT INTO sessions (
-                    native_id, origin, raw_id, branch_type, active_leaf_message_id,
+                    native_id, origin, raw_id, parser_fingerprint, lowering_fingerprint,
+                    branch_type, active_leaf_message_id,
                     title, session_kind, title_source, title_ref, title_confidence,
                     display_name, run_settings_json, pending_drafts_json,
                     git_branch, git_repository_url, commit_hash,
@@ -560,9 +564,11 @@ def write_parsed_session_to_archive(
                     assistant_message_count, system_message_count,
                     tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                     content_hash, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(origin, native_id) DO UPDATE SET
                     raw_id = excluded.raw_id,
+                    parser_fingerprint = excluded.parser_fingerprint,
+                    lowering_fingerprint = excluded.lowering_fingerprint,
                     branch_type = excluded.branch_type,
                     active_leaf_message_id = excluded.active_leaf_message_id,
                     title = COALESCE(excluded.title, sessions.title),
@@ -633,6 +639,8 @@ def write_parsed_session_to_archive(
                     native_id,
                     origin.value,
                     raw_id,
+                    parser_semantic_fingerprint,
+                    lowering_semantic_fingerprint,
                     _enum_value(session.branch_type),
                     active_leaf_message_id,
                     _sqlite_text(session.title),

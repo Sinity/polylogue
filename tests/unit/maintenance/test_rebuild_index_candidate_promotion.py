@@ -1,0 +1,89 @@
+"""Real candidate-promotion proof for semantic stamp acceptance."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections.abc import Callable
+from pathlib import Path
+from typing import cast
+
+import pytest
+
+import polylogue.storage.sqlite.archive_tiers.revision_governance as revision_governance
+from polylogue.core.enums import Provider
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.storage.index_generation import IndexGenerationStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+
+def _codex_session(native_id: str, text: str) -> bytes:
+    rows = [
+        {"type": "session_meta", "payload": {"id": native_id, "timestamp": "2026-08-05T10:00:00Z"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": f"{native_id}-m0",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            },
+        },
+    ]
+    return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
+
+
+def _seed_raw(root: Path, native_id: str, text: str) -> None:
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=_codex_session(native_id, text),
+            source_path=f"stamp-regression/{native_id}.jsonl",
+            acquired_at_ms=1,
+        )
+
+
+def _active_snapshot(root: Path) -> tuple[tuple[object, ...], ...]:
+    with sqlite3.connect(root / "index.db") as conn:
+        return (
+            tuple(conn.execute("SELECT session_id, content_hash FROM sessions ORDER BY session_id")),
+            tuple(conn.execute("SELECT message_id, text FROM blocks ORDER BY block_id")),
+        )
+
+
+def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production rebuild route rejects an unstamped candidate before swap."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    _seed_raw(root, "active-session", "active generation remains exact")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+
+    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    assert initial.status == "replayed"
+
+    store = IndexGenerationStore.for_archive_root(root)
+    active_before = store.active_pointer.resolve(strict=True)
+    snapshot_before = _active_snapshot(root)
+
+    _seed_raw(root, "candidate-session", "candidate must never become active")
+    original_writer = cast(Callable[..., str], revision_governance.__dict__["write_parsed_session_to_archive"])
+    corruption_calls = 0
+
+    def bypass_stamps(conn: sqlite3.Connection, *args: object, **kwargs: object) -> str:
+        nonlocal corruption_calls
+        result = original_writer(conn, *args, **kwargs)
+        conn.execute("UPDATE sessions SET parser_fingerprint = NULL, lowering_fingerprint = NULL")
+        corruption_calls += 1
+        return result
+
+    monkeypatch.setattr(revision_governance, "write_parsed_session_to_archive", bypass_stamps)
+
+    with pytest.raises(RuntimeError, match="reindex acceptance gate failed.*session-fingerprint-stamps"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+
+    assert corruption_calls > 0
+    assert store.active_pointer.resolve(strict=True) == active_before
+    assert _active_snapshot(root) == snapshot_before

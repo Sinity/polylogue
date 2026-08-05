@@ -27,6 +27,7 @@ from polylogue.maintenance.archive_verification import (
     ArchiveVerificationWaiver,
     verify_archive,
 )
+from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.pathology_zoo import build_pathology_zoo, make_pathology_zoo_member_red
@@ -64,10 +65,11 @@ def _seed_coherent_archive(root: Path) -> None:
     try:
         index_conn.execute(
             """
-            INSERT INTO sessions(native_id, origin, raw_id, content_hash, message_count)
-            VALUES ('session', 'codex-session', 'raw-1', ?, 1)
+            INSERT INTO sessions(
+                native_id, origin, raw_id, parser_fingerprint, lowering_fingerprint, content_hash, message_count
+            ) VALUES ('session', 'codex-session', 'raw-1', ?, ?, ?, 1)
             """,
-            (b"s" * 32,),
+            (parser_fingerprint_for_origin("codex-session"), lowering_fingerprint(), b"s" * 32),
         )
         index_conn.execute(
             """
@@ -742,6 +744,70 @@ def test_message_count_projection_passes_on_coherent_archive(tmp_path: Path) -> 
     assert check.evidence["drifted_session_count"] == 0
 
 
+def test_reindex_acceptance_rejects_missing_semantic_stamp_coverage(tmp_path: Path) -> None:
+    """A candidate cannot promote when a session has no parser stamp."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute("UPDATE sessions SET parser_fingerprint = NULL")
+
+    report = verify_archive(tmp_path, checks=REINDEX_ACCEPTANCE_CHECKS)
+
+    check = _check(report, "session-fingerprint-stamps")
+    assert report.blocking
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["invalid_parser_stamp_count"] == 1
+    assert check.evidence["fully_current_session_count"] == 0
+
+
+def test_reindex_acceptance_rejects_missing_semantic_stamp_column(tmp_path: Path) -> None:
+    """A pre-bootstrap candidate cannot bypass coverage by lacking the column."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute("ALTER TABLE sessions DROP COLUMN parser_fingerprint")
+
+    report = verify_archive(tmp_path, checks=REINDEX_ACCEPTANCE_CHECKS)
+
+    check = _check(report, "session-fingerprint-stamps")
+    assert report.blocking
+    assert check.status is OutcomeStatus.ERROR
+    assert "missing fingerprint column(s): parser_fingerprint" in check.summary
+
+
+def test_reindex_acceptance_rejects_stale_semantic_stamps(tmp_path: Path) -> None:
+    """A well-formed historic stamp must fail the current-source comparison."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute("UPDATE sessions SET parser_fingerprint = ?", ("0" * 64,))
+
+    report = verify_archive(tmp_path, checks=REINDEX_ACCEPTANCE_CHECKS)
+
+    check = _check(report, "session-fingerprint-stamps")
+    assert report.blocking
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["parser_stale_by_origin"] == {"codex-session": 1}
+
+
+def test_reindex_acceptance_rejects_mixed_semantic_stamps(tmp_path: Path) -> None:
+    """A partly replayed candidate cannot hide a second parser/lowering vintage."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions(native_id, origin, parser_fingerprint, lowering_fingerprint, content_hash, message_count)
+            VALUES ('other', 'codex-session', ?, ?, ?, 0)
+            """,
+            ("1" * 64, "2" * 64, b"o" * 32),
+        )
+
+    report = verify_archive(tmp_path, checks=REINDEX_ACCEPTANCE_CHECKS)
+
+    check = _check(report, "session-fingerprint-stamps")
+    assert report.blocking
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["parser_mixed_by_origin"] == {"codex-session": 2}
+    assert check.evidence["lowering_distinct_count"] == 2
+
+
 def test_missing_enum_value_trips_enum_superset_check(tmp_path: Path) -> None:
     """RED TWIN (I2): a live CHECK list frozen at an older, narrower Origin
     vocabulary is exactly the drift class this check exists to catch -- an
@@ -1253,10 +1319,10 @@ def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path:
         initialize_archive_tier(conn, ArchiveTier.INDEX)
         conn.execute(
             """
-            INSERT INTO sessions(native_id, origin, content_hash, message_count)
-            VALUES ('session', 'codex-session', ?, 0)
+            INSERT INTO sessions(native_id, origin, parser_fingerprint, lowering_fingerprint, content_hash, message_count)
+            VALUES ('session', 'codex-session', ?, ?, ?, 0)
             """,
-            (b"s" * 32,),
+            (parser_fingerprint_for_origin("codex-session"), lowering_fingerprint(), b"s" * 32),
         )
         conn.commit()
         conn.execute("ANALYZE blocks")
@@ -1297,6 +1363,7 @@ RED_TWIN_TESTS: dict[str, str] = {
     "embeddings-refs-liveness": "test_orphaned_embedding_ref_trips_embeddings_refs_liveness",
     "session-lineage-acyclic": "test_parent_session_id_cycle_trips_session_lineage_acyclic",
     "message-count-projection": "test_drifted_message_count_trips_message_count_projection",
+    "session-fingerprint-stamps": "test_reindex_acceptance_rejects_missing_semantic_stamp_coverage",
     "planner-stats": "test_missing_sqlite_stat1_is_warning_not_error",
     "convergence-freshness": "test_stalled_backlog_trips_convergence_freshness",
     "user-tier-refs": "test_dangling_assertion_target_trips_user_tier_refs",

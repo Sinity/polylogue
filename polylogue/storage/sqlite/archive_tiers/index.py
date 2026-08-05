@@ -433,7 +433,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # `blocks_command_trigram` remains because `devtools/affordance_usage.py`'s
 # `_cli_action_rows` is a real consumer with a documented archive-scale
 # speedup. See the v63 declaration in lifecycle.py.
-INDEX_SCHEMA_VERSION = 63
+# polylogue-xselt: v64 adds parser/lowering semantic stamps consumed by the
+# reindex acceptance gate. They remain nullable only so pre-bootstrap index
+# generations can be opened long enough to undergo the semantic replay.
+INDEX_SCHEMA_VERSION = 64
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -541,6 +544,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     parent_session_id       TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
     root_session_id         TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
     raw_id                  TEXT,
+    -- Written by the parsed-session chokepoint in the same transaction as
+    -- this row. Pre-v64 generations are intentionally nullable until replay.
+    parser_fingerprint      TEXT,
+    lowering_fingerprint    TEXT,
     branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)}),
     active_leaf_message_id  TEXT,
     title                   TEXT,

@@ -49,6 +49,7 @@ from polylogue.maintenance.corpus_fidelity import (
     audit_attachment_fidelity,
     audit_revision_fidelity,
 )
+from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
@@ -1298,6 +1299,165 @@ def _check_message_count_projection(archive_root: Path, sample_limit: int) -> Ar
 
 
 # ---------------------------------------------------------------------------
+# Check: parser/lowering semantic stamp coverage (polylogue-xselt)
+# ---------------------------------------------------------------------------
+
+
+def _check_session_fingerprint_stamps(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Require every candidate session to carry current, unmixed semantic stamps.
+
+    ``sessions`` is the ground-truth candidate universe. The check compares
+    each row to the current source-derived stamp rather than accepting a
+    merely well-formed historical value, so a parser/lowering semantic change
+    cannot promote a stale reindex candidate.
+    """
+    index_path = _resolve_index_path(archive_root)
+    if not index_path.exists():
+        return _skip_check("session-fingerprint-stamps", "index.db not present")
+    try:
+        conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("session-fingerprint-stamps", f"could not open index.db: {exc}", exc=exc)
+
+    try:
+        required_columns = {"parser_fingerprint", "lowering_fingerprint"}
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)")}
+        missing_columns = sorted(required_columns - columns)
+        if missing_columns:
+            return _error_check(
+                "session-fingerprint-stamps",
+                f"sessions is missing fingerprint column(s): {', '.join(missing_columns)}",
+            )
+
+        total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        invalid_sql = "{column} IS NULL OR length({column}) != 64 OR {column} GLOB '*[^0-9a-f]*'"
+        invalid_parser_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM sessions WHERE {invalid_sql.format(column='parser_fingerprint')}"
+            ).fetchone()[0]
+        )
+        invalid_lowering_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM sessions WHERE {invalid_sql.format(column='lowering_fingerprint')}"
+            ).fetchone()[0]
+        )
+        parser_rows = [
+            (str(row[0]), str(row[1]), int(row[2]))
+            for row in conn.execute(
+                """
+                SELECT origin, parser_fingerprint, COUNT(*)
+                FROM sessions
+                WHERE parser_fingerprint IS NOT NULL
+                  AND length(parser_fingerprint) = 64
+                  AND parser_fingerprint NOT GLOB '*[^0-9a-f]*'
+                GROUP BY origin, parser_fingerprint
+                ORDER BY origin, parser_fingerprint
+                """
+            )
+        ]
+        lowering_rows = [
+            (str(row[0]), int(row[1]))
+            for row in conn.execute(
+                """
+                SELECT lowering_fingerprint, COUNT(*)
+                FROM sessions
+                WHERE lowering_fingerprint IS NOT NULL
+                  AND length(lowering_fingerprint) = 64
+                  AND lowering_fingerprint NOT GLOB '*[^0-9a-f]*'
+                GROUP BY lowering_fingerprint
+                ORDER BY lowering_fingerprint
+                """
+            )
+        ]
+        session_stamp_rows = [
+            (str(row[0]), row[1], row[2])
+            for row in conn.execute("SELECT origin, parser_fingerprint, lowering_fingerprint FROM sessions")
+        ]
+        invalid_sample = [
+            str(row[0])
+            for row in conn.execute(
+                f"""
+                SELECT session_id FROM sessions
+                WHERE {invalid_sql.format(column="parser_fingerprint")}
+                   OR {invalid_sql.format(column="lowering_fingerprint")}
+                ORDER BY session_id
+                LIMIT ?
+                """,
+                (sample_limit,),
+            )
+        ]
+    except sqlite3.Error as exc:
+        return _error_check("session-fingerprint-stamps", f"could not read index.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    expected_parser_by_origin: dict[str, str] = {}
+    parser_values_by_origin: dict[str, dict[str, int]] = {}
+    for origin, fingerprint, count in parser_rows:
+        parser_values_by_origin.setdefault(origin, {})[fingerprint] = count
+    parser_stale_by_origin: dict[str, int] = {}
+    parser_mixed_by_origin: dict[str, int] = {}
+    for origin, values in parser_values_by_origin.items():
+        try:
+            expected = parser_fingerprint_for_origin(origin)
+        except ValueError:
+            parser_stale_by_origin[origin] = sum(values.values())
+            continue
+        expected_parser_by_origin[origin] = expected
+        stale_count = sum(count for fingerprint, count in values.items() if fingerprint != expected)
+        if stale_count:
+            parser_stale_by_origin[origin] = stale_count
+        if len(values) != 1:
+            parser_mixed_by_origin[origin] = len(values)
+
+    expected_lowering = lowering_fingerprint()
+    lowering_stale_count = sum(count for fingerprint, count in lowering_rows if fingerprint != expected_lowering)
+    lowering_distinct_count = len(lowering_rows)
+    fully_current_count = sum(
+        expected_parser_by_origin.get(origin) is not None
+        and parser_fingerprint == expected_parser_by_origin[origin]
+        and lowering_stamp == expected_lowering
+        for origin, parser_fingerprint, lowering_stamp in session_stamp_rows
+    )
+    problems: list[str] = []
+    if invalid_parser_count:
+        problems.append(f"missing/invalid parser stamps={invalid_parser_count:,}")
+    if invalid_lowering_count:
+        problems.append(f"missing/invalid lowering stamps={invalid_lowering_count:,}")
+    if parser_stale_by_origin:
+        problems.append(f"stale parser stamps={parser_stale_by_origin}")
+    if lowering_stale_count:
+        problems.append(f"stale lowering stamps={lowering_stale_count:,}")
+    if parser_mixed_by_origin:
+        problems.append(f"mixed parser stamps={parser_mixed_by_origin}")
+    if total and lowering_distinct_count != 1:
+        problems.append(f"mixed lowering stamps={lowering_distinct_count}")
+
+    return ArchiveVerificationCheck(
+        name="session-fingerprint-stamps",
+        status=OutcomeStatus.ERROR if problems else OutcomeStatus.OK,
+        summary=("; ".join(problems) if problems else f"{total:,} session(s) carry current semantic stamps"),
+        count=len(problems),
+        details=[f"invalid:{session_id}" for session_id in invalid_sample],
+        evidence={
+            "session_count": total,
+            "fully_current_session_count": fully_current_count,
+            "invalid_parser_stamp_count": invalid_parser_count,
+            "invalid_lowering_stamp_count": invalid_lowering_count,
+            "expected_parser_by_origin": expected_parser_by_origin,
+            "parser_values_by_origin": parser_values_by_origin,
+            "parser_stale_by_origin": parser_stale_by_origin,
+            "parser_mixed_by_origin": parser_mixed_by_origin,
+            "expected_lowering_fingerprint": expected_lowering,
+            "lowering_values": dict(lowering_rows),
+            "lowering_stale_count": lowering_stale_count,
+            "lowering_distinct_count": lowering_distinct_count,
+            "invalid_sample": invalid_sample,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Check 6: planner stats presence (polylogue-l3tk class)
 # ---------------------------------------------------------------------------
 
@@ -2115,6 +2275,12 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         ArchiveVerificationCheckClass.CONSERVATION,
     ),
     ArchiveVerificationCheckSpec(
+        "session-fingerprint-stamps",
+        "Every indexed session carries current, unmixed parser and lowering semantic stamps (polylogue-xselt).",
+        _check_session_fingerprint_stamps,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+    ),
+    ArchiveVerificationCheckSpec(
         "planner-stats",
         "sqlite_stat1 covers blocks/messages/action_pairs (polylogue-l3tk class, warn-level).",
         _check_planner_stats,
@@ -2213,6 +2379,7 @@ REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
     "enum-superset-check",
     "session-lineage-acyclic",
     "message-count-projection",
+    "session-fingerprint-stamps",
     "planner-stats",
 )
 
