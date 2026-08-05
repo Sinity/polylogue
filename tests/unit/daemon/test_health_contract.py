@@ -676,7 +676,7 @@ class TestArchiveHealthRouteRawFailureLifecycle:
         status, payload = send_json.call_args.args
         return status, cast(dict[str, object], payload)
 
-    @pytest.mark.parametrize("source_state", ["missing", "malformed", "unreadable"])
+    @pytest.mark.parametrize("source_state", ["missing", "malformed", "unreadable", "unexplained"])
     def test_health_route_blocks_unavailable_source_lifecycle(
         self,
         tmp_path: Path,
@@ -690,6 +690,22 @@ class TestArchiveHealthRouteRawFailureLifecycle:
             source_db.write_bytes(b"not a sqlite database")
         elif source_state == "unreadable":
             source_db.mkdir()
+        elif source_state == "unexplained":
+            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+            from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+            initialize_archive_database(source_db, ArchiveTier.SOURCE)
+            with sqlite3.connect(source_db) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO raw_sessions (
+                        raw_id, origin, native_id, source_path, blob_hash,
+                        blob_size, acquired_at_ms, parse_error
+                    ) VALUES ('raw-failed', 'codex-session', 'failed', '/bad', ?, 1, 1, 'parser failed')
+                    """,
+                    (b"f" * 32,),
+                )
+                conn.commit()
         self._patch_route_checks(monkeypatch)
 
         with patch("polylogue.daemon.status.archive_root", return_value=root):

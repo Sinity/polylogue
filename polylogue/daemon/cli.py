@@ -2865,11 +2865,14 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
                 browser_capture_spool_path=spool_path,
                 include_browser_capture_spool_path=spool_path is not None,
             )
+    status_ok = payload.get("ok") is True
     if output_format == "json":
         click.echo(dumps(payload))
-        return
-    for line in format_daemon_status_lines(payload):
-        click.echo(line)
+    else:
+        for line in format_daemon_status_lines(payload):
+            click.echo(line)
+    if not status_ok:
+        raise SystemExit(1)
 
 
 @main.command("health", help="Run tiered daemon health checks.")

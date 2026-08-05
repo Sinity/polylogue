@@ -492,8 +492,8 @@ class DaemonStatus(BaseModel):
     raw_deferred_failures: int = 0
     raw_terminal_rejections: int = 0
     raw_unexplained_failures: int = 0
-    raw_failure_lifecycle_available: bool | None = None
-    raw_failure_lifecycle_state: Literal["healthy", "degraded", "blocked", "unavailable"] | None = None
+    raw_failure_lifecycle_available: bool = False
+    raw_failure_lifecycle_state: Literal["healthy", "degraded", "blocked", "unavailable"] = "unavailable"
     raw_failure_lifecycle_reason: str | None = None
     raw_failure_samples: list[RawFailureSample] = Field(default_factory=list)
     raw_detection_warnings: int = 0
@@ -979,13 +979,7 @@ def _archive_raw_failure_info(
             "terminal_rejections": lifecycle_snapshot.terminal,
             "unexplained_failures": lifecycle_snapshot.unexplained,
             "raw_failure_lifecycle_available": True,
-            "raw_failure_lifecycle_state": (
-                "blocked"
-                if lifecycle_snapshot.unexplained
-                else "degraded"
-                if lifecycle_snapshot.deferred or lifecycle_snapshot.terminal
-                else "healthy"
-            ),
+            "raw_failure_lifecycle_state": lifecycle_snapshot.state,
             "samples": combined,
         }
     except (OSError, sqlite3.Error) as exc:
@@ -1006,6 +1000,11 @@ def raw_failure_info_for_root(root: Path) -> dict[str, object]:
         maintenance_count=maintenance_count,
     )
     return archive_info
+
+
+def raw_failure_lifecycle_for_root(root: Path) -> Any:
+    """Return the bounded source-tier lifecycle snapshot for a status route."""
+    return read_raw_failure_lifecycle(root / "source.db", sample_limit=0)
 
 
 def _maintenance_failure_info(root: Path | None = None) -> tuple[list[RawFailureSample], int]:
@@ -2555,7 +2554,13 @@ def build_daemon_status(
         ops_db=archive_root() / "ops.db",
     )
     raw_failures: dict[str, object] = _v("raw_failures", {})
-    raw_lifecycle_available = raw_failures.get("raw_failure_lifecycle_available")
+    raw_lifecycle_available = raw_failures.get("raw_failure_lifecycle_available") is True
+    raw_lifecycle_state = raw_failures.get("raw_failure_lifecycle_state")
+    if raw_lifecycle_state not in {"healthy", "degraded", "blocked", "unavailable"}:
+        raw_lifecycle_state = "unavailable"
+    raw_lifecycle_reason = raw_failures.get("raw_failure_lifecycle_reason")
+    if not raw_lifecycle_available and not raw_lifecycle_reason:
+        raw_lifecycle_reason = "raw failure lifecycle evidence is unavailable"
     blob_publication_reservations = _v("blob_publication_reservations", BlobPublicationReservationStatus())
     embedding_info: dict[str, object] = _v("embedding_readiness", {})
     health = _v("health", _checked_health())
@@ -2653,16 +2658,9 @@ def build_daemon_status(
         raw_deferred_failures=_safe_int(raw_failures.get("deferred_failures", 0)),
         raw_terminal_rejections=_safe_int(raw_failures.get("terminal_rejections", 0)),
         raw_unexplained_failures=_safe_int(raw_failures.get("unexplained_failures", 0)),
-        raw_failure_lifecycle_available=raw_lifecycle_available if isinstance(raw_lifecycle_available, bool) else None,
-        raw_failure_lifecycle_state=cast(
-            Literal["healthy", "degraded", "blocked", "unavailable"] | None,
-            raw_failures.get("raw_failure_lifecycle_state"),
-        ),
-        raw_failure_lifecycle_reason=(
-            str(raw_failures["raw_failure_lifecycle_reason"])
-            if raw_failures.get("raw_failure_lifecycle_reason") is not None
-            else None
-        ),
+        raw_failure_lifecycle_available=raw_lifecycle_available,
+        raw_failure_lifecycle_state=cast(Literal["healthy", "degraded", "blocked", "unavailable"], raw_lifecycle_state),
+        raw_failure_lifecycle_reason=str(raw_lifecycle_reason) if raw_lifecycle_reason is not None else None,
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
         daemon_liveness=_check_daemon_liveness(daemon_lifecycle),
@@ -2803,7 +2801,8 @@ def daemon_status_payload(
         {
             "ok": (
                 status.raw_frontier_integrity.overall_status == "healthy"
-                and status.raw_failure_lifecycle_available is not False
+                and status.raw_failure_lifecycle_available
+                and status.raw_failure_lifecycle_state == "healthy"
             ),
             "daemon": "polylogued",
             "daemon_liveness": status.daemon_liveness,
@@ -3282,9 +3281,10 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     raw_deferred = _safe_int(payload.get("raw_deferred_failures"))
     raw_terminal = _safe_int(payload.get("raw_terminal_rejections"))
     raw_unexplained = _safe_int(payload.get("raw_unexplained_failures"))
-    raw_lifecycle_unavailable = payload.get("raw_failure_lifecycle_available") is False
-    if raw_lifecycle_unavailable:
-        lifecycle_state = str(payload.get("raw_failure_lifecycle_state") or "unavailable")
+    raw_lifecycle_available = payload.get("raw_failure_lifecycle_available") is True
+    lifecycle_state = str(payload.get("raw_failure_lifecycle_state") or "unavailable")
+    raw_lifecycle_unavailable = not raw_lifecycle_available or lifecycle_state == "unavailable"
+    if raw_lifecycle_unavailable or lifecycle_state == "blocked":
         lifecycle_reason = str(payload.get("raw_failure_lifecycle_reason") or "source.db evidence is unavailable")
         lines.append(f"Raw failures: {lifecycle_state} ({lifecycle_reason})")
     total_raw = raw_parse + raw_val + raw_maintenance

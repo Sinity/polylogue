@@ -21,6 +21,7 @@ from polylogue.core.raw_failure_evidence import (
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 RawFailureLifecycle = Literal["deferred", "terminal", "unexplained"]
+RawFailureLifecycleState = Literal["healthy", "degraded", "blocked", "unavailable"]
 logger = logging.getLogger(__name__)
 
 
@@ -44,6 +45,22 @@ class RawFailureLifecycleSnapshot:
         """Whether failed source evidence lacks a typed lifecycle explanation."""
         return not self.available or self.unexplained > 0
 
+    @property
+    def state(self) -> RawFailureLifecycleState:
+        """Return the public claim state for this source-tier evidence."""
+        if not self.available:
+            return "unavailable"
+        if self.unexplained > 0:
+            return "blocked"
+        if self.parse_failures > 0 or self.validation_failures > 0:
+            return "degraded"
+        return "healthy"
+
+    @property
+    def healthy(self) -> bool:
+        """Whether the source proves a clean, zero-failure lifecycle."""
+        return self.state == "healthy"
+
     def to_dict(self) -> dict[str, object]:
         return {
             "available": self.available,
@@ -56,6 +73,7 @@ class RawFailureLifecycleSnapshot:
             "by_artifact_kind": dict(self.by_artifact_kind),
             "samples": [dict(sample) for sample in self.samples],
             "reason": self.reason,
+            "state": self.state,
         }
 
 
@@ -190,4 +208,4 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
     )
 
 
-__all__ = ["RawFailureLifecycleSnapshot", "read_raw_failure_lifecycle"]
+__all__ = ["RawFailureLifecycleSnapshot", "RawFailureLifecycleState", "read_raw_failure_lifecycle"]
