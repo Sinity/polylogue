@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,9 @@ def _installed_bd() -> str | None:
     """Resolve the installed binary without using this checkout's wrapper."""
     scripts_dir = (ROOT / "scripts").resolve()
     search_path = os.pathsep.join(
-        entry for entry in os.environ.get("PATH", "").split(os.pathsep) if Path(entry or ".").resolve() != scripts_dir
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if (Path(entry or ".").resolve() / "bd").resolve().parent.name != scripts_dir.name
     )
     return shutil.which("bd", path=search_path)
 
@@ -136,9 +139,60 @@ def _deploy_current_common_checkout(repo: Path) -> None:
     wrapper.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "scripts" / "bd", wrapper)
     wrapper.chmod(0o755)
+    hook_configurator = repo / "scripts" / "configure-git-hooks"
+    shutil.copy2(ROOT / "scripts" / "configure-git-hooks", hook_configurator)
+    hook_configurator.chmod(0o755)
     guard = repo / "devtools" / "bd_reimport_guard.py"
     guard.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "devtools" / "bd_reimport_guard.py", guard)
+
+
+def _execute_historical_envrc(lane: Path, env: dict[str, str], tmp_path: Path, installed_bd: str) -> None:
+    """Source the retained envrc and execute its branch-point use-flake hook."""
+    historical_use_flake = tmp_path / "historical-use-flake"
+    historical_flake = _historical_file("flake.nix")
+    start_marker = "          # Install repo git hooks"
+    end_marker = "          # Clean stale __pycache__"
+    start = historical_flake.index(start_marker)
+    end = historical_flake.index(end_marker, start)
+    historical_shell_hook = textwrap.dedent(historical_flake[start:end])
+    historical_use_flake.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\n{historical_shell_hook}")
+    historical_use_flake.chmod(0o755)
+
+    marker = tmp_path / "historical-direct-bd-ran"
+    probe_bin = tmp_path / "historical-bin"
+    probe_bin.mkdir()
+    direct_bd = probe_bin / "bd"
+    direct_bd.write_text(f"#!/bin/sh\nprintf '%s\\n' ran > {marker!s}\n")
+    direct_bd.chmod(0o755)
+
+    historical_env = env.copy()
+    historical_env["HISTORICAL_USE_FLAKE"] = str(historical_use_flake)
+    # Keep the historical direct command-v bd route observable through the
+    # probe while the deployed wrapper follows the valid installed binary.
+    historical_env["POLYLOGUE_BD_REAL"] = installed_bd
+    historical_env["PATH"] = os.pathsep.join((str(probe_bin), historical_env["PATH"]))
+    _run(
+        [
+            "bash",
+            "-c",
+            'use() { "$HISTORICAL_USE_FLAKE" "$@"; }; source .envrc',
+        ],
+        lane,
+        historical_env,
+    )
+
+    # The old shell hook wrote a relative value through git config --local.
+    # The worktree-level common-dir pin must still select the deployed hook.
+    effective_hooks_path = _run(["git", "config", "--get", "core.hooksPath"], lane, historical_env).stdout.strip()
+    assert effective_hooks_path == str((lane.parent / "coordinator" / ".beads-hooks").resolve())
+    effective_hooks_origin = _run(
+        ["git", "config", "--show-origin", "--get", "core.hooksPath"], lane, historical_env
+    ).stdout.strip()
+    assert effective_hooks_origin.endswith("/config.worktree\t" + effective_hooks_path)
+
+    _run(["git", "switch", "--detach", "HEAD"], lane, historical_env)
+    assert not marker.exists(), "historical direct bd hook must not execute"
 
 
 def _setup_stale_worktree(
@@ -186,9 +240,23 @@ def _setup_stale_worktree(
     # Deployment happens only in the common coordinator checkout. The shared
     # absolute hook path is what protects the stale lane's historical files.
     _deploy_current_common_checkout(repo)
-    _run(["git", "add", ".beads-hooks", ".envrc", "scripts/bd", "devtools/bd_reimport_guard.py"], repo, env)
+    _run(
+        [
+            "git",
+            "add",
+            ".beads-hooks",
+            ".envrc",
+            "scripts/bd",
+            "scripts/configure-git-hooks",
+            "devtools/bd_reimport_guard.py",
+        ],
+        repo,
+        env,
+    )
     _run(["git", "commit", "-m", "deploy Beads guard"], repo, env)
-    _run(["git", "config", "core.hooksPath", str(repo / ".beads-hooks")], repo, env)
+
+    _run([str(repo / "scripts" / "configure-git-hooks")], repo, env)
+    _execute_historical_envrc(lane, env, tmp_path, bd)
 
     env["PATH"] = os.pathsep.join((str(repo / "scripts"), env["PATH"]))
     _run([bd, "close", issue_id, "--reason", "coordinator close"], repo, env)
@@ -246,7 +314,10 @@ def test_unsafe_import_auto_control_reverts_clock_skewed_stale_snapshot(tmp_path
     assert shown[0]["status"] == "open"
 
 
-@pytest.mark.parametrize("route", ["bare-wrapper", "symlink-wrapper", "script-recursion", "script-symlink-recursion"])
+@pytest.mark.parametrize(
+    "route",
+    ["bare-wrapper", "symlink-wrapper", "script-recursion", "script-symlink-recursion", "interpreter-recursion"],
+)
 def test_bd_wrapper_rejects_recursive_real_binary_routes(tmp_path: Path, route: str) -> None:
     """Wrapper aliases and script recursion fail before the guard lock."""
     deployed = tmp_path / "deployed"
@@ -284,11 +355,16 @@ def test_bd_wrapper_rejects_recursive_real_binary_routes(tmp_path: Path, route: 
         recursive.write_text(f'#!/bin/sh\nexec {wrapper!s} "$@"\n')
         recursive.chmod(0o755)
         env["POLYLOGUE_BD_REAL"] = str(recursive)
-    else:
+    elif route == "script-symlink-recursion":
         alias = tmp_path / "bd-alias"
         alias.symlink_to(wrapper)
         recursive = tmp_path / "recursive-bd"
         recursive.write_text(f'#!/bin/sh\nexec {alias!s} "$@"\n')
+        recursive.chmod(0o755)
+        env["POLYLOGUE_BD_REAL"] = str(recursive)
+    else:
+        recursive = tmp_path / "interpreter-recursive-bd"
+        recursive.write_text(f'#!/bin/sh\nexec /bin/sh -c \'exec {wrapper!s} "$@"\' sh "$@"\n')
         recursive.chmod(0o755)
         env["POLYLOGUE_BD_REAL"] = str(recursive)
 

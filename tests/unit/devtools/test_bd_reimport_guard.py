@@ -61,6 +61,15 @@ def test_validated_real_bd_path_accepts_explicit_launcher_target(tmp_path: Path)
     assert guard._validated_real_bd_path(str(launcher)) == launcher
 
 
+def test_validated_real_bd_path_rejects_interpreter_mediated_launcher(tmp_path: Path) -> None:
+    launcher = tmp_path / "bd-shell-launcher"
+    launcher.write_text('#!/bin/sh\nexec /bin/sh -c \'exec /tmp/hidden-bd "$@"\' sh "$@"\n')
+    launcher.chmod(0o755)
+
+    with pytest.raises(ValueError, match="interpreter launcher"):
+        guard._validated_real_bd_path(str(launcher))
+
+
 # --- merge_rows: the monotonic per-row merge engine --------------------------
 
 

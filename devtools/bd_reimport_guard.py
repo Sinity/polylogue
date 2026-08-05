@@ -227,6 +227,22 @@ def _repo_root() -> Path:
 
 
 _EXEC_TARGET = re.compile(r"(?m)^\s*exec(?:\s+-a\s+(?:'[^']*'|\"[^\"]*\"|\S+))?\s+(?:'([^']+)'|\"([^\"]+)\"|(\S+))")
+_INTERPRETER_NAMES = frozenset(
+    {
+        "bash",
+        "dash",
+        "env",
+        "fish",
+        "ksh",
+        "perl",
+        "python",
+        "python2",
+        "python3",
+        "ruby",
+        "sh",
+        "zsh",
+    }
+)
 
 
 def _resolve_launcher_target(target: str, launcher: Path) -> Path:
@@ -240,6 +256,11 @@ def _resolve_launcher_target(target: str, launcher: Path) -> Path:
     if resolved is None:
         raise ValueError(f"launcher target is unavailable: {target}")
     return Path(resolved)
+
+
+def _is_interpreter(path: Path) -> bool:
+    """Return whether a launcher target is an interpreter entry point."""
+    return path.name in _INTERPRETER_NAMES or Path(os.path.realpath(path)).name in _INTERPRETER_NAMES
 
 
 def _validate_executable_route(path: Path, wrapper: Path, seen: set[Path]) -> None:
@@ -264,7 +285,14 @@ def _validate_executable_route(path: Path, wrapper: Path, seen: set[Path]) -> No
     targets = [next(value for value in groups if value) for groups in _EXEC_TARGET.findall(launcher)]
     if len(targets) != 1:
         raise ValueError("refusing launcher without one explicit executable target")
-    _validate_executable_route(_resolve_launcher_target(targets[0], resolved), wrapper, seen)
+    target = _resolve_launcher_target(targets[0], resolved)
+    # A route such as `exec /bin/sh -c ...` can hide another wrapper behind
+    # shell parsing. We do not interpret shell syntax here. Reject known
+    # interpreter entry points before the shared invocation lock and only
+    # accept launcher chains whose next target is itself explicit.
+    if _is_interpreter(target):
+        raise ValueError("refusing unresolved interpreter launcher route")
+    _validate_executable_route(target, wrapper, seen)
 
 
 def _validated_real_bd_path(path: str) -> Path:

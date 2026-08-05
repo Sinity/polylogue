@@ -15,6 +15,10 @@ fi
 # --- BEGIN BEADS INTEGRATION v1.0.4 ---
 # This section is managed by beads. Do not remove these markers.
 if [ -n "$_bd_command" ]; then
+  _bd_configure_hooks="$(CDPATH= cd -- "$_bd_common_dir/.." && pwd -P)/scripts/configure-git-hooks"
+  if [ -x "$_bd_configure_hooks" ]; then
+    "$_bd_configure_hooks"
+  fi
   # Linked worktrees share a live Beads store but retain branch-point JSONL.
   # Do not let a caller re-enable hook imports through Viper's BD_* override.
   unset BD_IMPORT_AUTO
