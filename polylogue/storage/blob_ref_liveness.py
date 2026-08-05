@@ -265,6 +265,7 @@ def stage_blob_ref_liveness(conn: sqlite3.Connection, *, sample_limit: int = 30)
             """,
             tuple(params),
         )
+    conn.execute(f"CREATE INDEX {candidate_table}_source_hash ON {candidate_table}(ref_type, source_path, blob_hash)")
     candidate_count = int(conn.execute(f"SELECT COUNT(*) FROM {candidate_table}").fetchone()[0])
     orphaned_by_ref_type = {
         str(row[0]): int(row[1])

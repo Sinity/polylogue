@@ -31,6 +31,15 @@ from polylogue.storage.sqlite.migration_runner import (
 )
 
 TOOL_VERSION = "blob-ref-liveness-reconciliation-v1"
+BATCH_SIZE = 1_000
+_RECOVERY_TERMINAL_PHASES = {
+    "committed",
+    "aborted",
+    "recovered_committed",
+    "recovered_rolled_back",
+    "recovered_partial",
+    "indeterminate",
+}
 
 
 class BlobRefLivenessReconciliationError(RuntimeError):
@@ -233,7 +242,7 @@ def _stage_receipt_candidates(conn: sqlite3.Connection, receipt_path: Path) -> t
                     header = row
                 else:
                     phase = row.get("phase")
-                    if phase is not None:
+                    if phase is not None and str(phase) in _RECOVERY_TERMINAL_PHASES:
                         terminal_phases.append(str(phase))
             elif row.get("kind") == "candidate":
                 candidate = _receipt_candidate(row)
@@ -272,11 +281,10 @@ def _stage_receipt_candidates(conn: sqlite3.Connection, receipt_path: Path) -> t
 
 
 def _recover_prepared_receipt(source_db: Path, receipt_path: Path) -> str:
-    """Resolve the only crash window between SQLite commit and receipt footer.
+    """Resolve crashes between bounded batch commits and receipt progress.
 
-    The DELETE is one SQLite transaction, so every prepared candidate is either
-    still present (the transaction rolled back) or absent (it committed). A
-    mixture is external interference and remains deliberately indeterminate.
+    Each batch is one SQLite transaction. Exact receipt keys therefore show a
+    fully rolled-back plan, a fully committed plan, or a partial batch train.
     Recovery appends durable evidence but never performs another mutation.
     """
 
@@ -299,33 +307,65 @@ def _recover_prepared_receipt(source_db: Path, receipt_path: Path) -> str:
     elif present_count == 0:
         outcome = "recovered_committed"
     else:
-        outcome = "indeterminate"
-    _append_receipt_footer(receipt_path, phase=outcome)
+        outcome = "recovered_partial"
+    _append_receipt_footer(
+        receipt_path,
+        phase=outcome,
+        deleted_count=candidate_count - present_count,
+        error=None if outcome != "recovered_partial" else f"{present_count} candidate(s) remain present",
+    )
     return outcome
 
 
-def _delete_candidates(conn: sqlite3.Connection, candidate_table: str, *, batch_size: int = 1000) -> int:
-    deleted_count = 0
-    while True:
-        deleted = conn.execute(
-            f"""
-            DELETE FROM blob_refs
-            WHERE rowid IN (
-                SELECT b.rowid
-                FROM blob_refs AS b
-                JOIN {candidate_table} AS c
-                  ON c.blob_hash = b.blob_hash
-                 AND c.ref_type = b.ref_type
-                 AND c.ref_id = b.ref_id
-                LIMIT ?
-            )
-            """,
-            (batch_size,),
+def _stage_candidate_batch(conn: sqlite3.Connection, candidate_table: str, batch_table: str, *, batch_size: int) -> int:
+    conn.execute(f"DROP TABLE IF EXISTS temp.{batch_table}")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {batch_table} AS
+        SELECT blob_hash, ref_type, ref_id, source_path, size_bytes,
+               acquired_at_ms, referent_table, referent_column
+        FROM {candidate_table}
+        ORDER BY ref_type, ref_id, blob_hash
+        LIMIT ?
+        """,
+        (batch_size,),
+    )
+    conn.execute(f"CREATE INDEX {batch_table}_source_hash ON {batch_table}(ref_type, source_path, blob_hash)")
+    return int(conn.execute(f"SELECT COUNT(*) FROM {batch_table}").fetchone()[0])
+
+
+def _delete_candidate_batch(conn: sqlite3.Connection, candidate_table: str, batch_table: str) -> int:
+    planned_count = int(conn.execute(f"SELECT COUNT(*) FROM {batch_table}").fetchone()[0])
+    deleted = conn.execute(
+        f"""
+        DELETE FROM blob_refs
+        WHERE rowid IN (
+            SELECT b.rowid
+            FROM blob_refs AS b
+            JOIN {batch_table} AS c
+              ON c.blob_hash = b.blob_hash
+             AND c.ref_type = b.ref_type
+             AND c.ref_id = b.ref_id
         )
-        count = max(0, int(deleted.rowcount))
-        deleted_count += count
-        if count == 0:
-            return deleted_count
+        """
+    )
+    deleted_count = max(0, int(deleted.rowcount))
+    if deleted_count != planned_count:
+        raise BlobRefLivenessReconciliationError(
+            f"candidate/delete count mismatch: planned={planned_count} deleted={deleted_count}"
+        )
+    conn.execute(
+        f"""
+        DELETE FROM {candidate_table}
+        WHERE EXISTS (
+            SELECT 1 FROM {batch_table} AS b
+            WHERE b.blob_hash = {candidate_table}.blob_hash
+              AND b.ref_type = {candidate_table}.ref_type
+              AND b.ref_id = {candidate_table}.ref_id
+        )
+        """
+    )
+    return deleted_count
 
 
 def _validate_locked_candidate_plan(conn: sqlite3.Connection, candidate_table: str, expected_count: int) -> None:
@@ -370,11 +410,18 @@ def _validate_locked_candidate_plan(conn: sqlite3.Connection, candidate_table: s
     conn.execute("DROP TABLE IF EXISTS temp.blob_ref_liveness_locked_hooks")
     if _table_exists(conn, "raw_hook_events"):
         conn.execute(
-            """
+            f"""
             CREATE TEMP TABLE blob_ref_liveness_locked_hooks AS
             SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
             FROM raw_hook_events AS h
-            WHERE NOT EXISTS (
+            WHERE EXISTS (
+                SELECT 1
+                FROM {candidate_table} AS c
+                WHERE c.ref_type = 'raw_payload'
+                  AND c.source_path IS h.source_path
+                  AND (h.blob_hash IS NULL OR h.blob_hash = c.blob_hash)
+            )
+              AND NOT EXISTS (
                 SELECT 1 FROM blob_refs AS b
                 WHERE b.blob_hash = h.blob_hash
                   AND b.ref_type = 'hook_payload'
@@ -516,33 +563,50 @@ def reconcile_blob_ref_liveness(
         raise
 
     conn = pre_conn
+    deleted_count = 0
+    first_batch = True
+    batch_table = "blob_ref_liveness_batch"
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            # The full backup-tree attestation happened before ownership. This
-            # ownership check re-authenticates the receipt and checks only the
-            # live source fingerprint, so backup hashing cannot occupy the
-            # write lock twice.
-            validate_migration_backup_live_fingerprint(backup_manifest, ArchiveTier.SOURCE, connection=conn)
-            _validate_locked_candidate_plan(conn, staged_plan.candidate_table, expected_count)
-            deleted_count = _delete_candidates(conn, staged_plan.candidate_table)
-            if deleted_count != expected_count:
-                raise BlobRefLivenessReconciliationError(
-                    f"candidate/delete count mismatch: planned={expected_count} deleted={deleted_count}"
-                )
-        except Exception:
-            if conn.in_transaction:
-                conn.rollback()
-            with suppress(OSError):
-                _append_receipt_footer(receipt_path, phase="aborted", error="transaction rolled back")
-            raise
-        else:
-            conn.commit()
+        while True:
+            batch_count = _stage_candidate_batch(
+                conn,
+                staged_plan.candidate_table,
+                batch_table,
+                batch_size=BATCH_SIZE,
+            )
+            if batch_count == 0:
+                break
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if first_batch:
+                    # This is the ownership-boundary attestation. The helper
+                    # re-authenticates the receipt and validates the cached
+                    # full backup inventory, rehashing only if its stat
+                    # signature changed since the pre-lock validation.
+                    validate_migration_backup_live_fingerprint(backup_manifest, ArchiveTier.SOURCE, connection=conn)
+                _validate_locked_candidate_plan(conn, batch_table, batch_count)
+                batch_deleted = _delete_candidate_batch(conn, staged_plan.candidate_table, batch_table)
+            except Exception:
+                if conn.in_transaction:
+                    conn.rollback()
+                # Leave the prepared receipt without a terminal footer. A
+                # retry can inspect exact key presence and record rollback,
+                # commit, or partial-batch recovery without guessing.
+                raise
+            else:
+                conn.commit()
+            deleted_count += batch_deleted
+            first_batch = False
+            _append_receipt_footer(receipt_path, phase="batch_committed", deleted_count=deleted_count)
+        if deleted_count != expected_count:
+            raise BlobRefLivenessReconciliationError(
+                f"candidate/delete count mismatch: planned={expected_count} deleted={deleted_count}"
+            )
     finally:
         conn.close()
 
     try:
-        _append_receipt_footer(receipt_path, phase="committed", deleted_count=expected_count)
+        _append_receipt_footer(receipt_path, phase="committed", deleted_count=deleted_count)
     except OSError as exc:
         raise BlobRefLivenessReconciliationError(
             f"source.db committed but could not finalize receipt {receipt_path}"

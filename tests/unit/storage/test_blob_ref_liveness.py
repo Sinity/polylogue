@@ -10,13 +10,25 @@ import pytest
 
 import polylogue.maintenance.blob_ref_liveness_reconciliation as liveness_reconciliation
 import polylogue.storage.hook_payload_ref_reconciliation as hook_payload_ref_reconciliation
+from polylogue.daemon.backup import backup_archive
 from polylogue.maintenance.blob_ref_liveness_reconciliation import (
     BlobRefLivenessReconciliationError,
     reconcile_blob_ref_liveness,
 )
-from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
+from polylogue.storage.blob_ref_liveness import (
+    BlobRefLivenessStagedPlan,
+    classify_blob_ref_liveness,
+    stage_blob_ref_liveness,
+)
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
+from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash, deterministic_raw_session_id
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import (
+    MigrationError,
+    validate_migration_backup_live_fingerprint,
+    validate_migration_backup_manifest,
+)
 
 
 def _source_archive(tmp_path: Path) -> Path:
@@ -61,6 +73,41 @@ def _source_archive(tmp_path: Path) -> Path:
             VALUES (?, ?, ?, '/fixture', 1, 1)
             """,
             refs,
+        )
+    return archive_root
+
+
+def _real_source_archive(archive_root: Path) -> Path:
+    initialize_active_archive_root(archive_root)
+    blob_store = BlobStore(archive_root / "blob")
+    live_payload = b"live-payload"
+    gone_payloads = (b"gone-payload-1", b"gone-payload-2")
+    live_hash = deterministic_blob_hash(live_payload)
+    gone_hashes = tuple(deterministic_blob_hash(payload) for payload in gone_payloads)
+    blob_store.write_from_bytes(live_payload)
+    for payload in gone_payloads:
+        blob_store.write_from_bytes(payload)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-live', 'codex-session', '/live.jsonl', 0, ?, 1, 1)
+            """,
+            (live_hash,),
+        )
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, 1, 1)
+            """,
+            ((gone_hashes[index - 1], f"raw-gone-{index}", f"/gone-{index}.jsonl") for index in range(1, 3)),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-live', 'raw_payload', '/live.jsonl', 1, 1)
+            """,
+            (live_hash,),
         )
     return archive_root
 
@@ -209,7 +256,7 @@ def test_restart_recovers_prepared_receipt_after_rollback(tmp_path: Path) -> Non
     assert rows[-1]["phase"] == "recovered_rolled_back"
 
 
-def test_restart_marks_partial_prepared_plan_indeterminate(tmp_path: Path) -> None:
+def test_restart_recovers_partial_prepared_plan_with_exact_counts(tmp_path: Path) -> None:
     archive_root = _source_archive(tmp_path)
     receipt = tmp_path / "receipts" / "partial.jsonl"
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -224,13 +271,16 @@ def test_restart_marks_partial_prepared_plan_indeterminate(tmp_path: Path) -> No
             (bytes.fromhex(candidate.blob_hash), candidate.ref_type, candidate.ref_id),
         )
 
-    with pytest.raises(BlobRefLivenessReconciliationError, match="indeterminate"):
+    with pytest.raises(BlobRefLivenessReconciliationError, match="recovered_partial"):
         reconcile_blob_ref_liveness(
             archive_root,
             backup_manifest=tmp_path / "backup.json",
             receipt_path=receipt,
             dry_run=False,
         )
+    rows = [json.loads(line) for line in receipt.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["phase"] == "recovered_partial"
+    assert rows[-1]["deleted_count"] == 1
     with pytest.raises(BlobRefLivenessReconciliationError, match="already terminal"):
         reconcile_blob_ref_liveness(
             archive_root,
@@ -287,6 +337,94 @@ def test_apply_deletes_only_join_proven_orphans_and_persists_receipt(
     assert receipt_rows[0]["candidate_digest"]
     assert receipt_rows[-1]["phase"] == "committed"
     assert receipt_rows[-1]["deleted_count"] == 4
+
+
+def test_real_backup_tamper_between_validations_refuses_before_delete(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _real_source_archive(workspace_env["archive_root"])
+    backup_result = backup_archive(output_dir=tmp_path / "backups", profile="rebuildable_cache_exclude", verify=True)
+    assert backup_result.ok and backup_result.output_path is not None, backup_result.error
+    manifest = Path(backup_result.output_path) / "manifest.json"
+    receipt = tmp_path / "receipts" / "tampered.jsonl"
+    calls: list[str] = []
+    real_pre_validate = validate_migration_backup_manifest
+    real_live_validate = validate_migration_backup_live_fingerprint
+    real_stage = stage_blob_ref_liveness
+
+    def record_pre(path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection) -> Path:
+        calls.append("pre")
+        return real_pre_validate(path, tier, connection=connection)
+
+    def record_live(path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection) -> Path:
+        calls.append("live")
+        return real_live_validate(path, tier, connection=connection)
+
+    def stage_then_tamper(conn: sqlite3.Connection) -> BlobRefLivenessStagedPlan:
+        staged = real_stage(conn)
+        with (manifest.parent / "source.db").open("ab") as handle:
+            handle.write(b"tampered-after-precheck")
+        return staged
+
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_manifest", record_pre)
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_live_fingerprint", record_live)
+    monkeypatch.setattr(liveness_reconciliation, "stage_blob_ref_liveness", stage_then_tamper)
+
+    with pytest.raises(MigrationError, match="tier artifact size mismatch"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=manifest,
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    assert calls == ["pre", "live"]
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (3,)
+    rows = [json.loads(line) for line in receipt.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["phase"] == "prepared"
+    assert all(row.get("phase") != "committed" for row in rows)
+
+
+def test_real_prepared_failure_rolls_back_and_recovery_records_exact_state(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _real_source_archive(workspace_env["archive_root"])
+    backup_result = backup_archive(output_dir=tmp_path / "backups", profile="rebuildable_cache_exclude", verify=True)
+    assert backup_result.ok and backup_result.output_path is not None, backup_result.error
+    manifest = Path(backup_result.output_path) / "manifest.json"
+    receipt = tmp_path / "receipts" / "failed.jsonl"
+    real_delete = liveness_reconciliation._delete_candidate_batch
+
+    def delete_then_fail(conn: sqlite3.Connection, candidate_table: str, batch_table: str) -> int:
+        deleted = real_delete(conn, candidate_table, batch_table)
+        raise RuntimeError(f"injected after deleting {deleted} candidate(s) before commit")
+
+    monkeypatch.setattr(liveness_reconciliation, "_delete_candidate_batch", delete_then_fail)
+    with pytest.raises(RuntimeError, match="before commit"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=manifest,
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (3,)
+    prepared_rows = [json.loads(line) for line in receipt.read_text(encoding="utf-8").splitlines()]
+    assert prepared_rows[0]["phase"] == "prepared"
+    assert prepared_rows[-1].get("phase") != "committed"
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="recovered_rolled_back"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=manifest,
+            receipt_path=receipt,
+            dry_run=False,
+        )
+    recovered_rows = [json.loads(line) for line in receipt.read_text(encoding="utf-8").splitlines()]
+    assert recovered_rows[-1]["phase"] == "recovered_rolled_back"
+    assert recovered_rows[-1]["deleted_count"] == 0
 
 
 def test_locked_plan_rejects_referent_that_appears_after_staging(tmp_path: Path) -> None:
@@ -389,6 +527,7 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
     monkeypatch.setattr(
         "polylogue.storage.hook_payload_ref_reconciliation._deterministic_raw_session_id_udf", count_udf
     )
+    monkeypatch.setattr(liveness_reconciliation, "_deterministic_raw_session_id_udf", count_udf)
 
     def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
         assert connection.execute("SELECT 1").fetchone() == (1,)
@@ -405,6 +544,15 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
     monkeypatch.setattr(
         "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid", lambda _config: None
     )
+    batches = 0
+    real_delete = liveness_reconciliation._delete_candidate_batch
+
+    def count_batch_delete(conn: sqlite3.Connection, candidate_table: str, batch_table: str) -> int:
+        nonlocal batches
+        batches += 1
+        return real_delete(conn, candidate_table, batch_table)
+
+    monkeypatch.setattr(liveness_reconciliation, "_delete_candidate_batch", count_batch_delete)
     receipt = tmp_path / "receipts" / "scale.jsonl"
     report = reconcile_blob_ref_liveness(
         archive_root,
@@ -416,6 +564,7 @@ def test_scale_apply_streams_distinct_hook_paths_and_preserves_exact_survivors(
     assert report.deleted_count == orphan_count
     assert report.classification.orphaned_count == orphan_count
     assert calls <= orphan_count * 2
+    assert batches == orphan_count // liveness_reconciliation.BATCH_SIZE
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (1,)
         assert conn.execute("SELECT ref_type, ref_id FROM blob_refs").fetchone() == ("raw_payload", "raw-live")
@@ -497,6 +646,7 @@ def test_shared_legacy_hook_path_fails_closed_without_cross_product(
     monkeypatch.setattr(
         "polylogue.storage.hook_payload_ref_reconciliation._deterministic_raw_session_id_udf", count_udf
     )
+    monkeypatch.setattr(liveness_reconciliation, "_deterministic_raw_session_id_udf", count_udf)
     with sqlite3.connect(archive_root / "source.db") as conn:
         classification = classify_blob_ref_liveness(conn)
 

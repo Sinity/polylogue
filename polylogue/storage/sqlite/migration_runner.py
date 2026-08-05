@@ -741,13 +741,14 @@ def validate_migration_backup_manifest(
 def validate_migration_backup_live_fingerprint(
     path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection
 ) -> Path:
-    """Recheck receipt authority and the live tier without rescanning backups.
+    """Recheck receipt authority and the live tier with a cached inventory.
 
     Callers run ``validate_migration_backup_manifest`` before taking the live
     tier lock. Once ownership is held, this helper repeats the local HMAC and
-    manifest binding checks, then checks the live source fingerprint. It does
-    not rebuild the backup artifact inventory, so the immutable backup tree is
-    hashed once per apply invocation rather than once per lock boundary.
+    manifest binding checks, then validates the complete cached backup
+    inventory. A stat change invalidates the process cache and re-hashes the
+    tree, so source.db/blob mutations after the precheck are rejected without
+    repeating the expensive scan when the tree is unchanged.
     """
 
     if tier not in DURABLE_MIGRATION_TIERS:
@@ -777,23 +778,27 @@ def validate_migration_backup_live_fingerprint(
         raise MigrationError(f"migration backup receipt authentication failed: {exc}") from exc
     if receipt.get("verdict") != "success":
         raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
-    if _json_int(receipt.get("manifest_size_bytes")) != manifest_path.stat().st_size:
+    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
+    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
+    manifest_evidence = file_evidence.get("manifest.json", {})
+    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
         raise MigrationError("migration backup receipt does not match manifest size")
-    if receipt.get("manifest_sha256") != _sha256_file(manifest_path):
+    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
         raise MigrationError("migration backup receipt does not match manifest bytes")
-    artifacts = receipt.get("tier_artifacts")
-    if not isinstance(artifacts, list):
-        raise MigrationError("migration backup receipt does not bind tier artifacts")
-    artifact = next((item for item in artifacts if isinstance(item, dict) and item.get("tier") == tier.value), None)
+    artifacts = _validated_receipt_artifacts(
+        backup_root,
+        manifest,
+        receipt,
+        target_tier=tier.value,
+        live_tier_path=live_tier_path,
+        file_evidence=file_evidence,
+    )
+    artifact = artifacts.get(tier.value)
     if artifact is None:
         raise MigrationError(f"migration backup receipt does not include {tier.value}.db: {receipt_path}")
-    source_fingerprint = artifact.get("source_fingerprint")
-    if not isinstance(source_fingerprint, dict) or any(
-        artifact.get(field) != source_fingerprint.get(field) for field in ("size_bytes", "sha256", "user_version")
-    ):
-        raise MigrationError(
-            f"migration backup tier artifact does not match its live source fingerprint: {tier.value}.db"
-        )
+    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
+    if receipt.get("artifact_inventory") != artifact_inventory:
+        raise MigrationError("migration backup receipt does not match the closed artifact inventory")
     _validate_live_source_fingerprint(connection, artifact)
     return receipt_path
 
