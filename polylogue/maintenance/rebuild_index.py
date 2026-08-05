@@ -245,6 +245,7 @@ class RebuildIndexRequest:
     promote: bool = True
     candidate_acceptance_checks: tuple[str, ...] | None = None
     operation_id: str | None = None
+    schema_inference_receipt_path: Path | None = None
     raw_batch_size: int = 500
     pass_byte_budget_mb: float | None = None
     pass_deadline_seconds: float | None = None
@@ -404,6 +405,7 @@ class RebuildIndexReceipt:
     #: not measured at all. Persisting it here makes the next optimisation
     #: evidence-based rather than a guess.
     timings_s: dict[str, float] = field(default_factory=dict)
+    consumed_evidence: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -419,6 +421,7 @@ class RebuildIndexReceipt:
             "transaction": self.transaction,
             "operation": self.operation,
             "timings_s": self.timings_s,
+            "consumed_evidence": self.consumed_evidence,
             **self.replay,
         }
 
@@ -615,6 +618,15 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
     validate_rebuild_index_request(request)
     root = request.archive_root
+    from polylogue.maintenance.schema_inference_gate import (
+        SchemaInferenceGateError,
+        validate_schema_inference_receipt,
+    )
+
+    try:
+        consumed_evidence = validate_schema_inference_receipt(root, request.schema_inference_receipt_path)
+    except SchemaInferenceGateError as exc:
+        raise RuntimeError(f"rebuild schema-inference preflight gate failed: {exc}") from exc
     location = ArchiveLocation.resolve(root)
     active_config = Config(
         archive_root=root,
@@ -643,13 +655,19 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         owned = OwnedArchiveLocation.acquire(location)
         try:
             assert_owns_archive_location(owned, location)
-            return await _rebuild_index_from_source_owned(request, root=root, owned=owned)
+            return await _rebuild_index_from_source_owned(
+                request, root=root, owned=owned, consumed_evidence=consumed_evidence
+            )
         finally:
             owned.release()
 
 
 async def _rebuild_index_from_source_owned(
-    request: RebuildIndexRequest, *, root: Path, owned: OwnedArchiveLocation
+    request: RebuildIndexRequest,
+    *,
+    root: Path,
+    owned: OwnedArchiveLocation,
+    consumed_evidence: dict[str, object],
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
@@ -683,6 +701,7 @@ async def _rebuild_index_from_source_owned(
                 readiness={},
                 replay={},
                 operation=_operation_evidence(root, generation=None, transaction=None, recovery_state="empty-source"),
+                consumed_evidence=consumed_evidence,
             )
         resumable_full_source = not request.raw_ids and not request.only_missing and request.max_blob_mb is None
         transaction = None
@@ -946,6 +965,7 @@ async def _rebuild_index_from_source_owned(
                             root, generation=generation, transaction=transaction, recovery_state="deferred"
                         ),
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
+                        consumed_evidence=consumed_evidence,
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
                     return pass_receipt
@@ -1025,6 +1045,7 @@ async def _rebuild_index_from_source_owned(
                             root, generation=generation, transaction=transaction, recovery_state=status
                         ),
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
+                        consumed_evidence=consumed_evidence,
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
                     return pass_receipt
@@ -1200,6 +1221,7 @@ async def _rebuild_index_from_source_owned(
             recovery_state="promoted" if request.promote else "ready",
         ),
         timings_s={key: round(value, 3) for key, value in terminal_timings_s.items()},
+        consumed_evidence=consumed_evidence,
     )
     if transaction is not None:
         generation_store.save_pass_receipt(transaction.operation_id, final_receipt.to_dict())

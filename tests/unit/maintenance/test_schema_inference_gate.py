@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 from typing import TypedDict, cast
@@ -14,6 +15,7 @@ from polylogue.maintenance.schema_inference_gate import (
     RECEIPT_FILENAME,
     SchemaInferenceGateError,
     run_schema_inference_gate,
+    validate_schema_inference_receipt,
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -170,6 +172,19 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
             "matched_external_hash": expected_hash,
             "matched_external_size": len(b"actual external codex raw"),
             "disposition": "materialized",
+        }
+    ]
+    mapping = payload["ground_truth_inputs"]["origins"]["codex-session"]["raw_external_mapping"]
+    assert mapping == [
+        {
+            "blob_hash": hashlib.sha256(b"actual external codex raw").hexdigest(),
+            "blob_size": len(b"actual external codex raw"),
+            "disposition": "matched-external",
+            "external_hash": hashlib.sha256(b"actual external codex raw").hexdigest(),
+            "external_relative_path": "session.jsonl",
+            "external_size": len(b"actual external codex raw"),
+            "raw_id": "raw-1",
+            "source_path": str(ground_truth / "session.jsonl"),
         }
     ]
     full = payload["full_blob_hash_verification"]
@@ -340,6 +355,39 @@ def test_full_blob_hash_evidence_is_not_a_caller_claim(tmp_path: Path) -> None:
     assert full["passed"] is False
     assert full["verifier"]["identity"] == "polylogue.storage.blob_store.BlobStore.verify_all"
     assert any(finding["reason"] == "hash_mismatch" for finding in full["failures"])
+
+
+def test_receipt_rejects_stale_source_path_even_when_blob_mapping_is_unchanged(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / RECEIPT_FILENAME
+    _run(root, tmp_path, ground_truth=ground_truth)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-1'", ("stale/path.jsonl",))
+    with pytest.raises(SchemaInferenceGateError, match="external ground-truth corpus changed"):
+        validate_schema_inference_receipt(root, receipt_path)
+
+
+def test_receipt_rejects_mutated_raw_external_mapping_and_aggregate_only_receipt(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / RECEIPT_FILENAME
+    _run(root, tmp_path, ground_truth=ground_truth)
+    payload = cast(dict[str, Any], json.loads(receipt_path.read_text(encoding="utf-8")))
+    original_payload = json.loads(json.dumps(payload))
+    mapping = cast(
+        list[dict[str, object]], payload["ground_truth_inputs"]["origins"]["codex-session"]["raw_external_mapping"]
+    )
+    mapping[0]["external_relative_path"] = "forged.jsonl"
+    receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(SchemaInferenceGateError, match="raw external mapping or inventory"):
+        validate_schema_inference_receipt(root, receipt_path)
+
+    aggregate_only = cast(dict[str, Any], original_payload)
+    aggregate_only["ground_truth_inputs"]["origins"]["codex-session"].pop("raw_external_mapping")
+    receipt_path.write_text(json.dumps(aggregate_only), encoding="utf-8")
+    with pytest.raises(SchemaInferenceGateError, match="raw external mapping"):
+        validate_schema_inference_receipt(root, receipt_path)
 
 
 def test_non_session_duplicate_requires_durable_content_bound_twin_receipt(tmp_path: Path) -> None:
