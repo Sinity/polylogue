@@ -589,7 +589,7 @@ def _explain_zip(
                     )
                     continue
                 try:
-                    with open_bounded_zip_entry(archive, info.filename) as handle:
+                    with open_bounded_zip_entry(archive, info) as handle:
                         entry = _explain_bytes(
                             handle.read(MAX_UNCOMPRESSED_SIZE + 1),
                             stream_name=info.filename,

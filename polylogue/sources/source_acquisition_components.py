@@ -421,7 +421,7 @@ def _stream_preserved_zip_entry(
     *,
     provider_hint: Provider,
 ) -> RawSessionData:
-    with zf.open(context.entry.filename) as handle:
+    with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
         blob_hash, blob_size = stream_fileobj_to_blob(
             context.blob_store,
             handle,
@@ -462,7 +462,7 @@ def iter_zip_entry_raw_data(
 
     detected_provider = entry_provider_hint
     split_buffer = SplitPayloadBuffer()
-    with zf.open(context.entry.filename) as handle:
+    with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
         for detected in iter_entry_payloads(
             handle,
             stream_name=context.entry.filename,

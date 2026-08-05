@@ -480,7 +480,7 @@ def _admit_non_session_zip_artifacts(
                     or zip_entry_session_artifact(zf, info, provider=provider) is not None
                 ):
                     continue
-                with open_bounded_zip_entry(zf, info.filename) as payload:
+                with open_bounded_zip_entry(zf, info) as payload:
                     blob_hash, blob_size = publisher.write_from_fileobj(payload)
                 receipt_id = publisher.receipt_id(blob_hash)
                 publisher.flush()

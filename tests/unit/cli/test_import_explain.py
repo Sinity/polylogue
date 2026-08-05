@@ -8,9 +8,9 @@ from pathlib import Path
 from click.testing import CliRunner
 from pytest import MonkeyPatch
 
+from polylogue.archive import zip_admission as zip_admission_module
 from polylogue.cli.click_app import cli
 from polylogue.core.enums import Provider
-from polylogue.sources import decoder_zip as decoder_zip_module
 from polylogue.sources import import_explain as import_explain_module
 from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.import_explain import explain_import_path
@@ -153,7 +153,7 @@ def test_import_explain_zip_rejects_oversized_member_before_read(
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("big.json", b"{}")
     monkeypatch.setattr(import_explain_module, "MAX_UNCOMPRESSED_SIZE", 1)
-    monkeypatch.setattr(decoder_zip_module, "MAX_UNCOMPRESSED_SIZE", 1)
+    monkeypatch.setattr(zip_admission_module, "MAX_UNCOMPRESSED_SIZE", 1)
 
     payload = explain_import_path(archive)
 
@@ -182,7 +182,7 @@ def test_import_explain_zip_rejects_aggregate_over_cap_before_read(
     with zipfile.ZipFile(archive, "w") as zf:
         for name in entry_names:
             zf.writestr(name, entry_bytes)
-    monkeypatch.setattr(decoder_zip_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes))
+    monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes))
 
     payload = explain_import_path(archive)
 
@@ -227,7 +227,7 @@ def test_import_explain_zip_aggregate_admission_precedes_path_session_decode(
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("safe.json", first_bytes)
         zf.writestr("workflows/later.json", later_session_bytes)
-    monkeypatch.setattr(decoder_zip_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(first_bytes))
+    monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(first_bytes))
 
     decoded_members: list[str] = []
 
@@ -263,7 +263,7 @@ def test_import_explain_zip_allows_archive_comfortably_under_aggregate_cap(
     with zipfile.ZipFile(archive, "w") as zf:
         for i in range(3):
             zf.writestr(f"entry_{i}.json", entry_bytes)
-    monkeypatch.setattr(decoder_zip_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes) * 10)
+    monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(entry_bytes) * 10)
 
     payload = explain_import_path(archive)
 

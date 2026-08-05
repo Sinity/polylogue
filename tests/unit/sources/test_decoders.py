@@ -20,6 +20,7 @@ from polylogue.sources.decoders import (
     _decode_json_bytes,
     _iter_json_stream,
     _ZipEntryValidator,
+    open_bounded_zip_entry,
 )
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 
@@ -295,6 +296,18 @@ class TestZipEntryValidator:
         normal_entry = self._make_zip_info("sessions.json", file_size=50000, compress_size=5000)
         entries = list(validator.filter_entries([normal_entry]))
         assert len(entries) == 1
+
+    def test_bounded_open_preserves_duplicate_zipinfo_identity(self) -> None:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("duplicate.json", b"first")
+            zf.writestr("duplicate.json", b"second")
+        buffer.seek(0)
+
+        with zipfile.ZipFile(buffer) as zf:
+            infos = zf.infolist()
+            with open_bounded_zip_entry(zf, infos[0]) as handle:
+                assert handle.read() == b"first"
 
     def test_cursor_state_records_failures(self) -> None:
         """Rejected entries record failures in cursor_state."""

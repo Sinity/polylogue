@@ -313,11 +313,11 @@ async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
 
     def reject_unbounded_read(
         zf: zipfile.ZipFile,
-        name: str,
+        info: zipfile.ZipInfo,
         *,
         max_bytes: int = MAX_UNCOMPRESSED_SIZE,
     ) -> _RejectUnboundedRead:
-        return _RejectUnboundedRead(original_open(zf, name, max_bytes=max_bytes))
+        return _RejectUnboundedRead(original_open(zf, info, max_bytes=max_bytes))
 
     monkeypatch.setattr(
         "polylogue.pipeline.services.archive_ingest.open_bounded_zip_entry",

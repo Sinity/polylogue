@@ -52,89 +52,81 @@ def _read_json_file(path: Path) -> object | None:
         return None
 
 
-def _read_json_zip_member(zip_path: Path, member_name: str) -> object | None:
+def _read_json_zip_member(zip_path: Path, info: zipfile.ZipInfo, zf: zipfile.ZipFile) -> object | None:
+    from .decoder_zip import ZipBombError, open_bounded_zip_entry
+
     try:
-        with zipfile.ZipFile(zip_path) as zf, zf.open(member_name) as handle:
+        with open_bounded_zip_entry(zf, info) as handle:
             data: object = json.load(handle)
             return data
-    except (OSError, KeyError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+    except (OSError, KeyError, zipfile.BadZipFile, json.JSONDecodeError, ZipBombError) as exc:
         logger.debug(
             "chatgpt_sidecar_zip_member_unavailable",
             zip_path=str(zip_path),
-            member=member_name,
+            member=info.filename,
             error=str(exc),
         )
         return None
 
 
-def _dat_asset_id(basename: str) -> str:
-    bare = basename[: -len(_DAT_SUFFIX)] if basename.lower().endswith(_DAT_SUFFIX) else basename
-    return _normalize_file_id(bare)
+def _read_chatgpt_zip_sidecars(
+    zip_path: Path,
+    store: BlobStore | None,
+) -> tuple[dict[str, object], dict[str, tuple[str, int]]]:
+    """Read admitted JSON sidecars and stream admitted ``.dat`` members.
 
-
-def _acquire_dat_blobs_from_zip(zip_path: Path, store: BlobStore) -> dict[str, tuple[str, int]]:
-    """Stream every ``.dat`` ZIP member into *store*, keyed by asset id.
-
-    Mirrors ``decoder_zip.py``'s ``capture_raw`` streaming pattern (bounded
-    decompression via ``open_bounded_zip_entry``, no full-file memory load)
-    but scans the whole archive up front rather than the main
-    ``ZipEntryValidator`` per-entry loop, which only ever admits
-    ``.json``/``.jsonl`` entries and would otherwise
-    never see a ``.dat`` member at all.
+    ``ZipInfo`` identity is preserved from central-directory admission through
+    decompression. In particular, a later duplicate filename cannot replace an
+    earlier member by making ``ZipFile.open(name)`` resolve through the archive's
+    name map. One validator accounts for every relevant member in the archive,
+    so JSON and ``.dat`` payloads share the cumulative limit.
     """
-    from polylogue.storage.blob_publication import flush_blob_publications
+    from .decoder_zip import ZIP_JSON_SUFFIXES, ZipBombError, ZipEntryValidator, open_bounded_zip_entry
 
-    from .decoder_zip import (
-        MAX_COMPRESSION_RATIO,
-        MAX_UNCOMPRESSED_SIZE,
-        ZipBombError,
-        open_bounded_zip_entry,
-    )
-
+    targets = {_LIBRARY_FILES_NAME, _ASSET_NAMES_NAME}
+    seen_targets: set[str] = set()
+    payloads: dict[str, object] = {}
     acquired: dict[str, tuple[str, int]] = {}
     try:
         with zipfile.ZipFile(zip_path) as zf:
-            for info in zf.infolist():
-                if info.is_dir():
+            validator = ZipEntryValidator("chatgpt", cursor_state=None, zip_path=zip_path)
+            for info in validator.filter_entries(zf.infolist(), allowed_suffixes=(*ZIP_JSON_SUFFIXES, _DAT_SUFFIX)):
+                if info.filename.lower().endswith(_DAT_SUFFIX):
+                    if store is None:
+                        continue
+                    dat_id = _dat_asset_id(Path(info.filename).name)
+                    if dat_id in acquired:
+                        continue
+                    try:
+                        with open_bounded_zip_entry(zf, info) as handle:
+                            blob_hash, size = store.write_from_fileobj(handle)
+                    except ZipBombError:
+                        logger.warning("chatgpt_dat_zip_bomb", path=str(zip_path), member=info.filename)
+                        continue
+                    except (KeyError, zipfile.BadZipFile, OSError) as exc:
+                        logger.debug(
+                            "chatgpt_dat_read_failed",
+                            path=str(zip_path),
+                            member=info.filename,
+                            error=str(exc),
+                        )
+                        continue
+                    acquired[dat_id] = (blob_hash, size)
                     continue
-                name = info.filename
-                if not name.lower().endswith(_DAT_SUFFIX):
+                if info.filename not in targets or info.filename in seen_targets:
                     continue
-                dat_id = _dat_asset_id(Path(name).name)
-                if dat_id in acquired:
-                    continue
-                if info.compress_size > 0 and info.file_size / info.compress_size > MAX_COMPRESSION_RATIO:
-                    logger.warning("chatgpt_dat_suspicious_compression_ratio", path=str(zip_path), member=name)
-                    continue
-                if info.file_size > MAX_UNCOMPRESSED_SIZE:
-                    logger.warning(
-                        "chatgpt_dat_oversized",
-                        path=str(zip_path),
-                        member=name,
-                        size=info.file_size,
-                    )
-                    continue
-                try:
-                    with open_bounded_zip_entry(zf, name) as handle:
-                        blob_hash, size = store.write_from_fileobj(handle)
-                except ZipBombError:
-                    logger.warning("chatgpt_dat_zip_bomb", path=str(zip_path), member=name)
-                    continue
-                except (KeyError, zipfile.BadZipFile, OSError) as exc:
-                    logger.debug(
-                        "chatgpt_dat_read_failed",
-                        path=str(zip_path),
-                        member=name,
-                        error=str(exc),
-                    )
-                    continue
-                acquired[dat_id] = (blob_hash, size)
+                seen_targets.add(info.filename)
+                payload = _read_json_zip_member(zip_path, info, zf)
+                if payload is not None:
+                    payloads[info.filename] = payload
     except (OSError, zipfile.BadZipFile) as exc:
-        logger.warning("chatgpt_dat_zip_open_failed", path=str(zip_path), error=str(exc))
-        return acquired
-    if acquired:
-        flush_blob_publications(store)
-    return acquired
+        logger.debug("chatgpt_sidecar_zip_open_failed", zip_path=str(zip_path), error=str(exc))
+    return payloads, acquired
+
+
+def _dat_asset_id(basename: str) -> str:
+    bare = basename[: -len(_DAT_SUFFIX)] if basename.lower().endswith(_DAT_SUFFIX) else basename
+    return _normalize_file_id(bare)
 
 
 def _acquire_dat_blobs_from_directory(directory: Path, store: BlobStore) -> dict[str, tuple[str, int]]:
@@ -213,12 +205,16 @@ class ChatGPTAssemblySpec:
         seen_dirs: set[Path] = set()
         for path in source_paths:
             if path.suffix.lower() == ".zip":
+                zip_sidecars, zip_dat_blobs = _read_chatgpt_zip_sidecars(path, blob_store)
                 if library_files_payload is None:
-                    library_files_payload = _read_json_zip_member(path, _LIBRARY_FILES_NAME)
+                    library_files_payload = zip_sidecars.get(_LIBRARY_FILES_NAME)
                 if asset_names_payload is None:
-                    asset_names_payload = _read_json_zip_member(path, _ASSET_NAMES_NAME)
-                if blob_store is not None:
-                    dat_blobs.update(_acquire_dat_blobs_from_zip(path, blob_store))
+                    asset_names_payload = zip_sidecars.get(_ASSET_NAMES_NAME)
+                dat_blobs.update(zip_dat_blobs)
+                if zip_dat_blobs and blob_store is not None:
+                    from polylogue.storage.blob_publication import flush_blob_publications
+
+                    flush_blob_publications(blob_store)
                 continue
             directory = path.parent
             if directory in seen_dirs:
@@ -315,7 +311,7 @@ def _resolve_dat_attachment(
             update["provider_file_id"] = resolved.file_id
     if blob is not None and attachment.inline_bytes is None and attachment.precomputed_blob is None:
         # bd polylogue-8ac0: bytes already streamed into the blob store during
-        # sidecar discovery (`_acquire_dat_blobs_from_zip`/`_from_directory`).
+        # sidecar discovery (`_read_chatgpt_zip_sidecars`/`_from_directory`).
         # Recording the (hash, size) pair here -- rather than re-reading the
         # source bytes -- lets `ingest_batch/_core.py` mark the attachment
         # acquired without re-hashing already-written bytes.

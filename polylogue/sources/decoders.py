@@ -17,6 +17,7 @@ from polylogue.sources.decoder_zip import (
     MAX_AGGREGATE_UNCOMPRESSED_SIZE,
     MAX_COMPRESSION_RATIO,
     MAX_UNCOMPRESSED_SIZE,
+    open_bounded_zip_entry,
 )
 from polylogue.sources.decoder_zip import ZipEntryValidator as _ZipEntryValidator
 from polylogue.sources.decoder_zip import process_zip as _process_zip
@@ -46,4 +47,5 @@ __all__ = [
     "MAX_AGGREGATE_UNCOMPRESSED_SIZE",
     "MAX_COMPRESSION_RATIO",
     "MAX_UNCOMPRESSED_SIZE",
+    "open_bounded_zip_entry",
 ]

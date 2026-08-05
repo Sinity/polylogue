@@ -58,6 +58,7 @@ from polylogue.pipeline.ingest_outcomes import (
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     _detect_provider_from_raw_bytes,
@@ -2895,43 +2896,46 @@ class LiveBatchProcessor:
                 for info in entries:
                     if info.file_size == 0:
                         continue
-                    for raw_data in iter_zip_entry_raw_data(
-                        zf,
-                        ZipEntryReadContext(
-                            source=source,
-                            zip_path=path,
-                            entry=info,
-                            file_mtime=file_mtime,
-                            provider_hint=zip_provider_hint,
-                            blob_store=blob_store,
-                        ),
-                    ):
-                        if raw_data.blob_hash is None:
-                            continue
-                        member_provider = raw_data.provider_hint or fallback_provider
-                        member_size = raw_data.blob_size or 0
-                        total_bytes += member_size
-                        records.append(
-                            (
-                                raw_data.blob_hash,
-                                RawSessionRecord(
-                                    raw_id=raw_data.blob_hash,
-                                    payload_provider=member_provider,
-                                    capture_mode=(
-                                        fallback_provider
-                                        if fallback_provider is not Provider.UNKNOWN
-                                        else member_provider
+                    try:
+                        for raw_data in iter_zip_entry_raw_data(
+                            zf,
+                            ZipEntryReadContext(
+                                source=source,
+                                zip_path=path,
+                                entry=info,
+                                file_mtime=file_mtime,
+                                provider_hint=zip_provider_hint,
+                                blob_store=blob_store,
+                            ),
+                        ):
+                            if raw_data.blob_hash is None:
+                                continue
+                            member_provider = raw_data.provider_hint or fallback_provider
+                            member_size = raw_data.blob_size or 0
+                            total_bytes += member_size
+                            records.append(
+                                (
+                                    raw_data.blob_hash,
+                                    RawSessionRecord(
+                                        raw_id=raw_data.blob_hash,
+                                        payload_provider=member_provider,
+                                        capture_mode=(
+                                            fallback_provider
+                                            if fallback_provider is not Provider.UNKNOWN
+                                            else member_provider
+                                        ),
+                                        source_name=member_provider.value,
+                                        source_path=raw_data.source_path,
+                                        source_index=raw_data.source_index or 0,
+                                        blob_size=member_size,
+                                        blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
+                                        acquired_at=acquired_at,
+                                        file_mtime=raw_data.file_mtime,
                                     ),
-                                    source_name=member_provider.value,
-                                    source_path=raw_data.source_path,
-                                    source_index=raw_data.source_index or 0,
-                                    blob_size=member_size,
-                                    blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
-                                    acquired_at=acquired_at,
-                                    file_mtime=raw_data.file_mtime,
-                                ),
+                                )
                             )
-                        )
+                    except ZipBombError as exc:
+                        logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
         except (zipfile.BadZipFile, OSError) as exc:
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
@@ -2957,9 +2961,9 @@ class LiveBatchProcessor:
             if not name_lower.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
                 continue
             try:
-                with zf.open(info.filename) as handle:
+                with open_bounded_zip_entry(zf, info) as handle:
                     prefix = handle.read(_DETECTION_PREFIX_SIZE)
-            except (zipfile.BadZipFile, OSError):
+            except (zipfile.BadZipFile, OSError, ZipBombError):
                 continue
             if not prefix:
                 continue
