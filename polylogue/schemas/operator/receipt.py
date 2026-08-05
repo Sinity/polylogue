@@ -14,6 +14,7 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.operator.registry import RuntimeSchemaRegistryLike
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import canonical_schema_provider
+from polylogue.schemas.synthetic.classification import unsupported_schema_constructs
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
 
 SCHEMA_INFERENCE_HANDOFF_SCHEMA = "polylogue.schema-inference-handoff.v1"
@@ -21,87 +22,6 @@ SCHEMA_INFERENCE_HANDOFF_FILENAME = "schema-inference-handoff.json"
 
 CoverageDecision: TypeAlias = Literal["committed", "unsupported", "nonrepresentable"]
 _COVERAGE_DECISIONS = frozenset({"committed", "unsupported", "nonrepresentable"})
-_SUPPORTED_SCHEMA_KEYS = frozenset(
-    {
-        "$anchor",
-        "$comment",
-        "$id",
-        "$schema",
-        "additionalProperties",
-        "anyOf",
-        "default",
-        "deprecated",
-        "description",
-        "examples",
-        "items",
-        "oneOf",
-        "properties",
-        "readOnly",
-        "title",
-        "type",
-        "writeOnly",
-        "x-polylogue-array-lengths",
-        "x-polylogue-foreign-keys",
-        "x-polylogue-format",
-        "x-polylogue-frequency",
-        "x-polylogue-multiline",
-        "x-polylogue-mutually-exclusive",
-        "x-polylogue-observed-distribution",
-        "x-polylogue-range",
-        "x-polylogue-semantic-role",
-        "x-polylogue-string-lengths",
-        "x-polylogue-time-deltas",
-        "x-polylogue-values",
-    }
-)
-_PERSISTED_SCHEMA_METADATA_ANNOTATIONS = frozenset(
-    {
-        "x-polylogue-anchor-profile-family-id",
-        "x-polylogue-artifact-kind",
-        "x-polylogue-element-bundle-scope-count",
-        "x-polylogue-element-first-seen",
-        "x-polylogue-element-kind",
-        "x-polylogue-element-last-seen",
-        "x-polylogue-evidence",
-        "x-polylogue-evidence-confidence",
-        "x-polylogue-exact-structure-ids",
-        "x-polylogue-generated-at",
-        "x-polylogue-generator",
-        "x-polylogue-high-cardinality-keys",
-        "x-polylogue-observed-artifact-count",
-        "x-polylogue-package-profile-family-ids",
-        "x-polylogue-package-version",
-        "x-polylogue-profile-family-ids",
-        "x-polylogue-profile-tokens",
-        "x-polylogue-promoted-at",
-        "x-polylogue-registered-at",
-        "x-polylogue-sample-count",
-        "x-polylogue-sample-granularity",
-        "x-polylogue-score",
-        "x-polylogue-version",
-    }
-)
-_SCHEMA_MAPPING_KEYS = frozenset(
-    {
-        "$defs",
-        "additionalProperties",
-        "contentSchema",
-        "contains",
-        "dependentSchemas",
-        "dependencies",
-        "else",
-        "if",
-        "items",
-        "not",
-        "patternProperties",
-        "properties",
-        "propertyNames",
-        "then",
-        "unevaluatedItems",
-        "unevaluatedProperties",
-    }
-)
-_SCHEMA_ARRAY_KEYS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
 
 
 def _require_digest(value: object, *, field: str) -> str:
@@ -112,28 +32,6 @@ def _require_digest(value: object, *, field: str) -> str:
 
 def _canonical_payload(payload: Mapping[str, object]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-
-
-def _walk_schema_keys(value: object, found: set[str]) -> None:
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            if isinstance(key, str) and key.startswith("x-"):
-                if key not in _PERSISTED_SCHEMA_METADATA_ANNOTATIONS:
-                    found.add(key)
-                continue
-            if isinstance(key, str):
-                found.add(key)
-            if key == "properties" and isinstance(child, Mapping):
-                for property_schema in child.values():
-                    _walk_schema_keys(property_schema, found)
-            elif key in _SCHEMA_MAPPING_KEYS:
-                _walk_schema_keys(child, found)
-            elif key in _SCHEMA_ARRAY_KEYS and isinstance(child, Sequence):
-                for branch in child:
-                    _walk_schema_keys(branch, found)
-    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        for child in value:
-            _walk_schema_keys(child, found)
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -476,14 +374,7 @@ def _unsupported_for_package(
                 )
             )
             continue
-        keys: set[str] = set()
-        _walk_schema_keys(schema, keys)
-        unsupported = tuple(sorted(keys - _SUPPORTED_SCHEMA_KEYS))
-        schema_type = schema.get("type")
-        if "x-polylogue-observed-distribution" in schema and (
-            not isinstance(schema_type, str) or schema_type not in {"array", "number", "integer"}
-        ):
-            unsupported = tuple(sorted(set(unsupported) | {"x-polylogue-observed-distribution"}))
+        unsupported = unsupported_schema_constructs(schema)
         if unsupported:
             decisions.append(
                 SchemaInferenceUnsupportedDecision(

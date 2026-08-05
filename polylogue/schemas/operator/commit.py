@@ -38,7 +38,10 @@ from pathlib import Path
 from typing import cast
 
 from polylogue.core.json import JSONDocument
-from polylogue.maintenance.schema_inference_gate import RECEIPT_SCHEMA, schema_inference_gate_receipt_digest
+from polylogue.maintenance.schema_inference_gate import (
+    validate_schema_inference_gate_receipt,
+)
+from polylogue.paths import db_path as default_index_db_path
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.generation.workflow import generate_all_schemas
 from polylogue.schemas.operator.inference import privacy_config_from_payload
@@ -63,7 +66,7 @@ def _element_schemas_by_kind(
     }
 
 
-def _accepted_gate_receipt_digest(path: Path | None) -> str:
+def _accepted_gate_receipt_digest(path: Path | None, *, archive_root: Path) -> str:
     if path is None:
         raise ValueError("schema commit requires an accepted schema-inference gate receipt path")
     try:
@@ -72,19 +75,28 @@ def _accepted_gate_receipt_digest(path: Path | None) -> str:
         raise ValueError(f"unable to read schema-inference gate receipt {path}: {exc}") from exc
     if not isinstance(payload, Mapping):
         raise ValueError("schema-inference gate receipt must be a JSON object")
-    if payload.get("schema") != RECEIPT_SCHEMA:
-        raise ValueError(f"schema-inference gate receipt must use schema {RECEIPT_SCHEMA!r}")
-    if payload.get("verdict") != "PASS":
-        raise ValueError("schema-inference gate receipt must have verdict PASS")
-    return schema_inference_gate_receipt_digest(cast(Mapping[str, object], payload))
+    return validate_schema_inference_gate_receipt(
+        cast(Mapping[str, object], payload),
+        archive_root=archive_root,
+    )
+
+
+def _target_archive_root(request: SchemaCommitRequest) -> Path:
+    target_db = request.db_path or default_index_db_path()
+    return target_db.absolute().parent
 
 
 def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommitResult:
     provider_token = str(canonical_schema_provider(request.provider))
-    gate_receipt_digest = _accepted_gate_receipt_digest(request.schema_inference_gate_receipt_path)
+    gate_receipt_digest = _accepted_gate_receipt_digest(
+        request.schema_inference_gate_receipt_path,
+        archive_root=_target_archive_root(request),
+    )
 
     registry_before = SchemaRegistry(storage_root=output_dir)
-    catalog_before = registry_before.load_package_catalog(provider_token)
+    # The bundled registry is a read fallback, not the prior state of this
+    # commit's output directory. Compare against local persisted packages only.
+    catalog_before = registry_before._load_local_catalog(provider_token)
     before_versions = {package.version for package in catalog_before.packages} if catalog_before is not None else set()
     before_schemas: dict[str, dict[str, JSONDocument | None]] = {}
     if catalog_before is not None:

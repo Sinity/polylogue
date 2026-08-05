@@ -8,7 +8,8 @@ new command actually changes files on disk, not merely that a function was
 called: every assertion below reads back real gzip/JSON files written by
 ``SchemaRegistry.replace_provider_packages`` under a real ``tmp_path``, using
 a fictional provider token so nothing here can read or write the repo's real
-committed ``polylogue/schemas/providers/`` tree.
+committed ``polylogue/schemas/providers/`` tree. The real bundled ``chatgpt``
+wire format is used for campaign execution.
 
 Only ``_build_provider_bundle`` (the sample-observation step) is mocked, the
 same seam ``tests/unit/core/test_schema_generation.py`` uses for
@@ -28,7 +29,6 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.maintenance.schema_inference_gate import schema_inference_gate_receipt_digest
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
@@ -36,25 +36,63 @@ from polylogue.schemas.operator.receipt import SCHEMA_INFERENCE_HANDOFF_FILENAME
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.tooling_models import ClusterManifest
+from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from tests.infra.inferred_corpus import compile_inferred_corpus_manifest
 
-_PROVIDER = "commit-fixture-k45pq"
+_PROVIDER = "chatgpt"
 
 
 def _gate_receipt(output_dir: Path) -> Path:
     path = output_dir.parent / "schema-inference-gate-receipt.json"
-    payload = {"schema": "polylogue.schema-inference-gate.v1", "gate_version": "test", "verdict": "PASS"}
+    archive_root = output_dir.parent
+    payload = {
+        "schema": "polylogue.schema-inference-gate.v1",
+        "gate_version": "2",
+        "generated_at": "2026-08-05T14:00:00+00:00",
+        "receipt_nonce": "00000000-0000-4000-8000-000000000001",
+        "verdict": "PASS",
+        "archive_root": str(archive_root.absolute()),
+        "archive_identity_digest": ArchiveIdentity.resolve_location(
+            ArchiveLocation.resolve(archive_root)
+        ).authority_identity_digest,
+        "schema_identity": {},
+        "source_schema_identity": {},
+        "query_results": {"pristine": {"passed": True}},
+        "source_denominators": {},
+        "blob_denominators": {},
+        "ground_truth_denominators": {},
+        "ground_truth_inputs": {"passed": True},
+        "exemptions": {},
+        "corpus_fidelity": {"passed": True},
+        "full_blob_hash_verification": {
+            "passed": True,
+            "verifier": {"identity": "polylogue.storage.blob_store.BlobStore.verify_all"},
+            "before_snapshot": {"digest": "a" * 64},
+            "after_snapshot": {"digest": "a" * 64},
+            "failures": [],
+            "missing_references": [],
+            "errors": [],
+        },
+        "input_paths": {},
+        "tool_versions": {},
+        "pass_fail_reasons": [],
+    }
     path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-    assert schema_inference_gate_receipt_digest(payload)
     return path
 
 
-def _request(output_dir: Path, *, dry_run: bool = False) -> SchemaCommitRequest:
+def _request(
+    output_dir: Path,
+    *,
+    dry_run: bool = False,
+    gate_path: Path | None = None,
+) -> SchemaCommitRequest:
     return SchemaCommitRequest(
         provider=_PROVIDER,
         output_dir=output_dir,
+        db_path=output_dir.parent / "index.db",
         full_corpus=True,
-        schema_inference_gate_receipt_path=_gate_receipt(output_dir),
+        schema_inference_gate_receipt_path=gate_path or _gate_receipt(output_dir),
         dry_run=dry_run,
     )
 
@@ -162,11 +200,84 @@ class TestCommitProviderSchemaWritesRealFiles:
         )
         assert manifest.receipt_state == "package_receipt_attached"
         assert len(manifest.entries) == 1
+        entry = manifest.entries[0]
+        assert entry.spec is not None
+        assert entry.generator_schema is not None
+        assert entry.key.provider == "chatgpt"
+
+        element_path = output_dir / _PROVIDER / "versions" / "v1" / "elements" / "session_document.schema.json.gz"
+        mutated_schema = _read_element_schema(output_dir, "v1")
+        mutated_schema["title"] = "mutation"
+        with gzip.open(element_path, "wt", encoding="utf-8") as handle:
+            json.dump(mutated_schema, handle)
+        with pytest.raises(ValueError, match="package/version/element hashes"):
+            compile_inferred_corpus_manifest(
+                registry=SchemaRegistry(storage_root=output_dir),
+                providers=(_PROVIDER,),
+                package_receipt=result.handoff.to_payload(),
+                campaign_mode=True,
+            )
 
     def test_commit_requires_an_accepted_gate_receipt(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "providers"
         with pytest.raises(ValueError, match="accepted schema-inference gate receipt"):
             commit_provider_schema(SchemaCommitRequest(provider=_PROVIDER, output_dir=output_dir, full_corpus=True))
+
+    def test_commit_rejects_a_minimal_or_mutated_pass_payload(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "providers"
+        receipt_path = _gate_receipt(output_dir)
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload.pop("full_blob_hash_verification")
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="authoritative fields"):
+            commit_provider_schema(_request(output_dir, gate_path=receipt_path))
+
+        payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
+        payload["full_blob_hash_verification"]["passed"] = False
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="full_blob_hash_verification PASS"):
+            commit_provider_schema(_request(output_dir, gate_path=receipt_path))
+
+        payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
+        payload["archive_identity_digest"] = "0" * 64
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="archive identity"):
+            commit_provider_schema(_request(output_dir, gate_path=receipt_path))
+
+        payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
+        payload["receipt_nonce"] = "forged"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="receipt nonce"):
+            commit_provider_schema(_request(output_dir, gate_path=receipt_path))
+
+        payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
+        payload["generated_at"] = "2020-01-01T00:00:00+00:00"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="stale or from the future"):
+            commit_provider_schema(_request(output_dir, gate_path=receipt_path))
+
+    def test_registry_construct_rejection_remains_an_explicit_unsupported_entry(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "providers"
+        bundle = _bundle(
+            version="v1",
+            schema={"type": "object", "properties": {"id": {"type": "string", "enum": ["x"]}}},
+            sample_count=5,
+        )
+        with patch("polylogue.schemas.generation.workflow._build_provider_bundle", return_value=bundle):
+            result = commit_provider_schema(_request(output_dir))
+
+        assert result.handoff is not None
+        manifest = compile_inferred_corpus_manifest(
+            registry=SchemaRegistry(storage_root=output_dir),
+            providers=(_PROVIDER,),
+            package_receipt=result.handoff.to_payload(),
+            campaign_mode=True,
+        )
+        entry = manifest.entries[0]
+        assert entry.spec is None
+        assert entry.unsupported is not None
+        assert entry.unsupported.reason == "unsupported_json_schema_construct"
+        assert "enum" in entry.unsupported.details
 
     def test_regeneration_with_new_field_reports_changed_and_added(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "providers"
@@ -277,6 +388,7 @@ class TestCommitProviderSchemaWritesRealFiles:
             SchemaCommitRequest(
                 provider="not-a-real-provider-k45pq",
                 output_dir=output_dir,
+                db_path=output_dir.parent / "index.db",
                 full_corpus=True,
                 schema_inference_gate_receipt_path=_gate_receipt(output_dir),
             )

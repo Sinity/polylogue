@@ -134,11 +134,64 @@ def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decision
             campaign_mode=True,
         )
 
+
+def test_bundled_registry_relation_annotations_share_one_receipt_classification() -> None:
+    registry = _registry()
+    provider = "chatgpt"
+    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest="a" * 64)
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=(provider,),
+        package_receipt=receipt.to_payload(),
+        campaign_mode=True,
+    )
+
+    expected_annotations = {
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-string-lengths",
+        "x-polylogue-time-deltas",
+    }
+    observed = {
+        item.construct
+        for entry in manifest.entries
+        for item in entry.key.construct_support
+        if item.construct in expected_annotations
+    }
+    assert observed == expected_annotations
+    receipt_decisions = {
+        (item.provider, item.package_version, item.element_kind, item.decision, item.reason, item.details)
+        for item in receipt.unsupported_decisions
+        if item.provider == provider
+    }
+    manifest_decisions: set[tuple[str, str, str, str, str, tuple[str, ...]]] = set()
+    for entry in manifest.entries:
+        if entry.unsupported is None:
+            continue
+        unsupported = entry.unsupported
+        manifest_decisions.add(
+            (
+                entry.key.provider,
+                entry.key.package_version,
+                entry.key.element_kind,
+                "nonrepresentable" if unsupported.reason == "unsupported_json_schema_construct" else "unsupported",
+                unsupported.reason,
+                unsupported.details,
+            )
+        )
+    assert receipt_decisions == manifest_decisions
+    assert all(
+        annotation in details
+        for *_identity, details in receipt_decisions
+        for annotation in expected_annotations
+        if annotation in observed
+    )
+
     package = receipt.packages[0]
     if receipt.unsupported_decisions:
         first = receipt.unsupported_decisions[0]
         changed = replace(first, decision="unsupported" if first.decision == "nonrepresentable" else "nonrepresentable")
-        unsupported = (changed, *receipt.unsupported_decisions[1:])
+        tampered_decisions = (changed, *receipt.unsupported_decisions[1:])
     else:
         changed = SchemaInferenceUnsupportedDecision(
             provider=provider,
@@ -148,8 +201,8 @@ def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decision
             reason="tampered decision",
             details=("tampered_construct",),
         )
-        unsupported = (changed,)
-    tampered_unsupported = replace(receipt, unsupported_decisions=tuple(sorted(unsupported)))
+        tampered_decisions = (changed,)
+    tampered_unsupported = replace(receipt, unsupported_decisions=tuple(sorted(tampered_decisions)))
     with pytest.raises(ValueError, match="unsupported/nonrepresentable decisions"):
         compile_inferred_corpus_manifest(
             registry=registry,

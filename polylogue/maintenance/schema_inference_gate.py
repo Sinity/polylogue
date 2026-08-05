@@ -14,6 +14,7 @@ import json
 import platform
 import sqlite3
 import sys
+import uuid
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ RECEIPT_SCHEMA = "polylogue.schema-inference-gate.v1"
 GATE_VERSION = "2"
 DEFAULT_SAMPLE_LIMIT = 10
 RECEIPT_FILENAME = "schema-inference-gate-receipt.json"
+RECEIPT_MAX_AGE_SECONDS = 24 * 60 * 60
 
 _ALLOWED_RESIDUAL_EXPLANATIONS = frozenset(
     {"materialized", "superseded-duplicate", "legitimately-excluded-non-conversation"}
@@ -1021,6 +1023,123 @@ def schema_inference_gate_receipt_digest(payload: Mapping[str, object]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def validate_schema_inference_gate_receipt(
+    payload: Mapping[str, object],
+    *,
+    archive_root: Path,
+    now: datetime | None = None,
+) -> str:
+    """Validate the authoritative PASS receipt consumed by schema commit.
+
+    A verdict alone is not evidence. The handoff contract requires the gate's
+    complete receipt shape, a fresh nonce, the current archive authority
+    identity, and an explicit successful full blob verification.
+    """
+
+    required_fields = {
+        "schema",
+        "gate_version",
+        "generated_at",
+        "receipt_nonce",
+        "verdict",
+        "archive_root",
+        "archive_identity_digest",
+        "schema_identity",
+        "source_schema_identity",
+        "query_results",
+        "source_denominators",
+        "blob_denominators",
+        "ground_truth_denominators",
+        "ground_truth_inputs",
+        "exemptions",
+        "corpus_fidelity",
+        "full_blob_hash_verification",
+        "input_paths",
+        "tool_versions",
+        "pass_fail_reasons",
+    }
+    missing = sorted(required_fields - set(payload))
+    if missing:
+        raise ValueError(f"schema-inference gate receipt is missing authoritative fields: {missing}")
+    if payload.get("schema") != RECEIPT_SCHEMA or payload.get("gate_version") != GATE_VERSION:
+        raise ValueError("schema-inference gate receipt schema or gate version is not authoritative")
+    if payload.get("verdict") != "PASS":
+        raise ValueError("schema-inference gate receipt must have verdict PASS")
+
+    nonce = payload.get("receipt_nonce")
+    try:
+        valid_nonce = isinstance(nonce, str) and uuid.UUID(nonce).hex == nonce.replace("-", "")
+    except ValueError:
+        valid_nonce = False
+    if not valid_nonce:
+        raise ValueError("schema-inference gate receipt must contain a valid receipt nonce")
+
+    generated_at = payload.get("generated_at")
+    if not isinstance(generated_at, str):
+        raise ValueError("schema-inference gate receipt generated_at is required")
+    try:
+        generated = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("schema-inference gate receipt generated_at is invalid") from exc
+    if generated.tzinfo is None:
+        raise ValueError("schema-inference gate receipt generated_at must include a timezone")
+    observed_at = now or datetime.now(UTC)
+    age_seconds = (observed_at - generated.astimezone(UTC)).total_seconds()
+    if age_seconds < -300 or age_seconds > RECEIPT_MAX_AGE_SECONDS:
+        raise ValueError("schema-inference gate receipt is stale or from the future")
+
+    expected_root = archive_root.absolute()
+    recorded_root = payload.get("archive_root")
+    if not isinstance(recorded_root, str) or Path(recorded_root).absolute() != expected_root:
+        raise ValueError("schema-inference gate receipt targets a different archive")
+    try:
+        location = ArchiveLocation.resolve(expected_root)
+        expected_identity_digest = ArchiveIdentity.resolve_location(location).authority_identity_digest
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise ValueError(f"unable to resolve target archive identity: {exc}") from exc
+    if payload.get("archive_identity_digest") != expected_identity_digest:
+        raise ValueError("schema-inference gate receipt archive identity is stale or mismatched")
+
+    full_blob = payload.get("full_blob_hash_verification")
+    if not isinstance(full_blob, Mapping) or full_blob.get("passed") is not True:
+        raise ValueError("schema-inference gate receipt lacks an explicit full_blob_hash_verification PASS")
+    verifier = full_blob.get("verifier")
+    if (
+        not isinstance(verifier, Mapping)
+        or verifier.get("identity") != "polylogue.storage.blob_store.BlobStore.verify_all"
+    ):
+        raise ValueError("schema-inference gate receipt lacks the authoritative full blob verifier")
+    before = full_blob.get("before_snapshot")
+    after = full_blob.get("after_snapshot")
+    if (
+        not isinstance(before, Mapping)
+        or not isinstance(after, Mapping)
+        or not isinstance(before.get("digest"), str)
+        or before.get("digest") != after.get("digest")
+        or full_blob.get("failures") != []
+        or full_blob.get("missing_references") != []
+        or full_blob.get("errors") != []
+    ):
+        raise ValueError("schema-inference gate receipt full blob verification evidence is incomplete")
+
+    query_results = payload.get("query_results")
+    if (
+        not isinstance(query_results, Mapping)
+        or not query_results
+        or any(not isinstance(result, Mapping) or result.get("passed") is not True for result in query_results.values())
+    ):
+        raise ValueError("schema-inference gate receipt contains a non-passing pristine query gate")
+    corpus_fidelity = payload.get("corpus_fidelity")
+    ground_truth = payload.get("ground_truth_inputs")
+    if not isinstance(corpus_fidelity, Mapping) or corpus_fidelity.get("passed") is not True:
+        raise ValueError("schema-inference gate receipt corpus fidelity is not PASS")
+    if not isinstance(ground_truth, Mapping) or ground_truth.get("passed") is not True:
+        raise ValueError("schema-inference gate receipt ground truth is not PASS")
+    if payload.get("pass_fail_reasons") != []:
+        raise ValueError("schema-inference gate receipt contains pass/fail reasons")
+    return schema_inference_gate_receipt_digest(payload)
+
+
 def _int_or_zero(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
@@ -1115,8 +1234,12 @@ def run_schema_inference_gate(
         "schema": RECEIPT_SCHEMA,
         "gate_version": GATE_VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
+        "receipt_nonce": str(uuid.uuid4()),
         "verdict": "PASS" if not reasons and passed_hard_gates else "FAIL",
         "archive_root": str(root),
+        "archive_identity_digest": (
+            ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)).authority_identity_digest
+        ),
         "schema_identity": schema_identity,
         "source_schema_identity": source_entry,
         "query_results": gate_results,
@@ -1150,9 +1273,11 @@ __all__ = [
     "DEFAULT_SAMPLE_LIMIT",
     "GROUND_TRUTH_INPUTS",
     "RECEIPT_FILENAME",
+    "RECEIPT_MAX_AGE_SECONDS",
     "RECEIPT_SCHEMA",
     "SchemaInferenceGateError",
     "SchemaInferenceGateResult",
     "schema_inference_gate_receipt_digest",
+    "validate_schema_inference_gate_receipt",
     "run_schema_inference_gate",
 ]
