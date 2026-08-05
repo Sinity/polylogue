@@ -42,7 +42,8 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
     assert all(entry.schema_valid is True for entry in supported)
     assert all(entry.parsed_session_count > 0 for entry in supported)
     assert all(entry.parsed_message_count > 0 for entry in supported)
-    assert all(entry.construct_coverage is not None for entry in supported)
+    assert all(entry.construct_coverage is not None and entry.construct_coverage.complete for entry in supported)
+    assert receipt.complete
 
 
 def test_support_receipt_is_deterministic() -> None:
@@ -107,7 +108,8 @@ def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.
     assert before.to_dict() != after.to_dict()
     assert not after.complete
     assert any(
-        entry.construct_coverage is not None and "type:array" in entry.construct_coverage.missing_keywords
+        entry.construct_coverage is not None
+        and any(keyword.startswith("type:array") for keyword in entry.construct_coverage.missing_keywords)
         for entry in after.entries
         if entry.status == "supported"
     )
@@ -120,6 +122,22 @@ def test_string_payload_cannot_satisfy_integer_coverage() -> None:
     )
 
     assert coverage.missing_keywords == ("type:integer",)
+    assert not coverage.complete
+
+
+def test_crossed_property_values_cannot_satisfy_each_others_types() -> None:
+    schema: SchemaRecord = {
+        "type": "object",
+        "properties": {
+            "count": {"type": "integer"},
+            "label": {"type": "string"},
+        },
+        "required": ["count", "label"],
+    }
+    coverage = wire_formats.construct_coverage(schema, ({"count": "wrong", "label": 7},))
+
+    assert any(keyword.startswith("type:integer@$.properties.count") for keyword in coverage.missing_keywords)
+    assert any(keyword.startswith("type:string@$.properties.label") for keyword in coverage.missing_keywords)
     assert not coverage.complete
 
 
