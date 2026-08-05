@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 from devtools.command_catalog import (
+    CATALOG_BYPASS_SITES,
+    WORKSPACE_COMMAND_DISPOSITIONS,
     CommandSpec,
     control_plane_command,
     featured_command_specs,
@@ -65,6 +67,36 @@ def _render_verification_lab_surface(commands: tuple[CommandSpec, ...]) -> list[
     return lines
 
 
+def _render_workspace_dispositions() -> list[str]:
+    lines = [
+        "## Workspace disposition audit",
+        "",
+        "The utf.1 triage retains workspace commands with operator history, reusable output, or focused tests. "
+        "The stale archive-schema-fast-forward name is removed in favor of the registered index fast-forward command.",
+        "",
+        "| Named entry | Disposition | Evidence | Replacement |",
+        "| --- | --- | --- | --- |",
+    ]
+    for item in WORKSPACE_COMMAND_DISPOSITIONS:
+        display_name = item.name if item.disposition == "remove" else control_plane_command(item.name)
+        lines.append(f"| `{display_name}` | `{item.disposition}` | {item.evidence} | {item.replacement} |")
+    lines.extend(
+        [
+            "",
+            "Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push route use registered commands; the generated test-economics provenance header is the sole declared sanctioned module-path exception.",
+            "",
+            "| Site | Status | Registered command | Reason |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for site in CATALOG_BYPASS_SITES:
+        lines.append(
+            f"| `{site.path}` | `{site.disposition}` | `{control_plane_command(site.command_name)}` | {site.reason} |"
+        )
+    lines.append("")
+    return lines
+
+
 def build_command_catalog() -> str:
     groups = grouped_command_specs()
     featured = featured_command_specs()
@@ -87,6 +119,7 @@ def build_command_catalog() -> str:
     lines.extend(_render_verification_lab_surface(verification_lab))
     if featured:
         lines.extend(_render_featured_commands(featured))
+    lines.extend(_render_workspace_dispositions())
     for category, commands in groups.items():
         lines.extend(_render_table(category, commands))
     lines.append("<!-- END GENERATED: devtools-command-catalog -->")

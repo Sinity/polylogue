@@ -100,6 +100,23 @@ class CommandSpec:
         return data
 
 
+@dataclass(frozen=True, slots=True)
+class WorkspaceCommandDisposition:
+    name: str
+    disposition: str
+    evidence: str
+    replacement: str
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogBypassSite:
+    path: str
+    marker: str
+    command_name: str
+    disposition: str
+    reason: str
+
+
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "status",
@@ -430,6 +447,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools verify coverage",
             "devtools verify coverage --ignore-integration --term-missing",
             "devtools verify coverage -- --maxfail=1",
+        ),
+    ),
+    CommandSpec(
+        "verify mutation-freshness",
+        "verification",
+        "Verify fresh mutation campaigns meet their declared kill-rate thresholds.",
+        "devtools.verify_mutation_freshness",
+        use_when=(
+            "Enforce mutation campaign freshness and kill-rate thresholds after a rotating CI campaign "
+            "has produced its local artifacts."
+        ),
+        examples=(
+            "devtools verify mutation-freshness --enforce-kill-rate",
+            "devtools verify mutation-freshness --yaml .local/mutation-campaigns/index.yaml --strict",
         ),
     ),
     CommandSpec(
@@ -2192,6 +2223,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "bench nightly-compare",
+        "benchmarking",
+        "Compare nightly pytest-benchmark output with the committed baseline.",
+        "devtools.benchmark_compare_nightly",
+        use_when="Check the nightly scale benchmark result against its committed regression threshold.",
+        examples=(
+            "devtools bench nightly-compare tests/benchmarks/baselines/nightly-baseline.json nightly-results.json",
+            "devtools bench nightly-compare baseline.json candidate.json --fail-pct 20",
+        ),
+    ),
+    CommandSpec(
         "bench synthetic",
         "benchmarking",
         "Run synthetic benchmark campaigns over generated archives.",
@@ -2284,6 +2326,102 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
 
 
+WORKSPACE_COMMAND_DISPOSITIONS: tuple[WorkspaceCommandDisposition, ...] = (
+    WorkspaceCommandDisposition(
+        "workspace index-fast-forward",
+        "retain",
+        "Recent production commits plus focused devtools/storage tests; emits a reusable proof receipt.",
+        "Keep the registered command as the index-tier actuator.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace archive-schema-fast-forward",
+        "remove",
+        "No current CommandSpec, implementation module, focused test, or history entry exists for this name.",
+        "Use workspace index-fast-forward for declared derived-index fast-forwards.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace degraded-archive-proof",
+        "retain",
+        "Focused tests and deterministic self-healing proof artifacts cover the command.",
+        "Keep the registered command for archive repair evidence.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace frontier",
+        "retain",
+        "Operator-facing frontier report with documented workflow use and structured report output.",
+        "Keep the registered command for frontier batching and wait-ahead decisions.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace temporal-read-profile",
+        "retain",
+        "Focused tests cover the report and JSON timing output is reusable for read tuning.",
+        "Keep the registered command as the temporal read profiling entrypoint.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace temporal-devloop",
+        "retain",
+        "Focused tests cover structured and Markdown event sources; output is a reusable evidence window.",
+        "Keep the registered command as the devloop temporal evidence entrypoint.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace temporal-archive-aggregates",
+        "retain",
+        "Focused tests cover aggregate report construction and reusable archive artifacts.",
+        "Keep the registered command as the run-projection aggregate entrypoint.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace lineage-validation",
+        "retain",
+        "Focused tests cover lineage evidence and the command emits reusable count and composition proof.",
+        "Keep the registered command before publishing archive cardinality claims.",
+    ),
+    WorkspaceCommandDisposition(
+        "workspace cli-surface-audit",
+        "retain",
+        "Focused tests cover bounded output and stale-artifact pruning; the audit shelf is reusable.",
+        "Keep the registered command as the current CLI surface audit entrypoint.",
+    ),
+    WorkspaceCommandDisposition(
+        "demo real-slice-screen",
+        "retain",
+        "Focused privacy-screening tests cover redaction, PII review, and report generation.",
+        "Keep the registered command as the read-only real-archive screening entrypoint.",
+    ),
+)
+
+
+CATALOG_BYPASS_SITES: tuple[CatalogBypassSite, ...] = (
+    CatalogBypassSite(
+        ".github/workflows/mutation-testing.yml",
+        "uv run devtools verify mutation-freshness",
+        "verify mutation-freshness",
+        "registered",
+        "CI invokes the catalog command so inventory and workflow validation see the freshness gate.",
+    ),
+    CatalogBypassSite(
+        ".github/workflows/nightly-scale.yml",
+        "uv run devtools bench nightly-compare",
+        "bench nightly-compare",
+        "registered",
+        "CI invokes the catalog command so the nightly comparison is discoverable and checked.",
+    ),
+    CatalogBypassSite(
+        "devtools/pre_push_gate.py",
+        'control_plane_argv("lab policy backlog-hygiene")',
+        "lab policy backlog-hygiene",
+        "registered",
+        "The intentional Beads-only route remains narrow while using the registered policy command.",
+    ),
+    CatalogBypassSite(
+        "docs/test-economics.md",
+        "python -m devtools.test_economics_report",
+        "lab test-economics",
+        "sanctioned-bypass",
+        "The generated provenance header preserves the module that emitted the document; operators use the catalog command.",
+    ),
+)
+
+
 def command_name_from_tokens(tokens: Iterable[str], commands: Iterable[CommandSpec] = COMMAND_SPECS) -> str | None:
     """Resolve leading argv tokens to a registered command name."""
     token_tuple = tuple(tokens)
@@ -2334,14 +2472,17 @@ __all__ = [
     "CATEGORY_ORDER",
     "COMMANDS",
     "COMMAND_SPECS",
+    "CATALOG_BYPASS_SITES",
     "CONTROL_PLANE",
     "CommandMain",
     "CommandSpec",
+    "WorkspaceCommandDisposition",
     "command_name_from_tokens",
     "control_plane_argv",
     "control_plane_command",
     "featured_command_specs",
     "grouped_command_specs",
     "VERIFICATION_LAB_COMMAND_NAMES",
+    "WORKSPACE_COMMAND_DISPOSITIONS",
     "verification_lab_command_specs",
 ]

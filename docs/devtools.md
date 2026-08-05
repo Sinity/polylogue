@@ -96,6 +96,32 @@ These are the commands worth remembering during normal repo work:
 - `devtools bench campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
   Common forms: `devtools bench campaign list`, `devtools bench campaign run search-filters`, `devtools bench campaign compare baseline.json candidate.json`.
 
+## Workspace disposition audit
+
+The utf.1 triage retains workspace commands with operator history, reusable output, or focused tests. The stale archive-schema-fast-forward name is removed in favor of the registered index fast-forward command.
+
+| Named entry | Disposition | Evidence | Replacement |
+| --- | --- | --- | --- |
+| `devtools workspace index-fast-forward` | `retain` | Recent production commits plus focused devtools/storage tests; emits a reusable proof receipt. | Keep the registered command as the index-tier actuator. |
+| `workspace archive-schema-fast-forward` | `remove` | No current CommandSpec, implementation module, focused test, or history entry exists for this name. | Use workspace index-fast-forward for declared derived-index fast-forwards. |
+| `devtools workspace degraded-archive-proof` | `retain` | Focused tests and deterministic self-healing proof artifacts cover the command. | Keep the registered command for archive repair evidence. |
+| `devtools workspace frontier` | `retain` | Operator-facing frontier report with documented workflow use and structured report output. | Keep the registered command for frontier batching and wait-ahead decisions. |
+| `devtools workspace temporal-read-profile` | `retain` | Focused tests cover the report and JSON timing output is reusable for read tuning. | Keep the registered command as the temporal read profiling entrypoint. |
+| `devtools workspace temporal-devloop` | `retain` | Focused tests cover structured and Markdown event sources; output is a reusable evidence window. | Keep the registered command as the devloop temporal evidence entrypoint. |
+| `devtools workspace temporal-archive-aggregates` | `retain` | Focused tests cover aggregate report construction and reusable archive artifacts. | Keep the registered command as the run-projection aggregate entrypoint. |
+| `devtools workspace lineage-validation` | `retain` | Focused tests cover lineage evidence and the command emits reusable count and composition proof. | Keep the registered command before publishing archive cardinality claims. |
+| `devtools workspace cli-surface-audit` | `retain` | Focused tests cover bounded output and stale-artifact pruning; the audit shelf is reusable. | Keep the registered command as the current CLI surface audit entrypoint. |
+| `devtools demo real-slice-screen` | `retain` | Focused privacy-screening tests cover redaction, PII review, and report generation. | Keep the registered command as the read-only real-archive screening entrypoint. |
+
+Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push route use registered commands; the generated test-economics provenance header is the sole declared sanctioned module-path exception.
+
+| Site | Status | Registered command | Reason |
+| --- | --- | --- | --- |
+| `.github/workflows/mutation-testing.yml` | `registered` | `devtools verify mutation-freshness` | CI invokes the catalog command so inventory and workflow validation see the freshness gate. |
+| `.github/workflows/nightly-scale.yml` | `registered` | `devtools bench nightly-compare` | CI invokes the catalog command so the nightly comparison is discoverable and checked. |
+| `devtools/pre_push_gate.py` | `registered` | `devtools lab policy backlog-hygiene` | The intentional Beads-only route remains narrow while using the registered policy command. |
+| `docs/test-economics.md` | `sanctioned-bypass` | `devtools lab test-economics` | The generated provenance header preserves the module that emitted the document; operators use the catalog command. |
+
 ### Core
 
 | Command | Description |
@@ -196,6 +222,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify evidence` | Render the pytest-first evidence dashboard. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
+| `devtools verify mutation-freshness` | Verify fresh mutation campaigns meet their declared kill-rate thresholds. |
 | `devtools verify public-claims` | Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy. |
 | `devtools verify pytest-timeout-overrides` | Verify explicit pytest timeout overrides are positive, bounded, and justified. |
 | `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
@@ -212,6 +239,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench mutation` | Run focused mutation campaigns and maintain their local index. |
+| `devtools bench nightly-compare` | Compare nightly pytest-benchmark output with the committed baseline. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 | `devtools bench synthetic` | Run synthetic benchmark campaigns over generated archives. |
 

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from devtools.command_catalog import (
+    CATALOG_BYPASS_SITES,
     CATEGORY_ORDER,
     COMMAND_SPECS,
+    COMMANDS,
     VERIFICATION_LAB_COMMAND_NAMES,
+    WORKSPACE_COMMAND_DISPOSITIONS,
     command_name_from_tokens,
     control_plane_argv,
     control_plane_command,
@@ -59,3 +64,44 @@ def test_verification_lab_surface_is_explicit_and_implemented() -> None:
         assert spec.use_when
         assert spec.examples
         assert callable(spec.resolve_main())
+
+
+def test_workspace_dispositions_cover_the_named_utf_entries() -> None:
+    expected = {
+        "workspace index-fast-forward",
+        "workspace archive-schema-fast-forward",
+        "workspace degraded-archive-proof",
+        "workspace frontier",
+        "workspace temporal-read-profile",
+        "workspace temporal-devloop",
+        "workspace temporal-archive-aggregates",
+        "workspace lineage-validation",
+        "workspace cli-surface-audit",
+        "demo real-slice-screen",
+    }
+    dispositions = {item.name: item for item in WORKSPACE_COMMAND_DISPOSITIONS}
+
+    assert set(dispositions) == expected
+    assert dispositions["workspace archive-schema-fast-forward"].disposition == "remove"
+    assert dispositions["workspace archive-schema-fast-forward"].replacement.endswith(
+        "workspace index-fast-forward for declared derived-index fast-forwards."
+    )
+    for name, item in dispositions.items():
+        assert item.evidence
+        assert item.replacement
+        if item.disposition == "retain":
+            assert name in COMMANDS
+        else:
+            assert name not in COMMANDS
+
+
+def test_named_catalog_bypass_sites_are_registered_or_sanctioned() -> None:
+    root = Path(__file__).resolve().parents[3]
+
+    assert CATALOG_BYPASS_SITES
+    for site in CATALOG_BYPASS_SITES:
+        source = (root / site.path).read_text(encoding="utf-8")
+        assert site.marker in source
+        assert site.command_name in COMMANDS
+        assert site.disposition in {"registered", "sanctioned-bypass"}
+        assert site.reason
