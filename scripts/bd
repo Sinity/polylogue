@@ -1,0 +1,89 @@
+#!/bin/sh
+set -eu
+
+_bd_wrapper_real=$(readlink -f "$0" 2>/dev/null || true)
+if [ -z "$_bd_wrapper_real" ] || [ ! -f "$_bd_wrapper_real" ]; then
+  echo "polylogue bd wrapper: cannot resolve wrapper executable" >&2
+  exit 126
+fi
+_bd_script_dir=$(CDPATH= cd -- "$(dirname -- "$_bd_wrapper_real")" && pwd -P)
+_bd_guard="$_bd_script_dir/../devtools/bd_reimport_guard.py"
+_bd_real=${POLYLOGUE_BD_REAL:-}
+
+if [ -z "$_bd_real" ]; then
+  _bd_real=bd
+fi
+
+case "$_bd_real" in
+  */*)
+    case "$_bd_real" in
+      /*) ;;
+      *)
+        echo "polylogue bd wrapper: POLYLOGUE_BD_REAL must be an absolute path or a bare command name" >&2
+        exit 126
+        ;;
+    esac
+    ;;
+  *)
+    _bd_name=$_bd_real
+    _bd_real=
+    _bd_old_ifs=$IFS
+    IFS=:
+    for _bd_path_entry in $PATH; do
+      [ -n "$_bd_path_entry" ] || _bd_path_entry=.
+      _bd_candidate="$_bd_path_entry/$_bd_name"
+      if [ -x "$_bd_candidate" ] && [ ! -d "$_bd_candidate" ]; then
+        _bd_candidate_real=$(readlink -f "$_bd_candidate" 2>/dev/null || true)
+        if [ -n "$_bd_candidate_real" ] && [ "$_bd_candidate_real" != "$_bd_wrapper_real" ]; then
+          _bd_real="$_bd_candidate_real"
+          break
+        fi
+      fi
+    done
+    IFS=$_bd_old_ifs
+    ;;
+esac
+
+if [ -z "$_bd_real" ]; then
+  echo "polylogue bd wrapper: installed bd binary not found" >&2
+  exit 127
+fi
+
+_bd_real=$(readlink -f "$_bd_real" 2>/dev/null || true)
+if [ -z "$_bd_real" ] || [ "$_bd_real" = "$_bd_wrapper_real" ]; then
+  echo "polylogue bd wrapper: refusing recursive wrapper route" >&2
+  exit 126
+fi
+if [ ! -f "$_bd_real" ] || [ ! -x "$_bd_real" ]; then
+  echo "polylogue bd wrapper: real Beads binary is not an executable file" >&2
+  exit 126
+fi
+
+_bd_python=
+_bd_old_ifs=$IFS
+IFS=:
+for _bd_path_entry in $PATH; do
+  [ -n "$_bd_path_entry" ] || _bd_path_entry=.
+  _bd_python_candidate="$_bd_path_entry/python3"
+  if [ -x "$_bd_python_candidate" ] && [ ! -d "$_bd_python_candidate" ]; then
+    _bd_python_candidate_real=$(readlink -f "$_bd_python_candidate" 2>/dev/null || true)
+    if [ -n "$_bd_python_candidate_real" ] && [ "$_bd_python_candidate_real" != "$_bd_wrapper_real" ]; then
+      # A PATH entry implemented as a script can trampoline back through this
+      # wrapper when it is used as python3. Skip launchers and continue to the
+      # real interpreter instead of allowing indirect recursion.
+      _bd_python_candidate_header=$(dd if="$_bd_python_candidate_real" bs=2 count=1 2>/dev/null || true)
+      case "$_bd_python_candidate_header" in
+        '#!'*) continue ;;
+      esac
+      _bd_python=$_bd_python_candidate_real
+      break
+    fi
+  fi
+done
+IFS=$_bd_old_ifs
+if [ -z "$_bd_python" ]; then
+  echo "polylogue bd wrapper: Python 3 interpreter not found" >&2
+  exit 126
+fi
+
+exec "$_bd_python" "$_bd_guard" invoke "$_bd_real" "$@"

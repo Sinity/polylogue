@@ -258,7 +258,7 @@ ACTION_UNIT_EVIDENCE: tuple[ActionUnitEvidence, ...] = (
     ActionUnitEvidence(
         action_id="select",
         evidence_unit="session target_ref / identity_key",
-        evidence_surface="select --json emits id, origin, title, and date for the chosen row.",
+        evidence_surface="select --format json emits id, origin, title, and date for the chosen row.",
         negative_guard="Zero matches produce no selected target; multi-match selection remains explicit.",
     ),
     ActionUnitEvidence(
@@ -311,7 +311,7 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
         id="select-exact-session-json",
         workflow_id="resolve-ref-drilldown",
         description="Exact id query selects the demo Claude Code session without broad FTS fallback.",
-        command=("find", f"id:{DEMO_CLAUDE_CODE_SESSION_ID}", "then", "select", "--json"),
+        command=("find", f"id:{DEMO_CLAUDE_CODE_SESSION_ID}", "then", "select", "--format", "json"),
         action_path=("select",),
         output_kind="json_object",
         json_expectations=(JsonExpectation(("id",), "string"), JsonExpectation(("origin",), "string")),
@@ -322,7 +322,7 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
         id="select-exact-session-ref-json",
         workflow_id="resolve-ref-drilldown",
         description="Exact session: ref query selects the demo Claude Code session without broad FTS fallback.",
-        command=("find", f"session:{DEMO_CLAUDE_CODE_SESSION_ID}", "then", "select", "--json"),
+        command=("find", f"session:{DEMO_CLAUDE_CODE_SESSION_ID}", "then", "select", "--format", "json"),
         action_path=("select",),
         output_kind="json_object",
         json_expectations=(JsonExpectation(("id",), "string"), JsonExpectation(("origin",), "string")),

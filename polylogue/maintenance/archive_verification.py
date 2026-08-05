@@ -52,6 +52,7 @@ from polylogue.maintenance.corpus_fidelity import (
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.introspection import table_exists
+from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -193,9 +194,17 @@ def archive_verification_check_json(check: OutcomeCheck) -> JSONDocument:
     return payload
 
 
-def _error_check(name: str, summary: str, *, exc: Exception | None = None) -> ArchiveVerificationCheck:
-    evidence: dict[str, Any] = {"error": str(exc)} if exc is not None else {}
-    return ArchiveVerificationCheck(name=name, status=OutcomeStatus.ERROR, summary=summary, count=1, evidence=evidence)
+def _error_check(
+    name: str,
+    summary: str,
+    *,
+    exc: Exception | None = None,
+    evidence: dict[str, Any] | None = None,
+) -> ArchiveVerificationCheck:
+    payload = dict(evidence or {})
+    if exc is not None:
+        payload["error"] = str(exc)
+    return ArchiveVerificationCheck(name=name, status=OutcomeStatus.ERROR, summary=summary, count=1, evidence=payload)
 
 
 def _skip_check(name: str, summary: str) -> ArchiveVerificationCheck:
@@ -234,6 +243,48 @@ class ArchiveVerificationReport(OutcomeReport):
                 "checks": [archive_verification_check_json(check) for check in self.checks],
             }
         )
+
+
+def strict_acceptance_failures(
+    report: ArchiveVerificationReport,
+    *,
+    required_checks: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Return every result that prevents a strict acceptance decision.
+
+    Strict acceptance is deliberately separate from :attr:`blocking`, which
+    is the ordinary monitoring gate and therefore honors reviewed waivers.
+    Acceptance proves a candidate is complete enough to activate: every
+    required check must be present and ``ok``. Warnings, skips, and errors all
+    fail this predicate, including errors carrying a waiver.
+    """
+    required = (
+        tuple(dict.fromkeys(required_checks))
+        if required_checks is not None
+        else tuple(check.name for check in report.checks)
+    )
+    by_name = {check.name: check for check in report.checks}
+    failures: list[str] = []
+    for name in required:
+        check = by_name.get(name)
+        if check is None:
+            failures.append(f"{name}: required check result is missing")
+            continue
+        if check.status is OutcomeStatus.OK:
+            continue
+        waiver = getattr(check, "waived_bead_id", None)
+        waiver_detail = f", waived by {waiver}" if waiver is not None else ""
+        failures.append(f"{check.name} [{check.status.value}{waiver_detail}]: {check.summary}")
+    return tuple(failures)
+
+
+def passes_strict_acceptance(
+    report: ArchiveVerificationReport,
+    *,
+    required_checks: Sequence[str] | None = None,
+) -> bool:
+    """Return whether a report is complete and wholly ``ok`` for activation."""
+    return not strict_acceptance_failures(report, required_checks=required_checks)
 
 
 ArchiveVerificationCheckFn = Callable[[Path, int], ArchiveVerificationCheck]
@@ -384,6 +435,12 @@ def _check_pointer_coherence(archive_root: Path, _sample_limit: int) -> ArchiveV
 
 
 def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_source_index_coverage_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_source_index_coverage_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
     """Every logical source's head is indexed OR carries a typed refusal.
 
     Universe (polylogue-in24n, invariant I1): ``raw_sessions`` logical heads --
@@ -402,7 +459,6 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
     (index sessions whose raw_id doesn't exist in source.db at all).
     """
     source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
-    index_path = _resolve_index_path(archive_root)
     if not source_path.exists() or not index_path.exists():
         return _skip_check("source-index-coverage", "source.db or index.db not present")
 
@@ -600,6 +656,12 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
             "orphan_sample": orphan_sample,
         },
     )
+
+
+def _check_source_index_coverage_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_source_index_coverage_at_index_path(archive_root, index_path, sample_limit)
 
 
 # ---------------------------------------------------------------------------
@@ -999,6 +1061,67 @@ def _check_blob_refs_liveness(archive_root: Path, sample_limit: int) -> ArchiveV
     )
 
 
+# ---------------------------------------------------------------------------
+# Check: raw failure lifecycle
+# ---------------------------------------------------------------------------
+
+
+def _check_raw_failure_lifecycle(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Require typed evidence for every retained raw parse/validation failure."""
+    snapshot = read_raw_failure_lifecycle(_tier_path(archive_root, ArchiveTier.SOURCE), sample_limit=sample_limit)
+    evidence = snapshot.to_dict()
+    if not snapshot.available:
+        return _error_check(
+            "raw-failure-lifecycle",
+            str(snapshot.reason or "raw failure lifecycle is unavailable"),
+            evidence=evidence,
+        )
+    if snapshot.unexplained:
+        return ArchiveVerificationCheck(
+            name="raw-failure-lifecycle",
+            status=OutcomeStatus.ERROR,
+            summary=(
+                f"{snapshot.unexplained:,} raw failure(s) lack typed deferred/terminal evidence; "
+                "reindex is unsafe until each is classified"
+            ),
+            count=snapshot.unexplained,
+            details=[
+                f"{sample.get('origin', 'unknown')}:{sample.get('artifact_kind') or '<none>'}"
+                for sample in snapshot.samples
+                if sample.get("lifecycle") == "unexplained"
+            ],
+            evidence=evidence,
+        )
+    known = snapshot.deferred + snapshot.terminal
+    status = OutcomeStatus.WARNING if known else OutcomeStatus.OK
+    summary = (
+        f"{known:,} raw failure(s) classified ({snapshot.deferred:,} deferred, {snapshot.terminal:,} terminal)"
+        if known
+        else "no raw parse or validation failures"
+    )
+    return ArchiveVerificationCheck(
+        name="raw-failure-lifecycle",
+        status=status,
+        summary=summary,
+        count=known,
+        evidence=evidence,
+    )
+
+
+def _check_raw_failure_lifecycle_at_candidate(
+    archive_root: Path, _index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Run the source-only lifecycle gate for an inactive index candidate."""
+    return _check_raw_failure_lifecycle(archive_root, sample_limit)
+
+
+def _check_blob_refs_liveness_at_candidate(
+    archive_root: Path, _index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Run the source-only blob check while a candidate index is selected."""
+    return _check_blob_refs_liveness(archive_root, sample_limit)
+
+
 def _check_pathology_zoo_invariants(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
     """Run each production-owned pathology-zoo invariant when its corpus is present."""
     from polylogue.maintenance.pathology_zoo import (
@@ -1093,6 +1216,12 @@ def _check_pathology_zoo_invariants_at_index_path(
 
 
 def _check_embeddings_refs_liveness(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_embeddings_refs_liveness_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_embeddings_refs_liveness_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
     """Every ``message_embedding_refs`` row resolves to a live index message.
 
     embeddings.db is a rebuildable derived tier keyed off index.db's message
@@ -1103,7 +1232,6 @@ def _check_embeddings_refs_liveness(archive_root: Path, sample_limit: int) -> Ar
     longer exists in the index.
     """
     embeddings_path = _tier_path(archive_root, ArchiveTier.EMBEDDINGS)
-    index_path = _resolve_index_path(archive_root)
     if not embeddings_path.exists():
         return _skip_check("embeddings-refs-liveness", "embeddings.db not present")
     if not index_path.exists():
@@ -1164,6 +1292,12 @@ def _check_embeddings_refs_liveness(archive_root: Path, sample_limit: int) -> Ar
         details=[f"orphan:{message_id}" for message_id in orphan_sample],
         evidence={"ref_count": int(total or 0), "orphan_count": orphans, "orphan_sample": orphan_sample},
     )
+
+
+def _check_embeddings_refs_liveness_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_embeddings_refs_liveness_at_index_path(archive_root, index_path, sample_limit)
 
 
 # ---------------------------------------------------------------------------
@@ -2122,6 +2256,12 @@ def _check_convergence_freshness(archive_root: Path, _sample_limit: int) -> Arch
 
 
 def _check_user_tier_refs(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_user_tier_refs_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_user_tier_refs_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
     """``assertions.target_ref`` of kind ``session``/``message`` must resolve
     to a live row in ``index.db`` (I10, polylogue-t0m73).
 
@@ -2134,7 +2274,6 @@ def _check_user_tier_refs(archive_root: Path, sample_limit: int) -> ArchiveVerif
     normal target-scoped query.
     """
     user_path = _tier_path(archive_root, ArchiveTier.USER)
-    index_path = _resolve_index_path(archive_root)
     if not user_path.exists() or not index_path.exists():
         return _skip_check("user-tier-refs", "user.db or index.db not present")
 
@@ -2208,6 +2347,12 @@ def _check_user_tier_refs(archive_root: Path, sample_limit: int) -> ArchiveVerif
     )
 
 
+def _check_user_tier_refs_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_user_tier_refs_at_index_path(archive_root, index_path, sample_limit)
+
+
 # ---------------------------------------------------------------------------
 # Registry + entrypoint
 # ---------------------------------------------------------------------------
@@ -2231,6 +2376,7 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "untyped gaps and index-orphans (raw_id ground truth, not the census ledger, polylogue-in24n) block.",
         _check_source_index_coverage,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_source_index_coverage_at_candidate,
     ),
     ArchiveVerificationCheckSpec(
         "fts-parity",
@@ -2256,6 +2402,14 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "not membership in blob_refs itself (polylogue-t0m73 I3).",
         _check_blob_refs_liveness,
         ArchiveVerificationCheckClass.LIVENESS,
+        _check_blob_refs_liveness_at_candidate,
+    ),
+    ArchiveVerificationCheckSpec(
+        "raw-failure-lifecycle",
+        "Every retained raw parse or validation failure has typed deferred or terminal lifecycle evidence.",
+        _check_raw_failure_lifecycle,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_raw_failure_lifecycle_at_candidate,
     ),
     ArchiveVerificationCheckSpec(
         "pathology-zoo-invariants",
@@ -2270,6 +2424,7 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "polylogue-t0m73 I4).",
         _check_embeddings_refs_liveness,
         ArchiveVerificationCheckClass.LIVENESS,
+        _check_embeddings_refs_liveness_at_candidate,
     ),
     ArchiveVerificationCheckSpec(
         "session-lineage-acyclic",
@@ -2313,12 +2468,16 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "assertions.target_ref of kind session/message resolves to a live index.db row (polylogue-t0m73 I10).",
         _check_user_tier_refs,
         ArchiveVerificationCheckClass.LIVENESS,
+        _check_user_tier_refs_at_candidate,
     ),
     ArchiveVerificationCheckSpec(
         "excluded-cursor-vocabulary-honesty",
         "No excluded ingest_cursor row carries a live next_retry_at (would misreport as retry-due, polylogue-ix5r).",
         _check_excluded_cursor_vocabulary_honesty,
         ArchiveVerificationCheckClass.LIVENESS,
+        lambda archive_root, _index_path, sample_limit: _check_excluded_cursor_vocabulary_honesty(
+            archive_root, sample_limit
+        ),
     ),
     ArchiveVerificationCheckSpec(
         "stalled-append-cursor-freshness",
@@ -2326,6 +2485,9 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "the stall-escalation threshold (polylogue-2qrx).",
         _check_stalled_append_cursor_freshness,
         ArchiveVerificationCheckClass.LIVENESS,
+        lambda archive_root, _index_path, sample_limit: _check_stalled_append_cursor_freshness(
+            archive_root, sample_limit
+        ),
     ),
     ArchiveVerificationCheckSpec(
         "raw-quarantine-group-dedup",
@@ -2368,20 +2530,9 @@ CORPUS_FIDELITY_CHECKS: tuple[str, ...] = (
     "corpus-revision-fidelity",
 )
 
-#: The subset of ground-truth checks a blue-green reindex candidate generation
-#: is expected to satisfy before promotion (polylogue-t0m73's "reindex
-#: acceptance gate"). Restricted to checks whose universe is satisfiable from
-#: ``index.db`` alone -- a candidate generation directory holds only the new
-#: ``index.db``, not the durable ``source.db``/``user.db``/``embeddings.db``
-#: tiers (those live once at the archive root, not per-generation), so
-#: cross-tier checks (``source-index-coverage``, ``blob-refs-liveness``,
-#: ``embeddings-refs-liveness``, ``tier-schema``) would either report a false
-#: ERROR (missing tiers they're not skip-tolerant of, e.g. tier-schema) or
-#: only ever SKIP (uninformative). Intended use: ``verify_archive(generation_
-#: root, checks=REINDEX_ACCEPTANCE_CHECKS)`` right before promotion, exactly
-#: how :mod:`polylogue.maintenance.rebuild_index` already ran the ``fts-
-#: parity`` singleton -- this constant widens that gate to the rest of the
-#: ground-truth-eligible registry.
+#: Index-only checks run against the inactive generation before promotion.
+#: Cross-tier checks live in :data:`REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS`
+#: because a generation directory contains only ``index.db``.
 REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
     "fts-parity",
     "lineage-sanity",
@@ -2389,13 +2540,22 @@ REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
     "session-lineage-acyclic",
     "message-count-projection",
     "session-fingerprint-stamps",
-    "planner-stats",
 )
 
-#: Candidate checks that need the durable archive tiers as well as the
-#: inactive generation's index. These are run with ``index_path_override`` so
-#: they cannot silently fall back to the active/default index.
+#: Full rebuild candidate checks that need durable archive tiers as well as
+#: the inactive generation's index. This is the strict promotion profile:
+#: source/index coverage, blob refs, embeddings refs, user refs, both cursor
+#: checks, and the existing corpus/pathology checks. Every entry has a
+#: candidate runner so ``index_path_override`` cannot silently inspect the
+#: active generation.
 REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS: tuple[str, ...] = (
+    "raw-failure-lifecycle",
+    "source-index-coverage",
+    "blob-refs-liveness",
+    "embeddings-refs-liveness",
+    "user-tier-refs",
+    "excluded-cursor-vocabulary-honesty",
+    "stalled-append-cursor-freshness",
     "corpus-absences",
     "corpus-attachment-fidelity",
     "corpus-revision-fidelity",
@@ -2495,5 +2655,8 @@ __all__ = [
     "ArchiveVerificationReport",
     "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
+    "read_raw_failure_lifecycle",
+    "passes_strict_acceptance",
+    "strict_acceptance_failures",
     "verify_archive",
 ]

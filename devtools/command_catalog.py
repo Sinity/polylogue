@@ -1150,6 +1150,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-failure-disposition-apply",
+        "workspace",
+        "Apply reviewed terminal dispositions to historical raw parse failures.",
+        "devtools.raw_failure_disposition_apply",
+        use_when=(
+            "polylogue-dyica: terminal historical parse failures predate typed lifecycle evidence. "
+            "Default is dry-run; --apply requires an exact JSONL disposition manifest and a verified "
+            "source-tier backup. It retains raw bytes and parser errors while replacing only the stale "
+            "artifact classification and writing immutable per-row receipts."
+        ),
+        examples=(
+            "devtools workspace raw-failure-disposition-apply --manifest-path /realm/staging/raw-failure-disposition.jsonl",
+            "devtools workspace raw-failure-disposition-apply --apply --manifest-path /realm/staging/raw-failure-disposition.jsonl "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace raw-append-chain-backfill-apply",
         "workspace",
         "Promote membershipless append raws proven correct by live-source verification.",

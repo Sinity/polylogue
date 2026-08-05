@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import Config
 from polylogue.logging import get_logger
+from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.index_generation import (
     IndexGenerationStore,
@@ -149,6 +150,18 @@ DAEMON_BULK_REBUILD_BATCH_SIZE = 500
 _TERMINAL_NOT_RESUMABLE = frozenset({"promoted", "stale", "failed"})
 
 
+def _preflight_raw_failure_lifecycle(root: Path) -> None:
+    """Refuse daemon rebuild mutation while raw failures are unexplained."""
+    snapshot = read_raw_failure_lifecycle(root / "source.db", sample_limit=10)
+    if not snapshot.blocking:
+        return
+    if snapshot.available:
+        reason = f"{snapshot.unexplained} raw failure(s) lack matching typed lifecycle evidence"
+    else:
+        reason = snapshot.reason or "raw failure lifecycle is unavailable"
+    raise RuntimeError(f"daemon bulk-rebuild raw failure lifecycle preflight failed: {reason}")
+
+
 def resolve_or_start_daemon_bulk_rebuild_transaction(
     root: Path, *, schema_inference_receipt_path: Path | None = None
 ) -> IndexRebuildTransaction:
@@ -170,6 +183,12 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
     archive location before touching disk, not just the eventual write pass.
     """
     _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+    # This must precede transaction resolution, because retiring a terminal
+    # transaction and creating its replacement also creates generation state.
+    # It must also precede the caller's page selection for a resumed
+    # transaction, so no raw is selected while the source failure universe is
+    # not in a known lifecycle state.
+    _preflight_raw_failure_lifecycle(root)
     location = ArchiveLocation.resolve(root)
     owned = OwnedArchiveLocation.acquire(location)
     try:

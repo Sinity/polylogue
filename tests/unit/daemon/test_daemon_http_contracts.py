@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
@@ -95,6 +96,9 @@ REQUIRED_STATUS_KEYS: frozenset[str] = frozenset(
         "raw_quarantined",
         "raw_detection_warnings",
         "raw_failure_samples",
+        "raw_failure_lifecycle_available",
+        "raw_failure_lifecycle_state",
+        "raw_failure_lifecycle_reason",
         "last_event_id",
     }
 )
@@ -108,6 +112,10 @@ REQUIRED_HEALTH_KEYS: frozenset[str] = frozenset(
         "blob_dir_size_bytes",
         "quick_check",
         "quick_check_age_s",
+        "raw_failure_lifecycle_available",
+        "raw_failure_lifecycle_state",
+        "raw_failure_lifecycle_reason",
+        "raw_failure_lifecycle",
     }
 )
 
@@ -382,6 +390,58 @@ class TestStatusEnvelopeContract:
         assert status == HTTPStatus.OK
         assert payload["quick_check"] == "pass"
         assert payload["ok"] is True
+
+    @pytest.mark.parametrize("source_state", ["missing", "malformed", "unreadable", "unexplained"])
+    def test_fast_health_fails_closed_for_every_raw_lifecycle_failure_shape(
+        self,
+        workspace_env: dict[str, Path],
+        source_state: str,
+    ) -> None:
+        """The fast route cannot turn absent source evidence into a healthy archive."""
+        _init_archive(workspace_env["archive_root"])
+        source_db = workspace_env["archive_root"] / "source.db"
+        if source_state == "missing":
+            source_db.unlink()
+        elif source_state == "malformed":
+            source_db.write_bytes(b"not sqlite")
+        elif source_state == "unreadable":
+            source_db.unlink()
+            source_db.mkdir()
+        else:
+            with sqlite3.connect(source_db) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO raw_sessions (
+                        raw_id, origin, native_id, source_path, blob_hash,
+                        blob_size, acquired_at_ms, parse_error
+                    ) VALUES ('raw-failed', 'codex-session', 'failed', '/bad', ?, 1, 1, 'parser failed')
+                    """,
+                    (b"f" * 32,),
+                )
+                conn.commit()
+
+        handler = _make_handler("GET", "/api/health")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+        assert payload["ok"] is False
+        assert payload["raw_failure_lifecycle_state"] in {"unavailable", "blocked"}
+        assert payload["raw_failure_lifecycle_available"] is (source_state == "unexplained")
+
+    def test_fast_health_accepts_only_a_clean_zero_failure_source(self, workspace_env: dict[str, Path]) -> None:
+        _init_archive(workspace_env["archive_root"])
+        handler = _make_handler("GET", "/api/health")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.OK
+        assert payload["ok"] is True
+        assert payload["raw_failure_lifecycle_available"] is True
+        assert payload["raw_failure_lifecycle_state"] == "healthy"
+        assert payload["raw_failure_lifecycle"]["unexplained"] == 0
 
 
 # ---------------------------------------------------------------------------

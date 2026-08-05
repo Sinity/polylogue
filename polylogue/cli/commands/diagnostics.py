@@ -265,13 +265,6 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     help="Report detail: headline skips expensive origin-event and stale-rollup diagnostics.",
 )
 @click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
-)
-@click.option(
     "--format",
     "-f",
     "output_format",
@@ -541,13 +534,6 @@ def _usage_counter_line(counters: object) -> str:
     ),
 )
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
-@click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
-)
 @click.option(
     "--format",
     "-f",
@@ -903,13 +889,6 @@ async def _tools(
 @click.option("--surface", help="Only rows for this surface (cli, mcp, daemon-http, daemon-internal, web).")
 @click.option("--since-hours", type=float, default=24.0, show_default=True, help="Lookback window in hours.")
 @click.option("--limit", "-l", "-n", type=int, default=1000, help="Max rows read per source table.")
-@click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
-)
 @click.option(
     "--format",
     "-f",

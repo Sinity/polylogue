@@ -158,6 +158,11 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+
+class CursorAuthorityBlockedError(RuntimeError):
+    """The canonical raw frontier proof did not authorize live source selection."""
+
+
 # polylogue-0jf4: known ~/.codex live SQLite state filenames, matched by name
 # first (cheap, no I/O) before the structural table-shape check in
 # ``codex_state.is_in_scope_codex_sqlite_path`` decides whether to acquire.
@@ -492,6 +497,27 @@ class LiveBatchProcessor:
         # argument (identical shape to ``DaemonParseStage``).
         self._parse_stage = parse_stage
 
+    def cursor_authority_block_reason(self) -> str | None:
+        """Return the canonical frontier reason that blocks live ingestion.
+
+        Small unit tests may exercise the batch processor before an active
+        archive has been bootstrapped. The real watcher cannot write without
+        these tiers, so the preflight is intentionally deferred until they
+        exist. Once they do, the readiness proof is fail-closed and shared
+        with raw convergence, recovery, and reindex.
+        """
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        if not (archive_root / "source.db").is_file() or not (archive_root / "index.db").is_file():
+            return None
+        from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+        return raw_frontier_source_selection_block_reason(archive_root)
+
+    def require_cursor_authority(self) -> None:
+        """Fail closed before a live batch can create attempts or write data."""
+        if reason := self.cursor_authority_block_reason():
+            raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
+
     async def ingest_files(
         self,
         paths: list[Path],
@@ -502,6 +528,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics."""
+        self.require_cursor_authority()
         if is_fully_degraded():
             # The daemon has been marked structurally unable to ingest (e.g.
             # schema mismatch detected at preflight or on the first batch).

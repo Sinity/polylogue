@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner as _ClickCliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.core.enums import Provider
@@ -33,6 +33,32 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+
+
+def _schema_receipt_path(root: Path) -> Path:
+    return root.parent / f"{root.name}-schema-inference-gate-receipt.json"
+
+
+class _CanaryCliRunner(_ClickCliRunner):
+    """Supply the fixture's explicit receipt to legacy route invocations."""
+
+    def invoke(self, cli, args=None, **kwargs):  # type: ignore[no-untyped-def]
+        command_args = list(args or ())
+        if (
+            "reindex-canary" in command_args
+            and "--consume-report" not in command_args
+            and "--schema-inference-receipt" not in command_args
+            and "--archive-root" in command_args
+        ):
+            archive_root = Path(command_args[command_args.index("--archive-root") + 1])
+            receipt_path = _schema_receipt_path(archive_root)
+            if receipt_path.is_file():
+                command_args.extend(("--schema-inference-receipt", str(receipt_path)))
+        return super().invoke(cli, command_args, **kwargs)
+
+
+CliRunner = _CanaryCliRunner
 
 
 def _codex_session(native_id: str) -> bytes:
@@ -93,7 +119,10 @@ def _seed_isolated_canary(
                     (raw_id, f"codex-session:{name}", name, "1", blob_hash, 2),
                 )
             connection.commit()
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    receipt_path = write_valid_rebuild_receipt(root, _schema_receipt_path(root))
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=receipt_path)
+    )
     assert receipt.status == "replayed"
 
 
@@ -869,9 +898,6 @@ def test_cli_consumption_obeys_rebuild_lease(tmp_path: Path, monkeypatch: pytest
     assert "rebuild lease" in consumed.output or "already held" in consumed.output
 
 
-from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
-
-
 def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> CanaryRunResult:
     selection = CanarySelection(
         index_path=index_path,
@@ -1125,6 +1151,8 @@ def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
 
     index_path = tmp_path / "index.db"
     index_path.touch()
+    receipt_path = tmp_path / "schema-inference-gate-receipt.json"
+    receipt_path.touch()
     report_path = tmp_path / "canary.json"
     review_path = tmp_path / "reviews.json"
     run_result = _nonempty_run_result(index_path)
@@ -1171,6 +1199,8 @@ def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
             str(report_path),
             "--review-manifest",
             str(review_path),
+            "--schema-inference-receipt",
+            str(receipt_path),
             "--no-promote",
             "--output-format",
             "json",
@@ -1190,6 +1220,8 @@ def test_reindex_canary_cli_rejects_manifest_with_wrong_changed_columns(
 
     index_path = tmp_path / "index.db"
     index_path.touch()
+    receipt_path = tmp_path / "schema-inference-gate-receipt.json"
+    receipt_path.touch()
     report_path = tmp_path / "canary.json"
     review_path = tmp_path / "reviews.json"
     run_result = _nonempty_run_result(index_path)
@@ -1222,6 +1254,8 @@ def test_reindex_canary_cli_rejects_manifest_with_wrong_changed_columns(
             str(report_path),
             "--review-manifest",
             str(review_path),
+            "--schema-inference-receipt",
+            str(receipt_path),
             "--no-promote",
         ],
         catch_exceptions=False,
@@ -1237,6 +1271,8 @@ def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest
 ) -> None:
     index_path = tmp_path / "index.db"
     index_path.touch()
+    receipt_path = tmp_path / "schema-inference-gate-receipt.json"
+    receipt_path.touch()
     run_result = _nonempty_run_result(index_path)
 
     def fake_write(path: Path, **kwargs: object) -> DurableCanaryReport:
@@ -1270,6 +1306,8 @@ def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest
             str(index_path),
             "--report",
             str(tmp_path / "canary.json"),
+            "--schema-inference-receipt",
+            str(receipt_path),
             "--no-promote",
         ],
     )

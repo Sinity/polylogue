@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -174,6 +175,17 @@ _OLD_MS = 1_700_000_000_000  # far outside any quiet window relative to _NOW_MS
 _NOW_MS = 1_800_000_000_000
 
 
+def _traced_reconcile_connect(traced_sql: list[str]) -> Callable[..., sqlite3.Connection]:
+    real_connect = sqlite3.connect
+
+    def traced_connect(database: str | Path, *, timeout: float) -> sqlite3.Connection:
+        connection = real_connect(database, timeout=timeout)
+        connection.set_trace_callback(traced_sql.append)
+        return connection
+
+    return traced_connect
+
+
 def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) -> None:
     session_id = "codex-session:s1"
     m1, m2 = f"{session_id}:m1", f"{session_id}:m2"
@@ -241,6 +253,47 @@ def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) -> 
             status_table="embeddings.embedding_status",
         )
     assert [item.session_id for item in pending] == [session_id]
+
+
+def test_reconcile_removes_ref_with_stale_session_identity_but_preserves_live_ref(tmp_path: Path) -> None:
+    """A ref is live only when both duplicated identities match the index row.
+
+    The session_id is denormalized in ``message_embedding_refs`` so the
+    cross-tier reconciler must validate it rather than treating message_id
+    presence alone as sufficient.
+    """
+    session_id = "codex-session:session-identity"
+    live_message_id = f"{session_id}:m1"
+    preserved_message_id = f"{session_id}:m2"
+    stale_session_id = "codex-session:deleted-session"
+
+    _connect_index(
+        tmp_path / "index.db",
+        sessions=[session_id],
+        messages={session_id: [live_message_id, preserved_message_id]},
+    )
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    _write_embedding(conn, message_id=preserved_message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
+    _write_embedding(conn, message_id=live_message_id, session_id=stale_session_id, embedded_at_ms=_OLD_MS)
+    conn.close()
+
+    report = reconcile_embedding_orphans(
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        quiet_window_ms=0,
+        mutation_authority="offline-exclusive",
+    )
+
+    assert report.orphan_message_rows == 1
+    assert report.removed_message_rows == 1
+    with _connect_embeddings(embeddings_db) as verify:
+        refs = verify.execute(
+            "SELECT message_id, session_id FROM message_embedding_refs ORDER BY session_id"
+        ).fetchall()
+    assert [(row["message_id"], row["session_id"]) for row in refs] == [(preserved_message_id, session_id)]
 
 
 def test_apply_accepts_generation_metadata_beside_external_pointer_anchor(tmp_path: Path) -> None:
@@ -526,6 +579,99 @@ def test_reconcile_is_bounded_and_resumable(tmp_path: Path) -> None:
     assert clean.orphan_message_rows == 0
     assert clean.removed_message_rows == 0
     assert clean.ok is True
+
+
+def test_reconcile_max_count_limits_message_query_and_deletion_count(tmp_path: Path) -> None:
+    """The message candidate query is bounded before Python receives rows.
+
+    Anti-vacuity: removing the SQL LIMIT makes the trace assertion fail, while
+    deleting more than the requested work unit makes the remaining-ref count
+    and report mutation count fail. The fixture uses the real embeddings DDL,
+    sqlite-vec loader, and content-addressed writer route.
+    """
+    session_id = "codex-session:bounded-messages"
+    message_ids = [f"{session_id}:m{i}" for i in range(4)]
+    _connect_index(tmp_path / "index.db", sessions=[session_id], messages={session_id: []})
+
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    for message_id in message_ids:
+        _write_embedding(conn, message_id=message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
+    conn.close()
+
+    traced_sql: list[str] = []
+    with patch(
+        "polylogue.storage.embeddings.reconcile.sqlite3.connect",
+        side_effect=_traced_reconcile_connect(traced_sql),
+    ):
+        report = reconcile_embedding_orphans(
+            tmp_path / "index.db",
+            embeddings_db,
+            dry_run=False,
+            max_count=1,
+            now_ms=_NOW_MS,
+            quiet_window_ms=0,
+            mutation_authority="offline-exclusive",
+        )
+
+    candidate_queries = [sql for sql in traced_sql if "SELECT r.message_id AS message_id" in sql]
+    assert len(candidate_queries) == 1
+    assert "LIMIT 1" in candidate_queries[0]
+    assert any(
+        "SELECT 1" in sql and "FROM message_embedding_refs AS r" in sql and "LIMIT 1" in sql for sql in traced_sql
+    )
+    assert report.orphan_message_rows == 4
+    assert report.candidate_message_rows == 1
+    assert report.removed_message_rows == 1
+    assert report.more_pending is True
+
+    with _connect_embeddings(embeddings_db) as verify:
+        assert verify.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 3
+
+
+def test_reconcile_max_count_limits_status_query_and_deletion_count(tmp_path: Path) -> None:
+    """The status candidate query is bounded when the message queue is empty."""
+    _connect_index(tmp_path / "index.db", sessions=[], messages={})
+
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    status_ids = [f"codex-session:bounded-status-{i}" for i in range(4)]
+    for session_id in status_ids:
+        _write_status(
+            conn,
+            session_id=session_id,
+            message_count_embedded=0,
+            last_embedded_at_ms=_OLD_MS,
+        )
+    conn.close()
+
+    traced_sql: list[str] = []
+    with patch(
+        "polylogue.storage.embeddings.reconcile.sqlite3.connect",
+        side_effect=_traced_reconcile_connect(traced_sql),
+    ):
+        report = reconcile_embedding_orphans(
+            tmp_path / "index.db",
+            embeddings_db,
+            dry_run=False,
+            max_count=1,
+            now_ms=_NOW_MS,
+            quiet_window_ms=0,
+            mutation_authority="offline-exclusive",
+        )
+
+    candidate_queries = [sql for sql in traced_sql if "SELECT session_id, last_embedded_at_ms" in sql]
+    assert len(candidate_queries) == 1
+    assert "LIMIT 1" in candidate_queries[0]
+    assert any("SELECT 1" in sql and "FROM embedding_status" in sql and "LIMIT 1" in sql for sql in traced_sql)
+    assert report.orphan_status_rows == 4
+    assert report.candidate_status_rows == 1
+    assert report.removed_status_rows == 1
+    assert report.more_pending is True
+
+    with _connect_embeddings(embeddings_db) as verify:
+        remaining = verify.execute("SELECT session_id FROM embedding_status ORDER BY session_id").fetchall()
+    assert [row[0] for row in remaining] == status_ids[1:]
 
 
 def test_reconcile_dry_run_does_not_mutate(tmp_path: Path) -> None:

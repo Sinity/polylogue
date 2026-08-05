@@ -238,6 +238,47 @@ def _load_migrations(tier: ArchiveTier) -> tuple[MigrationStep, ...]:
     return tuple(steps)
 
 
+def _prepare_fresh_connection_for_target(
+    connection: sqlite3.Connection,
+    tier: ArchiveTier,
+    target_version: int,
+) -> None:
+    """Project current canonical DDL to an earlier additive migration slot.
+
+    The shipped bootstrap is necessarily at the newest version.  A durable
+    archive can be paused between numbered trains, so parity for one historical
+    step must exclude objects explicitly owned by later train riders.  Existing
+    object rewrites remain in the comparison and fail closed.
+    """
+    runtime_target = ARCHIVE_VERSION_BY_TIER[tier]
+    if target_version >= runtime_target:
+        return
+    steps = _load_migrations(tier)
+    from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
+
+    sidecars = validate_durable_migration_sidecars(tier, tuple((step.name, step.sql) for step in steps))
+    future_refs = {
+        schema_object
+        for sidecar in sidecars
+        if sidecar.slot > target_version
+        for rider in sidecar.train.riders
+        for schema_object in rider.schema_objects
+    }
+    drop_order = {"index": 0, "trigger": 0, "view": 0, "table": 1}
+    for schema_object in sorted(
+        future_refs,
+        key=lambda item: (drop_order.get(item.partition(":")[0], 2), item),
+    ):
+        object_type, separator, object_name = schema_object.partition(":")
+        if not separator or object_type not in drop_order:
+            continue
+        quoted_name = '"' + object_name.replace('"', '""') + '"'
+        connection.execute(f"DROP {object_type.upper()} IF EXISTS {quoted_name}")
+    if future_refs:
+        connection.execute(f"PRAGMA user_version = {target_version}")
+        connection.commit()
+
+
 def durable_migration_claims(tier: ArchiveTier) -> tuple[DurableMigrationClaim, ...]:
     """Return the exact claims consumed by the shipped migration runner."""
     return tuple(
@@ -1014,6 +1055,7 @@ def migrate_archive_tier(
                 fresh_connection.execute("PRAGMA foreign_keys = ON")
                 fresh_connection.executescript(ARCHIVE_DDL_BY_TIER[tier])
                 fresh_connection.execute(f"PRAGMA user_version = {target_version}")
+                _prepare_fresh_connection_for_target(fresh_connection, tier, target_version)
                 fresh_connection.commit()
                 fresh_parity = prove_durable_fresh_ddl_parity(
                     tier,

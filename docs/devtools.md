@@ -288,6 +288,7 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |
 | `devtools workspace raw-byte-duplicate-supersession-apply` | Promote quarantined, logical-key-less raws proven byte-identical to an already-indexed raw. |
+| `devtools workspace raw-failure-disposition-apply` | Apply reviewed terminal dispositions to historical raw parse failures. |
 | `devtools workspace raw-live-source-reconciliation` | Classify quarantined raw evidence against its live source file's current bytes. |
 | `devtools workspace raw-live-source-reconciliation-apply` | Promote quarantined raw evidence proven correct by live-source verification. |
 | `devtools workspace raw-membership-writeback-apply` | Propagate already-decided membership verdicts onto raw_sessions.revision_authority. |

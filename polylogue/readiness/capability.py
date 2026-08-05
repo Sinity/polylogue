@@ -467,6 +467,38 @@ def raw_frontier_integrity_is_proven_healthy(payload: object) -> bool:
     return error is None and normalized is not None and normalized.get("overall_status") == "healthy"
 
 
+def raw_frontier_source_selection_block_reason(
+    archive_root: Path,
+    raw_materialization_readiness: Mapping[str, object] | None = None,
+) -> str | None:
+    """Return the readiness reason that must block unsafe source selection.
+
+    Raw convergence and reindex both select source rows before they write an
+    index. They therefore require the same complete, healthy frontier proof
+    exposed by the diagnostic/readiness route. ``None`` means every authority
+    comparison was proven healthy. A deferred or incomparable cursor is a
+    deliberate terminal exception to the byte comparison, but it remains a
+    blocking unknown until its authority can be resolved.
+    """
+
+    projection = raw_frontier_integrity_projection(
+        archive_root,
+        raw_materialization_readiness
+        if raw_materialization_readiness is not None
+        else _raw_materialization_readiness_for_source_selection(archive_root),
+    )
+    payload = projection.to_dict()
+    if raw_frontier_integrity_is_proven_healthy(payload):
+        return None
+    return raw_frontier_integrity_summary(payload)
+
+
+def _raw_materialization_readiness_for_source_selection(archive_root: Path) -> Mapping[str, object]:
+    from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
+
+    return raw_materialization_readiness_snapshot(archive_root)
+
+
 def status_snapshot_has_fresh_provenance(payload: Mapping[str, Any]) -> bool:
     """Return whether a daemon payload carries a complete fresh-cache marker."""
 
@@ -874,6 +906,7 @@ __all__ = [
     "normalize_raw_frontier_status_payload",
     "raw_frontier_integrity_projection",
     "raw_frontier_integrity_is_proven_healthy",
+    "raw_frontier_source_selection_block_reason",
     "raw_frontier_integrity_summary",
     "status_snapshot_has_fresh_provenance",
     "unknown_raw_frontier_integrity_projection",

@@ -35,6 +35,7 @@ import json
 import sqlite3
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -109,6 +110,38 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def test_daemon_bulk_rebuild_refuses_unexplained_failures_before_generation_or_page_selection(
+    tmp_path: Path,
+) -> None:
+    """The real daemon route fails before creating state or selecting raws."""
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parse_error
+            ) VALUES ('raw-failed', 'codex-session', 'failed', '/x', ?, 10, 100, 'parser failed')
+            """,
+            (b"f" * 32,),
+        )
+        conn.commit()
+
+    parse_stage = Mock()
+    with pytest.raises(RuntimeError, match="raw failure lifecycle preflight"):
+        asyncio.run(
+            run_daemon_bulk_rebuild_pass(
+                config=_config(tmp_path),
+                parse_stage=parse_stage,  # preflight must make this unreachable
+                batch_size=1,
+                max_payload_bytes=10_000,
+            )
+        )
+
+    assert not (tmp_path / ".index-generations").exists()
+    parse_stage.warm_raw_ids.assert_not_called()
 
 
 def _table_rows(conn: sqlite3.Connection, table: str) -> tuple[tuple[Any, ...], ...]:
