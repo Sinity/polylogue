@@ -9,6 +9,7 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.storage.archive_identity import OwnedArchiveLocation
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -47,6 +48,24 @@ def _active_bytes(root: Path) -> bytes:
     return root.joinpath("index.db").read_bytes()
 
 
+def _interpose_receipt_mutation(monkeypatch: pytest.MonkeyPatch, receipt_path: Path, *, expire: bool) -> None:
+    original_acquire = OwnedArchiveLocation.acquire
+
+    def acquire_after_mutation(
+        cls: type[OwnedArchiveLocation], /, location: object, **kwargs: object
+    ) -> OwnedArchiveLocation:
+        owned = original_acquire(location, **kwargs)  # type: ignore[arg-type]
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if expire:
+            payload["generated_at"] = "2000-01-01T00:00:00Z"
+        else:
+            payload["source_snapshot"] = "post-preflight-source-drift"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        return owned
+
+    monkeypatch.setattr(OwnedArchiveLocation, "acquire", classmethod(acquire_after_mutation))
+
+
 def test_missing_receipt_fails_before_lease_and_candidate_mutation(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     _seed(root, count=1)
@@ -55,6 +74,27 @@ def test_missing_receipt_fails_before_lease_and_candidate_mutation(tmp_path: Pat
         rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
     assert _active_bytes(root) == active_before
     assert not (root / ".index-generations").exists()
+
+
+@pytest.mark.parametrize("expire", [False, True], ids=["external-drift", "receipt-expiry"])
+def test_offline_post_preflight_receipt_change_fails_before_lease_or_candidate_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expire: bool
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    _interpose_receipt_mutation(monkeypatch, receipt_path, expire=expire)
+    lease_path = root / ".index-rebuild.lock"
+    lease_before = lease_path.read_bytes() if lease_path.exists() else None
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
+
+    assert (lease_path.read_bytes() if lease_path.exists() else None) == lease_before
+    assert not (root / ".index-generations").exists()
+    assert not (root / ".index-rebuild-transactions").exists()
 
 
 def test_forged_top_level_pass_cannot_bypass_a_failing_subgate(tmp_path: Path) -> None:
