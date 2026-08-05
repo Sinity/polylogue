@@ -212,6 +212,31 @@ reclassifies under `BEGIN IMMEDIATE` before fsyncing the prepared receipt and
 deleting the exact candidate set. Review the receipt's final `committed` line
 before treating the pass as complete.
 
+### `polylogue ops maintenance blob-reference-closure` - acquired reference closure
+
+Read-only by default. It checks that each `raw_sessions` row has exactly one
+matching `raw_payload` ref and that each acquired index attachment is reachable
+through `attachment_refs`. Raw gaps are repaired from the retained raw row's
+exact hash, path, size, and acquisition timestamp. Attachment gaps are repaired
+only when a complete reparse of authoritative `source.db` bytes reproduces the
+attachment identity and its owning message still exists. Other rows are
+reported as typed blockers and remain untouched.
+
+```bash
+polylogue ops maintenance blob-reference-closure --output-format json
+polylogue ops maintenance blob-reference-closure --apply \
+  --backup-manifest /path/to/verified-full-evidence-manifest.json \
+  --receipt-file /path/to/new/blob-reference-closure.jsonl \
+  --output-format json
+```
+
+Apply requires the daemon to be offline, a verified backup manifest covering
+both `source.db` and `index.db`, and a new receipt path. It inserts exact refs
+only, never deletes or replaces existing refs. The source and index commits are
+recorded separately in the receipt so a retry can safely continue an additive
+repair. Reindex acceptance runs the same closure check against the candidate
+index before promotion.
+
 ### `polylogue ops maintenance hook-payload-ref-reconcile` - legacy hook-ref repair
 
 Read-only by default. It classifies historical orphaned `raw_payload` refs and

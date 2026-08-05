@@ -6,6 +6,7 @@ import click
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as root_cli
+from polylogue.cli.commands.maintenance._blob_reference_closure import blob_reference_closure_command
 from polylogue.cli.commands.maintenance._hook_payload_ref_reconciliation import hook_payload_ref_reconcile_command
 from polylogue.cli.commands.maintenance._plan import plan_command
 from polylogue.cli.commands.maintenance._run import run_command
@@ -106,6 +107,10 @@ def test_hook_payload_reconcile_is_click_command() -> None:
     assert isinstance(hook_payload_ref_reconcile_command, click.Command)
 
 
+def test_blob_reference_closure_is_click_command() -> None:
+    assert isinstance(blob_reference_closure_command, click.Command)
+
+
 def test_maintenance_group_has_status() -> None:
     """maintenance group lists status as a subcommand (#1197)."""
     maintenance_group = _registered_maintenance_command()
@@ -113,6 +118,7 @@ def test_maintenance_group_has_status() -> None:
     cmds = maintenance_group.list_commands(ctx)  # type: ignore[attr-defined]
     assert "status" in cmds
     assert "hook-payload-ref-reconcile" in cmds
+    assert "blob-reference-closure" in cmds
 
 
 def test_maintenance_status_help_output() -> None:

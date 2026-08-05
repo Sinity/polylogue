@@ -120,6 +120,28 @@ async def save_raw_session(
             (file_mtime_ms, record.source_path, record.raw_id, file_mtime_ms, record.source_path),
         )
 
+    # ``raw_sessions`` and ``blob_refs`` are one durable acquisition contract.
+    # This async writer predates the typed source-tier writer and used to stop
+    # after inserting the raw row, leaving the payload invisible to blob GC and
+    # source-to-index reindex closure checks. Read the retained row back so a
+    # duplicate save cannot manufacture reference metadata from a stale caller
+    # record, then write the exact persisted identity.
+    cursor = await conn.execute(
+        "SELECT source_path, blob_hash, blob_size, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
+        (record.raw_id,),
+    )
+    persisted = await cursor.fetchone()
+    if persisted is None:
+        raise RuntimeError(f"raw session disappeared before its blob reference was written: {record.raw_id}")
+    await conn.execute(
+        """
+        INSERT OR REPLACE INTO blob_refs (
+            blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+        ) VALUES (?, ?, 'raw_payload', ?, ?, ?)
+        """,
+        (persisted[1], record.raw_id, persisted[0], persisted[2], persisted[3]),
+    )
+
     if record.blob_publication_receipt_id is not None:
         await conn.execute(
             "DELETE FROM blob_publication_reservations WHERE publication_id = ? AND blob_hash = ?",
