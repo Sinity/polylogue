@@ -83,6 +83,26 @@ class TestLooksLike:
 
 
 class TestSessionStreamContract:
+    def test_headerless_envelope_append_delta_uses_fallback_identity(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload
+
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "append delta"}],
+                },
+            }
+        ]
+
+        assert is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "rollout-fallback", source_path="/tmp/append.jsonl")
+
+        assert [session.provider_session_id for session in sessions] == ["rollout-fallback"]
+        assert len(sessions[0].messages) == 1
+
     def test_real_wire_stream_parses_and_passes_materialization_evidence_gate(self) -> None:
         from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
 
@@ -106,6 +126,26 @@ class TestSessionStreamContract:
             require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/real-stream.jsonl")
             == sessions
         )
+
+    def test_session_header_plus_direct_messages_is_admitted_and_parsed(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload
+
+        payload = [
+            {"type": "session_meta", "payload": {"id": "legacy-stream"}},
+            {
+                "type": "message",
+                "id": "legacy-user",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "header plus direct"}],
+            },
+        ]
+
+        assert is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "fallback", source_path="/tmp/header-direct.jsonl")
+
+        assert [session.provider_session_id for session in sessions] == ["legacy-stream"]
+        assert len(sessions[0].messages) == 1
+        assert sessions[0].messages[0].provider_message_id == "legacy-user"
 
     def test_legacy_direct_stream_uses_fallback_identity_and_passes_contract(self) -> None:
         from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
