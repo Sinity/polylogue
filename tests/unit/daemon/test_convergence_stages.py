@@ -682,6 +682,24 @@ def test_fts_surface_debt_retries_after_real_sqlite_backpressure(
     assert retired.success is False
     assert retired.deferred is False
 
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="messages_fts",
+        error="global FTS repair pending after malformed shadow table",
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+    with sqlite3.connect(archive_db) as conn:
+        conn.execute("DROP TABLE messages_fts_docsize")
+        conn.commit()
+
+    assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
+    failed = [debt for debt in cursor.list_convergence_debt() if debt.subject_id == "messages_fts"]
+    assert len(failed) == 1
+    assert failed[0].status == "failed"
+
 
 def test_archive_fts_global_repair_deletes_excess_rows_without_reset(tmp_path: Path) -> None:
     """Global surface debt should remove excess rows without a full rebuild."""
