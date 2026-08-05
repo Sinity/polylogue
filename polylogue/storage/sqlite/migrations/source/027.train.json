@@ -34,7 +34,7 @@
           "consumer_id": "source-tier-bootstrap",
           "production_ref": "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
           "behavior_proof_ref": "proof:source-v27:tier-bootstrap",
-          "roles": ["write", "read"]
+          "roles": ["read"]
         }
       ],
       "behavior_proof_refs": [
@@ -64,5 +64,5 @@
   "released_at_ms": null,
   "release_evidence_ref": null,
   "proof_refs": [],
-  "manifest_sha256": "bff53ffaddc8f94a8cbf5e26dd82946e5cbca7720a252be674687fd40252f1ab"
+  "manifest_sha256": "1643f8a42e29249214a68f9cacbf49fc7bee1cb47f590c9f417c69a16dcf4c34"
 }
