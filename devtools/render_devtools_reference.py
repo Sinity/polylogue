@@ -83,15 +83,20 @@ def _render_workspace_dispositions() -> list[str]:
     lines.extend(
         [
             "",
-            "Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push route use registered commands; direct hook adapters and generated provenance headers require declared sanctioned exceptions.",
+            "Catalog bypass audit sites are machine-checked across workflow runs, CI-owned npm scripts, hooks, and devtools process launches. Direct hook adapters require declared sanctioned exceptions with an exact occurrence and cardinality.",
             "",
-            "| Site | Status | Registered command | Reason |",
-            "| --- | --- | --- | --- |",
+            "| Site | Status | Registered command | Occurrence | Reason |",
+            "| --- | --- | --- | --- | --- |",
         ]
     )
     for site in CATALOG_BYPASS_SITES:
         command = control_plane_command(site.command_name) if site.command_name is not None else "hook adapter"
-        lines.append(f"| `{site.path}` | `{site.disposition}` | `{command}` | {site.reason} |")
+        occurrence = (
+            f"line {site.occurrence_line} ({site.expected_occurrences} expected)"
+            if site.occurrence_line is not None
+            else "not applicable"
+        )
+        lines.append(f"| `{site.path}` | `{site.disposition}` | `{command}` | {occurrence} | {site.reason} |")
     lines.append("")
     return lines
 

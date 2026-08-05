@@ -82,17 +82,19 @@ def test_workspace_dispositions_cover_the_named_utf_entries() -> None:
     dispositions = {item.name: item for item in WORKSPACE_COMMAND_DISPOSITIONS}
 
     assert set(dispositions) == expected
-    assert dispositions["workspace archive-schema-fast-forward"].disposition == "remove"
-    assert dispositions["workspace archive-schema-fast-forward"].replacement.endswith(
-        "workspace index-fast-forward for declared derived-index fast-forwards."
-    )
+    archived = dispositions["workspace archive-schema-fast-forward"]
+    assert archived.disposition == "remove"
+    assert archived.replacement_command == "workspace index-fast-forward"
+    assert archived.replacement_command in COMMANDS
     for name, item in dispositions.items():
         assert item.evidence
         assert item.replacement
         if item.disposition == "retain":
             assert name in COMMANDS
+            assert item.replacement_command is None
         else:
             assert name not in COMMANDS
+            assert item.replacement_command in COMMANDS
 
 
 def test_named_catalog_bypass_sites_are_registered_or_sanctioned() -> None:
@@ -107,4 +109,8 @@ def test_named_catalog_bypass_sites_are_registered_or_sanctioned() -> None:
             assert site.command_name in COMMANDS
         else:
             assert site.disposition == "sanctioned-bypass"
+        if site.occurrence_line is not None:
+            assert site.disposition == "sanctioned-bypass"
+            assert site.expected_occurrences == 1
+            assert source.splitlines()[site.occurrence_line - 1].strip().startswith(site.marker)
         assert site.reason

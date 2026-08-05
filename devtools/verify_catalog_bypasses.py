@@ -1,21 +1,23 @@
 """Reject unregistered direct devtools command execution in control surfaces.
 
 The CommandSpec catalog is the public execution registry. Workflow ``run:``
-blocks, repository hooks, and devtools process-launch calls must invoke it as
-``devtools ...``. This checker catches literal direct forms such as
+blocks, repository hooks, CI-owned npm scripts, and devtools process-launch
+calls must invoke it as ``devtools ...``. This checker catches literal direct forms such as
 ``python -m devtools.some_module`` and ``python devtools/some_module.py``.
 
 Scope is deliberately execution-only:
 
-* workflow ``run:`` blocks and hook shell scripts are scanned as shell text;
+* workflow ``run:`` blocks, hook shell scripts, and the declared top-level
+  JavaScript workspace npm scripts are scanned as structured command text;
 * ``devtools/**/*.py`` is parsed with ``ast`` and only command-runner call
-  arguments are inspected.
+  arguments are inspected, including literal ``args=`` keyword vectors.
 
 Generated provenance headers, argparse ``prog`` values, comments, and
 docstrings are outside the scope because they do not launch a process. A real
 hook adapter can remain only through a structured ``sanctioned-bypass`` entry
-in ``CATALOG_BYPASS_SITES`` with a reason. Dynamic command construction is
-outside this literal-vector check and must use catalog helpers at review.
+in ``CATALOG_BYPASS_SITES`` with a reason, exact line, and expected occurrence
+count. Dynamic values remain untrusted, but literal executable, module, and
+script segments are inspected without scanning comments or prose.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from pathlib import Path
 import yaml
 
 from devtools import repo_root as _get_root
-from devtools.command_catalog import CATALOG_BYPASS_SITES
+from devtools.command_catalog import CATALOG_BYPASS_SITES, CatalogBypassSite
 
 ROOT = _get_root()
 _COMMAND_RUNNERS = {"run", "check_call", "check_output", "Popen", "system", "_run", "run_command", "_run_command"}
@@ -41,6 +43,7 @@ _MODULE_INVOCATION = re.compile(rf"(?<![\w./-])(?:uv\s+run\s+)?{_PYTHON}\s+-m\s+
 _SCRIPT_INVOCATION = re.compile(
     rf"(?<![\w./-])(?:uv\s+run\s+)?{_PYTHON}\s+(?:\./)?(devtools/[A-Za-z_][A-Za-z0-9_]*\.py)"
 )
+_NPM_SCRIPT_MANIFESTS = (Path("webui/package.json"), Path("browser-extension/package.json"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +53,14 @@ class DirectDevtoolsInvocation:
     invocation: str
 
 
+@dataclass(frozen=True, slots=True)
+class BypassViolation:
+    path: str
+    lineno: int
+    invocation: str
+    reason: str
+
+
 def _relative_path(path: Path, root: Path) -> str:
     try:
         return path.relative_to(root).as_posix()
@@ -57,14 +68,14 @@ def _relative_path(path: Path, root: Path) -> str:
         return path.as_posix()
 
 
-def _shell_invocations(source: str, *, path: str) -> list[DirectDevtoolsInvocation]:
+def _shell_invocations(source: str, *, path: str, line_offset: int = 0) -> list[DirectDevtoolsInvocation]:
     findings: list[DirectDevtoolsInvocation] = []
     for pattern, prefix in ((_MODULE_INVOCATION, "python -m"), (_SCRIPT_INVOCATION, "python")):
         for match in pattern.finditer(source):
             findings.append(
                 DirectDevtoolsInvocation(
                     path=path,
-                    lineno=source.count("\n", 0, match.start()) + 1,
+                    lineno=line_offset + source.count("\n", 0, match.start()) + 1,
                     invocation=f"{prefix} {match.group(1)}",
                 )
             )
@@ -132,9 +143,15 @@ def _python_invocations(source: str, *, path: str) -> list[DirectDevtoolsInvocat
         return []
     findings: list[DirectDevtoolsInvocation] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_command_runner(node) or not node.args:
+        if not isinstance(node, ast.Call) or not _is_command_runner(node):
             continue
-        findings.extend(_invocations_from_command_expression(node.args[0], path=path, lineno=node.lineno))
+        command = (
+            node.args[0]
+            if node.args
+            else next((keyword.value for keyword in node.keywords if keyword.arg == "args"), None)
+        )
+        if command is not None:
+            findings.extend(_invocations_from_command_expression(command, path=path, lineno=node.lineno))
     return findings
 
 
@@ -157,6 +174,25 @@ def _workflow_run_blocks(path: Path) -> Iterable[str]:
     return tuple(_walk(data))
 
 
+def _npm_script_invocations(path: Path, *, relative: str) -> list[DirectDevtoolsInvocation]:
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    scripts = manifest.get("scripts")
+    if not isinstance(scripts, dict):
+        return []
+    source = path.read_text(encoding="utf-8")
+    findings: list[DirectDevtoolsInvocation] = []
+    for name, command in scripts.items():
+        if not isinstance(name, str) or not isinstance(command, str):
+            continue
+        match = re.search(rf'^\s*"{re.escape(name)}"\s*:', source, flags=re.MULTILINE)
+        line_offset = source.count("\n", 0, match.start()) if match is not None else 0
+        findings.extend(_shell_invocations(command, path=relative, line_offset=line_offset))
+    return findings
+
+
 def control_surface_paths(root: Path = ROOT) -> tuple[Path, ...]:
     paths: list[Path] = []
     workflows = root / ".github" / "workflows"
@@ -168,6 +204,7 @@ def control_surface_paths(root: Path = ROOT) -> tuple[Path, ...]:
     devtools = root / "devtools"
     if devtools.exists():
         paths.extend(sorted(devtools.rglob("*.py")))
+    paths.extend(root / manifest for manifest in _NPM_SCRIPT_MANIFESTS if (root / manifest).is_file())
     return tuple(paths)
 
 
@@ -182,6 +219,8 @@ def scan_control_surfaces(root: Path = ROOT, *, paths: Iterable[Path] | None = N
         if path.suffix in {".yml", ".yaml"}:
             for run in _workflow_run_blocks(path):
                 findings.extend(_shell_invocations(run, path=relative))
+        elif path.name == "package.json":
+            findings.extend(_npm_script_invocations(path, relative=relative))
         elif path.suffix == ".py":
             findings.extend(_python_invocations(source, path=relative))
         else:
@@ -189,13 +228,43 @@ def scan_control_surfaces(root: Path = ROOT, *, paths: Iterable[Path] | None = N
     return findings
 
 
-def _sanctioned_keys() -> set[tuple[str, str]]:
-    return {(site.path, site.marker) for site in CATALOG_BYPASS_SITES if site.disposition == "sanctioned-bypass"}
+def _sanctioned_sites() -> tuple[CatalogBypassSite, ...]:
+    return tuple(
+        site
+        for site in CATALOG_BYPASS_SITES
+        if site.disposition == "sanctioned-bypass" and site.occurrence_line is not None
+    )
 
 
-def collect_violations(root: Path = ROOT, *, paths: Iterable[Path] | None = None) -> list[DirectDevtoolsInvocation]:
-    sanctioned = _sanctioned_keys()
-    return [item for item in scan_control_surfaces(root, paths=paths) if (item.path, item.invocation) not in sanctioned]
+def collect_violations(root: Path = ROOT, *, paths: Iterable[Path] | None = None) -> list[BypassViolation]:
+    selected = tuple(paths) if paths is not None else control_surface_paths(root)
+    findings = scan_control_surfaces(root, paths=selected)
+    sanctioned = _sanctioned_sites()
+    selected_paths = {
+        _relative_path(candidate if candidate.is_absolute() else root / candidate, root) for candidate in selected
+    }
+    allowed = {(site.path, site.occurrence_line, site.marker) for site in sanctioned}
+    violations = [
+        BypassViolation(item.path, item.lineno, item.invocation, "undeclared-direct-invocation")
+        for item in findings
+        if (item.path, item.lineno, item.invocation) not in allowed
+    ]
+    for site in sanctioned:
+        occurrence_line = site.occurrence_line
+        assert occurrence_line is not None
+        if site.path not in selected_paths:
+            continue
+        count = sum(item.path == site.path and item.invocation == site.marker for item in findings)
+        if count != site.expected_occurrences:
+            violations.append(
+                BypassViolation(
+                    site.path,
+                    occurrence_line,
+                    site.marker,
+                    f"sanctioned-occurrence-count:{count}!={site.expected_occurrences}",
+                )
+            )
+    return violations
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -206,9 +275,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps({"ok": not violations, "violations": [asdict(item) for item in violations]}, indent=2))
     elif violations:
-        print("Unregistered direct devtools invocations:", file=sys.stderr)
+        print("Catalog bypass violations:", file=sys.stderr)
         for item in violations:
-            print(f"  {item.path}:{item.lineno}: {item.invocation}", file=sys.stderr)
+            print(f"  {item.path}:{item.lineno}: {item.invocation} ({item.reason})", file=sys.stderr)
     else:
         print("Catalog bypass scan OK: no undeclared direct devtools execution sites.")
     return 1 if violations else 0

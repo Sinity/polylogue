@@ -113,16 +113,16 @@ The utf.1 triage retains workspace commands with operator history, reusable outp
 | `devtools workspace cli-surface-audit` | `retain` | Focused tests cover bounded output and stale-artifact pruning; the audit shelf is reusable. | Keep the registered command as the current CLI surface audit entrypoint. |
 | `devtools demo real-slice-screen` | `retain` | Focused privacy-screening tests cover redaction, PII review, and report generation. | Keep the registered command as the read-only real-archive screening entrypoint. |
 
-Catalog bypass audit sites are machine-checked: CI and the Beads-only pre-push route use registered commands; direct hook adapters and generated provenance headers require declared sanctioned exceptions.
+Catalog bypass audit sites are machine-checked across workflow runs, CI-owned npm scripts, hooks, and devtools process launches. Direct hook adapters require declared sanctioned exceptions with an exact occurrence and cardinality.
 
-| Site | Status | Registered command | Reason |
-| --- | --- | --- | --- |
-| `.github/workflows/mutation-testing.yml` | `registered` | `devtools verify mutation-freshness` | CI invokes the catalog command so inventory and workflow validation see the freshness gate. |
-| `.github/workflows/nightly-scale.yml` | `registered` | `devtools bench nightly-compare` | CI invokes the catalog command so the nightly comparison is discoverable and checked. |
-| `devtools/pre_push_gate.py` | `registered` | `devtools lab policy backlog-hygiene` | The intentional Beads-only route remains narrow while using the registered policy command. |
-| `docs/test-economics.md` | `sanctioned-bypass` | `devtools lab test-economics` | The generated provenance header preserves the module that emitted the document; operators use the catalog command. |
-| `.githooks/pre-push` | `sanctioned-bypass` | `hook adapter` | The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate. |
-| `.beads-hooks/pre-push` | `sanctioned-bypass` | `hook adapter` | The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs. |
+| Site | Status | Registered command | Occurrence | Reason |
+| --- | --- | --- | --- | --- |
+| `.github/workflows/mutation-testing.yml` | `registered` | `devtools verify mutation-freshness` | not applicable | CI invokes the catalog command so inventory and workflow validation see the freshness gate. |
+| `.github/workflows/nightly-scale.yml` | `registered` | `devtools bench nightly-compare` | not applicable | CI invokes the catalog command so the nightly comparison is discoverable and checked. |
+| `devtools/pre_push_gate.py` | `registered` | `devtools lab policy backlog-hygiene` | not applicable | The intentional Beads-only route remains narrow while using the registered policy command. |
+| `docs/test-economics.md` | `sanctioned-bypass` | `devtools lab test-economics` | not applicable | The generated provenance header preserves the module that emitted the document; operators use the catalog command. |
+| `.githooks/pre-push` | `sanctioned-bypass` | `hook adapter` | line 21 (1 expected) | The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate. |
+| `.beads-hooks/pre-push` | `sanctioned-bypass` | `hook adapter` | line 21 (1 expected) | The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs. |
 
 ### Core
 

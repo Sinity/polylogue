@@ -30,7 +30,8 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
     assert "| `devtools render demo-corpus-datasheet` |" in rendered
     assert "| `devtools workspace index-fast-forward` | `retain` |" in rendered
     assert "| `workspace archive-schema-fast-forward` | `remove` |" in rendered
-    assert "| `.githooks/pre-push` | `sanctioned-bypass` | `hook adapter` |" in rendered
+    assert "Use workspace index-fast-forward for declared derived-index fast-forwards." in rendered
+    assert "| `.githooks/pre-push` | `sanctioned-bypass` | `hook adapter` | line 21 (1 expected) |" in rendered
     assert (
         "| `.github/workflows/mutation-testing.yml` | `registered` | `devtools verify mutation-freshness` |" in rendered
     )

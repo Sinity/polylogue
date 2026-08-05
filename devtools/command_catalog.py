@@ -106,6 +106,7 @@ class WorkspaceCommandDisposition:
     disposition: str
     evidence: str
     replacement: str
+    replacement_command: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +116,8 @@ class CatalogBypassSite:
     command_name: str | None
     disposition: str
     reason: str
+    occurrence_line: int | None = None
+    expected_occurrences: int = 0
 
 
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
@@ -2349,6 +2352,7 @@ WORKSPACE_COMMAND_DISPOSITIONS: tuple[WorkspaceCommandDisposition, ...] = (
         "remove",
         "No current CommandSpec, implementation module, focused test, or history entry exists for this name.",
         "Use workspace index-fast-forward for declared derived-index fast-forwards.",
+        "workspace index-fast-forward",
     ),
     WorkspaceCommandDisposition(
         "workspace degraded-archive-proof",
@@ -2436,6 +2440,8 @@ CATALOG_BYPASS_SITES: tuple[CatalogBypassSite, ...] = (
         None,
         "sanctioned-bypass",
         "The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate.",
+        occurrence_line=21,
+        expected_occurrences=1,
     ),
     CatalogBypassSite(
         ".beads-hooks/pre-push",
@@ -2443,6 +2449,8 @@ CATALOG_BYPASS_SITES: tuple[CatalogBypassSite, ...] = (
         None,
         "sanctioned-bypass",
         "The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs.",
+        occurrence_line=21,
+        expected_occurrences=1,
     ),
 )
 
