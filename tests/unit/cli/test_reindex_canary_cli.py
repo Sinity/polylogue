@@ -247,7 +247,9 @@ def test_cli_consumes_valid_reviewed_real_report(tmp_path: Path, monkeypatch: py
     canary_root, _observed_path, observed = _write_real_unreviewed_canary_report(
         tmp_path, monkeypatch, name="valid-canary"
     )
-    differences = observed["comparison"]["differences"]
+    comparison = observed["comparison"]
+    assert isinstance(comparison, dict)
+    differences = comparison["differences"]
     assert isinstance(differences, list) and differences
     review_path = tmp_path / "valid-reviews.json"
     review_path.write_text(
