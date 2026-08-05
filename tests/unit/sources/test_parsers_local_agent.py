@@ -995,10 +995,9 @@ def test_antigravity_brain_artifact_metadata_parses_sibling_markdown(tmp_path: P
     assert classification.parse_as_session is False
     assert classification.kind is ArtifactKind.AGENT_SIDECAR_META
 
-    # ``parse_brain_metadata`` itself remains usable directly -- it backs the
-    # explicit degraded fallback wired in
-    # ``source_parsing._iter_antigravity_brain_metadata_fallback`` for when
-    # the language server truly cannot be reached.
+    # ``parse_brain_metadata`` itself remains usable directly as a parser
+    # compatibility helper, but source acquisition never promotes this
+    # sidecar to a session.
     [session] = parse_payload(
         Provider.ANTIGRAVITY,
         payload,
@@ -1092,7 +1091,7 @@ def test_antigravity_source_walk_prefers_language_server_exports(
     assert sessions[0].messages[0].text == "hello"
 
 
-def test_antigravity_source_walk_ingests_metadata_not_config(tmp_path: Path) -> None:
+def test_antigravity_source_walk_leaves_metadata_artifact_only_without_conversations(tmp_path: Path) -> None:
     session_dir = tmp_path / "brain" / "session-1"
     session_dir.mkdir(parents=True)
     (session_dir / "task.md").write_text("Task artifact", encoding="utf-8")
@@ -1104,5 +1103,4 @@ def test_antigravity_source_walk_ingests_metadata_not_config(tmp_path: Path) -> 
 
     sessions = list(iter_source_sessions(Source(name="antigravity", path=tmp_path)))
 
-    assert len(sessions) == 1
-    assert sessions[0].source_name is Provider.ANTIGRAVITY
+    assert sessions == []
