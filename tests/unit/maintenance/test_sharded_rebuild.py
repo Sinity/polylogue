@@ -318,8 +318,9 @@ def test_merge_revalidates_external_evidence_before_target_mutation(tmp_path: Pa
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("discard_failure", ["exception", "false"], ids=["discard-exception", "discard-false"])
 def test_sharded_route_cleans_every_sibling_after_post_graph_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, discard_failure: str
 ) -> None:
     """The real sharded route cleans every sibling after graph provenance fails.
 
@@ -356,7 +357,9 @@ def test_sharded_route_cleans_every_sibling_after_post_graph_failure(
         generation_id = generation.generation_id
         discard_calls.append(generation_id)
         if generation_id == failed_shard_id:
-            raise OSError("synthetic shard cleanup failure")
+            if discard_failure == "exception":
+                raise OSError("synthetic shard cleanup failure")
+            return False
         return original_discard(generation_store, generation)
 
     def fail_after_graph(target_index_path: Path, *, provenance: RebuildProvenanceContext) -> float:
@@ -407,4 +410,5 @@ def test_sharded_route_cleans_every_sibling_after_post_graph_failure(
     notes = "\n".join(raised.value.__notes__ or ())
     assert "shard cleanup also failed" in notes
     assert failed_shard_id in notes
-    assert "synthetic shard cleanup failure" in notes
+    expected_detail = "synthetic shard cleanup failure" if discard_failure == "exception" else "was not discarded"
+    assert expected_detail in notes

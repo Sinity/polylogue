@@ -42,6 +42,7 @@ from polylogue.maintenance.reindex_canary import (
     write_canary_report,
 )
 from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
@@ -703,7 +704,10 @@ def test_real_no_promote_rebuild_changes_parse_state_without_evidence_drift(tmp_
     active_digest = hashlib.sha256((root / "index.db").read_bytes()).hexdigest()
     evidence_before = rebuild_source_evidence_snapshot(root)
 
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=False))
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, promote=False, schema_inference_receipt_path=receipt_path)
+    )
 
     with sqlite3.connect(root / "source.db") as connection:
         assert (
@@ -752,6 +756,32 @@ def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
     assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
 
 
+def test_run_reindex_canary_rejects_active_index_rotation_after_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A canary cannot compare against an index that stopped being active."""
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    location = ArchiveLocation.resolve(root)
+    current_index = location.active_index_path
+    rotated_index = tmp_path / "rotated" / "index.db"
+    rotated_index.parent.mkdir(parents=True)
+    shutil.copy2(current_index, rotated_index)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    rebuild = rebuild_index_from_source_sync
+
+    def rebuild_then_rotate(request: RebuildIndexRequest) -> object:
+        result = rebuild(request)
+        (root / ".index-active-pointer").write_text(str(rotated_index), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", rebuild_then_rotate)
+
+    with pytest.raises(CanarySelectionError, match="active index changed during rebuild"):
+        run_reindex_canary(root, schema_inference_receipt_path=receipt_path, sessions_per_origin=1, no_promote=True)
+
+
 def test_rebuild_rejects_evidence_mutation_in_deadline_interrupted_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -770,7 +800,7 @@ def test_rebuild_rejects_evidence_mutation_in_deadline_interrupted_pass(
     monkeypatch.setattr(rebuild_replay, "rebuild_index_from_source", mutate_source_then_interrupt)
     receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
 
-    with pytest.raises(RuntimeError, match="stale because source evidence changed"):
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
         rebuild_index_from_source_sync(
             RebuildIndexRequest(
                 archive_root=root,

@@ -344,6 +344,13 @@ def run_reindex_canary(
             schema_inference_receipt_path=schema_inference_receipt_path,
         )
     )
+    try:
+        active_after_rebuild = ArchiveLocation.resolve(root).active_index
+        selected_active_index = TierFileIdentity.resolve("index", current_index)
+        if not active_after_rebuild.same_file(selected_active_index):
+            raise CanarySelectionError("canary active index changed during rebuild")
+    except OSError as exc:
+        raise CanarySelectionError("canary active index could not be revalidated after rebuild") from exc
     receipt_payload = receipt.to_dict()
     _validate_selection_evidence(receipt_payload, selection.selected_raw_ids)
     candidate_path = _validate_canary_candidate(

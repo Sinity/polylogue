@@ -109,6 +109,22 @@ def test_missing_receipt_fails_before_lease_and_candidate_mutation(tmp_path: Pat
     assert not (root / ".index-generations").exists()
 
 
+def test_receipt_reference_policy_fails_before_candidate_mutation(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = root / "schema-inference-gate-receipt.json"
+    write_valid_rebuild_receipt(root, receipt_path)
+    active_before = _active_bytes(root)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
+
+    assert _active_bytes(root) == active_before
+    assert not (root / ".index-generations").exists()
+
+
 @pytest.mark.parametrize("expire", [False, True], ids=["external-drift", "receipt-expiry"])
 def test_offline_post_preflight_receipt_change_fails_before_lease_or_candidate_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expire: bool

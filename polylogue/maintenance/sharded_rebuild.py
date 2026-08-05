@@ -471,7 +471,9 @@ def _cleanup_shard_generations(
     for shard_generation in shard_generations:
         try:
             provenance.validate_cleanup()
-            generation_store.discard_if_inactive(shard_generation)
+            discarded = generation_store.discard_if_inactive(shard_generation)
+            if not discarded:
+                raise RuntimeError(f"{shard_generation.generation_id} was not discarded")
         except BaseException as exc:
             cleanup_error = RuntimeError(f"{shard_generation.generation_id}: {exc}")
             cleanup_error.__cause__ = exc

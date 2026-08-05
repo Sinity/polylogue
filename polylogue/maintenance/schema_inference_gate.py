@@ -501,12 +501,10 @@ def _tier_schema_identity(archive_root: Path, location: ArchiveLocation) -> dict
 
 
 def _resolve_receipt_path(receipt_path: Path, *, archive_root: Path) -> Path:
-    """Accept only the dedicated receipt filename outside the archive file set."""
+    """Accept only a receipt path outside the archive file set."""
 
     target = receipt_path.expanduser().resolve()
     root = archive_root.resolve()
-    if target.name != RECEIPT_FILENAME:
-        raise SchemaInferenceGateError(f"receipt filename must be {RECEIPT_FILENAME!r}")
     try:
         target.relative_to(root)
     except ValueError:
@@ -517,14 +515,17 @@ def _resolve_receipt_path(receipt_path: Path, *, archive_root: Path) -> Path:
 def resolve_schema_inference_receipt_reference(archive_root: Path, receipt_path: Path | None = None) -> Path:
     """Resolve the policy-controlled receipt reference used by rebuild callers."""
 
+    root = Path(archive_root).absolute()
     if receipt_path is not None:
-        return receipt_path.expanduser().resolve()
-    configured = os.environ.get(SCHEMA_INFERENCE_RECEIPT_ENV, "").strip()
-    if not configured:
-        raise SchemaInferenceGateError(
-            f"a fresh schema-inference receipt is required; pass a receipt path or set {SCHEMA_INFERENCE_RECEIPT_ENV}"
-        )
-    return Path(configured).expanduser().resolve()
+        candidate = receipt_path
+    else:
+        configured = os.environ.get(SCHEMA_INFERENCE_RECEIPT_ENV, "").strip()
+        if not configured:
+            raise SchemaInferenceGateError(
+                f"a fresh schema-inference receipt is required; pass a receipt path or set {SCHEMA_INFERENCE_RECEIPT_ENV}"
+            )
+        candidate = Path(configured)
+    return _resolve_receipt_path(candidate, archive_root=root)
 
 
 def _archive_receipt_identity(location: ArchiveLocation) -> dict[str, object]:
