@@ -15,6 +15,7 @@ from polylogue.maintenance.archive_verification import (
     ArchiveVerificationReport,
 )
 from polylogue.sources.dispatch import parse_payload
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -220,6 +221,58 @@ def test_activation_refuses_waived_embedding_orphan_at_strict_candidate_gate(
         conn.commit()
 
     with pytest.raises(forward.IndexFastForwardError, match=r"embeddings-refs-liveness.*waived by polylogue-feu0"):
+        forward.activate_forward(receipt_path=receipt_path)
+
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+
+
+@pytest.mark.parametrize("mutation", ("missing", "corrupt", "orphan"))
+def test_activation_refuses_physical_blob_failure_without_pointer_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_v37: None, mutation: str
+) -> None:
+    root = _archive(tmp_path)
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    receipt_path = tmp_path / "transition.json"
+    forward.prepare_forward(archive_root=root, receipt_path=receipt_path)
+
+    with sqlite3.connect(root / "source.db") as conn:
+        blob_hash = bytes(conn.execute("SELECT blob_hash FROM raw_sessions LIMIT 1").fetchone()[0]).hex()
+    blob_store = BlobStore(root / "blob")
+    if mutation == "missing":
+        blob_store.blob_path(blob_hash).unlink()
+    elif mutation == "corrupt":
+        blob_store.blob_path(blob_hash).write_bytes(b"corrupt physical bytes")
+    else:
+        blob_store.write_from_bytes(b"orphan physical bytes")
+
+    with pytest.raises(forward.IndexFastForwardError, match=r"blob-integrity"):
+        forward.activate_forward(receipt_path=receipt_path)
+
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+
+
+def test_activation_refuses_acquired_unreachable_attachment_without_pointer_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_v37: None
+) -> None:
+    root = _archive(tmp_path)
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    receipt_path = tmp_path / "transition.json"
+    receipt = forward.prepare_forward(archive_root=root, receipt_path=receipt_path)
+    generation = cast(dict[str, object], receipt["generation"])
+    candidate_index = Path(str(generation["index_path"]))
+
+    blob_hash, size = BlobStore(root / "blob").write_from_bytes(b"unreachable attachment")
+    with sqlite3.connect(candidate_index) as conn:
+        conn.execute(
+            """
+            INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
+            VALUES ('unreachable-attachment', ?, ?, 'acquired', 0)
+            """,
+            (bytes.fromhex(blob_hash), size),
+        )
+        conn.commit()
+
+    with pytest.raises(forward.IndexFastForwardError, match=r"attachment-acquisition-debt"):
         forward.activate_forward(receipt_path=receipt_path)
 
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
