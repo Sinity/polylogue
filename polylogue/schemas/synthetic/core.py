@@ -8,7 +8,6 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.core.json import json_document, loads
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.schemas.synthetic import builders as synthetic_builders
@@ -215,24 +214,21 @@ class SyntheticCorpus:
         written_files: list[Path] = []
         for idx, artifact in enumerate(batch.artifacts):
             if corpus.provider == "antigravity":
-                # The real acquisition path (iter_antigravity_language_server_sessions /
-                # its brain-metadata fallback, polylogue-eo81) requires a rooted
-                # directory layout: root/brain/<session-dir>/<name>.md.metadata.json,
-                # session identity derived from the immediate parent directory name.
-                # A flat root/<name>.md.metadata.json layout is refused by the
-                # generic per-file walk (deliberately, so real conversations aren't
-                # double-counted as sidecar fragments) and never reaches a parser.
-                session_dir = output_dir / "brain" / f"{prefix}-{idx:0{index_width}d}"
-                session_dir.mkdir(parents=True, exist_ok=True)
-                file_path = session_dir / f"{prefix}-{idx:0{index_width}d}.md.metadata.json"
-                markdown_path = session_dir / f"{prefix}-{idx:0{index_width}d}.md"
-                payload = json_document(loads(artifact.raw_bytes))
-                markdown_path.write_text(
-                    str(payload.get("summary") or "Synthetic Antigravity artifact"), encoding="utf-8"
+                # Sidecars describe artifacts and are intentionally not sessions.
+                # Synthetic conversations must use the same rooted trajectory shape
+                # as the real acquisition path: conversations/<cascade_id>.pb.
+                conversations_dir = output_dir / "conversations"
+                conversations_dir.mkdir(parents=True, exist_ok=True)
+                cascade_id = (
+                    spec.session_native_ids[idx]
+                    if idx < len(spec.session_native_ids)
+                    else f"{prefix}-{idx:0{index_width}d}"
                 )
+                file_path = conversations_dir / f"{cascade_id}.pb"
+                file_path.write_bytes(b"fake-protobuf-bytes-" + cascade_id.encode("utf-8"))
             else:
                 file_path = output_dir / f"{prefix}-{idx:0{index_width}d}{ext}"
-            file_path.write_bytes(artifact.raw_bytes)
+                file_path.write_bytes(artifact.raw_bytes)
             written_files.append(file_path)
         return SyntheticWrittenBatch(batch=batch, files=tuple(written_files))
 
