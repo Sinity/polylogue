@@ -13,10 +13,10 @@
     "./design-system.css": "./src/design-system/design-system.css"
   },
   "scripts": {
-    "generate": "cd .. && python3 -m devtools.render_webui_design_system",
-    "generate:check": "cd .. && python3 -m devtools.render_webui_design_system --check",
-    "generate:client": "cd .. && python3 -m devtools.render_webui_client",
-    "check:client": "cd .. && python3 -m devtools.render_webui_client --check",
+    "generate": "cd .. && uv run devtools render webui-design-system",
+    "generate:check": "cd .. && uv run devtools render webui-design-system --check",
+    "generate:client": "cd .. && uv run devtools render webui-client",
+    "check:client": "cd .. && uv run devtools render webui-client --check",
     "lint": "node scripts/lint-design-system.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

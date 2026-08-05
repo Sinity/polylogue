@@ -70,7 +70,7 @@ jobs:
             exit 0
           fi
           echo "Comparing against committed baseline..."
-          uv run python3 devtools/benchmark_compare_nightly.py "$BASELINE" nightly-results.json --fail-pct 20
+          uv run devtools bench nightly-compare "$BASELINE" nightly-results.json --fail-pct 20
           echo "comparison=completed" >> "$GITHUB_OUTPUT"
 
       - name: Report regression

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from devtools.command_catalog import (
+    CATALOG_BYPASS_SITES,
     CATEGORY_ORDER,
     COMMAND_SPECS,
+    COMMANDS,
     VERIFICATION_LAB_COMMAND_NAMES,
+    WORKSPACE_COMMAND_DISPOSITIONS,
     command_name_from_tokens,
     control_plane_argv,
     control_plane_command,
@@ -59,3 +64,53 @@ def test_verification_lab_surface_is_explicit_and_implemented() -> None:
         assert spec.use_when
         assert spec.examples
         assert callable(spec.resolve_main())
+
+
+def test_workspace_dispositions_cover_the_named_utf_entries() -> None:
+    expected = {
+        "workspace index-fast-forward",
+        "workspace archive-schema-fast-forward",
+        "workspace degraded-archive-proof",
+        "workspace frontier",
+        "workspace temporal-read-profile",
+        "workspace temporal-devloop",
+        "workspace temporal-archive-aggregates",
+        "workspace lineage-validation",
+        "workspace cli-surface-audit",
+        "demo real-slice-screen",
+    }
+    dispositions = {item.name: item for item in WORKSPACE_COMMAND_DISPOSITIONS}
+
+    assert set(dispositions) == expected
+    archived = dispositions["workspace archive-schema-fast-forward"]
+    assert archived.disposition == "remove"
+    assert archived.replacement_command == "workspace index-fast-forward"
+    assert archived.replacement_command in COMMANDS
+    for name, item in dispositions.items():
+        assert item.evidence
+        assert item.replacement
+        if item.disposition == "retain":
+            assert name in COMMANDS
+            assert item.replacement_command is None
+        else:
+            assert name not in COMMANDS
+            assert item.replacement_command in COMMANDS
+
+
+def test_named_catalog_bypass_sites_are_registered_or_sanctioned() -> None:
+    root = Path(__file__).resolve().parents[3]
+
+    assert CATALOG_BYPASS_SITES
+    for site in CATALOG_BYPASS_SITES:
+        source = (root / site.path).read_text(encoding="utf-8")
+        assert site.marker in source
+        assert site.disposition in {"registered", "sanctioned-bypass"}
+        if site.command_name is not None:
+            assert site.command_name in COMMANDS
+        else:
+            assert site.disposition == "sanctioned-bypass"
+        if site.occurrence_line is not None:
+            assert site.disposition == "sanctioned-bypass"
+            assert site.expected_occurrences == 1
+            assert source.splitlines()[site.occurrence_line - 1].strip().startswith(site.marker)
+        assert site.reason
