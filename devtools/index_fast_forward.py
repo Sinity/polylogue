@@ -504,6 +504,34 @@ def _require_candidate_strict_acceptance(archive_root: Path, candidate_index: Pa
         raise IndexFastForwardError(f"candidate strict acceptance gate failed: {failing}")
 
 
+def _require_generation_binding(
+    archive_root: Path,
+    receipt: dict[str, object],
+    generation_payload: dict[str, object],
+    generation: IndexGeneration,
+) -> None:
+    """Bind the loaded generation metadata to this receipt's archive and source."""
+    expected_archive_root = archive_root.resolve(strict=True)
+    receipt_archive_root = generation_payload.get("archive_root")
+    if (
+        not isinstance(receipt_archive_root, str)
+        or Path(receipt_archive_root).resolve(strict=False) != expected_archive_root
+    ):
+        raise IndexFastForwardError("prepared generation archive root changed or is foreign")
+    if Path(generation.archive_root).resolve(strict=False) != expected_archive_root:
+        raise IndexFastForwardError("prepared generation archive root changed or is foreign")
+    if generation.archive_root != receipt_archive_root:
+        raise IndexFastForwardError("prepared generation archive root metadata changed")
+
+    expected_source_snapshot = receipt.get("source_snapshot")
+    if not isinstance(expected_source_snapshot, str):
+        raise IndexFastForwardError("prepared generation source snapshot is missing")
+    if generation_payload.get("source_snapshot") != expected_source_snapshot:
+        raise IndexFastForwardError("prepared generation source snapshot changed since preparation")
+    if generation.source_snapshot != expected_source_snapshot:
+        raise IndexFastForwardError("prepared generation source snapshot changed since preparation")
+
+
 def _require_recovery_evidence(
     archive_root: Path,
     receipt: dict[str, object],
@@ -607,6 +635,7 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
     generation = store.load(str(generation_payload["generation_id"]))
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
+        _require_generation_binding(archive_root, receipt, generation_payload, generation)
         if generation.owner_id != generation_payload["owner_id"]:
             raise IndexFastForwardError("prepared generation ownership changed")
         clone = Path(generation.index_path)
