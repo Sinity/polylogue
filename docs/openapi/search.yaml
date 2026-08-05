@@ -1765,6 +1765,8 @@ components:
           - type: 'null'
           default: null
           title: Exit Code
+        result_state:
+          $ref: '#/components/schemas/ActionResultState'
         followup_class:
           anyOf:
           - type: string
@@ -1782,8 +1784,25 @@ components:
       - message_id
       - origin
       - tool_use_block_id
+      - result_state
       title: ActionQueryRowPayload
       type: object
+    ActionResultState:
+      description: 'Presence and structural-outcome state of one ``actions`` row.
+
+
+        ``NO_RESULT`` means no ``tool_result`` block was paired to the invocation.
+
+        It remains distinct from ``OUTCOME_UNKNOWN``, where a result block exists
+
+        but provider structure did not report a pass/fail outcome.'
+      enum:
+      - no_result
+      - outcome_unknown
+      - outcome_success
+      - outcome_error
+      title: ActionResultState
+      type: string
     AssertionKind:
       description: 'Closed vocabulary for ``user.db`` assertion rows.
 

@@ -452,6 +452,20 @@ class ToolResultUnknownReason(PolylogueStrEnum):
     NOT_READ = "not_read"
 
 
+class ActionResultState(PolylogueStrEnum):
+    """Presence and structural-outcome state of one ``actions`` row.
+
+    ``NO_RESULT`` means no ``tool_result`` block was paired to the invocation.
+    It remains distinct from ``OUTCOME_UNKNOWN``, where a result block exists
+    but provider structure did not report a pass/fail outcome.
+    """
+
+    NO_RESULT = "no_result"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+    OUTCOME_SUCCESS = "outcome_success"
+    OUTCOME_ERROR = "outcome_error"
+
+
 class SessionRefKind(PolylogueStrEnum):
     """Closed vocabulary for ``session_refs.kind`` (tracker-agnostic).
 
@@ -773,6 +787,7 @@ class RawAuthorityVerdict(PolylogueStrEnum):
 
 
 __all__ = [
+    "ActionResultState",
     "AssertionKind",
     "AssertionStatus",
     "AssertionVisibility",

@@ -2372,11 +2372,43 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
     """
     from polylogue.archive.actions.actions import build_actions, build_tool_calls_from_content_blocks
 
+    # Keep pairing aligned with storage/sqlite/action_pairs.py: rank uses and
+    # results independently by (message position, variant index, block
+    # position), then join equal ranks for each (session, tool_id). This is
+    # intentionally session-wide because providers commonly emit a tool use in
+    # one message and its result in a later message.
+    ordered_messages = [
+        message
+        for _input_index, message in sorted(
+            enumerate(session.messages),
+            key=lambda item: (item[1].position, item[1].branch_index, item[0]),
+        )
+    ]
+    uses_by_tool_id: dict[str, builtins.list[Mapping[str, object]]] = {}
+    results_by_tool_id: dict[str, builtins.list[Mapping[str, object]]] = {}
+    for message in ordered_messages:
+        for block in message.blocks:
+            block_type = str(block.get("type"))
+            tool_id = block.get("tool_id")
+            if not isinstance(tool_id, str) or not tool_id:
+                continue
+            if block_type == "tool_use":
+                uses_by_tool_id.setdefault(tool_id, []).append(block)
+            elif block_type == "tool_result":
+                results_by_tool_id.setdefault(tool_id, []).append(block)
+
+    result_block_by_use_block_id: dict[int, Mapping[str, object] | None] = {}
+    for tool_id, use_blocks in uses_by_tool_id.items():
+        result_blocks = results_by_tool_id.get(tool_id, ())
+        for rank, use_block in enumerate(use_blocks):
+            result_block_by_use_block_id[id(use_block)] = result_blocks[rank] if rank < len(result_blocks) else None
+
     events: builtins.list[Action] = []
-    for message in session.messages:
+    for message in ordered_messages:
         calls = build_tool_calls_from_content_blocks(
             origin=session.origin,
             content_blocks=message.blocks,
+            result_block_by_use_block_id=result_block_by_use_block_id,
         )
         events.extend(build_actions(message, calls))
     return tuple(events)
