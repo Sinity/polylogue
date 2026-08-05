@@ -1126,6 +1126,111 @@ def test_source_tier_fresh_bootstrap_accepts_claude_design_session(
         )
 
 
+def test_source_tier_v24_repairs_raw_hook_event_origin_check(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The current train repairs v22's missing hook-event Origin CHECK.
+
+    A v24 archive has already passed migration 022, so changing that historic
+    migration alone cannot help it. This fixture preserves a valid existing
+    hook row and a raw_artifacts foreign-key child, then requires v27's
+    copy-forward to retain both while rejecting an invalid origin.
+    """
+    db_path = workspace_env["archive_root"] / "source.db"
+    db_path.unlink(missing_ok=True)
+    blob_hash_hex, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(
+        b"v24-hook-origin-repair"
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SOURCE_DDL)
+        for table_name in (
+            "raw_quarantine_group_dedup_receipts",
+            "raw_unknown_export_reclassification_receipts",
+            "raw_non_session_duplicate_exclusion_receipts",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        conn.executescript(
+            """
+            ALTER TABLE raw_hook_events RENAME TO raw_hook_events_v24;
+
+            CREATE TABLE raw_hook_events (
+                hook_event_id     TEXT PRIMARY KEY,
+                origin            TEXT NOT NULL,
+                native_id         TEXT,
+                session_native_id TEXT,
+                source_path       TEXT NOT NULL,
+                event_type        TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                observed_at_ms    INTEGER NOT NULL,
+                blob_hash         BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)
+            ) STRICT;
+
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, session_native_id, source_path, event_type,
+                payload_json, observed_at_ms, blob_hash
+            )
+            SELECT
+                hook_event_id, origin, native_id, session_native_id, source_path, event_type,
+                payload_json, observed_at_ms, blob_hash
+            FROM raw_hook_events_v24;
+
+            DROP TABLE raw_hook_events_v24;
+
+            CREATE INDEX idx_raw_hook_events_session
+            ON raw_hook_events(origin, session_native_id, observed_at_ms);
+            """
+        )
+        conn.execute("PRAGMA user_version = 24")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-v24', 'codex-session', '/legacy.jsonl', ?, ?, 1)
+            """,
+            (bytes.fromhex(blob_hash_hex), blob_size),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, artifact_kind, support_status,
+                classification_reason, first_observed_at_ms, last_observed_at_ms
+            ) VALUES ('artifact-v24', 'raw-v24', 'codex-session', '/legacy.jsonl', 'session',
+                      'supported_parseable', 'ok', 1, 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, session_native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES ('hook-v24', 'codex-session', 'session-v24', '/legacy.jsonl', 'PreToolUse', '{}', 1)
+            """
+        )
+        conn.commit()
+
+    manifest = _verified_backup_manifest(tmp_path / "backup-v24-hook-origin")
+    with sqlite3.connect(db_path) as conn:
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+
+        assert result.from_version == 24
+        assert result.to_version == SOURCE_SCHEMA_VERSION
+        assert result.applied_versions == tuple(range(25, SOURCE_SCHEMA_VERSION + 1))
+        assert conn.execute(
+            "SELECT origin, session_native_id, payload_json FROM raw_hook_events WHERE hook_event_id = 'hook-v24'"
+        ).fetchone() == ("codex-session", "session-v24", "{}")
+        assert conn.execute("SELECT artifact_id FROM raw_artifacts WHERE artifact_id = 'artifact-v24'").fetchone() == (
+            "artifact-v24",
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO raw_hook_events (
+                    hook_event_id, origin, source_path, event_type, payload_json, observed_at_ms
+                ) VALUES ('invalid-v24-origin', 'invalid-origin', '/legacy.jsonl', 'PreToolUse', '{}', 2)
+                """
+            )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def _create_source_v2_with_pending_blob_refs(path: Path) -> None:
     """A v2 source tier that still carries ``pending_blob_refs``.
 
