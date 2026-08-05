@@ -51,6 +51,8 @@ from polylogue.maintenance.corpus_fidelity import (
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
+from polylogue.storage.blob_integrity import scan_attachment_acquisition_debt, scan_blob_integrity
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
@@ -1203,6 +1205,113 @@ def _check_blob_refs_liveness_at_candidate(
 ) -> ArchiveVerificationCheck:
     """Run the source-only blob check while a candidate index is selected."""
     return _check_blob_refs_liveness(archive_root, sample_limit)
+
+
+def _check_blob_integrity(
+    archive_root: Path, sample_limit: int, index_path: Path | None = None
+) -> ArchiveVerificationCheck:
+    """Require a complete physical scan of the durable blob namespace.
+
+    The ordinary blob-health surface is intentionally bounded. Archive
+    verification is the explicit point-in-time integrity receipt, so it uses
+    the scanner's full traversal while retaining only bounded finding samples.
+    Orphans are errors here as well as missing or corrupted referenced blobs:
+    a clean/nonblocking archive must describe the physical namespace exactly.
+    """
+    scan_path = index_path or _resolve_index_path(archive_root)
+    if not scan_path.exists():
+        source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+        if source_path.exists():
+            scan_path = source_path
+        elif (archive_root / "blob").exists():
+            return _error_check(
+                "blob-integrity",
+                "cannot verify the physical blob namespace without index.db or source.db reference evidence",
+            )
+        else:
+            return _skip_check("blob-integrity", "no archive database or blob namespace present")
+    try:
+        report = scan_blob_integrity(
+            scan_path,
+            store=BlobStore(archive_root / "blob"),
+            full=True,
+            sample_size=sample_limit,
+            configured_root=archive_root,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        return _error_check("blob-integrity", f"could not scan the physical blob namespace: {exc}", exc=exc)
+
+    finding_counts = {finding.kind: finding.count for finding in report.findings}
+    details = [f"{finding.kind}:{finding.count}" for finding in report.findings]
+    return ArchiveVerificationCheck(
+        name="blob-integrity",
+        status=OutcomeStatus.ERROR if report.findings else OutcomeStatus.OK,
+        summary=(
+            "; ".join(f"{kind}={count:,}" for kind, count in finding_counts.items())
+            if finding_counts
+            else f"full physical blob scan verified {report.scanned_blobs:,} blob(s) and {report.scanned_references:,} reference(s)"
+        ),
+        count=sum(finding_counts.values()),
+        details=details,
+        evidence={"scan": report.to_dict(), "finding_counts": finding_counts},
+    )
+
+
+def _check_blob_integrity_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Run the durable full blob scan against the candidate reference set."""
+    return _check_blob_integrity(archive_root, sample_limit, index_path)
+
+
+def _check_attachment_acquisition_debt(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_attachment_acquisition_debt_at_index_path(
+        archive_root, _resolve_index_path(archive_root), sample_limit
+    )
+
+
+def _check_attachment_acquisition_debt_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Acquired attachment bytes must exist and remain reachable by a ref."""
+    if not index_path.exists():
+        return _skip_check("attachment-acquisition-debt", "index.db not present")
+    try:
+        report = scan_attachment_acquisition_debt(
+            index_path,
+            store=BlobStore(archive_root / "blob"),
+            sample_size=sample_limit,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        return _error_check(
+            "attachment-acquisition-debt", f"could not scan attachment acquisition debt: {exc}", exc=exc
+        )
+
+    missing = report.acquired_missing_blob_count
+    unreachable = report.acquired_unreachable_count
+    debt_count = missing + unreachable
+    details = [
+        *(f"acquired-missing-blob:{attachment_id}" for attachment_id in report.acquired_missing_blob_sample),
+        *(f"acquired-unreachable:{attachment_id}" for attachment_id in report.acquired_unreachable_sample),
+    ]
+    return ArchiveVerificationCheck(
+        name="attachment-acquisition-debt",
+        status=OutcomeStatus.ERROR if debt_count else OutcomeStatus.OK,
+        summary=(
+            f"acquired attachment debt: missing_blob={missing:,}, unreachable={unreachable:,}"
+            if debt_count
+            else f"all {report.acquired_count:,} acquired attachment(s) have bytes and a live attachment reference"
+        ),
+        count=debt_count,
+        details=details,
+        evidence={"scan": report.to_dict(), "missing_blob_count": missing, "unreachable_count": unreachable},
+    )
+
+
+def _check_attachment_acquisition_debt_at_candidate(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    return _check_attachment_acquisition_debt_at_index_path(archive_root, index_path, sample_limit)
 
 
 def _check_pathology_zoo_invariants(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
@@ -2488,6 +2597,20 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         _check_blob_refs_liveness_at_candidate,
     ),
     ArchiveVerificationCheckSpec(
+        "blob-integrity",
+        "A full physical scan finds no missing, corrupted, orphaned, or invalid blob-namespace entries.",
+        _check_blob_integrity,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_blob_integrity_at_candidate,
+    ),
+    ArchiveVerificationCheckSpec(
+        "attachment-acquisition-debt",
+        "Every acquired attachment has physical bytes and remains reachable from an attachment reference.",
+        _check_attachment_acquisition_debt,
+        ArchiveVerificationCheckClass.LIVENESS,
+        _check_attachment_acquisition_debt_at_candidate,
+    ),
+    ArchiveVerificationCheckSpec(
         "raw-failure-lifecycle",
         "Every retained raw parse or validation failure has typed deferred or terminal lifecycle evidence.",
         _check_raw_failure_lifecycle,
@@ -2643,6 +2766,9 @@ REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS: tuple[str, ...] = (
     "raw-failure-lifecycle",
     "source-index-coverage",
     "blob-refs-liveness",
+    "blob-integrity",
+    "attachment-acquisition-debt",
+    "raw-failure-lifecycle",
     "embeddings-refs-liveness",
     "user-tier-refs",
     "excluded-cursor-vocabulary-honesty",
@@ -2651,6 +2777,16 @@ REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS: tuple[str, ...] = (
     "corpus-attachment-fidelity",
     "corpus-revision-fidelity",
     "pathology-zoo-invariants",
+)
+
+# These checks run before an inactive generation is created. They are kept
+# separate from the candidate profile because an empty archive has no index
+# attachment tier yet, so that check may legitimately return SKIP here.
+REINDEX_SOURCE_PREFLIGHT_CHECKS: tuple[str, ...] = (
+    "blob-refs-liveness",
+    "blob-integrity",
+    "attachment-acquisition-debt",
+    "raw-failure-lifecycle",
 )
 
 #: A partial reindex-canary candidate is intentionally not a complete source
@@ -2740,6 +2876,7 @@ __all__ = [
     "REINDEX_CANARY_ACCEPTANCE_CHECKS",
     "REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS",
     "REINDEX_ACCEPTANCE_CHECKS",
+    "REINDEX_SOURCE_PREFLIGHT_CHECKS",
     "ArchiveVerificationCheck",
     "ArchiveVerificationCheckClass",
     "ArchiveVerificationCheckSpec",

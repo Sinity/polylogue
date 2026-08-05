@@ -60,6 +60,13 @@ import click
     is_flag=True,
     help="Validate and approve evidence under archive/rebuild ownership. This never authorizes promotion.",
 )
+@click.option(
+    "--schema-inference-receipt",
+    "schema_inference_receipt_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
+    required=False,
+    help="Explicit fresh schema-inference PASS receipt consumed by the canary rebuild.",
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 @click.option(
     "--no-promote",
@@ -75,6 +82,7 @@ def reindex_canary_command(
     sample_session_id: tuple[str, ...],
     report_path: Path,
     consume_report: bool,
+    schema_inference_receipt_path: Path | None,
     output_format: str,
     no_promote: bool,
 ) -> None:
@@ -115,6 +123,8 @@ def reindex_canary_command(
         return
 
     result: CanaryRunResult | None = None
+    if schema_inference_receipt_path is None:
+        raise click.UsageError("reindex-canary rebuild requires --schema-inference-receipt")
     try:
         result = run_reindex_canary(
             archive_root,
@@ -123,6 +133,7 @@ def reindex_canary_command(
             pathology_session_ids=pathology_session_id,
             sample_session_ids=sample_session_id,
             no_promote=no_promote,
+            schema_inference_receipt_path=schema_inference_receipt_path,
         )
         reviews = load_canary_review_manifest(review_manifest) if review_manifest is not None else ()
         durable = write_canary_report(
