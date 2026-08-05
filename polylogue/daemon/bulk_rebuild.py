@@ -57,6 +57,20 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+
+def _validate_rebuild_provenance_receipt(root: Path, receipt_path: Path | None) -> None:
+    """Validate daemon rebuild provenance at the current ownership boundary."""
+    from polylogue.maintenance.schema_inference_gate import (
+        SchemaInferenceGateError,
+        validate_schema_inference_receipt,
+    )
+
+    try:
+        validate_schema_inference_receipt(root, receipt_path)
+    except SchemaInferenceGateError as exc:
+        raise RuntimeError(f"daemon bulk rebuild schema-inference preflight gate failed: {exc}") from exc
+
+
 #: Fixed operation id for the daemon's own bulk-rebuild transaction. Exactly
 #: one such operation is ever in flight per archive -- this module's only
 #: caller is a single daemon asyncio loop -- so a well-known id lets every
@@ -102,36 +116,33 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
     generation directory, so both must fail closed against a foreign/rotated
     archive location before touching disk, not just the eventual write pass.
     """
-    from polylogue.maintenance.schema_inference_gate import (
-        SchemaInferenceGateError,
-        validate_schema_inference_receipt,
-    )
-
-    try:
-        validate_schema_inference_receipt(root, schema_inference_receipt_path)
-    except SchemaInferenceGateError as exc:
-        raise RuntimeError(f"daemon bulk rebuild schema-inference preflight gate failed: {exc}") from exc
+    _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
     location = ArchiveLocation.resolve(root)
-    store = IndexGenerationStore(location)
-    transaction: IndexRebuildTransaction | None
-    try:
-        transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
-    except FileNotFoundError:
-        transaction = None
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        logger.warning(
-            "bulk-rebuild: could not load persisted transaction %s; starting a fresh one: %s",
-            DAEMON_BULK_REBUILD_OPERATION_ID,
-            exc,
-        )
-        transaction = None
-
-    if transaction is not None and transaction.status not in _TERMINAL_NOT_RESUMABLE:
-        return transaction
-
     owned = OwnedArchiveLocation.acquire(location)
     try:
         assert_owns_archive_location(owned, location)
+        # The first validation is only a cheap early rejection. Revalidate
+        # after ownership acquisition so receipt expiry, source revision, or
+        # external-corpus drift cannot reach generation bookkeeping.
+        _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+        store = IndexGenerationStore(location)
+        transaction: IndexRebuildTransaction | None
+        try:
+            transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
+        except FileNotFoundError:
+            transaction = None
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logger.warning(
+                "bulk-rebuild: could not load persisted transaction %s; starting a fresh one: %s",
+                DAEMON_BULK_REBUILD_OPERATION_ID,
+                exc,
+            )
+            transaction = None
+
+        if transaction is not None and transaction.status not in _TERMINAL_NOT_RESUMABLE:
+            _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+            return transaction
+
         if transaction is not None:
             # Terminal: retire the old candidate/transaction record before
             # reusing the well-known operation id. A "promoted" generation is
@@ -142,9 +153,12 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
             except (FileNotFoundError, OSError, ValueError):
                 generation = None
             if generation is not None and generation.state == "inactive":
+                _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
                 store.discard_if_inactive(generation)
+            _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
             store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
 
+        _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
         return store.create_transaction(
             source_snapshot=rebuild_source_revision_snapshot(root),
             operation_id=DAEMON_BULK_REBUILD_OPERATION_ID,

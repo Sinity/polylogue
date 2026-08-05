@@ -30,7 +30,7 @@ from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_fac
 
 if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
-    from polylogue.storage.index_generation import IndexGeneration, IndexRebuildTransaction
+    from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore, IndexRebuildTransaction
 
 _PLANNER_STATS_ANALYSIS_LIMIT = 1000
 # A fresh generation begins with representative bootstrap statistics, but a
@@ -53,6 +53,40 @@ _PLANNER_STATS_ANALYZE_STATEMENTS = (
 )
 
 logger = get_logger(__name__)
+
+
+def _validate_rebuild_provenance_receipt(root: Path, receipt_path: Path | None) -> dict[str, object]:
+    """Validate rebuild provenance at the current ownership boundary."""
+    from polylogue.maintenance.schema_inference_gate import (
+        SchemaInferenceGateError,
+        validate_schema_inference_receipt,
+    )
+
+    try:
+        return validate_schema_inference_receipt(root, receipt_path)
+    except SchemaInferenceGateError as exc:
+        raise RuntimeError(f"rebuild schema-inference preflight gate failed: {exc}") from exc
+
+
+def _create_rebuild_transaction_after_receipt_validation(
+    generation_store: IndexGenerationStore,
+    request: RebuildIndexRequest,
+    root: Path,
+) -> IndexRebuildTransaction:
+    """Create the first candidate only after an ownership-bound validation."""
+    from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
+
+    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+    return generation_store.create_transaction(
+        source_snapshot=rebuild_source_revision_snapshot(root),
+        pass_byte_budget=(
+            int(request.pass_byte_budget_mb * 1024 * 1024) if request.pass_byte_budget_mb is not None else None
+        ),
+        pass_deadline_ms=(
+            int(request.pass_deadline_seconds * 1000) if request.pass_deadline_seconds is not None else None
+        ),
+    )
+
 
 #: Passed through to ``CensusParseStage.warm_raw_ids``'s ``max_payload_bytes``
 #: parameter for symmetry with the daemon's own call site
@@ -619,15 +653,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
     validate_rebuild_index_request(request)
     root = request.archive_root
-    from polylogue.maintenance.schema_inference_gate import (
-        SchemaInferenceGateError,
-        validate_schema_inference_receipt,
-    )
-
-    try:
-        consumed_evidence = validate_schema_inference_receipt(root, request.schema_inference_receipt_path)
-    except SchemaInferenceGateError as exc:
-        raise RuntimeError(f"rebuild schema-inference preflight gate failed: {exc}") from exc
+    consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
     location = ArchiveLocation.resolve(root)
     active_config = Config(
         archive_root=root,
@@ -648,19 +674,24 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         )
         raise RuntimeError(f"reindex source preflight gate failed: {failing}")
 
-    # This is deliberately outside archive-location acquisition and
-    # generation-store construction.  Those steps can create/rewrite archive
-    # bookkeeping, so a competing ArchiveStore writer must fail before the
-    # rebuild's first lifecycle mutation, not only during replay.
-    with RebuildLease(root):
-        owned = OwnedArchiveLocation.acquire(location)
-        try:
-            assert_owns_archive_location(owned, location)
+    # Ownership acquisition itself only claims the lock. Revalidate after it
+    # so receipt expiry/source/external-corpus drift between the cheap
+    # preflight and ownership acquisition cannot reach the rebuild lease or a
+    # candidate mutation.
+    owned = OwnedArchiveLocation.acquire(location)
+    try:
+        assert_owns_archive_location(owned, location)
+        consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+        # The lease is itself lifecycle state guarded by the provenance gate.
+        # Revalidate again under the lease immediately before the owned body
+        # can create or mutate a candidate/transaction.
+        with RebuildLease(root):
+            consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
             return await _rebuild_index_from_source_owned(
                 request, root=root, owned=owned, consumed_evidence=consumed_evidence
             )
-        finally:
-            owned.release()
+    finally:
+        owned.release()
 
 
 async def _rebuild_index_from_source_owned(
@@ -713,16 +744,10 @@ async def _rebuild_index_from_source_owned(
             transaction = (
                 generation_store.load_transaction(request.operation_id)
                 if request.operation_id is not None
-                else generation_store.create_transaction(
-                    source_snapshot=rebuild_source_revision_snapshot(root),
-                    pass_byte_budget=(
-                        int(request.pass_byte_budget_mb * 1024 * 1024)
-                        if request.pass_byte_budget_mb is not None
-                        else None
-                    ),
-                    pass_deadline_ms=(
-                        int(request.pass_deadline_seconds * 1000) if request.pass_deadline_seconds is not None else None
-                    ),
+                else _create_rebuild_transaction_after_receipt_validation(
+                    generation_store,
+                    request,
+                    root,
                 )
             )
             if transaction.status in {"promoted", "stale"}:
@@ -730,6 +755,7 @@ async def _rebuild_index_from_source_owned(
                     f"rebuild operation {transaction.operation_id} is {transaction.status}; start a new operation"
                 )
             if rebuild_source_revision_snapshot(root) != transaction.source_snapshot:
+                _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                 generation_store.checkpoint_transaction(
                     transaction,
                     status="stale",
@@ -742,6 +768,7 @@ async def _rebuild_index_from_source_owned(
             if generation.owner_id != transaction.generation_owner_id or generation.state != "inactive":
                 raise RuntimeError(f"rebuild operation {transaction.operation_id} lost its inactive candidate")
             if not transaction.derived_stores_cleared:
+                _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                 _clear_bulk_build_derived_stores(Path(generation.index_path))
                 transaction = generation_store.checkpoint_transaction(
                     transaction,
@@ -765,6 +792,7 @@ async def _rebuild_index_from_source_owned(
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
+            _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
             generation = generation_store.create(source_snapshot=rebuild_source_revision_snapshot(root))
         source_drifted = False
         try:
@@ -980,6 +1008,7 @@ async def _rebuild_index_from_source_owned(
                 _refresh_generation_planner_statistics(Path(generation.index_path))
             if transaction is not None and selected_raw_ids:
                 if rebuild_source_revision_snapshot(root) != transaction.source_snapshot:
+                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                     transaction = generation_store.checkpoint_transaction(
                         transaction,
                         status="stale",
@@ -1064,6 +1093,7 @@ async def _rebuild_index_from_source_owned(
             terminal_timings_s: dict[str, float] = {"selection_s": selection_elapsed_s}
             if rebuild_source_revision_snapshot(root) != generation.source_snapshot:
                 if transaction is not None:
+                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                     transaction = generation_store.checkpoint_transaction(
                         transaction,
                         status="stale",
@@ -1167,6 +1197,7 @@ async def _rebuild_index_from_source_owned(
                 )
                 raise RuntimeError(f"inactive generation {generation.generation_id} is not exact-ready; {detail}")
             if transaction is not None:
+                _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                 transaction = generation_store.checkpoint_transaction(transaction, status="ready")
             if request.promote:
                 # Re-prove ownership immediately before the activation swap:
@@ -1175,6 +1206,7 @@ async def _rebuild_index_from_source_owned(
                 # caught before clobbering someone else's activation rather
                 # than after (polylogue-ovme.2 AC3).
                 assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
+                _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                 terminal_started_at = time.perf_counter()
                 generation = generation_store.promote(generation)
                 terminal_timings_s["terminal.promote"] = time.perf_counter() - terminal_started_at
@@ -1185,6 +1217,7 @@ async def _rebuild_index_from_source_owned(
                     elapsed_s=round(terminal_timings_s["terminal.promote"], 3),
                 )
                 if transaction is not None:
+                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
                     transaction = generation_store.checkpoint_transaction(transaction, status="promoted")
         except Exception:
             if transaction is not None and not source_drifted:
