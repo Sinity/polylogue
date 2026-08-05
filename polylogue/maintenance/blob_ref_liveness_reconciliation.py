@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,11 +16,18 @@ from polylogue.config import Config
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.paths import render_root
 from polylogue.storage.blob_ref_liveness import (
+    BlobRefLivenessCandidate,
     BlobRefLivenessClassification,
     classify_blob_ref_liveness,
+    stage_blob_ref_liveness,
 )
+from polylogue.storage.hook_payload_ref_reconciliation import _deterministic_raw_session_id_udf
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from polylogue.storage.sqlite.migration_runner import (
+    validate_migration_backup_live_fingerprint,
+    validate_migration_backup_manifest,
+)
 
 TOOL_VERSION = "blob-ref-liveness-reconciliation-v1"
 
@@ -75,13 +83,38 @@ def _checkpoint_source_db(conn: sqlite3.Connection) -> None:
         raise BlobRefLivenessReconciliationError("could not checkpoint source.db before backup validation")
 
 
-def _candidate_digest(classification: BlobRefLivenessClassification) -> str:
-    encoded = json.dumps(
-        [candidate.to_dict() for candidate in classification.candidates],
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+def _candidate_digest(candidates: Iterable[BlobRefLivenessCandidate]) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"[")
+    first = True
+    for candidate in candidates:
+        if not first:
+            digest.update(b",")
+        digest.update(json.dumps(candidate.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        first = False
+    digest.update(b"]")
+    return digest.hexdigest()
+
+
+def _iter_staged_candidates(conn: sqlite3.Connection, table_name: str) -> Iterator[BlobRefLivenessCandidate]:
+    for row in conn.execute(
+        f"""
+        SELECT blob_hash, ref_type, ref_id, source_path, size_bytes,
+               acquired_at_ms, referent_table, referent_column
+        FROM {table_name}
+        ORDER BY ref_type, ref_id, blob_hash
+        """
+    ):
+        yield BlobRefLivenessCandidate(
+            blob_hash=bytes(row[0]).hex(),
+            ref_type=str(row[1]),
+            ref_id=str(row[2]),
+            source_path=str(row[3]) if row[3] is not None else None,
+            size_bytes=int(row[4]),
+            acquired_at_ms=int(row[5]),
+            referent_table=str(row[6]),
+            referent_column=str(row[7]),
+        )
 
 
 def _fsync_directory(path: Path) -> None:
@@ -97,6 +130,9 @@ def _write_prepared_receipt(
     source_db: Path,
     classification: BlobRefLivenessClassification,
     backup_manifest: Path,
+    *,
+    candidates: Iterable[BlobRefLivenessCandidate] | None = None,
+    candidate_digest: str | None = None,
 ) -> None:
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
     header = {
@@ -106,8 +142,9 @@ def _write_prepared_receipt(
         "source_db": str(source_db),
         "backup_manifest": str(backup_manifest),
         "prepared_at_ms": int(time.time() * 1000),
-        "candidate_count": len(classification.candidates),
-        "candidate_digest": _candidate_digest(classification),
+        "candidate_count": classification.orphaned_count,
+        "candidate_digest": candidate_digest
+        or _candidate_digest(classification.candidates if candidates is None else candidates),
         "orphaned_by_ref_type": dict(classification.orphaned_by_ref_type),
         "referent_joins": [
             {"ref_type": ref_type, "referent_table": table, "referent_column": column}
@@ -116,10 +153,12 @@ def _write_prepared_receipt(
     }
     try:
         with receipt_path.open("x", encoding="utf-8") as handle:
-            rows = [header]
-            rows.extend({"kind": "candidate", **candidate.to_dict()} for candidate in classification.candidates)
-            for row in rows:
-                handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
+            handle.write(json.dumps(header, sort_keys=True, separators=(",", ":")))
+            handle.write("\n")
+            for candidate in classification.candidates if candidates is None else candidates:
+                handle.write(
+                    json.dumps({"kind": "candidate", **candidate.to_dict()}, sort_keys=True, separators=(",", ":"))
+                )
                 handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -152,6 +191,85 @@ def _append_receipt_footer(
     _fsync_directory(receipt_path.parent)
 
 
+def _receipt_candidate(row: dict[str, object]) -> tuple[bytes, str, str]:
+    try:
+        return bytes.fromhex(str(row["blob_hash"])), str(row["ref_type"]), str(row["ref_id"])
+    except (KeyError, ValueError) as exc:
+        raise BlobRefLivenessReconciliationError("prepared receipt contains an invalid candidate") from exc
+
+
+def _stage_receipt_candidates(conn: sqlite3.Connection, receipt_path: Path) -> tuple[int, str, dict[str, object]]:
+    table_name = "blob_ref_liveness_receipt_candidates"
+    conn.execute(f"DROP TABLE IF EXISTS temp.{table_name}")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {table_name} (
+            blob_hash BLOB NOT NULL,
+            ref_type TEXT NOT NULL,
+            ref_id TEXT NOT NULL,
+            PRIMARY KEY (blob_hash, ref_type, ref_id)
+        ) STRICT
+        """
+    )
+    header: dict[str, object] | None = None
+    terminal_phases: list[str] = []
+    digest = hashlib.sha256()
+    digest.update(b"[")
+    first_candidate = True
+    candidate_count = 0
+    with receipt_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise BlobRefLivenessReconciliationError(f"receipt is not valid JSON: {receipt_path}") from exc
+            if not isinstance(row, dict):
+                raise BlobRefLivenessReconciliationError(f"receipt row is not an object: {receipt_path}")
+            if row.get("kind") == "blob_ref_liveness_reconciliation":
+                if header is None:
+                    header = row
+                else:
+                    phase = row.get("phase")
+                    if phase is not None:
+                        terminal_phases.append(str(phase))
+            elif row.get("kind") == "candidate":
+                candidate = _receipt_candidate(row)
+                conn.execute(f"INSERT INTO {table_name} (blob_hash, ref_type, ref_id) VALUES (?, ?, ?)", candidate)
+                if not first_candidate:
+                    digest.update(b",")
+                digest.update(
+                    json.dumps(
+                        {
+                            "blob_hash": candidate[0].hex(),
+                            "ref_id": candidate[2],
+                            "ref_type": candidate[1],
+                            "source_path": row.get("source_path"),
+                            "size_bytes": row.get("size_bytes"),
+                            "acquired_at_ms": row.get("acquired_at_ms"),
+                            "referent_table": row.get("referent_table"),
+                            "referent_column": row.get("referent_column"),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                first_candidate = False
+                candidate_count += 1
+    if header is None or header.get("phase") != "prepared":
+        raise BlobRefLivenessReconciliationError(f"receipt does not contain a prepared plan: {receipt_path}")
+    if terminal_phases:
+        raise BlobRefLivenessReconciliationError(f"receipt is already terminal: {receipt_path}")
+    receipt_candidate_count = header.get("candidate_count")
+    if not isinstance(receipt_candidate_count, int) or receipt_candidate_count != candidate_count:
+        raise BlobRefLivenessReconciliationError(f"prepared receipt candidate count mismatch: {receipt_path}")
+    digest.update(b"]")
+    if str(header.get("candidate_digest")) != digest.hexdigest():
+        raise BlobRefLivenessReconciliationError(f"prepared receipt candidate digest mismatch: {receipt_path}")
+    return candidate_count, table_name, header
+
+
 def _recover_prepared_receipt(source_db: Path, receipt_path: Path) -> str:
     """Resolve the only crash window between SQLite commit and receipt footer.
 
@@ -161,31 +279,23 @@ def _recover_prepared_receipt(source_db: Path, receipt_path: Path) -> str:
     Recovery appends durable evidence but never performs another mutation.
     """
 
-    rows = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines() if line]
-    if not rows or rows[0].get("kind") != "blob_ref_liveness_reconciliation":
-        raise BlobRefLivenessReconciliationError(f"receipt is not a liveness reconciliation receipt: {receipt_path}")
-    phases = [str(row.get("phase")) for row in rows if row.get("kind") == "blob_ref_liveness_reconciliation"]
-    if not phases or phases[0] != "prepared":
-        raise BlobRefLivenessReconciliationError(f"receipt does not contain a prepared plan: {receipt_path}")
-    if any(
-        phase in {"committed", "aborted", "recovered_committed", "recovered_rolled_back", "indeterminate"}
-        for phase in phases[1:]
-    ):
-        raise BlobRefLivenessReconciliationError(f"receipt is already terminal: {receipt_path}")
-    candidates = [row for row in rows if row.get("kind") == "candidate"]
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
-        still_present = [
-            candidate
-            for candidate in candidates
-            if conn.execute(
-                "SELECT 1 FROM blob_refs WHERE blob_hash = ? AND ref_type = ? AND ref_id = ?",
-                (bytes.fromhex(str(candidate["blob_hash"])), candidate["ref_type"], candidate["ref_id"]),
-            ).fetchone()
-            is not None
-        ]
-    if len(still_present) == len(candidates):
+        candidate_count, table_name, _header = _stage_receipt_candidates(conn, receipt_path)
+        present_count = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {table_name} AS c
+                JOIN blob_refs AS b
+                  ON b.blob_hash = c.blob_hash
+                 AND b.ref_type = c.ref_type
+                 AND b.ref_id = c.ref_id
+                """
+            ).fetchone()[0]
+        )
+    if present_count == candidate_count:
         outcome = "recovered_rolled_back"
-    elif not still_present:
+    elif present_count == 0:
         outcome = "recovered_committed"
     else:
         outcome = "indeterminate"
@@ -193,37 +303,113 @@ def _recover_prepared_receipt(source_db: Path, receipt_path: Path) -> str:
     return outcome
 
 
-def _delete_candidates(conn: sqlite3.Connection, classification: BlobRefLivenessClassification) -> int:
-    conn.execute(
-        """
-        CREATE TEMP TABLE blob_ref_liveness_candidates (
-            blob_hash BLOB NOT NULL,
-            ref_type TEXT NOT NULL,
-            ref_id TEXT NOT NULL,
-            PRIMARY KEY (blob_hash, ref_type, ref_id)
-        ) STRICT
-        """
-    )
-    conn.executemany(
-        "INSERT INTO blob_ref_liveness_candidates (blob_hash, ref_type, ref_id) VALUES (?, ?, ?)",
-        (
-            (bytes.fromhex(candidate.blob_hash), candidate.ref_type, candidate.ref_id)
-            for candidate in classification.candidates
-        ),
-    )
-    deleted = conn.execute(
-        """
-        DELETE FROM blob_refs
-        WHERE EXISTS (
-            SELECT 1
-            FROM blob_ref_liveness_candidates AS c
-            WHERE c.blob_hash = blob_refs.blob_hash
-              AND c.ref_type = blob_refs.ref_type
-              AND c.ref_id = blob_refs.ref_id
+def _delete_candidates(conn: sqlite3.Connection, candidate_table: str, *, batch_size: int = 1000) -> int:
+    deleted_count = 0
+    while True:
+        deleted = conn.execute(
+            f"""
+            DELETE FROM blob_refs
+            WHERE rowid IN (
+                SELECT b.rowid
+                FROM blob_refs AS b
+                JOIN {candidate_table} AS c
+                  ON c.blob_hash = b.blob_hash
+                 AND c.ref_type = b.ref_type
+                 AND c.ref_id = b.ref_id
+                LIMIT ?
+            )
+            """,
+            (batch_size,),
         )
-        """
+        count = max(0, int(deleted.rowcount))
+        deleted_count += count
+        if count == 0:
+            return deleted_count
+
+
+def _validate_locked_candidate_plan(conn: sqlite3.Connection, candidate_table: str, expected_count: int) -> None:
+    present_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {candidate_table} AS c
+            JOIN blob_refs AS b
+              ON b.blob_hash = c.blob_hash
+             AND b.ref_type = c.ref_type
+             AND b.ref_id = c.ref_id
+            """
+        ).fetchone()[0]
     )
-    return max(0, int(deleted.rowcount))
+    if present_count != expected_count:
+        raise BlobRefLivenessReconciliationError(
+            f"prepared candidate presence mismatch: planned={expected_count} present={present_count}"
+        )
+    conn.execute("DROP TABLE IF EXISTS temp.blob_ref_liveness_locked_hooks")
+    if _table_exists(conn, "raw_hook_events"):
+        conn.execute(
+            """
+            CREATE TEMP TABLE blob_ref_liveness_locked_hooks AS
+            SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
+            FROM raw_hook_events AS h
+            WHERE NOT EXISTS (
+                SELECT 1 FROM blob_refs AS b
+                WHERE b.blob_hash = h.blob_hash
+                  AND b.ref_type = 'hook_payload'
+                  AND b.ref_id = h.hook_event_id
+            )
+            """
+        )
+    else:
+        conn.execute(
+            """
+            CREATE TEMP TABLE blob_ref_liveness_locked_hooks (
+                hook_event_id TEXT NOT NULL,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                blob_hash BLOB
+            )
+            """
+        )
+    conn.execute(
+        "CREATE INDEX blob_ref_liveness_locked_hooks_source_hash "
+        "ON blob_ref_liveness_locked_hooks(source_path, blob_hash)"
+    )
+    conn.create_function("polylogue_deterministic_raw_session_id", 5, _deterministic_raw_session_id_udf)
+    rekeyable = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT c.blob_hash, c.ref_id
+                FROM {candidate_table} AS c
+                JOIN blob_ref_liveness_locked_hooks AS h
+                  ON h.source_path IS c.source_path
+                 AND h.blob_hash = c.blob_hash
+                 AND polylogue_deterministic_raw_session_id(h.origin, c.source_path, 0, c.blob_hash, h.native_id) = c.ref_id
+                WHERE c.ref_type = 'raw_payload'
+                GROUP BY c.blob_hash, c.ref_id
+                HAVING COUNT(*) = 1
+                UNION ALL
+                SELECT c.blob_hash, c.ref_id
+                FROM {candidate_table} AS c
+                JOIN blob_ref_liveness_locked_hooks AS h
+                  ON h.source_path IS c.source_path
+                 AND h.blob_hash IS NULL
+                 AND polylogue_deterministic_raw_session_id(h.origin, c.source_path, 0, c.blob_hash, h.native_id) = c.ref_id
+                WHERE c.ref_type = 'raw_payload'
+                  AND (SELECT COUNT(*) FROM {candidate_table} AS c2
+                       WHERE c2.ref_type = 'raw_payload' AND c2.source_path IS c.source_path) = 1
+                  AND (SELECT COUNT(*) FROM blob_ref_liveness_locked_hooks AS h2
+                       WHERE h2.source_path IS h.source_path AND h2.blob_hash IS NULL) = 1
+            )
+            """
+        ).fetchone()[0]
+    )
+    if rekeyable:
+        raise BlobRefLivenessReconciliationError(
+            f"prepared candidates became rekeyable hook payloads under lock: {rekeyable}"
+        )
 
 
 def reconcile_blob_ref_liveness(
@@ -236,8 +422,9 @@ def reconcile_blob_ref_liveness(
     """Classify orphaned source-tier refs, or apply the exact locked plan.
 
     Apply requires both a verified source-tier backup manifest and a receipt
-    path. Classification is repeated after ``BEGIN IMMEDIATE`` and the
-    receipt is fsynced before the set-based DELETE starts.
+    path. A compact SQLite plan and prepared receipt are built before
+    ownership; exact candidate keys and rekeyable hook matches are rechecked
+    after ``BEGIN IMMEDIATE`` before bounded deletes start.
     """
 
     source_db = archive_root / "source.db"
@@ -271,61 +458,90 @@ def reconcile_blob_ref_liveness(
     if reason := _offline_apply_block_reason(archive_root):
         raise BlobRefLivenessReconciliationError(reason)
 
-    conn = sqlite3.connect(source_db)
-    classification: BlobRefLivenessClassification | None = None
-    prepared = False
+    pre_conn = sqlite3.connect(source_db)
+    staged_plan = None
     try:
-        _checkpoint_source_db(conn)
-        validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=conn)
+        _checkpoint_source_db(pre_conn)
+        validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=pre_conn)
+        staged_plan = stage_blob_ref_liveness(pre_conn)
+        classification = staged_plan.classification
+        if not classification.safe_to_apply:
+            raise BlobRefLivenessReconciliationError(
+                "ref types cannot be proven with source-tier joins: "
+                f"unknown={classification.unknown_ref_types!r}, "
+                f"unavailable={classification.unavailable_ref_types!r}, "
+                f"rekeyable_hook_payloads={classification.rekeyable_hook_payload_count!r}. "
+                "Run hook-payload reference reconciliation before deleting orphan refs."
+            )
+        candidates = _iter_staged_candidates(pre_conn, staged_plan.candidate_table)
+        candidate_digest = _candidate_digest(_iter_staged_candidates(pre_conn, staged_plan.candidate_table))
+        _write_prepared_receipt(
+            receipt_path,
+            source_db,
+            classification,
+            backup_manifest,
+            candidates=candidates,
+            candidate_digest=candidate_digest,
+        )
+        expected_count = classification.orphaned_count
+        # Temp tables survive a commit. Clearing the staging transaction here
+        # lets this same connection carry the exact plan into ownership without
+        # reparsing the durable receipt under the write lock.
+        pre_conn.commit()
+    except Exception:
+        pre_conn.close()
+        raise
+
+    conn = pre_conn
+    try:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=conn)
-            classification = classify_blob_ref_liveness(conn)
-            if not classification.safe_to_apply:
+            # The full backup-tree attestation happened before ownership. This
+            # ownership check re-authenticates the receipt and checks only the
+            # live source fingerprint, so backup hashing cannot occupy the
+            # write lock twice.
+            validate_migration_backup_live_fingerprint(backup_manifest, ArchiveTier.SOURCE, connection=conn)
+            _validate_locked_candidate_plan(conn, staged_plan.candidate_table, expected_count)
+            deleted_count = _delete_candidates(conn, staged_plan.candidate_table)
+            if deleted_count != expected_count:
                 raise BlobRefLivenessReconciliationError(
-                    "ref types cannot be proven with source-tier joins: "
-                    f"unknown={classification.unknown_ref_types!r}, "
-                    f"unavailable={classification.unavailable_ref_types!r}, "
-                    f"rekeyable_hook_payloads={classification.rekeyable_hook_payload_count!r}. "
-                    "Run hook-payload reference reconciliation before deleting orphan refs."
+                    f"candidate/delete count mismatch: planned={expected_count} deleted={deleted_count}"
                 )
-            _write_prepared_receipt(receipt_path, source_db, classification, backup_manifest)
-            prepared = True
-            deleted_count = _delete_candidates(conn, classification)
-            if deleted_count != len(classification.candidates):
-                raise BlobRefLivenessReconciliationError(
-                    f"candidate/delete count mismatch: planned={len(classification.candidates)} deleted={deleted_count}"
-                )
-            quick_check = conn.execute("PRAGMA quick_check").fetchone()
-            if quick_check is None or str(quick_check[0]).lower() != "ok":
-                raise BlobRefLivenessReconciliationError(f"source.db quick_check failed: {quick_check!r}")
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
+            with suppress(OSError):
+                _append_receipt_footer(receipt_path, phase="aborted", error="transaction rolled back")
             raise
         else:
             conn.commit()
-    except Exception as exc:
-        if prepared:
-            with suppress(OSError):
-                _append_receipt_footer(receipt_path, phase="aborted", error=str(exc))
-        raise
     finally:
         conn.close()
 
-    assert classification is not None
     try:
-        _append_receipt_footer(receipt_path, phase="committed", deleted_count=len(classification.candidates))
+        _append_receipt_footer(receipt_path, phase="committed", deleted_count=expected_count)
     except OSError as exc:
         raise BlobRefLivenessReconciliationError(
             f"source.db committed but could not finalize receipt {receipt_path}"
         ) from exc
+
+    try:
+        with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as verify_conn:
+            quick_check = verify_conn.execute("PRAGMA quick_check").fetchone()
+        if quick_check is None or str(quick_check[0]).lower() != "ok":
+            with suppress(OSError):
+                _append_receipt_footer(receipt_path, phase="post_check_failed", error=f"quick_check={quick_check!r}")
+            raise BlobRefLivenessReconciliationError(f"source.db quick_check failed after commit: {quick_check!r}")
+    finally:
+        pass
+
+    assert staged_plan is not None
     return BlobRefLivenessReconciliationReport(
         source_db=str(source_db),
         dry_run=False,
-        classification=classification,
+        classification=staged_plan.classification,
         applied=True,
-        deleted_count=len(classification.candidates),
+        deleted_count=expected_count,
         receipt_path=receipt_path,
         backup_manifest=backup_manifest,
     )

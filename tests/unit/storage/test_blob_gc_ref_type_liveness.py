@@ -262,6 +262,10 @@ def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
         lambda *args, **kwargs: args[0],
     )
     monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_live_fingerprint",
+        lambda *args, **kwargs: args[0],
+    )
+    monkeypatch.setattr(
         "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid",
         lambda _config: None,
     )
