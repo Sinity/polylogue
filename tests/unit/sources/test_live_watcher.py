@@ -319,6 +319,7 @@ async def test_live_watcher_flush_refuses_ahead_cursor_before_cursor_filtering(
     assert initialize_calls == 0
     assert filter_calls == 0
     assert _live_archive_snapshot(tmp_path) == before
+    assert watcher._pending_paths == {source_path}
     watcher.stop()
 
 

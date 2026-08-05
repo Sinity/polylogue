@@ -853,6 +853,12 @@ class LiveWatcher:
             await self._run_coordinated("watcher.live_batch", flush_batch)
         except CursorAuthorityBlockedError as exc:
             logger.warning("live.watcher: changed-file batch refused by cursor authority: %s", exc)
+            # Authority denial must leave both durable cursor state and the
+            # in-memory work queue intact.  Otherwise the source is invisible
+            # until a later catch-up scan instead of retrying on the next
+            # authorized debounce flush.
+            async with self._batch_lock:
+                self._pending_paths.update(paths)
             return True
         except sqlite3.OperationalError as exc:
             if not _is_database_locked(exc):
