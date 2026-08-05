@@ -889,25 +889,58 @@ def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: 
         hermes_state.parse_state_db(corrupted_path, profile_root=db_path.parent)
 
 
-def test_hermes_snapshot_parse_route_leaves_only_canonical_blob_namespace_entries(tmp_path: Path) -> None:
-    """The production snapshot-to-retained-parse seam must not leave SQLite sidecars."""
+def test_hermes_snapshot_parse_route_keeps_live_wal_sidecars_out_of_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live Hermes snapshot route must isolate SQLite work files from CAS paths."""
+    import polylogue.sources.sqlite_snapshot as sqlite_snapshot
+
     db_path = tmp_path / "state.db"
     blob_root = tmp_path / "blob"
     _write_hermes_state_db(db_path)
+    original_snapshot = sqlite_snapshot.snapshot_sqlite_database
+    staged_writer: sqlite3.Connection | None = None
+    staged_path: Path | None = None
 
-    rows = list(
-        iter_source_sessions_with_raw(
-            Source(name="hermes", path=db_path),
-            capture_raw=True,
-            blob_root=blob_root,
+    def snapshot_with_live_wal(source: Path, destination: Path) -> None:
+        nonlocal staged_path, staged_writer
+        original_snapshot(source, destination)
+        staged_path = destination
+        staged_writer = sqlite3.connect(destination)
+        staged_writer.execute("PRAGMA journal_mode=WAL")
+        staged_writer.execute("PRAGMA wal_autocheckpoint=0")
+        staged_writer.execute("PRAGMA application_id=51966")
+        staged_writer.commit()
+        assert destination.with_name(f"{destination.name}-wal").exists()
+        assert destination.with_name(f"{destination.name}-shm").exists()
+
+    monkeypatch.setattr(sqlite_snapshot, "snapshot_sqlite_database", snapshot_with_live_wal)
+
+    try:
+        rows = list(
+            iter_source_sessions_with_raw(
+                Source(name="hermes", path=db_path),
+                capture_raw=True,
+                blob_root=blob_root,
+            )
         )
-    )
+    finally:
+        if staged_writer is not None:
+            staged_writer.close()
 
     raw = rows[0][0]
     assert raw is not None and raw.blob_hash is not None
     store = BlobStore(blob_root)
+    assert staged_path is not None
+    assert staged_path.parent == store.staging_root
+    assert not staged_path.exists()
+    assert not staged_path.with_name(f"{staged_path.name}-wal").exists()
+    assert not staged_path.with_name(f"{staged_path.name}-shm").exists()
     entries = tuple(store.iter_namespace())
     assert [(entry.kind, entry.hash_hex) for entry in entries] == [("blob", raw.blob_hash)]
+    with store.open(raw.blob_hash) as retained:
+        assert retained.read(16) == b"SQLite format 3\x00"
     assert store.verify_all().passed is True
 
 

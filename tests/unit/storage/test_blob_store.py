@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import (
     BlobNamespaceEntryKind,
     BlobNamespaceIssue,
@@ -224,7 +225,7 @@ def test_verify_all_reports_malformed_leaf_without_hash_path_parsing(tmp_path: P
     assert result.failures[0].detail.endswith("invalid_leaf_name")
 
 
-def test_verify_all_reports_sqlite_sidecars_at_namespace_root(tmp_path: Path) -> None:
+def test_verify_all_rejects_foreign_sqlite_sidecars_at_namespace_root(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blobs")
     blob_hash, _ = blob_store.write_from_bytes(b"valid")
     for suffix in ("-wal", "-shm"):
@@ -431,25 +432,26 @@ def test_stats_with_blobs(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_iter_namespace_classifies_interrupted_temp_file_deterministically(tmp_path: Path) -> None:
+def test_pending_publication_stays_outside_canonical_namespace(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blobs")
     blob_hash, _ = blob_store.write_from_bytes(b"real blob")
-    prepared = blob_store.prepare_from_bytes(b"interrupted write")
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", blob_store.root)
+    pending_hash, _ = publisher.write_from_bytes(b"interrupted write")
+    pending_path = publisher.blob_path(pending_hash)
     try:
         entries = tuple(blob_store.iter_namespace())
         verified = blob_store.verify_all()
 
+        assert pending_path.parent == blob_store.staging_root
+        assert pending_path.exists()
         assert [(entry.relative_path, entry.issue) for entry in entries] == [
-            (prepared.temporary_path.name, BlobNamespaceIssue.INVALID_SHARD_NAME),
-            (blob_hash[:2] + "/" + blob_hash[2:], None),
+            (blob_hash[:2] + "/" + blob_hash[2:], None)
         ]
-        assert [(failure.reason, failure.path) for failure in verified.failures] == [
-            ("invalid_namespace_entry", prepared.temporary_path.name),
-        ]
+        assert verified.passed
         assert list(blob_store.iter_all()) == [blob_hash]
     finally:
-        blob_store.discard_prepared(prepared)
-    assert not prepared.temporary_path.exists()
+        publisher.discard_pending()
+    assert not pending_path.exists()
 
 
 def test_iter_all_skips_non_prefix_dirs(tmp_path: Path) -> None:

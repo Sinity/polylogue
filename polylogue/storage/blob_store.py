@@ -2,8 +2,10 @@
 
 Blobs are stored as immutable files under a two-level directory structure:
 ``{root}/{hash[:2]}/{hash[2:]}``, where hash is the SHA-256 hex digest of
-the content. Most raw sources use that digest as ``raw_id`` too; sources whose
-identity requires additional provenance retain it separately as ``blob_hash``.
+the content. ``{root}/.staging`` is a private, non-addressable workspace for
+publication and SQLite snapshot files. Most raw sources use that digest as
+``raw_id`` too; sources whose identity requires additional provenance retain
+it separately as ``blob_hash``.
 
 Writes are atomic (tempfile + ``os.replace``). Files are never modified
 after creation. Deduplication is free: identical content produces the
@@ -42,6 +44,7 @@ _CHUNK_SIZE = 1024 * 1024  # 1 MiB
 _VALID_HEX = re.compile(r"[0-9a-f]{64}")
 _VALID_SHARD = re.compile(r"[0-9a-f]{2}")
 _VALID_LEAF = re.compile(r"[0-9a-f]{62}")
+_STAGING_DIRNAME = ".staging"
 
 Heartbeat = Callable[[], None]
 
@@ -106,6 +109,26 @@ class BlobStore:
     def __init__(self, root: Path) -> None:
         self.root = root
 
+    @property
+    def staging_root(self) -> Path:
+        """Return the private same-filesystem workspace outside the CAS namespace."""
+        return self.root / _STAGING_DIRNAME
+
+    def allocate_staging_path(self, *, prefix: str, suffix: str = "") -> Path:
+        """Reserve a unique absent path for a private work file.
+
+        The returned path is deliberately removed before return so callers
+        such as SQLite can create their own database at it. Keeping the
+        workspace below ``root`` preserves same-filesystem atomic publication
+        while keeping every work file outside the addressable blob namespace.
+        """
+        self.staging_root.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(dir=self.staging_root, prefix=prefix, suffix=suffix)
+        os.close(fd)
+        temporary_path = Path(temporary_name)
+        temporary_path.unlink()
+        return temporary_path
+
     def blob_path(self, hash_hex: str) -> Path:
         """Return the filesystem path for a blob by its hex digest."""
         if not _VALID_HEX.fullmatch(hash_hex):
@@ -127,13 +150,13 @@ class BlobStore:
         heartbeat: Heartbeat | None = None,
     ) -> PreparedBlob:
         """Stream-hash *source* into a private temporary file."""
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.staging_root.mkdir(parents=True, exist_ok=True)
         fd: int | None = None
         temporary_path: Path | None = None
         try:
             hasher = hashlib.sha256()
             size = 0
-            fd, temporary_name = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            fd, temporary_name = tempfile.mkstemp(dir=self.staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             with open(source, "rb") as src:
                 while True:
@@ -164,13 +187,13 @@ class BlobStore:
         heartbeat: Heartbeat | None = None,
     ) -> PreparedBlob:
         """Stream-hash an open binary object into a private temporary file."""
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.staging_root.mkdir(parents=True, exist_ok=True)
         fd: int | None = None
         temporary_path: Path | None = None
         try:
             hasher = hashlib.sha256()
             size = 0
-            fd, temporary_name = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            fd, temporary_name = tempfile.mkstemp(dir=self.staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             while True:
                 chunk = source.read(_CHUNK_SIZE)
@@ -195,11 +218,11 @@ class BlobStore:
 
     def prepare_from_bytes(self, data: bytes) -> PreparedBlob:
         """Stage in-memory bytes without exposing their final hash path."""
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.staging_root.mkdir(parents=True, exist_ok=True)
         fd: int | None = None
         temporary_path: Path | None = None
         try:
-            fd, temporary_name = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            fd, temporary_name = tempfile.mkstemp(dir=self.staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             _write_all(fd, data)
             os.close(fd)
@@ -354,6 +377,17 @@ class BlobStore:
                     path=shard_path,
                     relative_path=shard_path.name,
                     issue=BlobNamespaceIssue.STAT_FAILED,
+                )
+                continue
+
+            if shard_path.name == _STAGING_DIRNAME:
+                if stat.S_ISDIR(shard_mode):
+                    continue
+                yield BlobNamespaceEntry(
+                    kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                    path=shard_path,
+                    relative_path=shard_path.name,
+                    issue=BlobNamespaceIssue.NOT_DIRECTORY,
                 )
                 continue
 
