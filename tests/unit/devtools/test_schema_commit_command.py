@@ -16,10 +16,23 @@ import pytest
 from devtools import schema_commit
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator.models import SchemaCommitRequest, SchemaCommitResult, SchemaVersionCommitReport
+from polylogue.schemas.operator.receipt import (
+    SchemaInferenceCoverageDecision,
+    SchemaInferenceReceipt,
+)
+
+_HANDOFF = SchemaInferenceReceipt(
+    gate_receipt_digest="a" * 64,
+    coverage_decisions=(
+        SchemaInferenceCoverageDecision(origin="codex-session", provider="codex", decision="committed", reason=None),
+    ),
+    packages=(),
+)
 
 
 @dataclass(frozen=True)
 class _ConfigStub:
+    archive_root: Path
     db_path: Path
 
 
@@ -29,7 +42,7 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
     captured: list[SchemaCommitRequest] = []
 
     def fake_get_config() -> _ConfigStub:
-        return _ConfigStub(db_path=tmp_path / "archive.db")
+        return _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db")
 
     def fake_commit(request: SchemaCommitRequest) -> SchemaCommitResult:
         captured.append(request)
@@ -61,7 +74,11 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
 def test_schema_commit_honors_output_dir_and_dry_run_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured: list[SchemaCommitRequest] = []
 
-    monkeypatch.setattr(schema_commit, "get_config", lambda: _ConfigStub(db_path=tmp_path / "archive.db"))
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
+    )
 
     def fake_commit(request: SchemaCommitRequest) -> SchemaCommitResult:
         captured.append(request)
@@ -99,7 +116,11 @@ def test_schema_commit_honors_output_dir_and_dry_run_overrides(monkeypatch: pyte
 def test_schema_commit_json_output_reports_success(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(schema_commit, "get_config", lambda: _ConfigStub(db_path=tmp_path / "archive.db"))
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
+    )
     monkeypatch.setattr(
         schema_commit,
         "commit_provider_schema",
@@ -112,6 +133,8 @@ def test_schema_commit_json_output_reports_success(
                 ),
             ),
             dry_run=False,
+            handoff=_HANDOFF,
+            handoff_path=tmp_path / "handoff.json",
         ),
     )
 
@@ -129,12 +152,18 @@ def test_schema_commit_json_output_reports_success(
     assert payload["sample_count"] == 42
     assert payload["versions"][0]["status"] == "changed"
     assert payload["versions"][0]["added_paths"] == ["session_document.new"]
+    assert payload["handoff"]["gate_receipt_digest"] == "a" * 64
+    assert payload["handoff_path"] == str(tmp_path / "handoff.json")
 
 
 def test_schema_commit_exits_nonzero_on_generation_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(schema_commit, "get_config", lambda: _ConfigStub(db_path=tmp_path / "archive.db"))
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
+    )
     monkeypatch.setattr(
         schema_commit,
         "commit_provider_schema",
@@ -167,7 +196,11 @@ def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPat
     """A commit that succeeds but narrows a previously-committed type must
     not report a clean exit code -- the whole point of the report is that a
     bad promotion can't land unnoticed."""
-    monkeypatch.setattr(schema_commit, "get_config", lambda: _ConfigStub(db_path=tmp_path / "archive.db"))
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
+    )
     monkeypatch.setattr(
         schema_commit,
         "commit_provider_schema",

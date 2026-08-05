@@ -29,6 +29,11 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.maintenance.schema_inference_gate import (
+    run_schema_inference_gate,
+    schema_inference_gate_receipt_digest,
+    schema_inference_hard_gate_evidence_digest,
+)
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
@@ -36,49 +41,26 @@ from polylogue.schemas.operator.receipt import SCHEMA_INFERENCE_HANDOFF_FILENAME
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.tooling_models import ClusterManifest
-from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.inferred_corpus import compile_inferred_corpus_manifest
+from tests.unit.maintenance.test_schema_inference_gate import _seed_archive
 
 _PROVIDER = "chatgpt"
 
 
 def _gate_receipt(output_dir: Path) -> Path:
     path = output_dir.parent / "schema-inference-gate-receipt.json"
-    archive_root = output_dir.parent
-    payload = {
-        "schema": "polylogue.schema-inference-gate.v1",
-        "gate_version": "2",
-        "generated_at": "2023-11-14T22:13:20+00:00",
-        "receipt_nonce": "00000000-0000-4000-8000-000000000001",
-        "verdict": "PASS",
-        "archive_root": str(archive_root.absolute()),
-        "archive_identity_digest": ArchiveIdentity.resolve_location(
-            ArchiveLocation.resolve(archive_root)
-        ).authority_identity_digest,
-        "schema_identity": {},
-        "source_schema_identity": {},
-        "query_results": {"pristine": {"passed": True}},
-        "source_denominators": {},
-        "blob_denominators": {},
-        "ground_truth_denominators": {},
-        "ground_truth_inputs": {"passed": True},
-        "exemptions": {},
-        "corpus_fidelity": {"passed": True},
-        "full_blob_hash_verification": {
-            "passed": True,
-            "verifier": {"identity": "polylogue.storage.blob_store.BlobStore.verify_all"},
-            "before_snapshot": {"digest": "a" * 64},
-            "after_snapshot": {"digest": "a" * 64},
-            "failures": [],
-            "missing_references": [],
-            "errors": [],
-        },
-        "input_paths": {},
-        "tool_versions": {},
-        "pass_fail_reasons": [],
-    }
-    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    archive_root = output_dir.parent / "archive"
+    if path.exists():
+        return path
+    if not (archive_root / "source.db").exists():
+        _seed_archive(archive_root)
+    ground_truth = archive_root.parent / f"{archive_root.name}-codex-ground-truth"
+    run_schema_inference_gate(
+        archive_root,
+        receipt_path=path,
+        ground_truth_roots={"codex-session": (ground_truth,)},
+    )
     return path
 
 
@@ -91,7 +73,8 @@ def _request(
     return SchemaCommitRequest(
         provider=_PROVIDER,
         output_dir=output_dir,
-        db_path=output_dir.parent / "index.db",
+        archive_root=output_dir.parent / "archive",
+        db_path=output_dir.parent / "archive" / "index.db",
         full_corpus=True,
         schema_inference_gate_receipt_path=gate_path or _gate_receipt(output_dir),
         dry_run=dry_run,
@@ -182,6 +165,8 @@ class TestCommitProviderSchemaWritesRealFiles:
         assert not version_report.narrowed_paths
         assert "session_document.id" in version_report.added_paths
         assert commit_result.handoff is not None
+        gate_payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
+        assert commit_result.handoff.gate_receipt_digest == schema_inference_gate_receipt_digest(gate_payload)
         assert commit_result.handoff_path == output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
         assert load_schema_inference_receipt(commit_result.handoff_path) == commit_result.handoff
         assert commit_result.handoff.packages[0].element_hashes[0].element_kind == "session_document"
@@ -238,28 +223,55 @@ class TestCommitProviderSchemaWritesRealFiles:
         with pytest.raises(ValueError, match="authoritative fields"):
             commit_provider_schema(_request(output_dir, gate_path=receipt_path))
 
+        receipt_path.unlink()
         payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
         payload["full_blob_hash_verification"]["passed"] = False
         receipt_path.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(ValueError, match="full_blob_hash_verification PASS"):
             commit_provider_schema(_request(output_dir, gate_path=receipt_path))
 
+        receipt_path.unlink()
         payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
         payload["archive_identity_digest"] = "0" * 64
         receipt_path.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(ValueError, match="archive identity"):
             commit_provider_schema(_request(output_dir, gate_path=receipt_path))
 
+        receipt_path.unlink()
         payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
         payload["receipt_nonce"] = "forged"
         receipt_path.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(ValueError, match="receipt nonce"):
             commit_provider_schema(_request(output_dir, gate_path=receipt_path))
 
+        receipt_path.unlink()
         payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
         payload["generated_at"] = "2020-01-01T00:00:00+00:00"
         receipt_path.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(ValueError, match="stale or from the future"):
+            commit_provider_schema(_request(output_dir, gate_path=receipt_path))
+
+    def test_commit_rejects_recomputed_forgery_of_live_gate_evidence(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "providers"
+        receipt_path = _gate_receipt(output_dir)
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["query_results"]["zero-surviving-quarantine"]["count"] = 99
+        payload["hard_gate_evidence_digest"] = schema_inference_hard_gate_evidence_digest(
+            payload["query_results"], payload["full_blob_hash_verification"]
+        )
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="hard-gate query results changed"):
+            commit_provider_schema(_request(output_dir, gate_path=receipt_path))
+
+        receipt_path.unlink()
+        payload = json.loads(_gate_receipt(output_dir).read_text(encoding="utf-8"))
+        payload["full_blob_hash_verification"]["before_snapshot"]["digest"] = "0" * 64
+        payload["full_blob_hash_verification"]["after_snapshot"]["digest"] = "0" * 64
+        payload["hard_gate_evidence_digest"] = schema_inference_hard_gate_evidence_digest(
+            payload["query_results"], payload["full_blob_hash_verification"]
+        )
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="hard-gate evidence digest"):
             commit_provider_schema(_request(output_dir, gate_path=receipt_path))
 
     def test_registry_construct_rejection_remains_an_explicit_unsupported_entry(self, tmp_path: Path) -> None:
@@ -273,11 +285,18 @@ class TestCommitProviderSchemaWritesRealFiles:
             result = commit_provider_schema(_request(output_dir))
 
         assert result.handoff is not None
+        with pytest.raises(ValueError, match="no executable synthetic corpus selection"):
+            compile_inferred_corpus_manifest(
+                registry=SchemaRegistry(storage_root=output_dir),
+                providers=(_PROVIDER,),
+                package_receipt=result.handoff.to_payload(),
+                campaign_mode=True,
+            )
         manifest = compile_inferred_corpus_manifest(
             registry=SchemaRegistry(storage_root=output_dir),
             providers=(_PROVIDER,),
             package_receipt=result.handoff.to_payload(),
-            campaign_mode=True,
+            campaign_mode=False,
         )
         entry = manifest.entries[0]
         assert entry.spec is None
@@ -366,6 +385,7 @@ class TestCommitProviderSchemaWritesRealFiles:
             commit_provider_schema(_request(output_dir))
 
         catalog_before_bytes = (output_dir / _PROVIDER / "catalog.json").read_bytes()
+        handoff_before_bytes = (output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME).read_bytes()
 
         second_schema = {
             "type": "object",
@@ -382,6 +402,7 @@ class TestCommitProviderSchemaWritesRealFiles:
         assert "session_document.would_be_added" in commit_result.versions[0].added_paths
         # The real committed directory was never touched.
         assert (output_dir / _PROVIDER / "catalog.json").read_bytes() == catalog_before_bytes
+        assert (output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME).read_bytes() == handoff_before_bytes
         on_disk = _read_element_schema(output_dir, "v1")
         assert "would_be_added" not in on_disk["properties"]
 
@@ -394,6 +415,7 @@ class TestCommitProviderSchemaWritesRealFiles:
             SchemaCommitRequest(
                 provider="not-a-real-provider-k45pq",
                 output_dir=output_dir,
+                archive_root=output_dir.parent / "archive",
                 db_path=output_dir.parent / "index.db",
                 full_corpus=True,
                 schema_inference_gate_receipt_path=_gate_receipt(output_dir),

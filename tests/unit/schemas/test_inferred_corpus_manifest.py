@@ -92,6 +92,48 @@ def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path
     assert read_inferred_corpus_manifest(path) == manifest
 
 
+def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) -> None:
+    registry = _registry()
+    provider = "codex"
+    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest="a" * 64)
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=(provider,),
+        package_receipt=receipt.to_payload(),
+        campaign_mode=True,
+    )
+    path = tmp_path / "campaign.json"
+
+    supported = next(entry for entry in manifest.entries if entry.spec is not None)
+    tampered_schema = replace(supported, generator_schema={"type": "string"})
+    tampered = replace(
+        manifest,
+        entries=tuple(
+            sorted(
+                (tampered_schema if entry is supported else entry for entry in manifest.entries),
+                key=lambda entry: entry.key,
+            )
+        ),
+    )
+    write_inferred_corpus_manifest(tampered, path)
+    with pytest.raises(ValueError, match="package/version/element hashes|generator schema changed"):
+        read_inferred_corpus_manifest(path, campaign_mode=True, registry=registry)
+
+    tampered_key = replace(supported.key, construct_support=())
+    tampered_entry = replace(supported, key=tampered_key)
+    tampered = replace(
+        manifest,
+        entries=tuple(
+            sorted(
+                (tampered_entry if entry is supported else entry for entry in manifest.entries),
+                key=lambda entry: entry.key,
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="classifier output changed"):
+        build_inferred_corpus_convergence_handoff(tampered, campaign_mode=True, registry=registry)
+
+
 def test_campaign_mode_rejects_catalog_only_manifest(tmp_path: Path) -> None:
     manifest = compile_inferred_corpus_manifest(registry=_registry())
     path = tmp_path / "catalog-only.json"
@@ -105,7 +147,7 @@ def test_campaign_mode_rejects_catalog_only_manifest(tmp_path: Path) -> None:
 
 def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decisions() -> None:
     registry = _registry()
-    provider = registry.list_providers()[0]
+    provider = "codex"
     receipt = build_schema_inference_receipt(
         registry,
         provider=provider,
@@ -143,7 +185,7 @@ def test_bundled_registry_relation_annotations_share_one_receipt_classification(
         registry=registry,
         providers=(provider,),
         package_receipt=receipt.to_payload(),
-        campaign_mode=True,
+        campaign_mode=False,
     )
 
     expected_annotations = {
@@ -203,7 +245,7 @@ def test_bundled_registry_relation_annotations_share_one_receipt_classification(
         )
         tampered_decisions = (changed,)
     tampered_unsupported = replace(receipt, unsupported_decisions=tuple(sorted(tampered_decisions)))
-    with pytest.raises(ValueError, match="unsupported/nonrepresentable decisions"):
+    with pytest.raises(ValueError, match="no executable synthetic corpus selection"):
         compile_inferred_corpus_manifest(
             registry=registry,
             providers=(provider,),

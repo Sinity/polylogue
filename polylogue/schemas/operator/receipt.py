@@ -14,7 +14,7 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.operator.registry import RuntimeSchemaRegistryLike
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import canonical_schema_provider
-from polylogue.schemas.synthetic.classification import unsupported_schema_constructs
+from polylogue.schemas.synthetic.classification import classify_schema_constructs
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
 
 SCHEMA_INFERENCE_HANDOFF_SCHEMA = "polylogue.schema-inference-handoff.v1"
@@ -28,10 +28,6 @@ def _require_digest(value: object, *, field: str) -> str:
     if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         raise ValueError(f"{field} must be a lowercase SHA-256 digest")
     return value
-
-
-def _canonical_payload(payload: Mapping[str, object]) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -300,7 +296,8 @@ def _package_hashes_for_package(
     if not package_path.exists():
         raise ValueError(f"persisted schema package is missing: {package_path}")
     element_hashes: list[SchemaElementContentHash] = []
-    version_files: list[dict[str, str]] = [{"path": "package.json", "hash": hash_file(package_path)}]
+    package_hash = hash_file(package_path)
+    version_files: list[dict[str, str]] = [{"path": "package.json", "hash": package_hash}]
     for element in sorted(package.elements, key=lambda item: item.element_kind):
         if element.schema_file is None:
             continue
@@ -319,7 +316,7 @@ def _package_hashes_for_package(
     return SchemaPackageContentHash(
         provider=provider_token,
         package_version=package.version,
-        package_hash=hash_file(package_path),
+        package_hash=package_hash,
         version_hash=hash_payload(version_files),
         element_hashes=tuple(element_hashes),
     )
@@ -374,7 +371,9 @@ def _unsupported_for_package(
                 )
             )
             continue
-        unsupported = unsupported_schema_constructs(schema)
+        unsupported = tuple(
+            item.construct for item in classify_schema_constructs(schema) if item.state == "unsupported"
+        )
         if unsupported:
             decisions.append(
                 SchemaInferenceUnsupportedDecision(
@@ -404,12 +403,29 @@ def build_schema_inference_receipt(
             item for package in catalog.packages for item in _unsupported_for_package(registry, provider_token, package)
         )
     )
+    unsupported_keys = {(item.package_version, item.element_kind) for item in unsupported}
+    representable = {
+        (package.version, element.element_kind)
+        for package in catalog.packages
+        for element in package.elements
+        if (package.version, element.element_kind) not in unsupported_keys
+    }
+    if representable:
+        coverage_decision: CoverageDecision = "committed"
+        coverage_reason = "persisted package/version/element hashes recorded"
+    else:
+        coverage_decision = (
+            "nonrepresentable"
+            if unsupported and all(item.decision == "nonrepresentable" for item in unsupported)
+            else "unsupported"
+        )
+        coverage_reason = "provider has no executable persisted schema element"
     origin = origin_from_provider(provider_token).value
     coverage = SchemaInferenceCoverageDecision(
         origin=origin,
         provider=provider_token,
-        decision="committed",
-        reason="persisted package/version/element hashes recorded",
+        decision=coverage_decision,
+        reason=coverage_reason,
     )
     return SchemaInferenceReceipt(gate_receipt_digest, (coverage,), packages, unsupported)
 

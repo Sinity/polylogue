@@ -41,7 +41,7 @@ from polylogue.core.json import JSONDocument
 from polylogue.maintenance.schema_inference_gate import (
     validate_schema_inference_gate_receipt,
 )
-from polylogue.paths import db_path as default_index_db_path
+from polylogue.paths import archive_root as default_archive_root
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.generation.workflow import generate_all_schemas
 from polylogue.schemas.operator.inference import privacy_config_from_payload
@@ -56,6 +56,7 @@ from polylogue.schemas.operator.receipt import (
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.type_narrowing import added_paths, narrowed_paths
+from polylogue.storage.archive_identity import ArchiveLocation
 
 
 def _element_schemas_by_kind(
@@ -82,16 +83,24 @@ def _accepted_gate_receipt_digest(path: Path | None, *, archive_root: Path) -> s
 
 
 def _target_archive_root(request: SchemaCommitRequest) -> Path:
-    target_db = request.db_path or default_index_db_path()
-    return target_db.absolute().parent
+    configured_root = request.archive_root or default_archive_root()
+    return ArchiveLocation.resolve(configured_root).configured_root
 
 
 def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommitResult:
     provider_token = str(canonical_schema_provider(request.provider))
+    output_dir = output_dir.absolute()
+    handoff_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
+    existing_handoff = load_schema_inference_receipt(handoff_path) if handoff_path.exists() else None
     gate_receipt_digest = _accepted_gate_receipt_digest(
         request.schema_inference_gate_receipt_path,
         archive_root=_target_archive_root(request),
     )
+    if existing_handoff is not None and existing_handoff.gate_receipt_digest != gate_receipt_digest:
+        raise ValueError(
+            "existing schema inference handoff was produced from a different gate receipt; "
+            "regenerate the handoff from the accepted gate before committing"
+        )
 
     registry_before = SchemaRegistry(storage_root=output_dir)
     # The bundled registry is a read fallback, not the prior state of this
@@ -123,6 +132,8 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     )
 
     version_reports: list[SchemaVersionCommitReport] = []
+    handoff: SchemaInferenceReceipt | None = None
+    registry_after: SchemaRegistry | None = None
     if generation.success:
         registry_after = SchemaRegistry(storage_root=output_dir)
         catalog_after = registry_after.load_package_catalog(provider_token)
@@ -164,22 +175,16 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
                     )
                 )
 
-    handoff: SchemaInferenceReceipt | None = None
-    handoff_path: Path | None = None
     if generation.success:
-        registry_after = SchemaRegistry(storage_root=output_dir)
+        if registry_after is None:
+            raise AssertionError("successful schema generation did not produce a persisted registry")
         provider_handoff = build_schema_inference_receipt(
             registry_after,
             provider=provider_token,
             gate_receipt_digest=gate_receipt_digest,
         )
-        handoff = provider_handoff
-        existing_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
-        if existing_path.exists():
-            handoff = load_schema_inference_receipt(existing_path).merged_with(provider_handoff)
-        write_schema_inference_receipt(handoff, existing_path)
-        if not request.dry_run:
-            handoff_path = existing_path
+        handoff = existing_handoff.merged_with(provider_handoff) if existing_handoff is not None else provider_handoff
+        write_schema_inference_receipt(handoff, handoff_path)
 
     return SchemaCommitResult(
         provider=request.provider,
@@ -187,7 +192,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
         versions=tuple(version_reports),
         dry_run=request.dry_run,
         handoff=handoff,
-        handoff_path=handoff_path,
+        handoff_path=handoff_path if generation.success else None,
     )
 
 
@@ -220,6 +225,7 @@ def commit_provider_schema(request: SchemaCommitRequest) -> SchemaCommitResult:
             versions=result.versions,
             dry_run=True,
             handoff=result.handoff,
+            handoff_path=None,
         )
 
 

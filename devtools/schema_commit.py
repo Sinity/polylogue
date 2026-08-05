@@ -87,18 +87,27 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     output_dir = args.output_dir if args.output_dir is not None else DEFAULT_OUTPUT_DIR
 
-    result = commit_provider_schema(
-        SchemaCommitRequest(
-            provider=str(args.provider),
-            output_dir=output_dir,
-            db_path=get_config().db_path,
-            max_samples=args.max_samples,
-            privacy_config=privacy_config,
-            full_corpus=bool(args.full_corpus),
-            dry_run=bool(args.dry_run),
-            schema_inference_gate_receipt_path=args.schema_inference_gate_receipt,
+    config = get_config()
+    try:
+        result = commit_provider_schema(
+            SchemaCommitRequest(
+                provider=str(args.provider),
+                output_dir=output_dir,
+                archive_root=config.archive_root,
+                db_path=config.db_path,
+                max_samples=args.max_samples,
+                privacy_config=privacy_config,
+                full_corpus=bool(args.full_corpus),
+                dry_run=bool(args.dry_run),
+                schema_inference_gate_receipt_path=args.schema_inference_gate_receipt,
+            )
         )
-    )
+    except ValueError as exc:
+        if args.json:
+            print(json.dumps({"provider": str(args.provider), "success": False, "error": str(exc)}, sort_keys=True))
+        else:
+            print(f"schema-commit: {exc}", file=sys.stderr)
+        return 1
 
     if not result.success:
         error = result.generation.error or "Schema generation failed"

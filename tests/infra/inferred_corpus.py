@@ -378,7 +378,9 @@ def write_inferred_corpus_manifest(manifest: InferredCorpusManifest, path: Path)
     )
 
 
-def read_inferred_corpus_manifest(path: Path, *, campaign_mode: bool = False) -> InferredCorpusManifest:
+def read_inferred_corpus_manifest(
+    path: Path, *, campaign_mode: bool = False, registry: RuntimeSchemaRegistryLike | None = None
+) -> InferredCorpusManifest:
     """Read and validate a persisted manifest before exposing executable rows."""
 
     try:
@@ -394,6 +396,10 @@ def read_inferred_corpus_manifest(path: Path, *, campaign_mode: bool = False) ->
     manifest = InferredCorpusManifest.from_payload(payload)
     if campaign_mode:
         _require_inference_handoff(manifest)
+        if registry is None:
+            raise ValueError("campaign mode requires a live schema registry")
+        providers = tuple(sorted({entry.key.provider for entry in manifest.entries}))
+        _validate_inference_handoff(manifest, registry, providers=providers)
     return manifest
 
 
@@ -407,14 +413,21 @@ def build_inferred_corpus_convergence_handoff(
     manifest: InferredCorpusManifest | Path,
     *,
     campaign_mode: bool = False,
+    registry: RuntimeSchemaRegistryLike | None = None,
 ) -> InferredCorpusConvergenceHandoff:
     """Bind every supported row from memory or persisted disk to convergence."""
 
     persisted_manifest = (
-        read_inferred_corpus_manifest(manifest, campaign_mode=campaign_mode) if isinstance(manifest, Path) else manifest
+        read_inferred_corpus_manifest(manifest, campaign_mode=campaign_mode, registry=registry)
+        if isinstance(manifest, Path)
+        else manifest
     )
     if campaign_mode:
         _require_inference_handoff(persisted_manifest)
+        if registry is None:
+            raise ValueError("campaign mode requires a live schema registry")
+        providers = tuple(sorted({entry.key.provider for entry in persisted_manifest.entries}))
+        _validate_inference_handoff(persisted_manifest, registry, providers=providers)
     selections = tuple(_selection_for_entry(entry) for entry in persisted_manifest.entries if entry.spec is not None)
     handoff = InferredCorpusConvergenceHandoff(
         manifest_id=persisted_manifest.manifest_id,
@@ -549,16 +562,23 @@ def _compile_entry(
     # Construct the production generator against the exact package/version/
     # element.  No generation is performed here, so compiling the receipt does
     # not turn an unverified catalog into an inference claim.
-    SyntheticCorpus.from_selection(
-        SyntheticSchemaSelection(
-            provider=provider,
-            package_version=package.version,
-            element_kind=element.element_kind,
-            schema=schema,
-            wire_format=wire_format,
-            workload_profile=workload_profile if isinstance(workload_profile, dict) else None,
-        )
+    selection = SyntheticSchemaSelection(
+        provider=provider,
+        package_version=package.version,
+        element_kind=element.element_kind,
+        schema=schema,
+        wire_format=wire_format,
+        workload_profile=workload_profile if isinstance(workload_profile, dict) else None,
     )
+    witness = SyntheticCorpus.from_selection(selection).generate(
+        count=1,
+        messages_per_session=range(spec.messages_min, spec.messages_min + 1),
+        seed=spec.seed,
+        style=spec.style,
+        session_native_ids=spec.session_native_ids[:1],
+    )
+    if len(witness) != 1 or not witness[0]:
+        raise ValueError("persisted schema selection did not produce a real synthetic corpus witness")
     return InferredCorpusManifestEntry(
         key=key,
         spec=spec,
@@ -630,14 +650,14 @@ def _validate_inference_handoff(
     providers: Sequence[str] | None,
 ) -> None:
     receipt = _require_inference_handoff(manifest)
+    if not manifest.supported_specs:
+        raise ValueError("campaign mode has no executable synthetic corpus selection")
     expected_packages = package_hashes_for_registry(cast(SchemaReceiptRegistry, registry), providers)
     if receipt.packages != expected_packages:
         raise ValueError("schema-inference handoff package/version/element hashes do not match the registry")
 
-    expected_coverage = {
-        (provider, origin_from_provider(provider).value)
-        for provider, _catalog, _package, _element in _catalog_entries(registry, providers)
-    }
+    catalog_entries = _catalog_entries(registry, providers)
+    expected_coverage = {(provider, origin_from_provider(provider).value) for provider, *_rest in catalog_entries}
     actual_coverage = {(item.provider, item.origin) for item in receipt.coverage_decisions}
     if actual_coverage != expected_coverage:
         raise ValueError(
@@ -645,8 +665,66 @@ def _validate_inference_handoff(
             f"missing={sorted(expected_coverage - actual_coverage)!r}, "
             f"unexpected={sorted(actual_coverage - expected_coverage)!r}"
         )
-    if any(item.decision != "committed" for item in receipt.coverage_decisions):
-        raise ValueError("schema-inference handoff contains a non-committed coverage decision")
+    entries_by_provider: dict[str, list[InferredCorpusManifestEntry]] = {}
+    for entry in manifest.entries:
+        entries_by_provider.setdefault(entry.key.provider, []).append(entry)
+    for coverage in receipt.coverage_decisions:
+        provider_entries = entries_by_provider.get(coverage.provider, [])
+        if any(entry.spec is not None for entry in provider_entries):
+            expected_decision = "committed"
+        elif provider_entries and all(
+            entry.unsupported is not None and entry.unsupported.reason == "unsupported_json_schema_construct"
+            for entry in provider_entries
+        ):
+            expected_decision = "nonrepresentable"
+        else:
+            expected_decision = "unsupported"
+        if coverage.decision != expected_decision:
+            raise ValueError("schema-inference handoff coverage decision changed")
+
+    for provider, _catalog, package, element in catalog_entries:
+        live_entry = next(
+            (
+                candidate
+                for candidate in manifest.entries
+                if (candidate.key.provider, candidate.key.package_version, candidate.key.element_kind)
+                == (provider, package.version, element.element_kind)
+            ),
+            None,
+        )
+        if live_entry is None:
+            raise ValueError("schema-inference manifest is missing a live registry entry")
+        live_schema = registry.get_element_schema(provider, version=package.version, element_kind=element.element_kind)
+        live_constructs = _schema_constructs(live_schema)
+        if live_entry.key.construct_support != live_constructs:
+            raise ValueError("schema-inference manifest classifier output changed")
+        live_unsupported = _unsupported_reason(
+            element=element,
+            schema=live_schema if isinstance(live_schema, dict) else None,
+            wire_format=PROVIDER_WIRE_FORMATS.get(provider),
+            construct_support=live_constructs,
+        )
+        if (live_entry.unsupported is None) != (live_unsupported is None):
+            raise ValueError("schema-inference manifest executable support changed")
+        if live_unsupported is not None:
+            if live_entry.unsupported != live_unsupported:
+                raise ValueError("schema-inference manifest unsupported decision changed")
+            continue
+        if live_entry.generator_schema != live_schema:
+            raise ValueError("schema-inference manifest generator schema changed")
+        selection = _selection_for_entry(live_entry)
+        spec = live_entry.spec
+        if spec is None:
+            raise ValueError("schema-inference manifest executable entry has no corpus spec")
+        witness = SyntheticCorpus.from_selection(selection).generate(
+            count=1,
+            messages_per_session=range(spec.messages_min, spec.messages_min + 1),
+            seed=spec.seed,
+            style=spec.style,
+            session_native_ids=spec.session_native_ids[:1],
+        )
+        if len(witness) != 1 or not witness[0]:
+            raise ValueError("schema-inference manifest selection produced no executable witness")
 
     expected_unsupported = {
         (

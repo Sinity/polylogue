@@ -366,6 +366,7 @@ class SchemaCommitRequest:
     full_corpus: bool = True
     dry_run: bool = False
     schema_inference_gate_receipt_path: Path | None = None
+    archive_root: Path | None = None
 
 
 @dataclass(frozen=True)
