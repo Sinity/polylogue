@@ -21,6 +21,7 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
+from polylogue.daemon.events import emit_catch_up_cycle, query_daemon_events
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
     _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
@@ -774,13 +775,21 @@ def _make_watcher(
     *,
     debounce_s: float = 0.01,
     event_emitter: MagicMock | None = None,
+    catch_up_event_emitter: Callable[..., None] | None = None,
     sources: tuple[WatchSource, ...] | None = None,
 ) -> tuple[LiveWatcher, _FullIngestMock]:
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     sources = sources or (WatchSource(name="test", root=root),)
-    watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, cursor=cursor, event_emitter=event_emitter)
+    watcher = LiveWatcher(
+        polylogue,
+        sources,
+        debounce_s=debounce_s,
+        cursor=cursor,
+        event_emitter=event_emitter,
+        catch_up_event_emitter=catch_up_event_emitter,
+    )
     full_ingest = _FullIngestMock()
     watcher._batch_processor._ingest_full_paths = full_ingest  # type: ignore[method-assign]
     return watcher, full_ingest
@@ -843,6 +852,34 @@ def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.M
     assert captured["paths"] == files
     assert captured["queued_file_count"] == 3
     assert captured["skipped_file_count"] == 0
+
+
+def test_real_catch_up_route_emits_daemon_cycle_start_and_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    source = root / "session.jsonl"
+    source.write_text('{"role":"user","content":"a"}\n')
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    watcher, full_ingest = _make_watcher(tmp_path, root, catch_up_event_emitter=emit_catch_up_cycle)
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert full_ingest.await_count == 1
+    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
+    payloads: list[dict[str, object]] = []
+    for event in events:
+        payload = event["payload"]
+        assert isinstance(payload, dict)
+        payloads.append(payload)
+    assert [payload["phase"] for payload in payloads] == ["start", "end"]
+    start, end = events
+    assert start["operation_id"] == end["operation_id"]
+    start_payload, end_payload = payloads
+    assert start_payload["backlog_start"] == 1
+    assert end_payload["attempted"] == 1
+    assert end_payload["ingested"] == 1
+    assert end_payload["backlog_end"] == 0
 
 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
