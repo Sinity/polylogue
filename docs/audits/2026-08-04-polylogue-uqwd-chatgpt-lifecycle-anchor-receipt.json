@@ -1,0 +1,60 @@
+{
+  "denominators": {
+    "logical_source_key_count": 2570,
+    "membershipless_selected_raw_count": 0,
+    "multi_candidate_cohort_count": 2555,
+    "parsed_and_projected_raw_count": 7498,
+    "raws_in_multi_candidate_cohorts": 7483,
+    "selected_membership_row_count": 7498,
+    "selected_quarantined_chatgpt_raw_count": 7498,
+    "singleton_cohort_count": 15
+  },
+  "outcomes": {
+    "classifier_cohort_counts": {
+      "cohorts_with_accepted_raw": 2561,
+      "cohorts_with_ambiguous_raw": 18,
+      "cohorts_with_equivalent_raw": 2538
+    },
+    "pair_relation_counts": {
+      "a_contains_b": 126,
+      "b_contains_a": 82,
+      "conflict": 71,
+      "equal": 7348
+    },
+    "target_pair_count": 0
+  },
+  "provenance": {
+    "archive_access": "SQLite source.db and index.db opened mode=ro; blob files read only; no archive writer created.",
+    "index_db": {
+      "mtime_ns": 1785748371749663866,
+      "size_bytes": 40554500096,
+      "sqlite_schema_version": 309,
+      "sqlite_user_version": 46
+    },
+    "producer_git_revision": "257b851f2ce4bde2d6501ea364a987718be8cac2",
+    "production_route": [
+      "polylogue.sources.revision_backfill._parse_one",
+      "polylogue.pipeline.ids.session_revision_projection",
+      "polylogue.archive.session_revision_membership._relation",
+      "polylogue.archive.session_revision_membership.classify_membership_revisions"
+    ],
+    "source_db": {
+      "mtime_ns": 1785817591883760785,
+      "size_bytes": 1891467264,
+      "sqlite_schema_version": 157,
+      "sqlite_user_version": 24
+    }
+  },
+  "receipt_status": "historical_pre_repair",
+  "repair_note": "Captured before the producer-cleanliness and blob-snapshot provenance contract. Retained as historical evidence only; do not use as a post-repair rerun receipt.",
+  "schema": "polylogue.chatgpt-lifecycle-anchor-audit.v1",
+  "scope": {
+    "conclusion_limit": "A zero target_pair_count describes only this current parser-and-corpus snapshot. It does not establish the historical pre-fix replay required to reclassify or remove any graph gate.",
+    "sanitized": "No raw ids, native ids, source paths, blob hashes, titles, or payload content are emitted."
+  },
+  "selection": {
+    "population_sql": "SELECT raw_id\nFROM raw_sessions\nWHERE origin = 'chatgpt-export' AND revision_authority = 'quarantined'\nORDER BY raw_id",
+    "sql": "SELECT r.raw_id, r.source_path, lower(hex(r.blob_hash)) AS blob_hash,\n       m.logical_source_key, m.provider_session_id\nFROM raw_sessions AS r\nJOIN raw_session_memberships AS m ON m.raw_id = r.raw_id\nWHERE r.origin = 'chatgpt-export' AND r.revision_authority = 'quarantined'\nORDER BY m.logical_source_key, r.raw_id"
+  },
+  "target_predicate": "A pair in one persisted logical_source_key cohort where each parsed session has exactly one generation_lifecycle event, their source_message_provider_id anchors differ, message_contents and attachment_contents are equal, non-anchor lifecycle content hashes are equal, and the production _relation is conflict."
+}

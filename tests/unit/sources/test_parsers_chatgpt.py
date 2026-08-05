@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypeAlias
+from unittest.mock import patch
 
 import pytest
 
@@ -14,6 +16,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.scenarios import CorpusSpec
+from polylogue.sources.parsers import chatgpt as chatgpt_parser
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
 from polylogue.sources.parsers.chatgpt import (
     SHARED_CONVERSATION_INDEX_INGEST_FLAG,
@@ -646,6 +649,36 @@ def test_chatgpt_block_content_type_routes_to_session_events() -> None:
     event = events[0]
     assert event.source_message_provider_id == "msg1"
     assert event.payload == {"block_index": 0, "content_type": "reasoning_recap"}
+
+
+def test_chatgpt_attachment_payload_preserves_known_bytes_and_unknown_reference() -> None:
+    mapping = {
+        "node1": make_chatgpt_node("msg1", "assistant", ["answer"]),
+    }
+    node = mapping["node1"]
+    assert isinstance(node, dict)
+    message = node["message"]
+    assert isinstance(message, dict)
+    message["metadata"] = {
+        "attachments": [
+            {
+                "id": "known-attachment",
+                "name": "report.txt",
+                "mime_type": "text/plain",
+                "extracted_content": "known bytes",
+            },
+            {"name": "unknown-report.txt", "mime_type": "text/plain"},
+        ]
+    }
+
+    session = chatgpt_parse({"id": "attachment-fixture", "mapping": mapping}, "fallback")
+
+    assert len(session.attachments) == 2
+    known, unknown = session.attachments
+    assert known.provider_attachment_id == "known-attachment"
+    assert known.inline_bytes == b"known bytes"
+    assert unknown.provider_attachment_id.startswith("att-")
+    assert unknown.inline_bytes is None
 
 
 @pytest.mark.parametrize("metadata,expected_type,desc", CHATGPT_METADATA_CASES)
@@ -1555,6 +1588,88 @@ def test_chatgpt_generation_timing_anchor_is_stable_across_mapping_order() -> No
     anchor_forward = _anchor([user, node_a, node_b])
     anchor_reversed = _anchor([user, node_b, node_a])
     assert anchor_forward == anchor_reversed
+
+
+def test_chatgpt_mapping_order_does_not_create_revision_conflict() -> None:
+    """The parser's stable tie-break reaches the membership classifier.
+
+    The historical implementation used mapping insertion position as the final
+    timing-candidate tiebreak. The two otherwise identical export orders then
+    anchored their lifecycle event to different messages, which made the
+    production revision classifier quarantine both raws as a conflict.
+    """
+    from polylogue.archive.session_revision_membership import (
+        MembershipRevision,
+        _relation,
+        classify_membership_revisions,
+    )
+
+    user = _branch_node("u1", "user", "do the work", parent=None, children=["node_a"])
+    node_a = _branch_node("node_a", "assistant", "first draft", parent="u1", children=["node_b"])
+    node_b = _branch_node("node_b", "assistant", "final draft", parent="node_a", children=[])
+    for node in (node_a, node_b):
+        node["message"]["metadata"] = {"finished_duration_sec": 5}
+
+    def parsed(order: list[dict[str, Any]]) -> ParsedSession:
+        return chatgpt_parse(
+            {"id": "tie-break-order", "mapping": {node["id"]: node for node in order}, "current_node": "node_b"},
+            "fallback-id",
+        )
+
+    left, right = parsed([user, node_a, node_b]), parsed([user, node_b, node_a])
+    revisions = [
+        MembershipRevision(raw_id, session_revision_projection(session))
+        for raw_id, session in (("raw-left", left), ("raw-right", right))
+    ]
+
+    assert left.session_events[0].source_message_provider_id == right.session_events[0].source_message_provider_id
+    assert revisions[0].projection.event_contents == revisions[1].projection.event_contents
+    assert _relation(revisions[0].projection, revisions[1].projection) == "equal"
+    result = classify_membership_revisions(revisions, existing_accepted_raw_id="raw-left")
+    assert result.accepted_raw_ids == ("raw-left",)
+    assert result.equivalent_raw_ids == ("raw-right",)
+    assert result.ambiguous_raw_ids == ()
+
+    original_extract = chatgpt_parser._extract_generation_timings
+
+    def historical_extract(mapping: Mapping[str, object]) -> list[Any]:
+        timings = original_extract(mapping)
+        timed_message_ids: list[str] = []
+        for node_id, raw_node in mapping.items():
+            if not isinstance(raw_node, Mapping):
+                continue
+            raw_message = raw_node.get("message")
+            if not isinstance(raw_message, Mapping):
+                continue
+            raw_author = raw_message.get("author")
+            if not isinstance(raw_author, Mapping) or raw_author.get("role") not in {"assistant", "tool"}:
+                continue
+            metadata = raw_message.get("metadata")
+            if not isinstance(metadata, Mapping) or not any(
+                field in metadata for field in ("reasoning_start_time", "reasoning_end_time", "finished_duration_sec")
+            ):
+                continue
+            timed_message_ids.append(str(raw_message.get("id") or raw_node.get("id") or node_id))
+        assert timed_message_ids
+        return [replace(timing, message_provider_id=timed_message_ids[0]) for timing in timings]
+
+    def historically_parsed(order: list[dict[str, Any]]) -> ParsedSession:
+        payload = {"id": "tie-break-order", "mapping": {node["id"]: node for node in order}, "current_node": "node_b"}
+        with patch.object(chatgpt_parser, "_extract_generation_timings", historical_extract):
+            return chatgpt_parse(payload, "fallback-id")
+
+    historical_left = historically_parsed([user, node_a, node_b])
+    historical_right = historically_parsed([user, node_b, node_a])
+    historical_revisions = [
+        MembershipRevision(raw_id, session_revision_projection(session))
+        for raw_id, session in (("raw-left", historical_left), ("raw-right", historical_right))
+    ]
+    assert historical_left.session_events[0].source_message_provider_id == "node_a"
+    assert historical_right.session_events[0].source_message_provider_id == "node_b"
+    assert _relation(historical_revisions[0].projection, historical_revisions[1].projection) == "conflict"
+    historical_result = classify_membership_revisions(historical_revisions, existing_accepted_raw_id="raw-left")
+    assert historical_result.accepted_raw_ids == ()
+    assert historical_result.ambiguous_raw_ids == ("raw-left", "raw-right")
 
 
 # ---------------------------------------------------------------------------

@@ -13,3 +13,4 @@ and [Developer Tools](../devtools.md) references for present-tense behavior.
 - [Reindex forcing-class audit](2026-08-04-reindex-forcing-class-audit.md)
 - [Blob-reference liveness closure audit](2026-08-04-blob-ref-liveness-closure.md)
 - [Raw-failure preflight](2026-08-04-raw-failure-preflight.md)
+- [ChatGPT lifecycle-anchor evidence packet](2026-08-04-polylogue-uqwd-chatgpt-lifecycle-anchor.md)
