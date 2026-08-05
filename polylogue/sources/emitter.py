@@ -380,11 +380,13 @@ class _SessionEmitter:
 
     def _resolve_payload(self, payload: JsonValue) -> _ResolvedPayload:
         provider = detect_provider(payload) or self._ctx.provider_hint
-        artifact = classify_artifact(
-            payload,
-            provider=provider,
-            source_path=self._ctx.source_path_str,
-        )
+        artifact = classify_artifact(payload, provider=provider)
+        if not artifact.parse_as_session:
+            artifact = classify_artifact(
+                payload,
+                provider=provider,
+                source_path=self._ctx.source_path_str,
+            )
         return _ResolvedPayload(
             provider=provider,
             artifact=artifact,

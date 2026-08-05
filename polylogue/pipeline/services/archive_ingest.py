@@ -20,6 +20,7 @@ from polylogue.pipeline.services.process_pool import (
 )
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import (
+    has_decoded_session_evidence,
     iter_antigravity_language_server_sessions,
     iter_source_sessions_with_raw,
     parse_one_source_path,
@@ -412,9 +413,14 @@ def _admit_non_session_origin_artifacts(
         )
         if walk is None:
             continue
+        provider = Provider.from_string(source.name)
         for candidate, _mtime in walk.paths_to_process:
             classification = classify_artifact_path(candidate, provider=source.name)
-            if classification is None or classification.parse_as_session:
+            if (
+                classification is None
+                or classification.parse_as_session
+                or has_decoded_session_evidence(candidate, provider=provider)
+            ):
                 continue
             try:
                 # polylogue-1fijp arm 4: route through the raw-admission
