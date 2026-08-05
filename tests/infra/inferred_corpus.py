@@ -181,46 +181,6 @@ _SUPPORTED_FORMAT_VALUES = frozenset(
 )
 _SUPPORTED_SEMANTIC_ROLE_VALUES = frozenset({"message_role", "message_body", "message_timestamp", "session_title"})
 
-REPRESENTATIVE_PROVIDER = "codex"
-REPRESENTATIVE_PACKAGE_VERSION = "v1"
-REPRESENTATIVE_ELEMENT_KIND = "session_record_stream"
-_REPRESENTATIVE_SCHEMA: SchemaRecord = {
-    "$id": "https://example.test/polylogue/inferred-corpus/codex-v1-session-record-stream",
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-        "type": {"type": "string", "x-polylogue-values": ["message"]},
-        "role": {
-            "type": "string",
-            "x-polylogue-semantic-role": "message_role",
-            "x-polylogue-values": ["user", "assistant"],
-        },
-        "content": {
-            "type": "array",
-            "x-polylogue-array-lengths": [1, 1],
-            "items": {
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string", "x-polylogue-values": ["input_text", "output_text"]},
-                    "text": {
-                        "type": "string",
-                        "x-polylogue-semantic-role": "message_body",
-                        "x-polylogue-multiline": True,
-                    },
-                },
-            },
-        },
-        "id": {"type": "string", "x-polylogue-format": "uuid4"},
-        "timestamp": {
-            "type": "string",
-            "x-polylogue-semantic-role": "message_timestamp",
-            "x-polylogue-format": "iso8601",
-        },
-        "sequence": {"type": "integer", "x-polylogue-range": [0, 1000]},
-    },
-    "x-polylogue-string-lengths": [{"path": "$.role", "min": 1, "max": 24, "avg": 8.0, "stddev": 2.0}],
-}
-
 
 @dataclass(frozen=True, order=True)
 class ConstructSupport:
@@ -1052,39 +1012,6 @@ def _catalog_entries(
     return tuple(result)
 
 
-class _RepresentativeRegistry:
-    """Keep the live package catalog while exposing one executable schema route."""
-
-    def __init__(self, base: RuntimeSchemaRegistryLike) -> None:
-        self._base = base
-
-    def get_element_schema(
-        self,
-        provider: str,
-        *,
-        version: str = "default",
-        element_kind: str | None = None,
-    ) -> SchemaRecord | JSONDocument | None:
-        package = self._base.get_package(provider, version=version)
-        resolved_version = package.version if package is not None else version
-        if (
-            provider == REPRESENTATIVE_PROVIDER
-            and resolved_version == REPRESENTATIVE_PACKAGE_VERSION
-            and element_kind == REPRESENTATIVE_ELEMENT_KIND
-        ):
-            return _REPRESENTATIVE_SCHEMA
-        return self._base.get_element_schema(provider, version=version, element_kind=element_kind)
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._base, name)
-
-
-def representative_inferred_corpus_registry(base: RuntimeSchemaRegistryLike) -> RuntimeSchemaRegistryLike:
-    """Return a catalog-backed registry with one real provider/package route admitted."""
-
-    return _RepresentativeRegistry(base)  # type: ignore[return-value]
-
-
 def _unsupported_reason(
     *,
     element: SchemaElementManifest,
@@ -1222,15 +1149,11 @@ __all__ = [
     "InferredCorpusManifest",
     "InferredCorpusManifestEntry",
     "PackageReceipt",
-    "REPRESENTATIVE_ELEMENT_KIND",
-    "REPRESENTATIVE_PACKAGE_VERSION",
-    "REPRESENTATIVE_PROVIDER",
     "UnsupportedCorpusRecord",
     "assert_inferred_corpus_convergence_handoff_complete",
     "assert_inferred_corpus_manifest_complete",
     "build_inferred_corpus_convergence_handoff",
     "compile_inferred_corpus_manifest",
     "read_inferred_corpus_manifest",
-    "representative_inferred_corpus_registry",
     "write_inferred_corpus_manifest",
 ]

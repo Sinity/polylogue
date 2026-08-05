@@ -8,18 +8,19 @@ from typing import cast
 import pytest
 
 from polylogue.core.json import JSONValue
+from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
 from tests.infra.inferred_corpus import (
     CorpusManifestKey,
     InferredCorpusManifest,
+    InferredCorpusManifestEntry,
     assert_inferred_corpus_convergence_handoff_complete,
     assert_inferred_corpus_manifest_complete,
     build_inferred_corpus_convergence_handoff,
     compile_inferred_corpus_manifest,
     read_inferred_corpus_manifest,
-    representative_inferred_corpus_registry,
     write_inferred_corpus_manifest,
 )
 
@@ -37,6 +38,37 @@ def _catalog_keys(registry: SchemaRegistry) -> set[CorpusManifestKey]:
             for element in package.elements:
                 keys.add(CorpusManifestKey(provider, package.version, element.element_kind))
     return keys
+
+
+def _manifest_with_real_persisted_schema() -> InferredCorpusManifest:
+    """Build a serialization fixture from a schema in the live persisted registry."""
+    registry = _registry()
+    manifest = compile_inferred_corpus_manifest(registry=registry)
+    provider, package_version, element_kind = _first_wired_catalog_entry(registry)
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (provider, package_version, element_kind)
+    )
+    schema = registry.get_element_schema(provider, version=package_version, element_kind=element_kind)
+    assert isinstance(schema, dict)
+    spec = CorpusSpec.for_provider(
+        provider,
+        package_version=package_version,
+        element_kind=element_kind,
+        count=1,
+        messages_min=1,
+        messages_max=1,
+        seed=42,
+        session_native_ids=("manifest-test",),
+    )
+    supported = InferredCorpusManifestEntry(
+        key=target.key,
+        spec=spec,
+        generator_schema=schema,
+    )
+    return InferredCorpusManifest(entries=tuple(supported if entry is target else entry for entry in manifest.entries))
 
 
 class _RegistryProxy:
@@ -142,7 +174,7 @@ def test_persisted_manifest_rejects_unhashed_extra_fields(tmp_path: Path) -> Non
 
 
 def test_persisted_manifest_rejects_spec_identity_tampering(tmp_path: Path) -> None:
-    manifest = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+    manifest = _manifest_with_real_persisted_schema()
     path = tmp_path / "inferred-manifest.json"
     write_inferred_corpus_manifest(manifest, path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -155,7 +187,7 @@ def test_persisted_manifest_rejects_spec_identity_tampering(tmp_path: Path) -> N
 
 
 def test_persisted_selection_preserves_workload_profile(tmp_path: Path) -> None:
-    base = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+    base = _manifest_with_real_persisted_schema()
     supported = next(entry for entry in base.entries if entry.spec is not None)
     profile: SchemaRecord = {"elements": {supported.key.element_kind: {"structural_variants": []}}}
     profiled = InferredCorpusManifest(
@@ -176,7 +208,7 @@ def test_persisted_selection_preserves_workload_profile(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("extra_field", ["workload_profile", "spec"])
 def test_persisted_manifest_rejects_noncanonical_optional_entry_fields(tmp_path: Path, extra_field: str) -> None:
-    manifest = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+    manifest = _manifest_with_real_persisted_schema()
     path = tmp_path / "noncanonical-manifest.json"
     write_inferred_corpus_manifest(manifest, path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -612,16 +644,12 @@ def _first_wired_catalog_entry(registry: SchemaRegistry) -> tuple[str, str, str]
     raise AssertionError("expected a persisted provider with a wire format")
 
 
-def test_representative_package_route_is_nonempty_and_uses_persisted_selection() -> None:
-    manifest = compile_inferred_corpus_manifest(registry=representative_inferred_corpus_registry(_registry()))
+def test_persisted_package_route_is_nonempty_and_uses_persisted_selection() -> None:
+    manifest = _manifest_with_real_persisted_schema()
 
     assert manifest.supported_specs
     entry = next(entry for entry in manifest.entries if entry.spec is not None)
-    assert (entry.key.provider, entry.key.package_version, entry.key.element_kind) == (
-        "codex",
-        "v1",
-        "session_record_stream",
-    )
+    assert entry.key.provider in PROVIDER_WIRE_FORMATS
     assert entry.generator_schema is not None
     handoff = build_inferred_corpus_convergence_handoff(manifest)
     assert handoff.selections

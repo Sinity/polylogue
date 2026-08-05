@@ -1,52 +1,57 @@
-"""Full corpus ingestion equals a converged prefix followed by its delta."""
+"""A real live append delta reaches the same normalized archive as full replay."""
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+import pytest
 from hypothesis import HealthCheck, Phase, given, settings
 from hypothesis import strategies as st
 
 from tests.infra.convergence_harness import (
+    append_convergence_member,
+    assert_append_provenance,
     assert_archives_equivalent,
+    build_append_prefix_archive,
     build_converged_archive,
-    converge_convergence_archive,
-    ingest_convergence_pathology,
-    initialize_active_archive,
+    build_full_live_archive,
+    convergence_max_examples,
+    drop_one_insight_row,
     rich_convergence_pathology,
-    rotated_session_order,
 )
 
 
 @settings(
-    max_examples=1,
-    phases=(Phase.explicit, Phase.reuse, Phase.generate, Phase.target),
+    max_examples=convergence_max_examples(),
+    phases=(Phase.explicit, Phase.reuse, Phase.generate, Phase.shrink),
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(
-    st.integers(min_value=1, max_value=len(rich_convergence_pathology().sessions) - 1),
-    st.integers(min_value=1, max_value=len(rich_convergence_pathology().sessions) - 1),
-)
-def test_convergence_property_append_prefix_matches_full(tmp_path: Path, shift: int, split: int) -> None:
-    pathology = rich_convergence_pathology()
-    order = rotated_session_order(pathology, shift)
-    full = build_converged_archive(tmp_path / "full", pathology, session_order=order)
+@given(st.integers(min_value=2, max_value=6))
+def test_convergence_property_append_prefix_matches_full(tmp_path: Path, split_line: int) -> None:
+    member = append_convergence_member()
+    full = build_full_live_archive(tmp_path / "full", member)
+    appended = build_append_prefix_archive(tmp_path / "append", member, split_line=split_line)
 
-    prefix_root = tmp_path / "prefix"
-    initialize_active_archive(prefix_root)
-    prefix = ingest_convergence_pathology(
-        prefix_root,
-        pathology,
-        session_indexes=order[:split],
-        converge_after_each=False,
-    )
-    converge_convergence_archive(prefix)
-    combined = ingest_convergence_pathology(
-        prefix_root,
-        pathology,
-        session_indexes=order[split:],
-        converge_after_each=False,
-    )
-    converge_convergence_archive(combined)
-    assert_archives_equivalent(full, combined)
+    assert_append_provenance(appended.root)
+    assert_archives_equivalent(full, appended, compare_acquisition_route=False)
+    with sqlite3.connect(full.root / "index.db") as left, sqlite3.connect(appended.root / "index.db") as right:
+        assert (
+            left.execute("SELECT COUNT(*) FROM attachments").fetchone()
+            == right.execute("SELECT COUNT(*) FROM attachments").fetchone()
+        )
+        assert (
+            left.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()
+            == right.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()
+        )
+
+
+def test_convergence_property_append_prefix_red_twin_detects_dropped_insight(tmp_path: Path) -> None:
+    corpus = rich_convergence_pathology()
+    baseline = build_converged_archive(tmp_path / "baseline", type(corpus)((corpus.members[0],)))
+    mutated = build_converged_archive(tmp_path / "mutated", type(corpus)((corpus.members[0],)))
+    drop_one_insight_row(mutated.root)
+
+    with pytest.raises(AssertionError, match="canonical archive snapshots differ"):
+        assert_archives_equivalent(baseline, mutated)

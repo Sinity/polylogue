@@ -115,10 +115,8 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
     # Add unrelated real FTS debt for the same session. Its future deadline is
     # a deterministic barrier: an insights retry must not execute, consume, or
     # rewrite this other stage's obligation.
-    deleted_fts_rows = make_messages_fts_stale(
-        recovered.index_db,
-        session_id=recovered.target_session_id,
-    )
+    expected_function_matches = messages_fts_match_count(recovered.index_db, "function")
+    make_messages_fts_stale(recovered.index_db, session_id=recovered.target_session_id)
     fts = make_fts_stage(recovered.index_db)
     assert fts.check_sessions is not None
     assert fts.check_sessions((recovered.target_session_id,)) == {recovered.target_session_id}
@@ -144,12 +142,15 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
     )
     assert unrelated_fts_debt is not None
     assert unrelated_fts_debt.status == "failed"
-    assert messages_fts_match_count(recovered.index_db, "Message") == 1
+    assert messages_fts_match_count(recovered.index_db, "function") == 1
 
     status_with_fts_debt = convergence_debt_summary_info(recovered.index_db)
     assert status_with_fts_debt.failed_count == 1
     assert status_with_fts_debt.retry_due_count == 0
-    assert [(item.stage, item.failed_count) for item in status_with_fts_debt.stage_summaries] == [("fts", 1)]
+    assert [(item.stage, item.failed_count) for item in status_with_fts_debt.stage_summaries] == [
+        ("fts", 1),
+        ("insights", 0),
+    ]
 
     # First restart: the source is still hot. Retrying must update the same
     # insights row in place and leave both FTS materialization and FTS debt
@@ -191,7 +192,7 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
         == unrelated_fts_debt
     )
     assert fts.check_sessions((recovered.target_session_id,)) == {recovered.target_session_id}
-    assert messages_fts_match_count(recovered.index_db, "Message") == 1
+    assert messages_fts_match_count(recovered.index_db, "function") == 1
     assert raw_authority_facts(recovered.source_db) == raw_facts_before
     assert (
         session_materialization_facts(
@@ -272,7 +273,7 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
         is None
     )
     assert fts.check_sessions((recovered.target_session_id,)) == set()
-    assert messages_fts_match_count(recovered.index_db, "Message") == deleted_fts_rows + 1
+    assert messages_fts_match_count(recovered.index_db, "function") == expected_function_matches
     assert (
         session_materialization_facts(
             recovered.index_db,

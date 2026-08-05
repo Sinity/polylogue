@@ -820,6 +820,7 @@ def write_parsed_session_to_archive(
                 messages,
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
+                resolve_existing_parents=merge_append,
             )
             add_timing("index.parent_links", t0)
             t0 = time.perf_counter()
@@ -3508,6 +3509,7 @@ def _write_parent_links(
     *,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
+    resolve_existing_parents: bool = False,
 ) -> None:
     by_native_id = {
         message.provider_message_id: _message_id(
@@ -3520,6 +3522,16 @@ def _write_parent_links(
         for fallback_position, message in enumerate(messages)
         if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
     }
+    if resolve_existing_parents:
+        for native_id, message_id in conn.execute(
+            """
+            SELECT native_id, message_id
+            FROM messages
+            WHERE session_id = ? AND native_id IS NOT NULL
+            """,
+            (session_id,),
+        ):
+            by_native_id.setdefault(str(native_id), str(message_id))
     by_message_position = {
         message.position: _message_id(
             session_id,

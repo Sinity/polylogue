@@ -341,6 +341,20 @@ settings.register_profile(
     ],
     database=_HYPOTHESIS_DB,
 )
+settings.register_profile(
+    "convergence-fast",
+    max_examples=3,
+    deadline=None,
+    suppress_health_check=[HealthCheck.differing_executors, HealthCheck.too_slow],
+    database=_HYPOTHESIS_DB,
+)
+settings.register_profile(
+    "convergence-exhaustive",
+    max_examples=24,
+    deadline=None,
+    suppress_health_check=[HealthCheck.differing_executors, HealthCheck.too_slow],
+    database=_HYPOTHESIS_DB,
+)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
