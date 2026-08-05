@@ -4,12 +4,29 @@ from __future__ import annotations
 
 from typing import get_args
 
-from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin
+from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin, SloSampleLabel
 from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 
 OPS_SCHEMA_VERSION = 1
 _OPS_RUN_STATUS_CHECK = literal_check("status", *(status.value for status in OPERATION_LIFECYCLE_STATUSES))
+_SLO_SAMPLE_LABEL_CHECK = check("label", SloSampleLabel)
+
+SLO_SAMPLES_DDL = f"""
+CREATE TABLE IF NOT EXISTS slo_samples (
+    sample_id       TEXT PRIMARY KEY,
+    label           TEXT NOT NULL CHECK ({_SLO_SAMPLE_LABEL_CHECK}),
+    scope           TEXT NOT NULL DEFAULT 'archive',
+    value           REAL NOT NULL,
+    observed_at_ms  INTEGER NOT NULL,
+    window_start_ms INTEGER,
+    window_end_ms   INTEGER,
+    metadata_json   TEXT NOT NULL DEFAULT '{{}}'
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_slo_samples_label_time
+ON slo_samples(label, observed_at_ms DESC);
+"""
 
 # Split out of OPS_DDL (polylogue-sd9s) so the ops-bootstrap convergence step
 # that repairs a stale live CHECK (``_ensure_schema_drift_samples_check`` in
@@ -166,6 +183,12 @@ CREATE TABLE IF NOT EXISTS cursor_lag_samples (
 
 CREATE INDEX IF NOT EXISTS idx_cursor_lag_samples_family_time
 ON cursor_lag_samples(family, sampled_at_ms DESC);
+
+-- Optional steady-state telemetry. This table is disposable and deliberately
+-- self-healing through the idempotent OPS_DDL reapply path. It records only
+-- bounded numeric samples; the source events and cursor tables remain the
+-- authoritative evidence for the projection that produces them.
+{SLO_SAMPLES_DDL}
 
 CREATE TABLE IF NOT EXISTS daemon_stage_events (
     event_id       TEXT PRIMARY KEY,
@@ -351,4 +374,4 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 -- drift apart from each other.
 {SCHEMA_DRIFT_SAMPLES_DDL}"""
 
-__all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION", "SCHEMA_DRIFT_SAMPLES_DDL"]
+__all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION", "SCHEMA_DRIFT_SAMPLES_DDL", "SLO_SAMPLES_DDL"]

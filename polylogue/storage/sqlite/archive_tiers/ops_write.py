@@ -10,7 +10,12 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 
-from polylogue.core.enums import IngestOutcome, OperationStatus, Origin, require_operation_lifecycle_status
+from polylogue.core.enums import (
+    IngestOutcome,
+    OperationStatus,
+    Origin,
+    require_operation_lifecycle_status,
+)
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
