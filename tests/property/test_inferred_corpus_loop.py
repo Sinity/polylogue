@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -17,6 +19,7 @@ from tests.infra.convergence_harness import (
     rich_convergence_pathology,
 )
 from tests.infra.inferred_corpus import (
+    _SUPPORTED_SYNTHETIC_ANNOTATIONS,
     assert_inferred_corpus_convergence_handoff_complete,
     build_inferred_corpus_convergence_handoff,
     compile_inferred_corpus_manifest,
@@ -27,11 +30,45 @@ def _spec_identity(spec: CorpusSpec) -> tuple[str, str, str | None]:
     return spec.provider, spec.package_version, spec.element_kind
 
 
+def _generator_only_schema(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            key: _generator_only_schema(child)
+            for key, child in value.items()
+            if not (isinstance(key, str) and key.startswith("x-") and key not in _SUPPORTED_SYNTHETIC_ANNOTATIONS)
+        }
+    if isinstance(value, list):
+        return [_generator_only_schema(child) for child in value]
+    return value
+
+
+class _GeneratorOnlyRegistry:
+    """Expose the generator-enforced schema view without catalog provenance."""
+
+    def __init__(self, base: SchemaRegistry) -> None:
+        self.base = base
+
+    def list_providers(self) -> list[str]:
+        return self.base.list_providers()
+
+    def load_package_catalog(self, provider: str) -> object:
+        return self.base.load_package_catalog(provider)
+
+    def get_element_schema(self, provider: str, *, version: str = "default", element_kind: str | None = None) -> object:
+        schema = self.base.get_element_schema(provider, version=version, element_kind=element_kind)
+        return cast(object, _generator_only_schema(schema))
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.base, name)
+
+
 @pytest.mark.asyncio
 async def test_inferred_manifest_supported_specs_ingest_and_converge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    manifest = compile_inferred_corpus_manifest(registry=SchemaRegistry(storage_root=SCHEMA_DIR))
+    manifest = compile_inferred_corpus_manifest(
+        registry=_GeneratorOnlyRegistry(SchemaRegistry(storage_root=SCHEMA_DIR))  # type: ignore[arg-type]
+    )
     handoff = build_inferred_corpus_convergence_handoff(manifest)
     assert_inferred_corpus_convergence_handoff_complete(manifest, handoff)
     assert handoff.specs
