@@ -297,10 +297,15 @@ def _fresh_ddl_parity_for_train(
     """Compare a live result, or two canonical creates, against bootstrap DDL."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
+    def prepare_target_schema(connection: sqlite3.Connection) -> None:
+        _migration_runner._prepare_fresh_connection_for_target(connection, train.tier, train.target_version)
+
     if migrated_connection is None:
         with sqlite3.connect(":memory:") as migrated, sqlite3.connect(":memory:") as fresh:
             initialize_archive_tier(migrated, train.tier)
             initialize_archive_tier(fresh, train.tier)
+            prepare_target_schema(migrated)
+            prepare_target_schema(fresh)
             return prove_durable_fresh_ddl_parity(
                 train.tier,
                 train.target_version,
@@ -310,6 +315,7 @@ def _fresh_ddl_parity_for_train(
             )
     with sqlite3.connect(":memory:") as fresh:
         initialize_archive_tier(fresh, train.tier)
+        prepare_target_schema(fresh)
         return prove_durable_fresh_ddl_parity(
             train.tier,
             train.target_version,
@@ -345,7 +351,16 @@ def _runtime_consumer_results(
             detail = f"resolved {reference}"
             try:
                 if reference.endswith(":initialize_archive_database"):
-                    value(archive_root / f"{train.tier.value}.db", train.tier, allow_create=False)
+                    tier_path = archive_root / f"{train.tier.value}.db"
+                    with _open_existing_tier(tier_path) as probe:
+                        live_version = int(probe.execute("PRAGMA user_version").fetchone()[0] or 0)
+                    runtime_target = cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[
+                        train.tier
+                    ]
+                    if live_version == runtime_target:
+                        value(tier_path, train.tier, allow_create=False)
+                    else:
+                        value(tier_path, train.tier, allow_create=False, expected_version=train.target_version)
                 elif reference.endswith(":initialize_archive_tier"):
                     with sqlite3.connect(":memory:") as probe:
                         value(probe, train.tier)
@@ -355,6 +370,18 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_source_hook_event_writer(cast(Callable[..., object], value))
+                elif reference.endswith(":_stage_locked_hook_snapshot"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_locked_hook_snapshot(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":_create_match_stage"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_hook_match_stage(cast(Callable[..., object], value), train.target_version)
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -452,6 +479,105 @@ def _probe_source_hook_event_writer(writer: Callable[..., object]) -> str:
     if hook_row != expected_hook_row or blob_ref_row != expected_blob_ref_row or raw_session_count != (0,):
         raise DurableChangeTrainError("source hook writer probe did not persist the expected hook payload contract")
     return "wrote and read back a hook payload in a fresh source tier"
+
+
+def _runtime_probe_source_connection(target_version: int) -> sqlite3.Connection:
+    """Create a source-tier probe projected to the train's schema slot."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+    connection = sqlite3.connect(":memory:")
+    initialize_archive_tier(connection, ArchiveTier.SOURCE)
+    _migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.SOURCE, target_version)
+    return connection
+
+
+def _seed_hook_reconciliation_probe(connection: sqlite3.Connection) -> tuple[str, bytes, str]:
+    """Install one deterministic orphaned raw payload and its hook evidence."""
+    from polylogue.core.enums import Origin
+    from polylogue.storage.sqlite.archive_tiers.source_write import (
+        deterministic_blob_hash,
+        deterministic_raw_session_id,
+    )
+
+    source_path = "/durable-change-train/hook-reconciliation-probe.jsonl"
+    payload = b'{"event":"PostToolUse","probe":"durable-change-train"}'
+    blob_hash = deterministic_blob_hash(payload)
+    native_id = "durable-change-train-hook-native"
+    ref_id = deterministic_raw_session_id(Origin.CODEX_SESSION, source_path, 0, blob_hash, native_id)
+    connection.execute(
+        """
+        INSERT INTO raw_hook_events (
+            hook_event_id, origin, native_id, session_native_id, source_path,
+            event_type, payload_json, observed_at_ms, blob_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "durable-change-train-hook-event",
+            Origin.CODEX_SESSION.value,
+            native_id,
+            "durable-change-train-hook-session",
+            source_path,
+            "PostToolUse",
+            payload.decode("utf-8"),
+            1_780_000_000_000,
+            blob_hash,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+        VALUES (?, ?, 'raw_payload', ?, ?, ?)
+        """,
+        (blob_hash, ref_id, source_path, len(payload), 1_780_000_000_000),
+    )
+    connection.execute(
+        """
+        CREATE TEMP TABLE durable_change_train_probe_candidates (
+            blob_hash BLOB NOT NULL,
+            ref_type TEXT NOT NULL,
+            ref_id TEXT NOT NULL,
+            source_path TEXT,
+            size_bytes INTEGER NOT NULL,
+            acquired_at_ms INTEGER NOT NULL
+        ) STRICT
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO durable_change_train_probe_candidates
+        SELECT blob_hash, ref_type, ref_id, source_path, size_bytes, acquired_at_ms
+        FROM blob_refs
+        WHERE ref_type = 'raw_payload'
+        """
+    )
+    connection.commit()
+    return "durable_change_train_probe_candidates", payload, ref_id
+
+
+def _probe_locked_hook_snapshot(snapshot: Callable[..., object], target_version: int) -> str:
+    """Exercise liveness snapshotting against a real source-tier fixture."""
+    with _runtime_probe_source_connection(target_version) as connection:
+        candidate_table, _payload, _ref_id = _seed_hook_reconciliation_probe(connection)
+        returned_table = snapshot(connection, candidate_table)
+        locked_count = int(connection.execute("SELECT COUNT(*) FROM temp.blob_ref_liveness_locked_hooks").fetchone()[0])
+        identity_count = int(
+            connection.execute("SELECT COUNT(*) FROM temp.blob_ref_liveness_locked_identity_matches").fetchone()[0]
+        )
+    if returned_table != "blob_ref_liveness_locked_hooks" or locked_count != 1 or identity_count != 1:
+        raise DurableChangeTrainError(
+            "liveness hook snapshot probe did not preserve the expected candidate identity evidence"
+        )
+    return "staged one hook candidate with one identity match"
+
+
+def _probe_hook_match_stage(match_stage: Callable[..., object], target_version: int) -> str:
+    """Exercise hook match staging against a real orphan/reference fixture."""
+    with _runtime_probe_source_connection(target_version) as connection:
+        _candidate_table, payload, ref_id = _seed_hook_reconciliation_probe(connection)
+        result = match_stage(connection)
+    if result != (1, 1, len(payload), 0):
+        raise DurableChangeTrainError(f"hook match-stage probe produced unexpected counts for {ref_id}: {result!r}")
+    return "staged one orphan with one unambiguous hook match"
 
 
 def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
@@ -629,9 +755,12 @@ def execute_durable_change_train(
             fresh_ddl_parity=_fresh_ddl_parity_for_train(train),
             admission_evidence_ref=f"proof:maintenance-admission:{train.train_id}",
             migration_claims=(sidecar.train.migration,),
-            canonical_target_version=cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[
-                tier
-            ],
+            # A durable archive may be several numbered slots behind the
+            # shipped package.  Admit the exact next train before advancing
+            # to a later sidecar.  Comparing a historical slot with the
+            # package's final target rejects valid sequential recovery as
+            # "stale" before the migration can run.
+            canonical_target_version=sidecar.slot,
         )
         train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
     if train.state is DurableChangeTrainState.ADMITTED:

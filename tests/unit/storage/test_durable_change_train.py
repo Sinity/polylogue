@@ -634,6 +634,127 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
         )
 
 
+def test_maintenance_route_replays_historical_sidecars_before_current_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later shipped slot must not reject an earlier persisted train."""
+    package_root = tmp_path / "fixture_migrations_sequential"
+    source_package = package_root / "source"
+    source_package.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (source_package / "__init__.py").write_text("", encoding="utf-8")
+
+    rider_template = DurableChangeRider(
+        rider_id="rider:maintenance",
+        owner_ref="owner:maintenance-rider",
+        schema_objects=(),
+        runtime_consumers=(
+            DurableRuntimeConsumer(
+                "bootstrap",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+                "proof:bootstrap",
+                ("write",),
+            ),
+            DurableRuntimeConsumer(
+                "daemon-health",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                "proof:daemon-health",
+                ("read",),
+            ),
+        ),
+        behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
+    )
+    migrations = (
+        (2, "durable_items", "CREATE TABLE durable_items (id INTEGER PRIMARY KEY) STRICT;"),
+        (3, "later_items", "CREATE TABLE later_items (id INTEGER PRIMARY KEY) STRICT;"),
+    )
+    for slot, table_name, statement in migrations:
+        sql = f"-- migration-safety: additive-no-backup\n{statement}\n"
+        filename = f"{slot:03d}_{table_name}.sql"
+        (source_package / filename).write_text(sql, encoding="utf-8")
+        claim = durable_migration_claim_for_sql(
+            ArchiveTier.SOURCE,
+            filename,
+            sql,
+            owner_ref=f"owner:maintenance-source:{slot}",
+        )
+        rider = replace(
+            rider_template,
+            rider_id=f"rider:maintenance:{slot}",
+            schema_objects=(f"table:{table_name}",),
+        )
+        declared = declare_durable_change_train(
+            train_id=f"train:source:v{slot}",
+            tier=ArchiveTier.SOURCE,
+            current_version=slot - 1,
+            target_version=slot,
+            slot=slot,
+            owner_ref=f"owner:maintenance-source:{slot}",
+            migration=claim,
+            riders=(rider,),
+            declared_at_ms=slot,
+        )
+        (source_package / f"{slot:03d}.train.json").write_text(
+            json.dumps(migration_runner.durable_change_train_to_payload(declared)), encoding="utf-8"
+        )
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(migration_runner, "_migration_package", lambda _tier: "fixture_migrations_sequential.source")
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda _tier: "fixture_migrations_sequential.source",
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train.DURABLE_MIGRATION_ADOPTION_FLOORS",
+        {ArchiveTier.SOURCE: 1, ArchiveTier.USER: 1},
+    )
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = 3
+    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
+    ddl = dict(ARCHIVE_DDL_BY_TIER)
+    ddl[ArchiveTier.SOURCE] = (
+        "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;"
+        "CREATE TABLE durable_items (id INTEGER PRIMARY KEY) STRICT;"
+        "CREATE TABLE later_items (id INTEGER PRIMARY KEY) STRICT;"
+    )
+    monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    released: list[bool] = []
+
+    first = execute_durable_change_train(
+        tmp_path,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: released.append(True),
+    )
+    assert first.migration_result is not None
+    assert first.migration_result.applied_versions == (2,)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
+
+    second = execute_durable_change_train(
+        tmp_path,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: released.append(True),
+    )
+    assert second.migration_result is not None
+    assert second.migration_result.applied_versions == (3,)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='later_items'").fetchone() == ("later_items",)
+    assert released == [True, True]
+
+
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
