@@ -233,66 +233,109 @@ def project_backlog_windows(
     now_ms: int | None = None,
 ) -> tuple[BacklogWindow, ...]:
     """Return bounded windows from the existing event stream, newest first."""
+    windows, _invalid = _project_backlog_windows(
+        events,
+        bulk_import_suppressed=bulk_import_suppressed,
+        now_ms=now_ms,
+    )
+    return windows
+
+
+def _project_backlog_windows(
+    events: Sequence[Mapping[str, object]],
+    *,
+    bulk_import_suppressed: bool | None = None,
+    now_ms: int | None = None,
+) -> tuple[tuple[BacklogWindow, ...], bool]:
+    """Project windows and report whether any lifecycle violated the receipt grammar.
+
+    Valid identities are ``start → end [→ terminal(success)]`` or
+    ``start → terminal(failure|cancelled|stopped)``. Historical ``start → end``
+    remains valid for compatibility with receipts written before terminals.
+    """
     suppressed = bulk_import_is_open(events) if bulk_import_suppressed is None else bulk_import_suppressed
     completed: list[tuple[tuple[int, int], BacklogWindow]] = []
-    completed_lifecycles: set[str] = set()
     active: dict[str, tuple[tuple[int, int], BacklogWindow]] = {}
+    states: dict[str, str] = {}
+    invalid_operations: set[str] = set()
+    invalid_metadata = False
+
+    def invalid_window(window: BacklogWindow) -> BacklogWindow:
+        return window.model_copy(
+            update={
+                "verdict": SloVerdict.UNKNOWN,
+                "reason": "catch-up lifecycle grammar is invalid",
+                "in_progress": False,
+            }
+        )
+
     for index, event in sorted(enumerate(events), key=lambda item: _event_order_key(*item)):
+        if event.get("kind") != "catch_up_cycle":
+            continue
         window = backlog_window_from_event(event, bulk_import_suppressed=suppressed)
         if window is None:
+            invalid_metadata = True
             continue
-        key = window.operation_id or f"event:{_int(event, 'id')}:{index}"
+        if window.operation_id is None:
+            invalid_metadata = True
+            continue
+        key = window.operation_id
         order_key = _event_order_key(index, event)
+        state = states.get(key)
         if window.in_progress:
+            if state is not None:
+                invalid_operations.add(key)
+                completed.append((order_key, invalid_window(window)))
+                continue
             active[key] = (order_key, window)
+            states[key] = "started"
         elif window.phase == "end":
-            if active.pop(key, None) is None:
-                completed.append(
-                    (
-                        order_key,
-                        window.model_copy(
-                            update={
-                                "verdict": SloVerdict.UNKNOWN,
-                                "reason": "catch-up cycle end has no matching start",
-                            }
-                        ),
-                    )
-                )
-            else:
-                completed.append((order_key, window))
-                completed_lifecycles.add(key)
+            if state != "started" or active.pop(key, None) is None:
+                invalid_operations.add(key)
+                completed.append((order_key, invalid_window(window)))
+                continue
+            completed.append((order_key, window))
+            states[key] = "ended"
         elif window.terminal_outcome is CatchUpCycleTerminalOutcome.SUCCESS:
-            if active.pop(key, None) is not None:
-                completed.append((order_key, window))
-                completed_lifecycles.add(key)
-            elif key not in completed_lifecycles:
-                completed.append(
-                    (
-                        order_key,
-                        window.model_copy(
-                            update={
-                                "verdict": SloVerdict.UNKNOWN,
-                                "reason": "catch-up cycle terminal receipt has no matching start",
-                            }
-                        ),
-                    )
-                )
+            if state != "ended":
+                invalid_operations.add(key)
+                completed.append((order_key, invalid_window(window)))
+                continue
+            states[key] = "terminal"
         else:
-            if active.pop(key, None) is None:
-                completed.append(
-                    (
-                        order_key,
-                        window.model_copy(
-                            update={
-                                "verdict": SloVerdict.UNKNOWN,
-                                "reason": "catch-up cycle terminal receipt has no matching start",
-                            }
-                        ),
-                    )
+            if state != "started" or active.pop(key, None) is None:
+                invalid_operations.add(key)
+                completed.append((order_key, invalid_window(window)))
+                continue
+            completed.append((order_key, window))
+            states[key] = "terminal"
+    if invalid_operations:
+        completed = [
+            (
+                order_key,
+                window.model_copy(
+                    update={
+                        "verdict": SloVerdict.UNKNOWN,
+                        "reason": "catch-up lifecycle grammar is invalid",
+                    }
                 )
-            else:
-                completed.append((order_key, window))
-                completed_lifecycles.add(key)
+                if window.operation_id in invalid_operations
+                else window,
+            )
+            for order_key, window in completed
+        ]
+        active = {
+            key: (
+                order_key,
+                window.model_copy(
+                    update={
+                        "verdict": SloVerdict.UNKNOWN,
+                        "reason": "catch-up lifecycle grammar is invalid",
+                    }
+                ),
+            )
+            for key, (order_key, window) in active.items()
+        }
     if now_ms is not None:
         for key, (order_key, window) in tuple(active.items()):
             if window.observed_at_ms is not None and now_ms - window.observed_at_ms >= CATCH_UP_ACTIVE_STALE_AFTER_MS:
@@ -310,7 +353,9 @@ def project_backlog_windows(
                     )
                 )
     windows = completed + list(active.values())
-    return tuple(window for _key, window in sorted(windows, reverse=True)[:20])
+    return tuple(window for _key, window in sorted(windows, reverse=True)[:20]), (
+        bool(invalid_operations) or invalid_metadata
+    )
 
 
 def reduce_slo_samples(
@@ -398,21 +443,25 @@ def slo_status_info(
         resolved_events = list(events)
         history_incomplete = False
     suppressed = bulk_import_is_open(resolved_events)
-    windows = project_backlog_windows(
+    windows, grammar_invalid = _project_backlog_windows(
         resolved_events,
         bulk_import_suppressed=suppressed,
         now_ms=current_epoch_ms() if now_ms is None else now_ms,
     )
     latest = windows[0] if windows else None
-    if history_incomplete:
+    if history_incomplete or grammar_invalid:
         return IngestSloStatus(
             available=latest is not None,
             verdict=SloVerdict.UNKNOWN,
-            reason="catch-up lifecycle history is incomplete",
+            reason=(
+                "catch-up lifecycle history is incomplete"
+                if history_incomplete
+                else "catch-up lifecycle grammar is invalid"
+            ),
             cursor_lag_stuck_file_count=cursor_lag.stuck_file_count,
             cursor_lag_degraded_file_count=cursor_lag.degraded_file_count,
             bulk_import_suppressed=suppressed,
-            lifecycle_history_incomplete=True,
+            lifecycle_history_incomplete=history_incomplete or grammar_invalid,
             latest_window=latest,
         )
     if latest is None:

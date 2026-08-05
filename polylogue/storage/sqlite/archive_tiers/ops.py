@@ -212,6 +212,8 @@ CREATE TABLE IF NOT EXISTS daemon_events (
 
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind ON daemon_events(kind);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
+CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC);
+CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, operation_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS daemon_lifecycle (
     run_id               TEXT PRIMARY KEY,
@@ -374,4 +376,21 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 -- drift apart from each other.
 {SCHEMA_DRIFT_SAMPLES_DDL}"""
 
-__all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION", "SCHEMA_DRIFT_SAMPLES_DDL", "SLO_SAMPLES_DDL"]
+OPS_BENIGN_DDL_CONVERGENCE_PLAN: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, operation_id, id DESC)",
+)
+"""Idempotent same-version OPS fast-forward statements.
+
+The ops tier is disposable and intentionally has no migration chain. Bootstrap
+applies this plan to existing generations after canonical DDL reapplication,
+so the lifecycle query indexes converge without an emitter-local schema write.
+"""
+
+__all__ = [
+    "OPS_BENIGN_DDL_CONVERGENCE_PLAN",
+    "OPS_DDL",
+    "OPS_SCHEMA_VERSION",
+    "SCHEMA_DRIFT_SAMPLES_DDL",
+    "SLO_SAMPLES_DDL",
+]

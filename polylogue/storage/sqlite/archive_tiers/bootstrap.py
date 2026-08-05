@@ -101,6 +101,7 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         ensure_embedding_catchup_run_outcome_columns(conn)
         ensure_ops_status_checks(conn)
         _ensure_schema_drift_samples_check(conn)
+        _apply_ops_benign_ddl_convergence(conn)
     if tier is ArchiveTier.INDEX:
         # Fresh init never had a registered drop's target table, and any
         # additive registry entry lands identically to canonical DDL -- this
@@ -139,6 +140,14 @@ def _ensure_schema_drift_samples_check(conn: sqlite3.Connection) -> None:
 
     conn.execute("DROP TABLE IF EXISTS schema_drift_samples")
     conn.executescript(SCHEMA_DRIFT_SAMPLES_DDL)
+
+
+def _apply_ops_benign_ddl_convergence(conn: sqlite3.Connection) -> None:
+    """Apply the declared idempotent OPS same-version fast-forward plan."""
+    from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN
+
+    for statement in OPS_BENIGN_DDL_CONVERGENCE_PLAN:
+        conn.execute(statement)
 
 
 def _ensure_user_annotation_schemas(conn: sqlite3.Connection) -> None:

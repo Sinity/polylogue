@@ -17,6 +17,7 @@ import polylogue.operations.slo as slo_storage
 from polylogue.core.enums import SloSampleLabel
 from polylogue.daemon.cursor_lag_status import CursorLagSummary
 from polylogue.daemon.events import (
+    CATCH_UP_LIFECYCLE_RETURN_LIMIT,
     CatchUpCycleTerminalOutcome,
     emit_catch_up_cycle,
     emit_daemon_event,
@@ -133,7 +134,7 @@ def test_unmatched_end_is_unknown_not_healthy() -> None:
     windows = project_backlog_windows([_cycle(backlog_start=3, backlog_end=0, discovered=3, ingested=3)])
 
     assert windows[0].verdict is SloVerdict.UNKNOWN
-    assert windows[0].reason == "catch-up cycle end has no matching start"
+    assert windows[0].reason == "catch-up lifecycle grammar is invalid"
 
 
 def test_unmatched_terminal_receipt_is_unknown() -> None:
@@ -150,7 +151,7 @@ def test_unmatched_terminal_receipt_is_unknown() -> None:
     )
 
     assert windows[0].verdict is SloVerdict.UNKNOWN
-    assert windows[0].reason == "catch-up cycle terminal receipt has no matching start"
+    assert windows[0].reason == "catch-up lifecycle grammar is invalid"
 
 
 @pytest.mark.parametrize("outcome", ["cancelled", "stopped"])
@@ -204,6 +205,72 @@ def test_lifecycle_pairing_uses_insertion_id_when_timestamps_rollback() -> None:
     assert status.latest_window.observed_at_ms == 1_000
 
 
+def test_persisted_repeated_start_then_end_is_unknown(workspace_env: dict[str, Path]) -> None:
+    del workspace_env
+    _emit_persisted_cycle("repeated-start", phase="start", backlog_end=1)
+    _emit_persisted_cycle("repeated-start", phase="start", backlog_end=1)
+    _emit_persisted_cycle("repeated-start", phase="end", backlog_end=0)
+
+    status = slo_status_info(cursor_lag=CursorLagSummary())
+
+    assert status.verdict is SloVerdict.UNKNOWN
+    assert status.lifecycle_history_incomplete is True
+    assert status.reason == "catch-up lifecycle grammar is invalid"
+
+
+def test_persisted_multiple_end_receipts_are_unknown(workspace_env: dict[str, Path]) -> None:
+    del workspace_env
+    _emit_persisted_cycle("multiple-end", phase="start", backlog_end=1)
+    _emit_persisted_cycle("multiple-end", phase="end", backlog_end=0)
+    _emit_persisted_cycle("multiple-end", phase="end", backlog_end=0)
+
+    status = slo_status_info(cursor_lag=CursorLagSummary())
+
+    assert status.verdict is SloVerdict.UNKNOWN
+    assert status.lifecycle_history_incomplete is True
+    assert status.reason == "catch-up lifecycle grammar is invalid"
+
+
+def test_persisted_multiple_terminal_receipts_are_unknown(workspace_env: dict[str, Path]) -> None:
+    del workspace_env
+    _emit_persisted_cycle("multiple-terminal", phase="start", backlog_end=1)
+    _emit_persisted_cycle(
+        "multiple-terminal",
+        phase="terminal",
+        backlog_end=1,
+        terminal_outcome="cancelled",
+    )
+    _emit_persisted_cycle(
+        "multiple-terminal",
+        phase="terminal",
+        backlog_end=1,
+        terminal_outcome="stopped",
+    )
+
+    status = slo_status_info(cursor_lag=CursorLagSummary())
+
+    assert status.verdict is SloVerdict.UNKNOWN
+    assert status.lifecycle_history_incomplete is True
+    assert status.reason == "catch-up lifecycle grammar is invalid"
+
+
+def test_persisted_unsupported_phase_invalidates_a_coexisting_valid_pair(workspace_env: dict[str, Path]) -> None:
+    del workspace_env
+    _emit_persisted_cycle("malformed-phase", phase="start", backlog_end=1)
+    _emit_persisted_cycle("malformed-phase", phase="end", backlog_end=0)
+    emit_daemon_event(
+        "catch_up_cycle",
+        operation_id="malformed-phase",
+        payload={"phase": "ignored-by-projection"},
+    )
+
+    status = slo_status_info(cursor_lag=CursorLagSummary())
+
+    assert status.verdict is SloVerdict.UNKNOWN
+    assert status.lifecycle_history_incomplete is True
+    assert status.reason == "catch-up lifecycle grammar is invalid"
+
+
 def test_status_reuses_event_and_cursor_lag_sources() -> None:
     status = slo_status_info(
         cursor_lag=CursorLagSummary(stuck_file_count=2, degraded_file_count=1),
@@ -236,6 +303,14 @@ def test_bulk_import_marker_suppresses_ingest_slo() -> None:
 
 def test_newer_start_cycle_overrides_stale_completed_verdict() -> None:
     events = [
+        _cycle(
+            backlog_start=3,
+            backlog_end=3,
+            discovered=3,
+            operation_id="old",
+            phase="start",
+            timestamp_ms=500,
+        ),
         _cycle(backlog_start=3, backlog_end=0, discovered=3, ingested=3, operation_id="old", timestamp_ms=1_000),
         _cycle(
             backlog_start=5,
@@ -408,7 +483,7 @@ def test_persisted_unmatched_end_fails_closed_in_status(workspace_env: dict[str,
     status = slo_status_info(cursor_lag=CursorLagSummary())
 
     assert status.verdict is SloVerdict.UNKNOWN
-    assert status.reason == "catch-up cycle end has no matching start"
+    assert status.reason == "catch-up lifecycle grammar is invalid"
 
 
 def test_persisted_lifecycle_pair_survives_unrelated_event_traffic(workspace_env: dict[str, Path]) -> None:
@@ -476,6 +551,20 @@ def test_bounded_history_fails_closed_when_older_active_cycle_is_outside_window(
     assert status.verdict is SloVerdict.UNKNOWN
     assert status.lifecycle_history_incomplete is True
     assert status.reason == "catch-up lifecycle history is incomplete"
+
+
+def test_lifecycle_history_return_count_includes_the_bulk_marker_bound(workspace_env: dict[str, Path]) -> None:
+    del workspace_env
+    for _receipt in range(4):
+        for index in range(32):
+            _emit_persisted_cycle(f"bounded-{index}", phase="start", backlog_end=1)
+    emit_daemon_event("bulk_import_started")
+
+    history = query_recent_catch_up_lifecycles()
+
+    assert CATCH_UP_LIFECYCLE_RETURN_LIMIT == 129
+    assert len(history.events) == CATCH_UP_LIFECYCLE_RETURN_LIMIT
+    assert history.incomplete is True
 
 
 def test_repeated_operation_identity_makes_persisted_history_incomplete(workspace_env: dict[str, Path]) -> None:

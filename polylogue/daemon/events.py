@@ -26,10 +26,6 @@ CREATE TABLE IF NOT EXISTS daemon_events (
     operation_id TEXT,
     payload_json TEXT NOT NULL
  ) STRICT;
-CREATE INDEX IF NOT EXISTS idx_daemon_events_kind ON daemon_events(kind);
-CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
-CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC);
-CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, operation_id, id DESC);
 """
 
 
@@ -97,6 +93,11 @@ class CatchUpLifecycleHistory:
 
     events: tuple[dict[str, object], ...]
     incomplete: bool
+
+
+_CATCH_UP_LIFECYCLE_IDENTITY_LIMIT = 32
+_CATCH_UP_LIFECYCLE_RECEIPT_LIMIT = 4
+CATCH_UP_LIFECYCLE_RETURN_LIMIT = _CATCH_UP_LIFECYCLE_IDENTITY_LIMIT * _CATCH_UP_LIFECYCLE_RECEIPT_LIMIT + 1
 
 
 def _iso_from_ms(value: object) -> str:
@@ -169,23 +170,21 @@ def query_daemon_events(
         conn.close()
 
 
-def query_recent_catch_up_lifecycles(*, limit: int = 32) -> CatchUpLifecycleHistory:
+def query_recent_catch_up_lifecycles() -> CatchUpLifecycleHistory:
     """Return bounded, complete histories for recent catch-up identities.
 
     A valid lifecycle writes at most start, end, and terminal receipts. The
-    indexed seed query therefore reads at most ``limit * 3 + 1`` catch-up
+    indexed seed query therefore reads at most ``32 * 3 + 1`` catch-up
     rows, then each selected identity receives at most four indexed receipts:
     three valid boundaries plus one overflow detector. Any older tail, excess
     identity, malformed operation id, or repeated identity receipt marks the
     result incomplete so status cannot hide it behind a newer healthy cycle.
     """
-    if limit < 1:
-        raise ValueError("catch-up lifecycle limit must be positive")
     conn = _open_events_reader()
     if conn is None:
         return CatchUpLifecycleHistory(events=(), incomplete=False)
     try:
-        seed_limit = limit * 3
+        seed_limit = _CATCH_UP_LIFECYCLE_IDENTITY_LIMIT * 3
         seed_rows = conn.execute(
             "SELECT id, ts_ms, kind, operation_id, payload_json "
             "FROM daemon_events WHERE kind = 'catch_up_cycle' "
@@ -199,7 +198,7 @@ def query_recent_catch_up_lifecycles(*, limit: int = 32) -> CatchUpLifecycleHist
             if not isinstance(operation_id, str):
                 incomplete = True
             elif operation_id not in operation_ids:
-                if len(operation_ids) == limit:
+                if len(operation_ids) == _CATCH_UP_LIFECYCLE_IDENTITY_LIMIT:
                     incomplete = True
                 else:
                     operation_ids.append(operation_id)
@@ -209,11 +208,11 @@ def query_recent_catch_up_lifecycles(*, limit: int = 32) -> CatchUpLifecycleHist
             rows = conn.execute(
                 "SELECT id, ts_ms, kind, operation_id, payload_json "
                 "FROM daemon_events WHERE kind = 'catch_up_cycle' AND operation_id = ? "
-                "ORDER BY id DESC LIMIT 4",
-                (operation_id,),
+                "ORDER BY id DESC LIMIT ?",
+                (operation_id, _CATCH_UP_LIFECYCLE_RECEIPT_LIMIT),
             ).fetchall()
             lifecycle_rows.extend(rows)
-            if len(rows) == 4:
+            if len(rows) == _CATCH_UP_LIFECYCLE_RECEIPT_LIMIT:
                 incomplete = True
 
         marker = conn.execute(
@@ -224,19 +223,19 @@ def query_recent_catch_up_lifecycles(*, limit: int = 32) -> CatchUpLifecycleHist
         if marker is not None:
             lifecycle_rows.append(marker)
         lifecycle_rows.sort(key=lambda row: int(cast(int | str | bytes | bytearray, row[0])), reverse=True)
-        return CatchUpLifecycleHistory(
-            events=tuple(
-                {
-                    "id": row[0],
-                    "ts": _iso_from_ms(row[1]),
-                    "kind": row[2],
-                    "operation_id": row[3],
-                    "payload": json.loads(cast(str | bytes | bytearray, row[4])),
-                }
-                for row in lifecycle_rows
-            ),
-            incomplete=incomplete,
+        events = tuple(
+            {
+                "id": row[0],
+                "ts": _iso_from_ms(row[1]),
+                "kind": row[2],
+                "operation_id": row[3],
+                "payload": json.loads(cast(str | bytes | bytearray, row[4])),
+            }
+            for row in lifecycle_rows
         )
+        if len(events) > CATCH_UP_LIFECYCLE_RETURN_LIMIT:
+            raise RuntimeError("catch-up lifecycle query exceeded its fixed return bound")
+        return CatchUpLifecycleHistory(events=events, incomplete=incomplete)
     finally:
         conn.close()
 
@@ -495,6 +494,7 @@ def get_daemon_event_counts() -> dict[str, int]:
 
 
 __all__ = [
+    "CATCH_UP_LIFECYCLE_RETURN_LIMIT",
     "CatchUpLifecycleHistory",
     "CatchUpCycleTerminalOutcome",
     "EVENT_SESSION_APPENDED",
