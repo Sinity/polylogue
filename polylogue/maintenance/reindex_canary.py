@@ -503,7 +503,7 @@ class DurableCanaryReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 4,
+            "schema_version": 5,
             "selection": self.selection.to_dict(),
             "comparison": self.comparison.to_dict(),
             "rebuild_receipt": self.rebuild_receipt,
@@ -707,13 +707,17 @@ def _validate_rebuild_receipt(
     archive_root = receipt.get("archive_root")
     selected_raw_count = receipt.get("selected_raw_count")
     generation = receipt.get("generation")
+    raw_sessions_state_after = receipt.get("raw_sessions_state_after")
     if (
-        not isinstance(archive_root, str)
+        receipt.get("receipt_schema_version") != 2
+        or not isinstance(archive_root, str)
         or not archive_root
         or selected_raw_count != len(tuple(selected_raw_ids))
         or receipt.get("status") != "replayed"
         or receipt.get("materialized") is not True
         or not isinstance(generation, dict)
+        or not isinstance(raw_sessions_state_after, str)
+        or len(raw_sessions_state_after) != 64
     ):
         raise UnclassifiedCanaryDiffError("canary report has invalid rebuild receipt")
     generation_archive_root = generation.get("archive_root")
@@ -839,7 +843,7 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
     """
 
     from polylogue.storage.archive_identity import ArchiveLocation, TierFileIdentity
-    from polylogue.storage.index_generation import source_revision_snapshot
+    from polylogue.storage.index_generation import rebuild_source_evidence_snapshot, source_revision_snapshot
 
     archive_root = receipt.get("archive_root")
     generation = receipt.get("generation")
@@ -863,9 +867,12 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
     candidate_path = Path(cast(str, candidate["index_path"]))
     if not candidate_path.samefile(comparison.candidate_index):
         raise UnclassifiedCanaryDiffError("archive-owned candidate generation does not match the canary comparison")
-    source_snapshot = source_revision_snapshot(root)
+    source_snapshot = rebuild_source_evidence_snapshot(root)
     if source_snapshot != candidate["source_snapshot"]:
         raise UnclassifiedCanaryDiffError("archive-owned source snapshot does not match the inactive candidate")
+    raw_sessions_state_after = source_revision_snapshot(root)
+    if raw_sessions_state_after != receipt.get("raw_sessions_state_after"):
+        raise UnclassifiedCanaryDiffError("archive-owned raw session state does not match the rebuild receipt")
     return {
         "archive_root": str(root.resolve()),
         "active_pointer": str(location.active_pointer) if location.active_pointer is not None else None,
@@ -874,6 +881,7 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
         "candidate_generation": candidate_metadata,
         "candidate_index": _index_evidence(candidate_path),
         "source_snapshot": source_snapshot,
+        "raw_sessions_state_after": raw_sessions_state_after,
     }
 
 
@@ -888,7 +896,7 @@ def _validate_archive_provenance(
     """Validate archive-owned evidence before opening report-provided indexes."""
 
     from polylogue.storage.archive_identity import ArchiveLocation, TierFileIdentity
-    from polylogue.storage.index_generation import source_revision_snapshot
+    from polylogue.storage.index_generation import rebuild_source_evidence_snapshot, source_revision_snapshot
 
     if not isinstance(provenance, dict):
         raise UnclassifiedCanaryDiffError("canary report has no archive-owned provenance")
@@ -934,9 +942,15 @@ def _validate_archive_provenance(
     if not same_candidate:
         raise UnclassifiedCanaryDiffError("archive-owned candidate generation no longer matches the report")
     _same_index_evidence(provenance.get("candidate_index"), candidate_path, label="candidate")
-    source_snapshot = source_revision_snapshot(root)
+    source_snapshot = rebuild_source_evidence_snapshot(root)
     if provenance.get("source_snapshot") != source_snapshot or live_fields["source_snapshot"] != source_snapshot:
         raise UnclassifiedCanaryDiffError("archive-owned source snapshot no longer matches the inactive candidate")
+    raw_sessions_state_after = source_revision_snapshot(root)
+    if (
+        provenance.get("raw_sessions_state_after") != raw_sessions_state_after
+        or receipt.get("raw_sessions_state_after") != raw_sessions_state_after
+    ):
+        raise UnclassifiedCanaryDiffError("archive-owned raw session state no longer matches the rebuild receipt")
 
 
 def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[str, object]:
@@ -945,7 +959,7 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise UnclassifiedCanaryDiffError("canary report root must be an object")
-    if payload.get("schema_version") != 4:
+    if payload.get("schema_version") != 5:
         raise UnclassifiedCanaryDiffError("canary report has no authoritative rebuild receipt schema")
     comparison = payload.get("comparison")
     if not isinstance(comparison, dict):

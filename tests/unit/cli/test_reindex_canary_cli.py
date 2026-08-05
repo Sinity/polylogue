@@ -128,6 +128,8 @@ def test_real_report_preserves_receipt_and_independent_source_snapshots(
     assert isinstance(provenance, dict)
     assert {
         "archive_root",
+        "receipt_schema_version",
+        "raw_sessions_state_after",
         "selected_raw_count",
         "selection_evidence",
         "status",
@@ -150,6 +152,7 @@ def test_real_report_preserves_receipt_and_independent_source_snapshots(
     assert provenance["archive_root"] == str(canary_root.resolve())
     assert provenance["candidate_generation"] == generation
     assert provenance["source_snapshot"] == generation["source_snapshot"]
+    assert provenance["raw_sessions_state_after"] == receipt["raw_sessions_state_after"]
     candidate_path = Path(str(generation["index_path"]))
     assert json.loads((candidate_path.parent / "rebuild-receipt.json").read_text(encoding="utf-8")) == receipt
     assert report_path.is_file()
@@ -401,7 +404,34 @@ def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> Ca
         missing_columns=(),
         differences=differences,  # type: ignore[arg-type]
     )
-    return CanaryRunResult(selection=selection, comparison=comparison, rebuild_receipt={"status": "replayed"})
+    return CanaryRunResult(
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt={
+            "receipt_schema_version": 2,
+            "archive_root": str(index_path.parent),
+            "selected_raw_count": len(selection.selected_raw_ids),
+            "status": "replayed",
+            "materialized": True,
+            "generation": {
+                "generation_id": "gen-sample",
+                "owner_id": "owner-sample",
+                "archive_root": str(index_path.parent),
+                "index_path": str(comparison.candidate_index),
+                "state": "inactive",
+                "source_snapshot": "snapshot",
+            },
+            "selection_evidence": rebuild_selection_evidence(
+                selection.selected_raw_ids,
+                archive_root=index_path.parent,
+                generation_id="gen-sample",
+                generation_owner_id="owner-sample",
+                candidate_index=comparison.candidate_index,
+                source_snapshot="snapshot",
+            ),
+            "raw_sessions_state_after": "0" * 64,
+        },
+    )
 
 
 def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
@@ -420,6 +450,7 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
         selection=result.selection,
         comparison=result.comparison,
         rebuild_receipt={
+            "receipt_schema_version": 2,
             "archive_root": str(index_path.parent),
             "selected_raw_count": 1,
             "status": "replayed",
@@ -440,6 +471,7 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
                 candidate_index=result.comparison.candidate_index,
                 source_snapshot="snapshot",
             ),
+            "raw_sessions_state_after": "0" * 64,
         },
     )
 
@@ -893,7 +925,7 @@ def test_cli_canary_report_red_twin_rejects_replaced_candidate(tmp_path: Path, m
     assert "candidate index identity" in consumed.output
 
 
-@pytest.mark.parametrize("drift", ("active-pointer", "candidate-generation", "source-snapshot"))
+@pytest.mark.parametrize("drift", ("active-pointer", "candidate-generation", "source-snapshot", "raw-state-after"))
 def test_cli_canary_report_red_twin_rejects_lifecycle_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str
 ) -> None:
@@ -912,9 +944,12 @@ def test_cli_canary_report_red_twin_rejects_lifecycle_drift(
         metadata = json.loads(candidate_metadata.read_text(encoding="utf-8"))
         metadata["owner_id"] = "replaced-owner"
         candidate_metadata.write_text(json.dumps(metadata), encoding="utf-8")
-    else:
+    elif drift == "source-snapshot":
         with sqlite3.connect(canary_root / "source.db") as connection:
             connection.execute("UPDATE raw_sessions SET acquired_at_ms = acquired_at_ms + 1")
+    else:
+        with sqlite3.connect(canary_root / "source.db") as connection:
+            connection.execute("UPDATE raw_sessions SET parsed_at_ms = parsed_at_ms + 1")
 
     consumed = CliRunner().invoke(
         cli,

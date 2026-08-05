@@ -460,6 +460,10 @@ class RebuildIndexReceipt:
     # requested IDs to prove the set, count, source snapshot, and candidate
     # identity all agree.
     selection_evidence: dict[str, object] = field(default_factory=dict)
+    # A full raw_sessions hash taken after replay. Unlike source_snapshot,
+    # this deliberately includes parser and governance state so report
+    # consumption can reject post-rebuild state mutation.
+    raw_sessions_state_after: str | None = None
     #: Wall-clock seconds per rebuild stage for THIS pass.
     #:
     #: Three full rebuilds ran without this, so the only cost breakdown
@@ -473,6 +477,7 @@ class RebuildIndexReceipt:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "receipt_schema_version": 2,
             "archive_root": self.archive_root,
             "raw_session_count": self.raw_session_count,
             "selected_raw_count": self.selected_raw_count,
@@ -485,6 +490,7 @@ class RebuildIndexReceipt:
             "transaction": self.transaction,
             "operation": self.operation,
             "selection_evidence": self.selection_evidence,
+            "raw_sessions_state_after": self.raw_sessions_state_after,
             "timings_s": self.timings_s,
             **self.replay,
         }
@@ -553,12 +559,12 @@ def _operation_evidence(
     transaction checkpoint.  It adds no competing ownership mechanism and
     keeps the full checkpoint in ``transaction`` for callers that need it.
     """
-    from polylogue.storage.index_generation import rebuild_lease_status, source_revision_snapshot
+    from polylogue.storage.index_generation import rebuild_lease_status, rebuild_source_evidence_snapshot
 
     transaction_payload = asdict(transaction) if transaction is not None else {}
     generation_payload = asdict(generation) if generation is not None else {}
     source_snapshot = transaction_payload.get("source_snapshot") or generation_payload.get("source_snapshot")
-    current_snapshot = source_revision_snapshot(root) if (root / "source.db").exists() else None
+    current_snapshot = rebuild_source_evidence_snapshot(root) if (root / "source.db").exists() else None
     return {
         "owner": {
             "generation_owner_id": transaction_payload.get("generation_owner_id") or generation_payload.get("owner_id"),
@@ -777,7 +783,11 @@ async def _rebuild_index_from_source_owned(
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
     from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
     from polylogue.storage.archive_readiness import archive_readiness_status
-    from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+    from polylogue.storage.index_generation import (
+        IndexGenerationStore,
+        rebuild_source_evidence_snapshot,
+        source_revision_snapshot,
+    )
     from polylogue.storage.repair import repair_session_insights
 
     generation_store = IndexGenerationStore(owned.location)
@@ -810,7 +820,7 @@ async def _rebuild_index_from_source_owned(
                 generation_store.load_transaction(request.operation_id)
                 if request.operation_id is not None
                 else generation_store.create_transaction(
-                    source_snapshot=source_revision_snapshot(root),
+                    source_snapshot=rebuild_source_evidence_snapshot(root),
                     pass_byte_budget=(
                         int(request.pass_byte_budget_mb * 1024 * 1024)
                         if request.pass_byte_budget_mb is not None
@@ -825,7 +835,7 @@ async def _rebuild_index_from_source_owned(
                 raise RuntimeError(
                     f"rebuild operation {transaction.operation_id} is {transaction.status}; start a new operation"
                 )
-            if source_revision_snapshot(root) != transaction.source_snapshot:
+            if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
                 generation_store.checkpoint_transaction(
                     transaction,
                     status="stale",
@@ -861,7 +871,7 @@ async def _rebuild_index_from_source_owned(
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
-            generation = generation_store.create(source_snapshot=source_revision_snapshot(root))
+            generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
         selection_evidence = rebuild_selection_evidence(
             selected_raw_ids,
             archive_root=root,
@@ -1084,7 +1094,7 @@ async def _rebuild_index_from_source_owned(
             ):
                 _refresh_generation_planner_statistics(Path(generation.index_path))
             if transaction is not None and selected_raw_ids:
-                if source_revision_snapshot(root) != transaction.source_snapshot:
+                if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
                     transaction = generation_store.checkpoint_transaction(
                         transaction,
                         status="stale",
@@ -1168,7 +1178,7 @@ async def _rebuild_index_from_source_owned(
             # not a parallel one, so every receipt shape (deferred, paused,
             # replayed) carries the identical key for this phase.
             terminal_timings_s: dict[str, float] = {"selection_s": selection_elapsed_s}
-            if source_revision_snapshot(root) != generation.source_snapshot:
+            if rebuild_source_evidence_snapshot(root) != generation.source_snapshot:
                 if transaction is not None:
                     transaction = generation_store.checkpoint_transaction(
                         transaction,
@@ -1177,6 +1187,7 @@ async def _rebuild_index_from_source_owned(
                     )
                     source_drifted = True
                 raise RuntimeError(f"source evidence changed while rebuilding {generation.generation_id}")
+            raw_sessions_state_after = source_revision_snapshot(root)
             # polylogue-v6i3: bulk-build replay (bulk_build=True above) left
             # messages_fts/blocks_command_trigram/action_pairs/delegation_facts
             # empty or stale for every session -- repopulate all four
@@ -1329,6 +1340,7 @@ async def _rebuild_index_from_source_owned(
             recovery_state="promoted" if request.promote else "ready",
         ),
         selection_evidence=selection_evidence,
+        raw_sessions_state_after=raw_sessions_state_after,
         timings_s=_receipt_timings(
             selection_s=selection_elapsed_s,
             replay=replay,
@@ -1372,7 +1384,7 @@ def rebuild_status(
     from polylogue.storage.index_generation import (
         IndexGenerationStore,
         rebuild_lease_status,
-        source_revision_snapshot,
+        rebuild_source_evidence_snapshot,
     )
 
     location = ArchiveLocation.resolve(archive_root)
@@ -1418,7 +1430,9 @@ def rebuild_status(
             transaction = None
         if transaction is not None:
             transaction_payload = cast(dict[str, object], asdict(transaction))
-            current_snapshot = source_revision_snapshot(archive_root) if (archive_root / "source.db").exists() else None
+            current_snapshot = (
+                rebuild_source_evidence_snapshot(archive_root) if (archive_root / "source.db").exists() else None
+            )
             delta = {
                 "source_snapshot_matches": (
                     current_snapshot is not None and current_snapshot == transaction.source_snapshot

@@ -19,8 +19,13 @@ from typing import Any
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.maintenance import reindex_canary as reindex_canary_module
-from polylogue.maintenance.rebuild_index import rebuild_selection_evidence
+from polylogue.maintenance.rebuild_index import (
+    RebuildIndexRequest,
+    rebuild_index_from_source_sync,
+    rebuild_selection_evidence,
+)
 from polylogue.maintenance.reindex_canary import (
     CanaryDifferenceReview,
     CanaryDiffReport,
@@ -36,7 +41,9 @@ from polylogue.maintenance.reindex_canary import (
     select_canary_sessions,
     write_canary_report,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.index_generation import rebuild_source_evidence_snapshot, source_revision_snapshot
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
 
@@ -164,6 +171,7 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
         "source_snapshot": "snapshot",
     }
     return {
+        "receipt_schema_version": 2,
         "archive_root": str(comparison.candidate_index.parent),
         "selected_raw_count": len(selection.selected_raw_ids),
         "status": "replayed",
@@ -177,6 +185,7 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
             candidate_index=comparison.candidate_index,
             source_snapshot="snapshot",
         ),
+        "raw_sessions_state_after": "0" * 64,
     }
 
 
@@ -566,6 +575,8 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     shutil.move(root / "index.db", external_index)
     (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
+    active_digest = hashlib.sha256(external_index.read_bytes()).hexdigest()
+    evidence_before = rebuild_source_evidence_snapshot(root)
 
     result = run_reindex_canary(root, input_index=external_index, sessions_per_origin=1, no_promote=True)
 
@@ -586,6 +597,10 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     assert generation["state"] == "inactive"
     assert isinstance(owner_id, str) and owner_id
     assert isinstance(source_snapshot, str) and source_snapshot
+    assert source_snapshot == evidence_before == rebuild_source_evidence_snapshot(root)
+    assert receipt["receipt_schema_version"] == 2
+    assert receipt["raw_sessions_state_after"] == source_revision_snapshot(root)
+    assert hashlib.sha256(external_index.read_bytes()).hexdigest() == active_digest
     assert json.loads((candidate_path.parent / "generation.json").read_text(encoding="utf-8")) == generation
 
     transaction = receipt["transaction"]
@@ -602,6 +617,78 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     assert operation_generation == {"generation_id": generation_id, "state": "inactive"}
     assert operation_delta["transaction_source_snapshot"] == source_snapshot
     assert operation_delta["source_snapshot_matches"] is True
+
+
+def test_real_no_promote_rebuild_changes_parse_state_without_evidence_drift(tmp_path: Path) -> None:
+    """Rebuild output state may change while durable replay evidence remains fixed."""
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    payload = (
+        b"\n".join(
+            (
+                b'{"type":"session_meta","payload":{"id":"fresh","timestamp":"2026-08-05T00:00:00Z"}}',
+                b'{"type":"response_item","payload":{"type":"message","id":"fresh-user","role":"user","content":[{"type":"input_text","text":"hello"}]}}',
+                b'{"type":"response_item","payload":{"type":"message","id":"fresh-assistant","role":"assistant","content":[{"type":"output_text","text":"world"}]}}',
+            )
+        )
+        + b"\n"
+    )
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="fresh.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(root / "source.db") as connection:
+        assert (
+            connection.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+            is None
+        )
+    active_digest = hashlib.sha256((root / "index.db").read_bytes()).hexdigest()
+    evidence_before = rebuild_source_evidence_snapshot(root)
+
+    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=False))
+
+    with sqlite3.connect(root / "source.db") as connection:
+        assert (
+            connection.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+            is not None
+        )
+    assert receipt.generation["state"] == "inactive"
+    assert receipt.generation["source_snapshot"] == evidence_before == rebuild_source_evidence_snapshot(root)
+    assert receipt.raw_sessions_state_after == source_revision_snapshot(root)
+    assert hashlib.sha256((root / "index.db").read_bytes()).hexdigest() == active_digest
+
+
+def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source identity mutation after replay fails before inactive readiness."""
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    active_index = root / "index.db"
+    active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
+
+    from polylogue.maintenance import replay as rebuild_replay
+
+    real_replay = rebuild_replay.rebuild_index_from_source
+
+    async def mutate_source_after_replay(*args: Any, **kwargs: Any) -> dict[str, object]:
+        replay = await real_replay(*args, **kwargs)
+        with sqlite3.connect(root / "source.db") as connection:
+            connection.execute("UPDATE raw_sessions SET source_index = source_index + 1")
+        return replay
+
+    monkeypatch.setattr(rebuild_replay, "rebuild_index_from_source", mutate_source_after_replay)
+
+    with pytest.raises(RuntimeError, match="source evidence changed while rebuilding"):
+        run_reindex_canary(root, sessions_per_origin=1, no_promote=True)
+
+    assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
 
 
 def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
@@ -869,7 +956,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert durable.unclassified_count == 0
     assert report_path.exists()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     comparison_payload = payload["comparison"]
     assert isinstance(comparison_payload, dict)
     summary = comparison_payload["summary"]
@@ -916,6 +1003,51 @@ def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) ->
     report_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(UnclassifiedCanaryDiffError, match="review coverage is incomplete"):
+        load_canary_report(report_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("schema_version", 4, "no authoritative rebuild receipt schema"),
+        ("receipt_schema_version", 1, "invalid rebuild receipt"),
+    ),
+)
+def test_loading_canary_report_rejects_ambiguous_prior_evidence_schema(
+    tmp_path: Path, field: str, value: int, message: str
+) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    comparison = compare_reindex_generations(current, candidate)
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="polylogue-follow-up",
+            rationale="the canary has no reviewed expected delta for this row",
+        )
+        for difference in comparison.differences
+    )
+    write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=reviews,
+    )
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    if field == "schema_version":
+        payload[field] = value
+    else:
+        payload["rebuild_receipt"][field] = value
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match=message):
         load_canary_report(report_path)
 
 

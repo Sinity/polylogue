@@ -864,7 +864,7 @@ class IndexGenerationStore:
 
 
 def source_revision_snapshot(archive_root: Path) -> str:
-    """Stable raw-evidence vector used to reject an unsafe rebuild delta."""
+    """Hash the full mutable raw-session state after a rebuild replay."""
     import hashlib
 
     digest = hashlib.sha256()
@@ -875,6 +875,43 @@ def source_revision_snapshot(archive_root: Path) -> str:
                 digest.update(encoded.encode())
                 digest.update(b"\0")
             digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
+    """Hash the immutable source evidence a rebuild is allowed to replay.
+
+    Parse, validation, and revision-governance state are rebuild outputs or
+    post-acquisition interpretation. They can legitimately change while the
+    rebuild runs, so they must never invalidate its before/after source proof.
+    The selected columns capture durable raw identity, membership, and bytes in
+    deterministic raw-id order.
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+        rows = conn.execute(
+            """
+            SELECT raw_id, origin, capture_mode, native_id, source_path,
+                   source_index, blob_hash, blob_size, acquired_at_ms,
+                   file_mtime_ms
+            FROM raw_sessions
+            ORDER BY raw_id
+            """
+        )
+        for row in rows:
+            for value in row:
+                if value is None:
+                    encoded = b"n"
+                elif isinstance(value, bytes):
+                    encoded = b"b" + value
+                elif isinstance(value, str):
+                    encoded = b"s" + value.encode()
+                else:
+                    encoded = b"i" + str(value).encode()
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
     return digest.hexdigest()
 
 
@@ -903,5 +940,6 @@ __all__ = [
     "RebuildLease",
     "RebuildLeaseUnavailableError",
     "rebuild_lease_status",
+    "rebuild_source_evidence_snapshot",
     "source_revision_snapshot",
 ]
