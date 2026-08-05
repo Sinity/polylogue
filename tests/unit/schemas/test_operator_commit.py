@@ -37,6 +37,7 @@ from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatal
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.tooling_models import ClusterManifest
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+from tests.infra.frozen_clock import FrozenClock
 from tests.infra.inferred_corpus import compile_inferred_corpus_manifest
 
 _PROVIDER = "chatgpt"
@@ -48,7 +49,7 @@ def _gate_receipt(output_dir: Path) -> Path:
     payload = {
         "schema": "polylogue.schema-inference-gate.v1",
         "gate_version": "2",
-        "generated_at": "2026-08-05T14:00:00+00:00",
+        "generated_at": "2023-11-14T22:13:20+00:00",
         "receipt_nonce": "00000000-0000-4000-8000-000000000001",
         "verdict": "PASS",
         "archive_root": str(archive_root.absolute()),
@@ -152,7 +153,12 @@ def _read_element_schema(output_dir: Path, version: str, element_kind: str = "se
         return cast("dict[str, Any]", json.load(handle))
 
 
+@pytest.mark.frozen_clock_modules("polylogue.maintenance.schema_inference_gate")
 class TestCommitProviderSchemaWritesRealFiles:
+    @pytest.fixture(autouse=True)
+    def _freeze_gate_clock(self, frozen_clock: FrozenClock) -> None:
+        pass
+
     def test_new_provider_writes_catalog_and_element_files(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "providers"
         schema = {"type": "object", "properties": {"id": {"type": "string"}}}
