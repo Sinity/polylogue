@@ -12,7 +12,7 @@ import click
 @click.option("--source-path-file", type=click.Path(path_type=Path, dir_okay=False), default=None)
 @click.option("--output-plan", type=click.Path(path_type=Path, dir_okay=False), default=None)
 @click.option("--plan", "plan_path", type=click.Path(path_type=Path, dir_okay=False), default=None)
-@click.option("--backup-manifest", type=click.Path(path_type=Path, dir_okay=False), default=None)
+@click.option("--backup-manifest", type=click.Path(path_type=Path, file_okay=True, dir_okay=True), default=None)
 @click.option("--receipt", type=click.Path(path_type=Path, dir_okay=False), default=None)
 @click.option("--apply", "apply_changes", is_flag=True, help="Apply one previously written reconciliation plan.")
 def cursor_authority_reconcile_command(

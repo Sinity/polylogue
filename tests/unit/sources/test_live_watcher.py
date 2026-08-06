@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import shutil
 import sqlite3
 import time
 import zipfile
@@ -338,6 +339,35 @@ async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Pa
     assert metrics.full_file_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
+    watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path) -> None:
+    from polylogue.maintenance import cursor_authority_reconcile as reconcile
+    from polylogue.maintenance.cursor_authority_reconcile import cursor_authority_path_digest
+    from polylogue.sources.live.batch import scoped_cursor_authority_authorization
+
+    processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    shadow_index = tmp_path / "index.db"
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    active_index.parent.mkdir(parents=True)
+    shutil.copy2(shadow_index, active_index)
+    (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
+    projection = reconcile._projection_for(tmp_path)
+    sample = projection.cursor_ahead_samples[0]
+    shadow_before = shadow_index.read_bytes()
+    with scoped_cursor_authority_authorization(
+        source_path_digest=cursor_authority_path_digest(source_path),
+        cursor_byte_offset=sample.cursor_byte_offset,
+        accepted_frontier=sample.accepted_frontier,
+        plan_digest="active-index-test",
+        force_full_ingest=True,
+    ):
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+
+    assert metrics.full_file_count == 1
+    assert shadow_index.read_bytes() == shadow_before
     watcher.stop()
 
 
@@ -2955,6 +2985,17 @@ def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch
     record = watcher._cursor.get_record(f)
     assert record is not None
     assert record.parser_fingerprint == "live-batched-v3"
+
+
+def test_live_batch_processor_observes_dynamic_parser_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", "live-batched-dynamic-test")
+
+    assert watcher._batch_processor._current_parser_fingerprint() == "live-batched-dynamic-test"
 
 
 def test_truncate_rewrite_triggers_reingest(tmp_path: Path) -> None:

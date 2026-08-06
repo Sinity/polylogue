@@ -23,7 +23,9 @@ from pathlib import Path
 
 from polylogue.api import Polylogue
 from polylogue.config import Config
+from polylogue.core.enums import IngestOutcome
 from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 from polylogue.sources.live.batch import (
     LiveBatchProcessor,
     cursor_authority_path_digest,
@@ -33,6 +35,8 @@ from polylogue.sources.live.batch_support import sha256_range_from_path
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.watcher import WatchSource
+from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.backup_attestation import BackupAttestationError, verify_verification_receipt
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
 
 PLAN_FORMAT = "polylogue.cursor-authority-reconciliation-plan.v1"
@@ -70,6 +74,17 @@ def _file_fingerprint(path: Path) -> tuple[int, str]:
     except OSError as exc:
         raise CursorAuthorityReconciliationError(f"required archive file is unreadable: {path}") from exc
     return size, digest.hexdigest()
+
+
+def _identity_digest(value: object) -> str:
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def _path_identity(path: Path) -> dict[str, str]:
+    return {
+        "path_digest": cursor_authority_path_digest(path),
+        "basename": path.name,
+    }
 
 
 def _stat_observation(path: Path) -> tuple[int, int, int, int, int]:
@@ -131,17 +146,26 @@ def _read_private_source_path(path_file: Path) -> Path:
 def _sqlite_snapshot(path: Path) -> dict[str, object]:
     if not path.is_file():
         raise CursorAuthorityReconciliationError(f"required archive tier is missing: {path}")
-    size_bytes, sha256 = _file_fingerprint(path)
     try:
-        with closing(sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)) as conn:
-            conn.execute("PRAGMA query_only = ON")
-            user_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-            schema_version = int(conn.execute("PRAGMA schema_version").fetchone()[0] or 0)
-            schema_rows = conn.execute(
-                "SELECT type, name, tbl_name, sql FROM sqlite_schema "
-                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name, tbl_name"
-            ).fetchall()
-            quick_check = tuple(str(row[0]) for row in conn.execute("PRAGMA quick_check"))
+        with tempfile.TemporaryDirectory(prefix="polylogue-sqlite-snapshot-") as temporary_dir:
+            snapshot_path = Path(temporary_dir) / "snapshot.db"
+            with (
+                closing(sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)) as source_conn,
+                closing(sqlite3.connect(snapshot_path)) as snapshot_conn,
+            ):
+                source_conn.execute("PRAGMA query_only = ON")
+                source_conn.backup(snapshot_conn)
+                snapshot_conn.commit()
+            size_bytes, sha256 = _file_fingerprint(snapshot_path)
+            with closing(sqlite3.connect(f"file:{snapshot_path.resolve()}?mode=ro", uri=True)) as conn:
+                conn.execute("PRAGMA query_only = ON")
+                user_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+                schema_version = int(conn.execute("PRAGMA schema_version").fetchone()[0] or 0)
+                schema_rows = conn.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_schema "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name, tbl_name"
+                ).fetchall()
+                quick_check = tuple(str(row[0]) for row in conn.execute("PRAGMA quick_check"))
     except (OSError, sqlite3.Error) as exc:
         raise CursorAuthorityReconciliationError(f"could not read SQLite tier {path}: {exc}") from exc
     schema_digest = _canonical_digest(
@@ -158,10 +182,20 @@ def _sqlite_snapshot(path: Path) -> dict[str, object]:
 
 
 def _tier_snapshots(root: Path) -> dict[str, dict[str, object]]:
+    location = ArchiveLocation.resolve(root)
     snapshots: dict[str, dict[str, object]] = {}
     for tier in _REQUIRED_TIERS:
-        snapshots[tier] = _sqlite_snapshot(root / f"{tier}.db")
+        tier_path = location.active_index_path if tier == "index" else root / f"{tier}.db"
+        snapshots[tier] = _sqlite_snapshot(tier_path)
     return snapshots
+
+
+def _active_index_binding(root: Path) -> dict[str, object]:
+    location = ArchiveLocation.resolve(root)
+    return {
+        "path": _path_identity(location.active_index_path),
+        "generation_digest": _identity_digest(location.active_generation),
+    }
 
 
 def _code_sha() -> str:
@@ -204,10 +238,12 @@ def _private_projection(projection: RawFrontierIntegrityProjection) -> dict[str,
         if isinstance(value, dict):
             return {
                 key: (
-                    cursor_authority_path_digest(Path(str(item)))
-                    if key in {"source_path", "logical_source_key"} and isinstance(item, str)
+                    _identity_digest(item)
+                    if key in {"source_path", "logical_source_key", "accepted_raw_id", "raw_id", "session_id"}
+                    and isinstance(item, str)
                     else None
-                    if key in {"source_path", "logical_source_key"} and item is not None
+                    if key in {"source_path", "logical_source_key", "accepted_raw_id", "raw_id", "session_id"}
+                    and item is not None
                     else redact(item)
                 )
                 for key, item in value.items()
@@ -253,7 +289,8 @@ def _head_details(root: Path, source_path: Path, projection: RawFrontierIntegrit
     sample = projection.cursor_ahead_samples[0]
     if Path(sample.source_path).resolve() != source_path.resolve():
         raise CursorAuthorityReconciliationError("selected source path is not the sole cursor-ahead path")
-    with closing(sqlite3.connect(f"file:{(root / 'index.db').resolve()}?mode=ro", uri=True)) as conn:
+    index_path = ArchiveLocation.resolve(root).active_index_path
+    with closing(sqlite3.connect(f"file:{index_path.resolve()}?mode=ro", uri=True)) as conn:
         head = conn.execute(
             "SELECT logical_source_key, accepted_raw_id, accepted_source_revision, "
             "accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
@@ -307,15 +344,24 @@ def _head_details(root: Path, source_path: Path, projection: RawFrontierIntegrit
     }
 
 
+def _require_healthy_projection_siblings(projection: RawFrontierIntegrityProjection) -> None:
+    if not projection.available:
+        raise CursorAuthorityReconciliationError("raw-frontier projection is unavailable")
+    if projection.broken_head_status != "healthy" or projection.missing_source_raw_status != "healthy":
+        raise CursorAuthorityReconciliationError("raw-frontier sibling projections are not healthy")
+
+
 def _build_plan(root: Path, source_path: Path, *, require_candidate: bool = True) -> dict[str, object]:
     tiers = _tier_snapshots(root)
     projection = _projection_for(root)
+    _require_healthy_projection_siblings(projection)
     path_digest = cursor_authority_path_digest(source_path)
     if projection.cursor_ahead_count == 0:
         if require_candidate and projection.cursor_authority_gap_count == 0 and projection.overall_status == "healthy":
             not_applicable_plan: dict[str, object] = {
                 "format": PLAN_FORMAT,
-                "archive_identity": {"root": str(root.resolve())},
+                "archive_identity": _path_identity(root),
+                "active_index": _active_index_binding(root),
                 "code_sha": _code_sha(),
                 "deployed_package_sha": _deployed_package_sha(),
                 "tier_fingerprints": tiers,
@@ -341,7 +387,8 @@ def _build_plan(root: Path, source_path: Path, *, require_candidate: bool = True
     details = _head_details(root, source_path, projection)
     plan: dict[str, object] = {
         "format": PLAN_FORMAT,
-        "archive_identity": {"root": str(root.resolve())},
+        "archive_identity": _path_identity(root),
+        "active_index": _active_index_binding(root),
         "code_sha": _code_sha(),
         "deployed_package_sha": _deployed_package_sha(),
         "tier_fingerprints": tiers,
@@ -376,7 +423,14 @@ def _load_plan(path: Path) -> dict[str, object]:
 
 
 def _backup_root(manifest_path: Path) -> Path:
-    root = manifest_path if manifest_path.is_dir() else manifest_path.parent
+    if manifest_path.is_dir():
+        root = manifest_path
+    elif manifest_path.is_file() and manifest_path.name == "manifest.json":
+        root = manifest_path.parent
+    else:
+        raise CursorAuthorityReconciliationError(
+            "backup manifest must be manifest.json or a verified full-evidence backup directory"
+        )
     if not root.is_dir() or not (root / "manifest.json").is_file():
         raise CursorAuthorityReconciliationError("backup manifest must be a verified full-evidence backup directory")
     return root
@@ -402,6 +456,24 @@ def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[st
         raise CursorAuthorityReconciliationError("backup lacks complete blob rollback evidence")
     if not (root / "blob").is_dir() or not (root / "blob-inventory.json").is_file():
         raise CursorAuthorityReconciliationError("backup lacks blob rollback evidence")
+    archive_root = _archive_root()
+    location = ArchiveLocation.resolve(archive_root)
+    expected_active_index = plan.get("active_index")
+    if expected_active_index is not None and expected_active_index != _active_index_binding(archive_root):
+        raise CursorAuthorityReconciliationError("active index generation changed since planning")
+    try:
+        verify_verification_receipt(
+            receipt,
+            tier="source",
+            live_tier_path=location.configured_tier("source").configured_path,
+        )
+        verify_verification_receipt(
+            receipt,
+            tier="user",
+            live_tier_path=location.configured_tier("user").configured_path,
+        )
+    except BackupAttestationError as exc:
+        raise CursorAuthorityReconciliationError("backup verification receipt attestation is invalid") from exc
     declared = manifest.get("tier_source_fingerprints")
     expected = plan.get("tier_fingerprints")
     if not isinstance(declared, dict) or not isinstance(expected, dict):
@@ -417,16 +489,29 @@ def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[st
         backup_tier = root / f"{tier}.db"
         if not backup_tier.is_file():
             raise CursorAuthorityReconciliationError(f"backup {tier} tier is missing")
-        actual_size, actual_sha256 = _file_fingerprint(backup_tier)
-        if actual_sha256 != str(expected_tier["sha256"]) or actual_size != int(expected_tier["size_bytes"]):
-            raise CursorAuthorityReconciliationError(f"backup {tier} bytes do not match the plan fingerprint")
-    return {"root": str(root.resolve()), "manifest_sha256": _sha256_file(root / "manifest.json")}
+        actual = _sqlite_snapshot(backup_tier)
+        if actual.get("sha256") != expected_tier.get("sha256") or actual.get("size_bytes") != expected_tier.get(
+            "size_bytes"
+        ):
+            raise CursorAuthorityReconciliationError(f"backup {tier} image does not match the plan fingerprint")
+        if tier == "index" and expected_active_index is not None:
+            source_fingerprint = artifact.get("path")
+            if (
+                not isinstance(source_fingerprint, str)
+                or Path(source_fingerprint).resolve() != location.active_index_path.resolve()
+            ):
+                raise CursorAuthorityReconciliationError(
+                    "backup index fingerprint does not bind the active index generation"
+                )
+    return {"root": _path_identity(root), "manifest_sha256": _sha256_file(root / "manifest.json")}
 
 
 def _quick_checks(root: Path) -> dict[str, list[str]]:
     checks: dict[str, list[str]] = {}
+    location = ArchiveLocation.resolve(root)
     for tier in ("source", "index", "ops", "audit"):
-        with closing(sqlite3.connect(f"file:{(root / f'{tier}.db').resolve()}?mode=ro", uri=True)) as conn:
+        tier_path = location.active_index_path if tier == "index" else root / f"{tier}.db"
+        with closing(sqlite3.connect(f"file:{tier_path.resolve()}?mode=ro", uri=True)) as conn:
             checks[tier] = [str(row[0]) for row in conn.execute("PRAGMA quick_check")]
         if checks[tier] != ["ok"]:
             raise CursorAuthorityReconciliationError(f"{tier}.db quick_check failed: {checks[tier]}")
@@ -463,7 +548,12 @@ def _write_atomic_json(path: Path, payload: Mapping[str, object], *, refuse_exis
 
 
 def _require_daemon_stopped(root: Path) -> None:
-    config = Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
+    config = Config(
+        archive_root=root,
+        render_root=root / "render",
+        sources=[],
+        db_path=ArchiveLocation.resolve(root).active_index_path,
+    )
     from polylogue.maintenance.offline_guard import running_daemon_pid
 
     if running_daemon_pid(config) is not None:
@@ -479,16 +569,52 @@ def build_reconciliation_plan(*, source_path_file: Path, output_plan: Path) -> d
     return plan
 
 
-def _find_recovery_attempt(root: Path, source_path: Path, plan_observed_at_ms: int) -> str | None:
+def _find_recovery_attempt(
+    root: Path,
+    source_path: Path,
+    plan_observed_at_ms: int,
+    *,
+    plan_digest: str,
+    path_digest: str,
+) -> dict[str, object] | None:
     with closing(sqlite3.connect(f"file:{(root / 'ops.db').resolve()}?mode=ro", uri=True)) as conn:
         rows = conn.execute(
-            "SELECT attempt_id, status, source_path, source_paths_json, finished_at_ms FROM ingest_attempts "
+            "SELECT attempt_id, status, source_path, source_paths_json, finished_at_ms, "
+            "outcome_code, retryable, diagnostic, remediation FROM ingest_attempts "
             "ORDER BY COALESCE(finished_at_ms, heartbeat_at_ms, started_at_ms) DESC LIMIT 50"
         ).fetchall()
-    for attempt_id, status, single_path, paths_json, finished_at_ms in rows:
+        event_rows = conn.execute(
+            "SELECT attempt_id, payload_json FROM daemon_stage_events "
+            "WHERE stage = 'planning' ORDER BY observed_at_ms DESC LIMIT 200"
+        ).fetchall()
+    planning_bindings: dict[str, bool] = {}
+    for attempt_id, payload_json in event_rows:
+        try:
+            payload = json.loads(str(payload_json))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        planning_bindings[str(attempt_id)] = (
+            payload.get("cursor_authority_plan_digest") == plan_digest
+            and payload.get("cursor_authority_path_digest") == path_digest
+        )
+    for (
+        attempt_id,
+        status,
+        single_path,
+        paths_json,
+        finished_at_ms,
+        outcome_code,
+        retryable,
+        diagnostic,
+        remediation,
+    ) in rows:
         if str(status) not in {"completed", "completed_with_failures"}:
             continue
         if not isinstance(finished_at_ms, int) or finished_at_ms <= plan_observed_at_ms:
+            continue
+        if not planning_bindings.get(str(attempt_id), False):
             continue
         values: list[str] = []
         if isinstance(paths_json, str):
@@ -501,14 +627,24 @@ def _find_recovery_attempt(root: Path, source_path: Path, plan_observed_at_ms: i
         if not values and single_path:
             values.append(str(single_path))
         if any(Path(value).resolve() == source_path.resolve() for value in values):
-            return str(attempt_id)
+            return {
+                "attempt_id": str(attempt_id),
+                "status": str(status),
+                "finished_at_ms": finished_at_ms,
+                "outcome_code": None if outcome_code is None else str(outcome_code),
+                "retryable": None if retryable is None else bool(retryable),
+                "diagnostic": None if diagnostic is None else str(diagnostic),
+                "remediation": None if remediation is None else str(remediation),
+            }
     return None
 
 
-async def _normal_ingest(root: Path, source_path: Path, plan: Mapping[str, object]) -> tuple[LiveBatchMetrics, str]:
+async def _normal_ingest(
+    root: Path, source_path: Path, plan: Mapping[str, object]
+) -> tuple[LiveBatchMetrics, dict[str, object]]:
     from polylogue.sources.live import watcher as live_watcher
 
-    async with Polylogue(archive_root=root, db_path=root / "index.db") as polylogue:
+    async with Polylogue(archive_root=root, db_path=ArchiveLocation.resolve(root).active_index_path) as polylogue:
         cursor = CursorStore(root / "ops.db", initialize=False, ops_db_path=root / "ops.db")
         processor = LiveBatchProcessor(
             polylogue,
@@ -521,9 +657,19 @@ async def _normal_ingest(root: Path, source_path: Path, plan: Mapping[str, objec
             cursor_byte_offset=_plan_int(plan, "cursor_byte_offset"),
             accepted_frontier=_plan_int(plan, "accepted_frontier"),
             plan_digest=str(plan["plan_digest"]),
+            force_full_ingest=True,
         ):
             metrics = await processor.ingest_files([source_path], emit_event=False)
-        return metrics, _find_recovery_attempt(root, source_path, _plan_int(plan, "observed_at_ms")) or "unknown"
+        attempt = _find_recovery_attempt(
+            root,
+            source_path,
+            _plan_int(plan, "observed_at_ms"),
+            plan_digest=str(plan["plan_digest"]),
+            path_digest=str(plan["selected_path_digest"]),
+        )
+        if attempt is None:
+            raise CursorAuthorityReconciliationError("completed ingest attempt lacks reconciliation planning binding")
+        return metrics, attempt
 
 
 def _plan_int(plan: Mapping[str, object], key: str) -> int:
@@ -560,6 +706,34 @@ def _changed_rows() -> dict[str, int | None]:
     return {"cursor": None, "accepted_head_direct_writes": 0}
 
 
+def _typed_retryable_attempt(attempt: Mapping[str, object]) -> bool:
+    outcome_code = attempt.get("outcome_code")
+    retryable = attempt.get("retryable")
+    if not isinstance(outcome_code, str) or retryable is not True:
+        return False
+    try:
+        outcome = IngestOutcome(outcome_code)
+    except ValueError:
+        return False
+    return IngestAttemptDisposition(outcome=outcome).retryable is True
+
+
+def _redacted_metrics(metrics: LiveBatchMetrics | None) -> dict[str, object] | None:
+    if metrics is None:
+        return None
+    payload = metrics.to_payload()
+    payload["failed_paths"] = [_path_identity(Path(str(path))) for path in metrics.failed_paths]
+    payload["new_sessions"] = [
+        {"source_name_digest": _identity_digest(source_name), "session_id_digest": _identity_digest(session_id)}
+        for source_name, session_id in metrics.new_sessions
+    ]
+    payload["updated_sessions"] = [
+        {"source_name_digest": _identity_digest(source_name), "session_id_digest": _identity_digest(session_id)}
+        for source_name, session_id in metrics.updated_sessions
+    ]
+    return payload
+
+
 def _receipt_payload(
     *,
     plan: Mapping[str, object],
@@ -585,12 +759,15 @@ def _receipt_payload(
     return {
         "format": RECEIPT_FORMAT,
         "verdict": verdict,
-        "archive_identity": {"root": str(root.resolve())},
+        "archive_identity": {
+            "root": _path_identity(root),
+            "active_index": plan.get("active_index"),
+        },
         "plan_digest": plan["plan_digest"],
         "backup": dict(backup),
         "before_projection": dict(before_projection),
         "after_projection": _private_projection(after_projection) if after_projection is not None else None,
-        "metrics": metrics.to_payload() if metrics is not None else None,
+        "metrics": _redacted_metrics(metrics),
         "changed_rows": _changed_rows(),
         "ingest_attempt_id": attempt_id,
         "ingest_attempt_observation": attempt_observation,
@@ -612,47 +789,62 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
     if receipt.exists():
         raise CursorAuthorityReconciliationError(f"output path already exists: {receipt}")
     before_projection = _before_projection(plan)
-    backup_evidence = _validate_backup(backup_manifest, plan)
-    current_path = _find_path_by_digest(root, str(plan["selected_path_digest"]))
-    try:
-        current_plan = _build_plan(root, current_path)
-    except CursorAuthorityReconciliationError:
-        current_plan = None
-    if current_plan is None or not _same_plan_bindings(current_plan, plan):
-        recovery_projection = _projection_for(root)
-        recovery_attempt = _find_recovery_attempt(root, current_path, _plan_int(plan, "observed_at_ms"))
-        if recovery_attempt is None or recovery_projection.cursor_ahead_count != 0:
-            raise CursorAuthorityReconciliationError("plan bindings changed before archive ownership")
-        before_gap_count = before_projection.get("cursor_authority_gap_count")
-        if not isinstance(before_gap_count, int) or recovery_projection.cursor_authority_gap_count != before_gap_count:
-            raise CursorAuthorityReconciliationError(
-                "recovered ingest changed the pre-existing incomparable cursor population"
-            )
-        recovered_receipt_payload = _receipt_payload(
-            plan=plan,
-            backup=backup_evidence,
-            root=root,
-            verdict="reconciled" if recovery_projection.overall_status == "healthy" else "typed_deferred",
-            before_projection=before_projection,
-            after_projection=recovery_projection,
-            metrics=None,
-            attempt_id=recovery_attempt,
-            attempt_observation="observed",
-            evidence={
-                "raw_frontier_worsening": False,
-                "invalid_ahead_reconciliation": False,
-                "changed_pre_existing_populations": False,
-            },
-        )
-        recovered_receipt_payload["receipt_digest"] = _canonical_digest(recovered_receipt_payload)
-        _write_atomic_json(receipt, recovered_receipt_payload, refuse_existing=True)
-        return recovered_receipt_payload
     owner = acquire_durable_archive_ownership(root, owner_id=f"cursor-authority-reconcile:{os.getpid()}")
     with owner:
+        backup_evidence = _validate_backup(backup_manifest, plan)
+        current_path = _find_path_by_digest(root, str(plan["selected_path_digest"]))
+        try:
+            current_plan = _build_plan(root, current_path)
+        except CursorAuthorityReconciliationError:
+            current_plan = None
+        if current_plan is None or not _same_plan_bindings(current_plan, plan):
+            recovery_projection = _projection_for(root)
+            _require_healthy_projection_siblings(recovery_projection)
+            recovery_attempt = _find_recovery_attempt(
+                root,
+                current_path,
+                _plan_int(plan, "observed_at_ms"),
+                plan_digest=str(plan["plan_digest"]),
+                path_digest=str(plan["selected_path_digest"]),
+            )
+            if recovery_attempt is None or recovery_projection.cursor_ahead_count != 0:
+                raise CursorAuthorityReconciliationError("plan bindings changed before archive ownership")
+            if recovery_projection.cursor_ahead_status != "healthy":
+                raise CursorAuthorityReconciliationError("recovery did not prove a healthy cursor frontier")
+            before_gap_count = before_projection.get("cursor_authority_gap_count")
+            if (
+                not isinstance(before_gap_count, int)
+                or recovery_projection.cursor_authority_gap_count != before_gap_count
+            ):
+                raise CursorAuthorityReconciliationError(
+                    "recovered ingest changed the pre-existing incomparable cursor population"
+                )
+            recovered_receipt_payload = _receipt_payload(
+                plan=plan,
+                backup=backup_evidence,
+                root=root,
+                verdict="reconciled",
+                before_projection=before_projection,
+                after_projection=recovery_projection,
+                metrics=None,
+                attempt_id=str(recovery_attempt["attempt_id"]),
+                attempt_observation="observed",
+                evidence={
+                    "raw_frontier_worsening": False,
+                    "invalid_ahead_reconciliation": False,
+                    "changed_pre_existing_populations": False,
+                    "attempt_outcome_code": recovery_attempt.get("outcome_code"),
+                },
+                tolerate_state_errors=False,
+            )
+            recovered_receipt_payload["receipt_digest"] = _canonical_digest(recovered_receipt_payload)
+            _write_atomic_json(receipt, recovered_receipt_payload, refuse_existing=True)
+            return recovered_receipt_payload
         current_plan = _build_plan(root, current_path)
         if not _same_plan_bindings(current_plan, plan):
             raise CursorAuthorityReconciliationError("plan bindings changed after archive ownership")
         metrics: LiveBatchMetrics | None = None
+        attempt: dict[str, object] | None = None
         attempt_id = "unknown"
         after_projection: RawFrontierIntegrityProjection | None = None
         evidence: dict[str, object] = {
@@ -661,8 +853,10 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
             "changed_pre_existing_populations": False,
         }
         try:
-            metrics, attempt_id = asyncio.run(_normal_ingest(root, current_path, plan))
+            metrics, attempt = asyncio.run(_normal_ingest(root, current_path, plan))
+            attempt_id = str(attempt["attempt_id"])
             after_projection = _projection_for(root)
+            _require_healthy_projection_siblings(after_projection)
             if after_projection.broken_head_count or after_projection.missing_source_raw_count:
                 evidence["raw_frontier_worsening"] = True
                 raise CursorAuthorityReconciliationError("reconciliation introduced unrelated raw-frontier worsening")
@@ -671,14 +865,17 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
                     metrics.succeeded_file_count != 0
                     or str(current_path) not in metrics.failed_paths
                     or metrics.time_budget_exceeded
+                    or not _typed_retryable_attempt(attempt)
                 ):
                     evidence["invalid_ahead_reconciliation"] = True
                     raise CursorAuthorityReconciliationError(
-                        "cursor-ahead postcondition is neither reconciled nor explicitly deferred"
+                        "cursor-ahead postcondition lacks a typed retryable deferral outcome"
                     )
                 verdict = "typed_deferred"
             else:
-                verdict = "reconciled" if after_projection.overall_status == "healthy" else "typed_deferred"
+                if after_projection.cursor_ahead_status != "healthy":
+                    raise CursorAuthorityReconciliationError("reconciliation did not prove a healthy cursor frontier")
+                verdict = "reconciled"
             before_gap_count = before_projection.get("cursor_authority_gap_count")
             if not isinstance(before_gap_count, int) or after_projection.cursor_authority_gap_count != before_gap_count:
                 evidence["changed_pre_existing_populations"] = True
@@ -695,8 +892,8 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
                 metrics=metrics,
                 attempt_id=attempt_id,
                 attempt_observation="performed",
-                evidence=evidence,
-                tolerate_state_errors=True,
+                evidence={**evidence, "attempt_outcome_code": attempt.get("outcome_code") if attempt else None},
+                tolerate_state_errors=False,
             )
         except Exception as exc:
             if after_projection is None:
@@ -715,8 +912,12 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
                 attempt_id=attempt_id,
                 attempt_observation="performed",
                 evidence=evidence,
+                tolerate_state_errors=True,
             )
-            failure_payload["error"] = {"type": type(exc).__name__, "message": str(exc)}
+            failure_message = str(exc).replace(str(root), "<archive-root>")
+            if "current_path" in locals():
+                failure_message = failure_message.replace(str(current_path), f"<source:{current_path.name}>")
+            failure_payload["error"] = {"type": type(exc).__name__, "message": failure_message}
             failure_payload["receipt_digest"] = _canonical_digest(failure_payload)
             _write_atomic_json(receipt, failure_payload, refuse_existing=True)
             if isinstance(exc, CursorAuthorityReconciliationError):

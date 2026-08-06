@@ -1744,6 +1744,43 @@ def test_cursor_authority_reconcile_cli_exposes_only_scoped_inputs(cli_runner: C
     assert "--bypass" not in result.output
 
 
+def test_cursor_authority_reconcile_cli_accepts_verified_backup_directory(
+    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.maintenance import cursor_authority_reconcile
+
+    backup = tmp_path / "verified-backup"
+    backup.mkdir()
+    (backup / "manifest.json").write_text("{}", encoding="utf-8")
+    observed: dict[str, Path] = {}
+
+    def fake_apply(*, plan_path: Path, backup_manifest: Path, receipt: Path) -> dict[str, object]:
+        observed["backup"] = backup_manifest
+        return {"verdict": "failed"}
+
+    monkeypatch.setattr(cursor_authority_reconcile, "apply_reconciliation", fake_apply)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "cursor-authority-reconcile",
+            "--apply",
+            "--plan",
+            str(tmp_path / "plan.json"),
+            "--backup-manifest",
+            str(backup),
+            "--receipt",
+            str(tmp_path / "receipt.json"),
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert observed["backup"] == backup
+
+
 @pytest.mark.parametrize(
     "args",
     [
