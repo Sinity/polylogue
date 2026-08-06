@@ -66,10 +66,11 @@ only that absent file through the archive ownership gate:
 polylogue ops maintenance migrate-tier audit --initialize-missing --output-format json
 ```
 
-The flag stages the canonical database in the private archive directory and
-publishes it with an atomic no-replace link. It refuses any existing path,
-including one created concurrently, and never replaces durable data. For each
-existing tier that the selected package reports behind, run its numbered
+The flag stages the canonical database in the private archive directory,
+copies it from the verified open descriptor into an anonymous inode, and
+publishes that inode with an atomic no-replace link. It refuses any existing
+path, including one created concurrently, and never replaces durable data. For
+each existing tier that the selected package reports behind, run its numbered
 migration with the verified full-evidence backup manifest:
 
 ```bash

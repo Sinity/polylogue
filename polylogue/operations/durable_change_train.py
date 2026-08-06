@@ -63,6 +63,7 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     staged = path.with_name(f".{path.name}.initialize-{uuid.uuid4().hex}.tmp")
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor: int | None = None
+    publication_descriptor: int | None = None
     staged_identity: tuple[int, int] | None = None
     try:
         descriptor = os.open(staged, flags, 0o600)
@@ -79,18 +80,56 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             or (initialized_metadata.st_dev, initialized_metadata.st_ino) != staged_identity
         ):
             raise MigrationError(f"staged durable tier identity changed during initialization: {staged}")
+        anonymous_flag = getattr(os, "O_TMPFILE", 0)
+        if not anonymous_flag:
+            raise MigrationError("missing-tier initialization requires anonymous-file publication support")
         try:
-            os.link(staged, path, follow_symlinks=False)
+            publication_descriptor = os.open(
+                path.parent,
+                os.O_RDWR | anonymous_flag | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+        except OSError as exc:
+            raise MigrationError(f"cannot create anonymous durable-tier publication inode: {path.parent}") from exc
+        offset = 0
+        while chunk := os.pread(descriptor, 1024 * 1024, offset):
+            written_offset = 0
+            while written_offset < len(chunk):
+                written = os.write(publication_descriptor, chunk[written_offset:])
+                if written <= 0:
+                    raise MigrationError("durable-tier publication copy made no progress")
+                written_offset += written
+            offset += len(chunk)
+        os.fsync(publication_descriptor)
+        publication_metadata = os.fstat(publication_descriptor)
+        if (
+            not stat.S_ISREG(publication_metadata.st_mode)
+            or publication_metadata.st_size != initialized_metadata.st_size
+        ):
+            raise MigrationError(f"anonymous durable-tier publication copy is incomplete: {path}")
+        publication_identity = (publication_metadata.st_dev, publication_metadata.st_ino)
+        try:
+            # O_TMPFILE plus link(2) publishes one descriptor-backed inode
+            # without resolving the replaceable named staging path again.
+            os.link(f"/proc/self/fd/{publication_descriptor}", path, follow_symlinks=True)
         except FileExistsError as exc:
             raise MigrationError(
                 f"{tier.value} tier appeared during initialization; refusing to replace it: {path}"
             ) from exc
+        published_metadata = path.lstat()
+        if (
+            not stat.S_ISREG(published_metadata.st_mode)
+            or (published_metadata.st_dev, published_metadata.st_ino) != publication_identity
+        ):
+            raise MigrationError(f"published durable tier identity does not match the staged database: {path}")
         directory_descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory_descriptor)
         finally:
             os.close(directory_descriptor)
     finally:
+        if publication_descriptor is not None:
+            os.close(publication_descriptor)
         if descriptor is not None:
             os.close(descriptor)
         if staged_identity is not None:
