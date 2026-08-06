@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -143,3 +144,31 @@ def test_check_rejects_pr_body_without_carrier(
 
     assert result.startswith("1\n")
     assert "missing the structured pr-scope carrier" in result
+
+
+def test_pr_lookup_falls_back_to_github_api_when_gh_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response(BytesIO):
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.close()
+
+    def missing_gh(*args: object, **kwargs: object) -> object:
+        command = args[0]
+        if isinstance(command, list) and command[:1] == ["gh"]:
+            raise FileNotFoundError("gh")
+        return type("Completed", (), {"stdout": "git@github.com:Sinity/polylogue.git\n"})()
+
+    seen_urls: list[str] = []
+
+    def github_response(api_request: object, *, timeout: int) -> Response:
+        assert isinstance(api_request, pr_scope.request.Request)
+        seen_urls.append(api_request.full_url)
+        return Response(json.dumps({"body": "carrier", "draft": False, "head": {"sha": HEAD_SHA}}).encode())
+
+    monkeypatch.setattr(pr_scope.subprocess, "run", missing_gh)
+    monkeypatch.setattr(pr_scope.request, "urlopen", github_response)
+
+    assert pr_scope._pr_body(3845) == ("carrier", HEAD_SHA, False)
+    assert seen_urls == ["https://api.github.com/repos/Sinity/polylogue/pulls/3845"]

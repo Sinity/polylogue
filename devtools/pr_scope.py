@@ -12,11 +12,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib import request
 
 _CARRIER_PREFIX = "polylogue-pr-scope:v1"
 _CARRIER_START = f"<!-- {_CARRIER_PREFIX}"
@@ -244,13 +247,38 @@ def _git_head_sha() -> str:
     return result.stdout.strip()
 
 
+def _github_repo_slug() -> str:
+    remote = subprocess.run(
+        ["git", "remote", "get-url", "origin"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", remote)
+    if match is None:
+        raise ValueError(f"cannot derive a GitHub repository from origin remote {remote!r}")
+    return f"{match.group(1)}/{match.group(2)}"
+
+
+def _pr_body_from_github_api(pr: int) -> tuple[str, str, bool]:
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    api_request = request.Request(f"https://api.github.com/repos/{_github_repo_slug()}/pulls/{pr}", headers=headers)
+    with request.urlopen(api_request, timeout=30) as response:
+        payload = json.loads(response.read())
+    return payload.get("body") or "", payload["head"]["sha"], bool(payload.get("draft"))
+
+
 def _pr_body(pr: int) -> tuple[str, str, bool]:
-    result = subprocess.run(
-        ["gh", "pr", "view", str(pr), "--json", "body,headRefOid,isDraft"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    """Read the published PR through ``gh``, or GitHub's public API in CI."""
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(pr), "--json", "body,headRefOid,isDraft"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return _pr_body_from_github_api(pr)
     payload = json.loads(result.stdout)
     return payload.get("body") or "", payload["headRefOid"], bool(payload.get("isDraft"))
 
