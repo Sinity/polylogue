@@ -65,6 +65,16 @@ def test_duplicate_forcing_row_is_blocking() -> None:
         resolve_incident_coverage(ledger, _graph())
 
 
+def test_replacing_a_forcing_row_with_an_unknown_bead_is_blocking() -> None:
+    ledger = _ledger()
+    row = _rows(ledger)[0]
+    row["bead_id"] = "polylogue-not-a-forcing-dependency"
+    cast(dict[str, object], row["incident"])["bead_id"] = "polylogue-not-a-forcing-dependency"
+
+    with pytest.raises(IncidentCoverageLedgerError, match="ledger rows do not match forcing dependencies"):
+        resolve_incident_coverage(ledger, _graph())
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -90,6 +100,24 @@ def test_deleting_a_named_successor_is_blocking() -> None:
     cast(dict[str, object], ledger["successors"]).pop(str(successor["bead_id"]))
 
     with pytest.raises(IncidentCoverageLedgerError, match="unknown successor"):
+        resolve_incident_coverage(ledger, _graph())
+
+
+def test_dangling_receipt_reference_is_blocking() -> None:
+    ledger = _ledger()
+    row = next(row for row in _rows(ledger) if row["bead_id"] == "polylogue-5xxmc")
+    cast(list[str], row["receipts"]).append("deleted-receipt")
+
+    with pytest.raises(IncidentCoverageLedgerError, match="unknown receipts"):
+        resolve_incident_coverage(ledger, _graph())
+
+
+def test_successor_from_another_parent_is_blocking() -> None:
+    ledger = _ledger()
+    successor = cast(dict[str, object], _rows(ledger)[0]["residual_successor"])
+    successor["bead_id"] = "polylogue-active-leaf-live-proof"
+
+    with pytest.raises(IncidentCoverageLedgerError, match="not a named child"):
         resolve_incident_coverage(ledger, _graph())
 
 
