@@ -1826,6 +1826,7 @@ def validate_schema_inference_receipt(
         if _as_dict(document.get(field)).get("passed") is not True:
             errors.append(f"receipt subgate {field} is not PASS")
 
+    active_token: dict[str, object] | None = inventory_token
     ground_truth = document.get("ground_truth_inputs")
     if not isinstance(ground_truth, dict):
         errors.append("receipt ground_truth_inputs are missing or malformed")
@@ -1841,7 +1842,6 @@ def validate_schema_inference_receipt(
             if recorded_digest != recorded_structure_digest:
                 errors.append("receipt raw external mapping or inventory does not match its digest")
             receipt_token = _as_dict(document.get("external_ground_truth_inventory_token"))
-            active_token = inventory_token if inventory_token is not None else None
             if inventory_token is not None:
                 expected_token_fields = {
                     "schema": "polylogue.external-ground-truth-inventory-token.v1",
@@ -1851,7 +1851,7 @@ def validate_schema_inference_receipt(
                     "source_snapshot": document.get("source_snapshot"),
                     "external_ground_truth_digest": recorded_digest,
                 }
-                if any(active_token.get(key) != value for key, value in expected_token_fields.items()):
+                if any(inventory_token.get(key) != value for key, value in expected_token_fields.items()):
                     errors.append("receipt external ground-truth inventory token is not bound to this pass")
             current_digest = _current_external_ground_truth_digest(root, ground_truth, inventory_token=active_token)
             if recorded_digest != current_digest:

@@ -803,5 +803,5 @@ def test_pointer_flip_records_post_promotion_attestation_failure(
     assert attestation["status"] == "failed"
     assert result.generation["state"] == "active"
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve(strict=True) == Path(
-        result.generation["index_path"]
+        cast(str, result.generation["index_path"])
     ).resolve(strict=True)
