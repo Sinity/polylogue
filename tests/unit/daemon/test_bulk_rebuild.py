@@ -48,7 +48,13 @@ from polylogue.daemon.bulk_rebuild import (
     run_daemon_bulk_rebuild_pass,
 )
 from polylogue.daemon.parse_prefetch import DaemonParseStage
-from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.maintenance.rebuild_index import (
+    RebuildIndexRequest,
+    RebuildSchemaCurrencyError,
+    rebuild_index_from_source_sync,
+)
+from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
+from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.index_generation import (
     IndexGenerationStore,
     rebuild_source_evidence_snapshot,
@@ -56,6 +62,7 @@ from polylogue.storage.index_generation import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _RAW_COUNT = 6
@@ -141,6 +148,57 @@ def test_daemon_bulk_rebuild_refuses_unexplained_failures_before_generation_or_p
         )
 
     assert not (tmp_path / ".index-generations").exists()
+    parse_stage.warm_raw_ids.assert_not_called()
+
+
+def test_daemon_bulk_pass_rechecks_schema_currency_in_page_selection_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A migration between transaction resolution and page selection blocks.
+
+    Production dependency: the second ownership-bound currency check in
+    ``run_daemon_bulk_rebuild_pass``. Mutation: removing that check reaches the
+    fail-fast ``next_raw_page`` replacement below instead of raising the schema
+    diagnostic before receipt or source-page consumption.
+    """
+    from polylogue.daemon import bulk_rebuild
+
+    _seed_corpus(tmp_path, count=1)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    real_assert = assert_owns_archive_location
+    assertion_count = 0
+
+    def advance_audit_after_page_ownership(owned: OwnedArchiveLocation, location: ArchiveLocation) -> None:
+        nonlocal assertion_count
+        real_assert(owned, location)
+        assertion_count += 1
+        if assertion_count != 2:
+            return
+        audit_probe = probe_archive_tier(ArchiveTier.AUDIT, tmp_path / "audit.db")
+        with sqlite3.connect(tmp_path / "audit.db") as conn:
+            conn.execute(f"PRAGMA user_version = {audit_probe.expected_user_version + 1}")
+
+    monkeypatch.setattr(bulk_rebuild, "assert_owns_archive_location", advance_audit_after_page_ownership)
+    next_raw_page = Mock(side_effect=AssertionError("source page selected before schema currency recheck"))
+    monkeypatch.setattr(IndexGenerationStore, "next_raw_page", next_raw_page)
+    parse_stage = Mock()
+
+    with pytest.raises(RebuildSchemaCurrencyError) as exc_info:
+        asyncio.run(
+            run_daemon_bulk_rebuild_pass(
+                config=_config(tmp_path),
+                parse_stage=parse_stage,
+                batch_size=1,
+                max_payload_bytes=10_000,
+            )
+        )
+
+    blocking_tiers = exc_info.value.diagnostic["blocking_tiers"]
+    assert isinstance(blocking_tiers, list)
+    assert blocking_tiers[0]["tier"] == "audit"
+    assert assertion_count == 2
+    next_raw_page.assert_not_called()
     parse_stage.warm_raw_ids.assert_not_called()
 
 

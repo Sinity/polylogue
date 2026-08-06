@@ -1990,6 +1990,245 @@ def test_rebuild_index_force_write_option_is_retired(cli_runner: CliRunner) -> N
     assert "--force-write" in result.output
 
 
+def test_rebuild_index_preflight_reports_durable_schema_currency(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    root = cli_workspace["archive_root"]
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("DROP INDEX idx_raw_failure_disposition_receipts_disposed_at")
+        conn.execute("DROP TABLE raw_failure_disposition_receipts")
+        conn.execute("PRAGMA user_version = 28")
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--preflight", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "rebuild-schema-currency"
+    assert payload["status"] == "blocked"
+    assert [tier["tier"] for tier in payload["tiers"]] == ["audit", "source", "user"]
+    assert payload["blocking_tiers"][0]["tier"] == "source"
+    assert payload["blocking_tiers"][0]["actual_user_version"] == 28
+    assert payload["blocking_tiers"][0]["expected_user_version"] == 29
+    assert "migrate or deploy before rebuilding" in result.stderr
+
+
+def test_migrate_tier_cli_initializes_only_an_absent_durable_tier(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+    audit_db.unlink()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["tier"] == "audit"
+    assert payload["initialized"] is True
+    assert payload["from_version"] == 0
+    assert payload["to_version"] == 1
+    with sqlite3.connect(audit_db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_an_existing_tier(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+    before = audit_db.read_bytes()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "already exists; refusing missing-tier initialization" in json.loads(result.stdout)["error"]
+    assert audit_db.read_bytes() == before
+
+
+def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_replacement(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+    audit_db.unlink()
+    raced_bytes = b"concurrent durable owner\n"
+    real_link = os.link
+
+    def create_target_before_publish(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        Path(destination).write_bytes(raced_bytes)
+        real_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.link", create_target_before_publish)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "appeared during initialization; refusing to replace it" in json.loads(result.stdout)["error"]
+    assert audit_db.read_bytes() == raced_bytes
+    assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
+
+
+def test_migrate_tier_cli_exposes_no_named_staging_inode_before_publication(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+    audit_db.unlink()
+    real_link = os.link
+
+    def assert_no_named_stage_before_publish(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
+        real_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(
+        "polylogue.operations.durable_change_train.os.link",
+        assert_no_named_stage_before_publish,
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    with sqlite3.connect(audit_db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
+
+
+def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    root = cli_workspace["archive_root"]
+    with sqlite3.connect(root / "audit.db") as conn:
+        expected = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        conn.execute(f"PRAGMA user_version = {expected + 1}")
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "audit.db" in result.stderr
+    assert not (root / ".index-generations").exists()
+
+
+def test_rebuild_index_empty_source_preserves_plain_receipt_output_after_guard(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real empty receipt must render without replay-only counter keys.
+
+    Mutation: removing the status branch reaches the production counter
+    formatter and raises KeyError before this exact plain output is emitted.
+    """
+    root = cli_workspace["archive_root"]
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == f"Archive root: {root}\nNo source.db raw_sessions rows found.\n"
+    assert not (root / ".index-generations").exists()
+
+
+def test_rebuild_index_rejects_daemon_schema_preflight_combination(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--preflight", "--daemon"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "--preflight cannot be combined with --daemon" in result.output
+
+
 def test_rebuild_index_daemon_path_posts_the_real_selection_request(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

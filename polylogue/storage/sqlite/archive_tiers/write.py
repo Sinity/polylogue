@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import urlparse
 
 from polylogue.archive.message.types import MessageType
@@ -451,6 +451,18 @@ def write_parsed_session_to_archive(
         force_spawned_fresh = False
         if parent_session_id is not None and messages:
             parent_composed: list[tuple[str, str]] | None = None
+            # Link quarantine happens after the session/link rows are written,
+            # but prefix normalization happens here. Classify the proposed edge
+            # against the current projection before deleting the copied prefix.
+            # The graph resolver remains the authority that persists quarantine
+            # evidence; this early check preserves the full child transcript for
+            # both proven cycles and indeterminate over-budget walks.
+            cycle_walk = _would_create_cycle(
+                conn,
+                child_id=session_id,
+                proposed_parent_id=parent_session_id,
+            )
+            force_spawned_fresh = cycle_walk.outcome != "acyclic"
             if acompact:
                 parent_composed = _composed_db_signatures(conn, parent_session_id, cache=signature_cache)
                 membership = _acompact_content_membership_ratio(
@@ -2782,7 +2794,8 @@ def _union_with_existing_rows(
     # changes which messages exist).
     is_prefix_sharing_parent = (
         conn.execute(
-            "SELECT 1 FROM session_links WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing' LIMIT 1",
+            "SELECT 1 FROM session_links WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing' "
+            "AND COALESCE(TRIM(status), '') != 'quarantined' LIMIT 1",
             (session_id,),
         ).fetchone()
         is not None
@@ -3727,40 +3740,46 @@ def _branch_type_from_link_type(link_type: object) -> str | None:
 _CYCLE_WALK_BUDGET = 1024
 
 
+@dataclass(frozen=True, slots=True)
+class _CycleWalkResult:
+    outcome: Literal["acyclic", "cycle", "budget_exhausted"]
+    path: tuple[str, ...]
+
+
 def _would_create_cycle(
     conn: sqlite3.Connection,
     *,
     child_id: str,
     proposed_parent_id: str,
-) -> list[str] | None:
-    """Return the cycle path if resolving child->proposed_parent would close a loop.
+) -> _CycleWalkResult:
+    """Classify the proposed edge without conflating exhaustion with a cycle.
 
     Walks ``sessions.parent_session_id`` upward from ``proposed_parent_id``.
-    Returns ``None`` for a legitimate (acyclic, or not-yet-resolvable) shape.
+    Budget exhaustion is indeterminate and must remain quarantined, but it is
+    not evidence that the proposed edge closes a cycle.
     """
     if proposed_parent_id == child_id:
-        return [child_id, child_id]
+        return _CycleWalkResult("cycle", (child_id, child_id))
     path: list[str] = [child_id, proposed_parent_id]
     current = proposed_parent_id
     steps = 0
     while True:
         if steps >= _CYCLE_WALK_BUDGET:
-            path.append("...budget-exceeded")
-            return path
+            return _CycleWalkResult("budget_exhausted", tuple(path))
         row = conn.execute(
             "SELECT parent_session_id FROM sessions WHERE session_id = ?",
             (current,),
         ).fetchone()
         if row is None:
-            return None
+            return _CycleWalkResult("acyclic", tuple(path))
         next_parent = row[0]
         if next_parent is None:
-            return None
+            return _CycleWalkResult("acyclic", tuple(path))
         if next_parent == child_id:
             path.append(child_id)
-            return path
-        path.append(next_parent)
-        current = next_parent
+            return _CycleWalkResult("cycle", tuple(path))
+        path.append(str(next_parent))
+        current = str(next_parent)
         steps += 1
 
 
@@ -3771,17 +3790,26 @@ def _quarantine_session_link(
     dst_origin: str,
     dst_native_id: str,
     link_type: str,
-    cycle_path: list[str],
+    cycle_walk: _CycleWalkResult,
     observed_at_ms: int,
 ) -> None:
-    """Mark one edge quarantined instead of resolving it, with evidence."""
-    evidence = _json_dumps(
-        {
+    """Mark one unsafe edge quarantined with accurately typed evidence."""
+    if cycle_walk.outcome == "cycle":
+        evidence_payload: dict[str, JSONValue] = {
             "reason": "cycle_rejected",
-            "cycle_path": cycle_path,
+            "cycle_path": list(cycle_walk.path),
             "detected_at_ms": observed_at_ms,
         }
-    )
+    elif cycle_walk.outcome == "budget_exhausted":
+        evidence_payload = {
+            "reason": "cycle_walk_budget_exhausted",
+            "walk_path": list(cycle_walk.path),
+            "walk_budget": _CYCLE_WALK_BUDGET,
+            "detected_at_ms": observed_at_ms,
+        }
+    else:
+        raise ValueError("acyclic session link cannot be quarantined as a cycle risk")
+    evidence = _json_dumps(evidence_payload)
     conn.execute(
         """
         UPDATE session_links
@@ -3862,16 +3890,16 @@ def _resolve_session_graph(
         child_id, link_type = str(row[0]), str(row[1])
         # polylogue-4ts.10: session_id is about to become child_id's parent --
         # refuse (quarantine, with evidence) rather than silently resolve if
-        # that would close a cycle in sessions.parent_session_id.
-        cycle_path = _would_create_cycle(conn, child_id=child_id, proposed_parent_id=session_id)
-        if cycle_path is not None:
+        # that would close a cycle or cannot be decided within the walk budget.
+        cycle_walk = _would_create_cycle(conn, child_id=child_id, proposed_parent_id=session_id)
+        if cycle_walk.outcome != "acyclic":
             _quarantine_session_link(
                 conn,
                 src_session_id=child_id,
                 dst_origin=origin,
                 dst_native_id=native_id,
                 link_type=link_type,
-                cycle_path=cycle_path,
+                cycle_walk=cycle_walk,
                 observed_at_ms=int(time.time() * 1000),
             )
             continue
@@ -3964,9 +3992,9 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
     """Resolve ``session_id``'s own unresolved outbound edges (it is the child).
 
     polylogue-4ts.10: candidates are evaluated one at a time (rather than a
-    single blanket UPDATE) so each can be cycle-checked against
-    ``sessions.parent_session_id`` before being resolved -- a candidate whose
-    resolution would close a loop is quarantined instead, never resolved.
+    single blanket UPDATE) so each can be checked against
+    ``sessions.parent_session_id`` before being resolved. A candidate whose
+    resolution would close a loop or exhaust the walk budget is quarantined.
     """
     candidates = conn.execute(
         """
@@ -3982,15 +4010,15 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
         (session_id,),
     ).fetchall()
     for dst_origin, dst_native_id, link_type, proposed_parent_id in candidates:
-        cycle_path = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=proposed_parent_id)
-        if cycle_path is not None:
+        cycle_walk = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=proposed_parent_id)
+        if cycle_walk.outcome != "acyclic":
             _quarantine_session_link(
                 conn,
                 src_session_id=session_id,
                 dst_origin=dst_origin,
                 dst_native_id=dst_native_id,
                 link_type=link_type,
-                cycle_path=cycle_path,
+                cycle_walk=cycle_walk,
                 observed_at_ms=int(time.time() * 1000),
             )
             continue
@@ -4019,6 +4047,7 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
         SELECT resolved_dst_session_id, link_type
         FROM session_links
         WHERE src_session_id = ? AND resolved_dst_session_id IS NOT NULL
+          AND COALESCE(TRIM(status), '') != 'quarantined'
         ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
         LIMIT 1
         """,
@@ -5700,6 +5729,7 @@ def _composed_db_signatures(
               AND inheritance = 'prefix-sharing'
               AND resolved_dst_session_id IS NOT NULL
               AND branch_point_message_id IS NOT NULL
+              AND COALESCE(TRIM(status), '') != 'quarantined'
             LIMIT 1
             """,
             (cursor_session_id,),
@@ -6104,6 +6134,7 @@ def _repair_stale_prefix_branch_points_db(
         WHERE l.inheritance = 'prefix-sharing'
           AND l.resolved_dst_session_id IS NOT NULL
           AND l.branch_point_message_id IS NOT NULL
+          AND COALESCE(TRIM(l.status), '') != 'quarantined'
           {scope_clause}
           AND NOT EXISTS (
               SELECT 1 FROM messages m
@@ -6430,6 +6461,7 @@ def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tupl
           AND inheritance = 'prefix-sharing'
           AND resolved_dst_session_id IS NOT NULL
           AND branch_point_message_id IS NOT NULL
+          AND COALESCE(TRIM(status), '') != 'quarantined'
         LIMIT 1
         """,
         (session_id,),

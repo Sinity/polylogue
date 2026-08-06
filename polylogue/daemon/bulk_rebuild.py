@@ -182,6 +182,9 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
     generation directory, so both must fail closed against a foreign/rotated
     archive location before touching disk, not just the eventual write pass.
     """
+    from polylogue.maintenance.rebuild_index import require_rebuild_schema_currency
+
+    require_rebuild_schema_currency(root)
     _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
     # This must precede transaction resolution, because retiring a terminal
     # transaction and creating its replacement also creates generation state.
@@ -193,6 +196,10 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
     owned = OwnedArchiveLocation.acquire(location)
     try:
         assert_owns_archive_location(owned, location)
+        # The early check is a cheap rejection before receipt work. Repeat it
+        # under archive ownership because a previous owner can migrate a
+        # durable tier while this caller waits for the lock.
+        require_rebuild_schema_currency(root)
         # The first validation is only a cheap early rejection. Revalidate
         # after ownership acquisition so receipt expiry, source revision, or
         # external-corpus drift cannot reach generation bookkeeping.
@@ -319,7 +326,11 @@ async def run_daemon_bulk_rebuild_pass(
     never opens a second writer connection of its own).
     """
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
-    from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+    from polylogue.maintenance.rebuild_index import (
+        RebuildIndexRequest,
+        rebuild_index_from_source_sync,
+        require_rebuild_schema_currency,
+    )
     from polylogue.maintenance.schema_inference_gate import resolve_schema_inference_receipt_reference
 
     root = Path(config.archive_root)
@@ -336,6 +347,10 @@ async def run_daemon_bulk_rebuild_pass(
     owned = await asyncio.to_thread(OwnedArchiveLocation.acquire, location)
     try:
         await asyncio.to_thread(assert_owns_archive_location, owned, location)
+        # Transaction resolution has its own ownership-bound currency check,
+        # but a migration can complete before this later page-selection hold.
+        # Recheck before consuming the receipt or selecting source material.
+        await asyncio.to_thread(require_rebuild_schema_currency, root)
         await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
         store = IndexGenerationStore(location)
         await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)

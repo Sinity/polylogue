@@ -16,10 +16,12 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from polylogue.config import Config
+from polylogue.core.errors import PolylogueError
 from polylogue.logging import get_logger
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
@@ -64,6 +66,63 @@ class RebuildProvenanceError(RuntimeError):
 
 class RebuildDerivedStateProvenanceError(RebuildProvenanceError):
     """A derived-state stage was blocked by a failed provenance recheck."""
+
+
+class RebuildSchemaCurrencyError(PolylogueError):
+    """The durable tiers do not match the package that would rebuild them."""
+
+    http_status_code = HTTPStatus.CONFLICT
+
+    def __init__(self, diagnostic: dict[str, object]) -> None:
+        self.diagnostic = diagnostic
+        blocked = diagnostic["blocking_tiers"]
+        assert isinstance(blocked, list)
+        detail = ", ".join(
+            f"{item['tier']}.db:{item['actual_user_version']}!={item['expected_user_version']}"
+            for item in blocked
+            if isinstance(item, dict)
+        )
+        super().__init__(f"rebuild schema currency preflight failed: {detail}")
+
+
+def rebuild_schema_currency_preflight(root: Path) -> dict[str, object]:
+    """Report whether every durable tier matches this runtime package.
+
+    ``index.db`` is intentionally absent: rebuilding it is the operation's
+    purpose, while a durable-tier mismatch means this package can interpret or
+    write durable evidence using a schema it does not own.
+    """
+    from polylogue.storage.archive_readiness import probe_archive_tier
+    from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
+
+    checks: list[dict[str, object]] = []
+    for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
+        probe = probe_archive_tier(tier, root / f"{tier.value}.db")
+        checks.append(
+            {
+                "tier": tier.value,
+                "path": probe.path,
+                "actual_user_version": probe.user_version,
+                "expected_user_version": probe.expected_user_version,
+                "status": probe.version_status,
+            }
+        )
+    blocking = [check for check in checks if check["status"] != "ok"]
+    return {
+        "kind": "rebuild-schema-currency",
+        "archive_root": str(root),
+        "status": "ready" if not blocking else "blocked",
+        "tiers": checks,
+        "blocking_tiers": blocking,
+    }
+
+
+def require_rebuild_schema_currency(root: Path) -> dict[str, object]:
+    """Reject a rebuild before it consumes evidence or creates a generation."""
+    diagnostic = rebuild_schema_currency_preflight(root)
+    if diagnostic["status"] != "ready":
+        raise RebuildSchemaCurrencyError(diagnostic)
+    return diagnostic
 
 
 @dataclass(frozen=True, slots=True)
@@ -1047,6 +1106,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
     validate_rebuild_index_request(request)
     root = request.archive_root
+    require_rebuild_schema_currency(root)
     consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
     location = ArchiveLocation.resolve(root)
     # The joined raw-frontier projection is rooted at the co-located active
@@ -1084,6 +1144,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     owned = OwnedArchiveLocation.acquire(location)
     try:
         assert_owns_archive_location(owned, location)
+        require_rebuild_schema_currency(root)
         consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
         # The lease is itself lifecycle state guarded by the provenance gate.
         # Revalidate again under the lease immediately before the owned body

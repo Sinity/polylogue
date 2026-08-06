@@ -388,6 +388,11 @@ def _rebuild_index_selection_plan(
         "single-writer path; unsupported with --daemon."
     ),
 )
+@click.option(
+    "--preflight",
+    is_flag=True,
+    help="Read-only: report whether every durable tier matches this package before rebuilding index.db.",
+)
 def rebuild_index_command(
     only_missing: bool,
     raw_ids: tuple[str, ...],
@@ -404,6 +409,7 @@ def rebuild_index_command(
     use_daemon: bool,
     daemon_url: str,
     shard_count: int,
+    preflight: bool,
 ) -> None:
     """Inspect or execute an authority-safe source-to-index rebuild.
 
@@ -423,6 +429,8 @@ def rebuild_index_command(
         raise click.BadParameter("plan limit must be positive", param_hint="--plan-limit")
     if use_daemon and plan_only:
         raise click.UsageError("--daemon executes a rebuild; --plan is always a local read-only preview")
+    if use_daemon and preflight:
+        raise click.UsageError("--preflight cannot be combined with --daemon")
     if shard_count <= 0:
         raise click.BadParameter("shard count must be positive", param_hint="--shard-count")
     if use_daemon and shard_count > 1:
@@ -441,6 +449,22 @@ def rebuild_index_command(
         raise click.UsageError("resumed rebuild budgets are durable; omit pass budget options with --operation-id")
 
     root = archive_root()
+    if preflight:
+        from polylogue.maintenance.rebuild_index import rebuild_schema_currency_preflight
+
+        payload = rebuild_schema_currency_preflight(root)
+        if output_format == "json":
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            click.echo(f"Archive root: {root}")
+            for tier in cast(list[dict[str, object]], payload["tiers"]):
+                click.echo(
+                    f"{tier['tier']}.db: {tier['actual_user_version']} (package expects "
+                    f"{tier['expected_user_version']}; {tier['status']})"
+                )
+        if payload["status"] != "ready":
+            raise click.ClickException("rebuild schema currency preflight failed; migrate or deploy before rebuilding")
+        return
     if use_daemon:
         payload = _run_daemon_rebuild(
             daemon_url,
@@ -462,23 +486,8 @@ def rebuild_index_command(
         click.echo(f"Replayed:     {int(cast(Any, payload['replayed_logical_source_count'])):,} logical source(s)")
         click.echo(f"Quarantined:  {int(cast(Any, payload['quarantined_raw_count'])):,} raw row(s)")
         return
-    raw_count = _count_source_raw_sessions(root)
-    if raw_count == 0:
-        payload = {
-            "archive_root": str(root),
-            "raw_session_count": 0,
-            "selected_raw_count": 0,
-            "skipped_by_blob_limit_count": 0,
-            "status": "empty-source",
-            "materialized": False,
-        }
-        if output_format == "json":
-            click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        else:
-            click.echo(f"Archive root: {root}")
-            click.echo("No source.db raw_sessions rows found.")
-        return
     if plan_only:
+        raw_count = _count_source_raw_sessions(root)
         selected_raw_ids = (
             list(dict.fromkeys(raw_ids))
             if raw_ids
@@ -533,7 +542,11 @@ def rebuild_index_command(
                         f"blob={int(group['blob_bytes']):,} source={group['source_path']}"
                     )
         return
-    from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+    from polylogue.maintenance.rebuild_index import (
+        RebuildIndexRequest,
+        RebuildSchemaCurrencyError,
+        rebuild_index_from_source_sync,
+    )
 
     try:
         receipt = rebuild_index_from_source_sync(
@@ -551,7 +564,7 @@ def rebuild_index_command(
                 shard_count=shard_count,
             )
         )
-    except (RuntimeError, ValueError) as exc:
+    except (RebuildSchemaCurrencyError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     payload = receipt.to_dict()
     result = payload
@@ -559,6 +572,9 @@ def rebuild_index_command(
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
     click.echo(f"Archive root: {root}")
+    if receipt.status == "empty-source":
+        click.echo("No source.db raw_sessions rows found.")
+        return
     click.echo(f"Classified:   {int(cast(Any, result['classified_full_count'])):,} full revision(s)")
     click.echo(f"Replayed:     {int(cast(Any, result['replayed_logical_source_count'])):,} logical source(s)")
     click.echo(f"Quarantined:  {int(cast(Any, result['quarantined_raw_count'])):,} raw row(s)")

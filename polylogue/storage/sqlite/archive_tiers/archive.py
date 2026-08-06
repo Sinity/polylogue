@@ -2797,6 +2797,7 @@ class ArchiveStore:
             WHERE src_session_id = ?
               AND inheritance = 'prefix-sharing'
               AND resolved_dst_session_id IS NOT NULL
+              AND COALESCE(TRIM(status), '') != 'quarantined'
             LIMIT 1
             """,
             (session_id,),
