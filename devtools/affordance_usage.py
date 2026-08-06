@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 import sys
@@ -48,6 +49,7 @@ class AffordanceUsageArgs:
     sample_limit: int
     json: bool
     all_time: bool
+    index_db: Path | None = None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -56,6 +58,12 @@ def _parser() -> argparse.ArgumentParser:
         description="Analyze agent affordance/tool usage from archive tool-use rows.",
     )
     parser.add_argument("--archive-root", type=Path, default=None, help="Override the active archive root.")
+    parser.add_argument(
+        "--index-db",
+        type=Path,
+        default=None,
+        help="Read a specific candidate/live index database instead of <archive-root>/index.db.",
+    )
     parser.add_argument("--out-dir", type=Path, default=None, help="Write CSV artifacts and report JSON.")
     parser.add_argument("--days", type=int, default=7, help="Recent window in days for adoption-sensitive counts.")
     parser.add_argument(
@@ -183,6 +191,45 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+_SNAPSHOT_HASH_CHUNK_BYTES = 1024 * 1024
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(_SNAPSHOT_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_observation(index_db: Path) -> dict[str, object]:
+    """Capture the selected index file's stat identity and content hash."""
+    try:
+        metadata = index_db.stat()
+        return {
+            "path": str(index_db),
+            "present": True,
+            "size": metadata.st_size,
+            "mtime_ns": metadata.st_mtime_ns,
+            "inode": metadata.st_ino,
+            "sha256": _file_sha256(index_db),
+        }
+    except FileNotFoundError:
+        return {"path": str(index_db), "present": False}
+
+
+def _snapshot_identity(index_db: Path, before: dict[str, object], after: dict[str, object]) -> dict[str, object]:
+    """Bind report evidence to the selected database, including instability."""
+    return {
+        "index_db": str(index_db),
+        "sha256": before.get("sha256"),
+        "size": before.get("size"),
+        "before": before,
+        "after": after,
+        "stable": before == after,
+    }
+
+
 def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
     summary = cast(dict[str, object], report["summary"])
     surface_summary = cast(dict[str, object], report.get("surface_inventory_summary", {}))
@@ -190,6 +237,8 @@ def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
         "artifact": "agent-affordance-usage",
         "updated_at": report["captured_at"],
         "archive_root": report["archive_root"],
+        "index_db": report["index_db"],
+        "snapshot_identity": report["snapshot_identity"],
         "index_schema_version": report["index_schema_version"],
         "claim": (
             "Polylogue can compare agent affordance usage across normalized action evidence "
@@ -865,6 +914,11 @@ def _try_product_detail_report(
 ) -> dict[str, Any] | None:
     if not effective_detail_patterns or args.family:
         return None
+    if config.db_path.parent.resolve() != config.archive_root.resolve():
+        # ArchiveStore resolves the configured file set. A selected external
+        # candidate must stay on the direct read-only SQLite fallback so its
+        # evidence cannot silently come from the configured archive root.
+        return None
     try:
         from polylogue.insights.tool_usage import ToolUsageInsightQuery
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1177,7 +1231,16 @@ def _all_time_action_rows(
 
 def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
-    index_db = config.db_path
+    index_db = (args.index_db or config.db_path).expanduser().resolve()
+    config = Config(
+        archive_root=config.archive_root,
+        render_root=config.render_root,
+        sources=config.sources,
+        db_path=index_db,
+        drive_config=config.drive_config,
+        index_config=config.index_config,
+    )
+    snapshot_before = _snapshot_observation(index_db)
     where_sql, where_params = _where_for_filters(args.family, args.detail_pattern, alias="a")
     effective_tool_patterns = _clean_patterns(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS))
     effective_detail_patterns = _clean_patterns(args.detail_pattern)
@@ -1282,6 +1345,9 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         report["surface_inventory_summary"] = surface_summary
     finally:
         conn.close()
+    snapshot_after = _snapshot_observation(index_db)
+    report["index_db"] = str(index_db)
+    report["snapshot_identity"] = _snapshot_identity(index_db, snapshot_before, snapshot_after)
     if args.out_dir is not None:
         out_dir = args.out_dir.expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1385,6 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
         report = build_report(
             AffordanceUsageArgs(
                 archive_root=parsed.archive_root,
+                index_db=parsed.index_db,
                 out_dir=parsed.out_dir,
                 days=parsed.days,
                 family=tuple(parsed.family or ()),

@@ -123,7 +123,10 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     report = affordance_usage.build_report(args)
 
     assert report["archive_root"] == str(archive_root.resolve())
+    assert report["index_db"] == str((archive_root / "index.db").resolve())
     assert report["index_schema_version"] == 18
+    assert report["snapshot_identity"]["stable"] is True
+    assert report["snapshot_identity"]["size"] == (archive_root / "index.db").stat().st_size
     families = {row["family"]: row for row in report["family_counts"]}
     assert families["context7"]["actions"] == 2
     assert families["context7"]["errors"] == 1
@@ -157,6 +160,8 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     assert written_report["family_counts"] == report["family_counts"]
     written_summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert written_summary["artifact"] == "agent-affordance-usage"
+    assert written_summary["index_db"] == report["index_db"]
+    assert written_summary["snapshot_identity"] == report["snapshot_identity"]
     assert written_summary["index_schema_version"] == report["index_schema_version"]
     assert written_summary["proof_report"]["top_families"] == report["summary"]["top_families"]
     assert written_summary["proof_report"]["surface_inventory_summary"] == report["surface_inventory_summary"]
@@ -169,6 +174,73 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     assert "recent" in (out_dir / "README.md").read_text(encoding="utf-8").lower()
     assert "surface inventory" in (out_dir / "README.md").read_text(encoding="utf-8").lower()
     assert "`summary.json`" in (out_dir / "README.md").read_text(encoding="utf-8")
+
+
+def test_affordance_usage_selected_external_index_is_the_report_evidence_source(tmp_path: Path) -> None:
+    configured_root = tmp_path / "configured"
+    selected_root = tmp_path / "selected"
+    _make_index_db(configured_root)
+    selected_db = _make_index_db(selected_root)
+    out_dir = tmp_path / "out"
+
+    report = affordance_usage.build_report(
+        affordance_usage.AffordanceUsageArgs(
+            archive_root=configured_root,
+            out_dir=out_dir,
+            days=36500,
+            family=("serena",),
+            detail_pattern=(),
+            sample_limit=10,
+            json=True,
+            all_time=False,
+            index_db=selected_db,
+        )
+    )
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert report["index_db"] == str(selected_db.resolve())
+    assert report["index_db"] != str(configured_root.resolve())
+    assert report["snapshot_identity"]["index_db"] == str(selected_db.resolve())
+    assert report["snapshot_identity"]["size"] == selected_db.stat().st_size
+    assert summary["index_db"] == str(selected_db.resolve())
+    assert summary["snapshot_identity"]["index_db"] == str(selected_db.resolve())
+
+
+def test_affordance_usage_marks_selected_index_snapshot_unstable_after_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    real_observation = affordance_usage._snapshot_observation
+    calls = 0
+
+    def observe_with_change(path: Path) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            with path.open("ab") as stream:
+                stream.write(b"concurrent-change")
+        return real_observation(path)
+
+    monkeypatch.setattr(affordance_usage, "_snapshot_observation", observe_with_change)
+    report = affordance_usage.build_report(
+        affordance_usage.AffordanceUsageArgs(
+            archive_root=archive_root,
+            out_dir=None,
+            days=36500,
+            family=("serena",),
+            detail_pattern=(),
+            sample_limit=10,
+            json=True,
+            all_time=False,
+            index_db=selected_db,
+        )
+    )
+
+    identity = report["snapshot_identity"]
+    assert identity["stable"] is False
+    assert identity["before"]["size"] != identity["after"]["size"]
+    assert identity["before"]["sha256"] != identity["after"]["sha256"]
 
 
 def test_affordance_usage_rejects_nonpositive_recent_window(tmp_path: Path) -> None:
