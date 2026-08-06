@@ -1913,7 +1913,10 @@ def authorize_schema_generation(archive_root: Path, receipt_path: Path) -> Itera
     """Hold quiescence for one fresh schema operation or compatible short sequence."""
 
     with schema_inference_quiescence(archive_root):
-        yield validate_schema_inference_gate_receipt(receipt_path, archive_root=archive_root)
+        yield cast(
+            dict[str, object],
+            validate_schema_inference_gate_receipt(receipt_path, archive_root=archive_root),
+        )
 
 
 def _run_schema_inference_gate_locked(

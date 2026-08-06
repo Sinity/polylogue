@@ -76,9 +76,12 @@ def _accepted_gate_receipt_digest(path: Path | None, *, archive_root: Path) -> s
         raise ValueError(f"unable to read schema-inference gate receipt {path}: {exc}") from exc
     if not isinstance(payload, Mapping):
         raise ValueError("schema-inference gate receipt must be a JSON object")
-    return validate_schema_inference_gate_receipt(
-        cast(Mapping[str, object], payload),
-        archive_root=archive_root,
+    return cast(
+        str,
+        validate_schema_inference_gate_receipt(
+            cast(Mapping[str, object], payload),
+            archive_root=archive_root,
+        ),
     )
 
 
