@@ -340,6 +340,13 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
         LEFT JOIN messages m ON m.session_id = l.src_session_id
         WHERE l.resolved_dst_session_id IS NULL
           AND COALESCE(NULLIF(TRIM(l.status), ''), 'unresolved') = 'unresolved'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM session_links resolved
+              WHERE resolved.src_session_id = l.src_session_id
+                AND resolved.resolved_dst_session_id IS NOT NULL
+                AND COALESCE(NULLIF(TRIM(resolved.status), ''), 'unresolved') != 'quarantined'
+          )
         GROUP BY l.src_session_id, l.dst_origin, l.dst_native_id, l.link_type
         ORDER BY l.src_session_id, l.dst_origin, l.dst_native_id, l.link_type
         LIMIT ?

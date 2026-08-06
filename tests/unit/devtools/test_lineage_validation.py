@@ -308,6 +308,8 @@ def test_lineage_validation_samples_distinct_unresolved_edges_without_multiplyin
                  resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
             VALUES ('orphan', 'codex-session', 'missing-parent', 'subagent', NULL,
                     NULL, 'parent-tool-use-id', '{}', NULL, 'spawned-fresh')
+            ,('child', 'codex-session', 'alternate-parent', 'continuation', NULL,
+              NULL, 'parser-parent', '{}', NULL, 'spawned-fresh')
             """
         )
         conn.commit()
@@ -316,7 +318,9 @@ def test_lineage_validation_samples_distinct_unresolved_edges_without_multiplyin
 
     sample = report["lineage"]["topology"]["unresolved_read_sample"]
     assert sample["safe"] is True
+    assert sample["unresolved_count"] == 3
     assert sample["sampled"] == 2
+    assert {row["session_id"] for row in sample["rows"]} == {"orphan"}
     assert {row["link_type"] for row in sample["rows"]} == {"continuation", "subagent"}
     assert {row["stored_messages"] for row in sample["rows"]} == {1}
     assert {row["served_messages"] for row in sample["rows"]} == {1}
