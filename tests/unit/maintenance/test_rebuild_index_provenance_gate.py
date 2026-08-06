@@ -873,6 +873,30 @@ def test_daemon_does_not_route_promoted_attestation_failure_back_to_rebuild(
     assert store.active_pointer.resolve(strict=True) == Path(active_generation.index_path).resolve(strict=True)
 
 
+def test_daemon_retires_attestation_failure_after_source_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A changed source gets a fresh daemon transaction without replacing the active index."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    store = IndexGenerationStore.for_archive_root(root)
+    terminal = store.create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root),
+        operation_id=bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID,
+    )
+    store.promote(store.load(terminal.generation_id))
+    store.checkpoint_transaction(terminal, status="promoted-attestation-failed")
+    monkeypatch.setattr(bulk_rebuild_module, "rebuild_source_evidence_snapshot", lambda _root: "changed-source")
+
+    replacement = bulk_rebuild_module.resolve_or_start_daemon_bulk_rebuild_transaction(
+        root, schema_inference_receipt_path=receipt_path
+    )
+
+    assert replacement.status == "running"
+    assert replacement.generation_id != terminal.generation_id
+    assert replacement.source_snapshot == "changed-source"
+    assert store.load(terminal.generation_id).state == "active"
+
+
 def test_validation_rejection_cannot_stale_transaction_before_ownership(
     tmp_path: Path,
 ) -> None:
@@ -1036,7 +1060,32 @@ def test_rebuild_reuses_verified_blob_snapshot_across_readiness_boundaries(
         RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path, promote=False)
     )
     assert result.status == "replayed"
-    assert calls == 1
+    assert calls == 2
+
+
+def test_rebuild_rechecks_blob_bytes_at_final_readiness_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Corruption after insight materialization is caught before readiness."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    from polylogue.storage import repair as repair_module
+
+    original_repair = repair_module.repair_session_insights
+
+    def corrupt_after_insights(*args: object, **kwargs: object) -> object:
+        result = cast(Any, original_repair)(*args, **kwargs)
+        with sqlite3.connect(root / "source.db") as source:
+            blob_hash = bytes(source.execute("SELECT blob_hash FROM raw_sessions LIMIT 1").fetchone()[0]).hex()
+        BlobStore(root / "blob").blob_path(blob_hash).write_bytes(b"corrupted after readiness precursor")
+        return result
+
+    monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", corrupt_after_insights)
+    with pytest.raises(RuntimeError, match="referenced source blob integrity verification failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path, promote=False)
+        )
 
 
 def test_replay_closure_caches_fingerprints_per_origin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

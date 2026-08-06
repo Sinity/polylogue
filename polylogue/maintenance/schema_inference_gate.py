@@ -746,7 +746,6 @@ def _canonical_external_ground_truth_digest(origins: Mapping[str, object]) -> st
             {
                 "origin": origin,
                 "roots": sorted(str(Path(root).expanduser().resolve()) for root in roots),
-                "inventory_change_detector": evidence.get("inventory_change_detector"),
                 "files": sorted(
                     files,
                     key=lambda item: (int(cast(int, item["root_index"])), str(item["relative_path"])),

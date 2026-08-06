@@ -150,18 +150,19 @@ class RebuildProvenanceContext:
     external_inventory_token: dict[str, object] = field(default_factory=dict)
     verified_blob_integrity_snapshot: dict[str, object] | None = None
 
-    def validate(self, *, verify_blob_integrity: bool = False) -> None:
+    def validate(self, *, verify_blob_integrity: bool = False, refresh_blob_integrity: bool = False) -> None:
+        cached_snapshot = None if refresh_blob_integrity else self.verified_blob_integrity_snapshot
         validated = _validate_rebuild_provenance_receipt(
             self.root,
             self.receipt_path,
             inventory_token=self.external_inventory_token,
             verify_blob_integrity=verify_blob_integrity,
-            verified_blob_integrity_snapshot=self.verified_blob_integrity_snapshot,
+            verified_blob_integrity_snapshot=cached_snapshot,
         )
         if verify_blob_integrity:
-            snapshot = validated.pop("_verified_blob_integrity_snapshot", None)
-            if isinstance(snapshot, dict):
-                self.verified_blob_integrity_snapshot = snapshot
+            refreshed_snapshot = validated.pop("_verified_blob_integrity_snapshot", None)
+            if isinstance(refreshed_snapshot, dict):
+                self.verified_blob_integrity_snapshot = refreshed_snapshot
         from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
 
         if rebuild_source_revision_snapshot(self.root) != self.source_snapshot:
@@ -238,11 +239,17 @@ def _mark_rebuild_transaction_stale_after_provenance_failure(
 
 
 def _validate_before_derived_state(
-    provenance: RebuildProvenanceContext, *, verify_blob_integrity: bool = False
+    provenance: RebuildProvenanceContext,
+    *,
+    verify_blob_integrity: bool = False,
+    refresh_blob_integrity: bool = False,
 ) -> None:
     """Validate immediately before a derived-state mutation begins."""
     try:
-        provenance.validate(verify_blob_integrity=verify_blob_integrity)
+        provenance.validate(
+            verify_blob_integrity=verify_blob_integrity,
+            refresh_blob_integrity=refresh_blob_integrity,
+        )
     except Exception as exc:
         raise RebuildDerivedStateProvenanceError(str(exc)) from exc
 
@@ -2020,7 +2027,11 @@ async def _rebuild_index_from_source_owned(
             # Verify the bytes named by source.db through BlobStore here,
             # before a pointer can be flipped, rather than treating a source
             # tier hash or an earlier receipt as proof of current blob bytes.
-            _validate_before_derived_state(provenance, verify_blob_integrity=True)
+            _validate_before_derived_state(
+                provenance,
+                verify_blob_integrity=True,
+                refresh_blob_integrity=True,
+            )
             if transaction is not None:
                 transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                     generation_store,

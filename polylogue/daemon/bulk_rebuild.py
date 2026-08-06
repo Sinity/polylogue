@@ -227,44 +227,57 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
         if transaction is not None:
             if transaction.status == "promoted-attestation-failed":
                 # The generation is already active. Preserve the terminal
-                # attestation failure so the caller can stop without starting
-                # another rebuild under the same operation id.
-                return transaction
-            # Terminal: retire the old candidate/transaction record before
-            # reusing the well-known operation id. A promoted generation,
-            # including one with a failed post-promotion attestation, is
-            # already the active index (nothing to discard); "stale"/"failed"
-            # candidates are still inactive and safe to discard.
-            cleanup_errors: list[BaseException] = []
-            if transaction.status not in {"promoted", "promoted-attestation-failed"}:
-                try:
-                    generation = store.load(transaction.generation_id)
-                except BaseException as exc:
-                    logger.error("bulk-rebuild: terminal candidate load failed", exc_info=True)
-                    cleanup_errors.append(exc)
-                else:
-                    if generation.state != "inactive":
-                        cleanup_errors.append(RuntimeError(f"candidate {generation.generation_id} is not inactive"))
-                    else:
-                        try:
-                            if not store.discard_if_inactive(generation):
-                                cleanup_errors.append(
-                                    RuntimeError(f"candidate {generation.generation_id} was not discarded")
-                                )
-                        except BaseException as exc:
-                            logger.error("bulk-rebuild: terminal candidate discard raised", exc_info=True)
-                            cleanup_error = RuntimeError(f"candidate {generation.generation_id} discard failed: {exc}")
-                            cleanup_error.__cause__ = exc
-                            cleanup_errors.append(cleanup_error)
-            try:
+                # attestation failure while its source evidence is unchanged.
+                # A later, receipt-authorized source change needs a fresh
+                # daemon transaction, but must retain the active generation.
+                current_source_snapshot = rebuild_source_evidence_snapshot(root)
+                if current_source_snapshot == transaction.source_snapshot:
+                    return transaction
                 if not store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID):
-                    cleanup_errors.append(
-                        RuntimeError(f"transaction {DAEMON_BULK_REBUILD_OPERATION_ID} was not discarded")
+                    raise RuntimeError(
+                        f"transaction {DAEMON_BULK_REBUILD_OPERATION_ID} was not discarded after source drift"
                     )
-            except BaseException as exc:
-                logger.error("bulk-rebuild: terminal transaction discard failed", exc_info=True)
-                cleanup_errors.append(exc)
-            _raise_daemon_cleanup_failures(cleanup_errors, label="daemon bulk-rebuild terminal")
+                transaction = None
+            if transaction is None:
+                pass
+            else:
+                # Terminal: retire the old candidate/transaction record before
+                # reusing the well-known operation id. A promoted generation,
+                # including one with a failed post-promotion attestation, is
+                # already the active index (nothing to discard); "stale/failed"
+                # candidates are still inactive and safe to discard.
+                cleanup_errors: list[BaseException] = []
+                if transaction.status not in {"promoted", "promoted-attestation-failed"}:
+                    try:
+                        generation = store.load(transaction.generation_id)
+                    except BaseException as exc:
+                        logger.error("bulk-rebuild: terminal candidate load failed", exc_info=True)
+                        cleanup_errors.append(exc)
+                    else:
+                        if generation.state != "inactive":
+                            cleanup_errors.append(RuntimeError(f"candidate {generation.generation_id} is not inactive"))
+                        else:
+                            try:
+                                if not store.discard_if_inactive(generation):
+                                    cleanup_errors.append(
+                                        RuntimeError(f"candidate {generation.generation_id} was not discarded")
+                                    )
+                            except BaseException as exc:
+                                logger.error("bulk-rebuild: terminal candidate discard raised", exc_info=True)
+                                cleanup_error = RuntimeError(
+                                    f"candidate {generation.generation_id} discard failed: {exc}"
+                                )
+                                cleanup_error.__cause__ = exc
+                                cleanup_errors.append(cleanup_error)
+                try:
+                    if not store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID):
+                        cleanup_errors.append(
+                            RuntimeError(f"transaction {DAEMON_BULK_REBUILD_OPERATION_ID} was not discarded")
+                        )
+                except BaseException as exc:
+                    logger.error("bulk-rebuild: terminal transaction discard failed", exc_info=True)
+                    cleanup_errors.append(exc)
+                _raise_daemon_cleanup_failures(cleanup_errors, label="daemon bulk-rebuild terminal")
 
         _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
         source_snapshot = rebuild_source_evidence_snapshot(root)
