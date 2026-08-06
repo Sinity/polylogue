@@ -120,3 +120,13 @@ def test_blob_reference_liveness_cli_census_redacts_unknown_ref_type_names(
     assert "future:/private/secret/hash" not in result.stdout
     assert "secret-ref" not in result.stdout
     assert "/private/path" not in result.stdout
+
+    plain_result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "blob-reference-liveness", "--census-only"],
+        catch_exceptions=False,
+    )
+
+    assert plain_result.exit_code == 0
+    assert "Unknown:      1 ref(s)" in plain_result.stdout
+    assert "future:/private/secret/hash" not in plain_result.stdout

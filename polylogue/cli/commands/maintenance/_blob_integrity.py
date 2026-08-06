@@ -68,13 +68,14 @@ def blob_reference_liveness_command(
         if output_format == "json":
             click.echo(json.dumps(payload, indent=2, sort_keys=True))
         else:
+            safe_payload = census.to_privacy_safe_dict()
             click.echo("Blob reference liveness census")
             click.echo(f"Scanned:      {census.scanned_count:,} blob_refs row(s)")
             click.echo(f"Orphans:      {census.total:,} row(s)")
             click.echo(f"Schema held:  {census.schema_unavailable_count:,} row(s)")
             click.echo(f"By ref type:  {json.dumps(census.by_ref_type, sort_keys=True)}")
-            click.echo(f"Unknown:      {json.dumps(census.unknown_ref_types or {}, sort_keys=True)}")
-            click.echo(f"Unavailable:  {json.dumps(census.unavailable_ref_types or {}, sort_keys=True)}")
+            click.echo(f"Unknown:      {safe_payload['unknown_ref_type_count']:,} ref(s)")
+            click.echo(f"Unavailable:  {json.dumps(safe_payload['unavailable_ref_types'], sort_keys=True)}")
         return
 
     from polylogue.maintenance.blob_ref_liveness_reconciliation import reconcile_blob_ref_liveness
