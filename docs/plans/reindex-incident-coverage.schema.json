@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polylogue.local/schemas/reindex-incident-coverage-v1.json",
+  "title": "Polylogue reindex incident coverage ledger",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "ledger_id",
+    "target_bead_id",
+    "graph_fixture_id",
+    "fixtures",
+    "checks",
+    "snapshots",
+    "receipts",
+    "successors",
+    "rows"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "ledger_id": {"const": "polylogue-incident-coverage-ledger"},
+    "target_bead_id": {"const": "polylogue-818fy"},
+    "graph_fixture_id": {"type": "string", "minLength": 1},
+    "fixtures": {"$ref": "#/$defs/catalog"},
+    "checks": {"$ref": "#/$defs/catalog"},
+    "snapshots": {"$ref": "#/$defs/catalog"},
+    "receipts": {"$ref": "#/$defs/catalog"},
+    "successors": {"$ref": "#/$defs/catalog"},
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/row"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "catalog": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {"type": "string", "minLength": 1},
+          "source": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    },
+    "row": {
+      "type": "object",
+      "required": [
+        "bead_id",
+        "bead_status",
+        "incident",
+        "route",
+        "schedule",
+        "expected_snapshot",
+        "registry_checks",
+        "red_mutation",
+        "receipts",
+        "residual_successor"
+      ],
+      "properties": {
+        "bead_id": {"type": "string", "pattern": "^polylogue-[a-z0-9][a-z0-9.-]*$"},
+        "bead_status": {"enum": ["open", "in_progress", "closed"]},
+        "incident": {
+          "type": "object",
+          "required": ["incident_id", "bead_id", "forcing_class"],
+          "properties": {
+            "incident_id": {"type": "string", "minLength": 1},
+            "bead_id": {"type": "string", "minLength": 1},
+            "forcing_class": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        "route": {
+          "type": "object",
+          "required": ["kind", "entrypoint"],
+          "properties": {
+            "kind": {"type": "string", "minLength": 1},
+            "entrypoint": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        "schedule": {
+          "type": "object",
+          "required": ["phase", "order"],
+          "properties": {
+            "phase": {"type": "string", "minLength": 1},
+            "order": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        "expected_snapshot": {
+          "type": "object",
+          "required": ["snapshot_id", "state"],
+          "properties": {
+            "snapshot_id": {"type": "string", "minLength": 1},
+            "state": {"enum": ["blocking", "green", "red", "unknown"]}
+          },
+          "additionalProperties": false
+        },
+        "registry_checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "red_mutation": {
+          "type": "object",
+          "required": ["fixture_id", "mutation_id"],
+          "properties": {
+            "fixture_id": {"type": "string", "minLength": 1},
+            "mutation_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        "receipts": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "residual_successor": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "required": ["bead_id", "kind"],
+              "properties": {
+                "bead_id": {"type": "string", "minLength": 1},
+                "kind": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
