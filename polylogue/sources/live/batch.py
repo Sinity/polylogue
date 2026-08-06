@@ -619,12 +619,11 @@ class LiveBatchProcessor:
         if reason is None:
             if authorization is not None:
                 raise CursorAuthorityBlockedError("scoped cursor authority authorization has no planned violation")
-            return
+            return None
         if authorization is not None:
             if paths is None:
                 raise CursorAuthorityBlockedError("scoped cursor authority requires an exact selected path")
-            if self._consume_scoped_cursor_authority(paths):
-                return authorization
+            return self._consume_scoped_cursor_authority(paths)
         raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
 
     async def ingest_files(

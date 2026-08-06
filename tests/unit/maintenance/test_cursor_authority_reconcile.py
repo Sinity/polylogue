@@ -389,7 +389,9 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="attestation"):
         reconcile._validate_backup(backup, plan)
     monkeypatch.setattr(reconcile, "verify_verification_receipt", lambda *args, **kwargs: None)
-    assert reconcile._validate_backup(backup, plan)["root"]["basename"] == backup.name
+    validated = reconcile._validate_backup(backup, plan)
+    assert isinstance(validated["root"], dict)
+    assert validated["root"]["basename"] == backup.name
     (backup / "audit.db").unlink()
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="tier is missing"):
         reconcile._validate_backup(backup, plan)
