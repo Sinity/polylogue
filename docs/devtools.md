@@ -316,8 +316,11 @@ writes a plan containing path and raw identifiers only as digests. Apply
 requires that immutable plan, a freshly verified `full_evidence` backup
 manifest with blob rollback evidence, and a new receipt path. The apply route
 uses the normal live full-ingest/replay path under one single-use exact path
-and frontier authorization. It never accepts a global cursor bypass or writes
-`ingest_cursor` or accepted-head rows directly.
+and frontier authorization. Receipts distinguish a performed ingest from an
+observed recovery, leave cursor row counts null when the before/after state did
+not prove them, and record typed deferred or failed post-ingest evidence. It
+never accepts a global cursor bypass or writes `ingest_cursor` or accepted-head
+rows directly.
 
 The dry-run form is:
 

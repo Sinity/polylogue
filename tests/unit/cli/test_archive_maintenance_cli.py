@@ -1736,10 +1736,37 @@ def test_cursor_authority_reconcile_cli_exposes_only_scoped_inputs(cli_runner: C
     assert result.exit_code == 0
     assert "--source-path-file" in result.output
     assert "--output-plan" in result.output
+    assert "--plan" in result.output
     assert "--backup-manifest" in result.output
+    assert "--receipt" in result.output
     assert "--apply" in result.output
     assert "--force" not in result.output
     assert "--bypass" not in result.output
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--apply", "--backup-manifest", "backup", "--receipt", "receipt"],
+        ["--apply", "--plan", "plan", "--receipt", "receipt"],
+        ["--apply", "--plan", "plan", "--backup-manifest", "backup"],
+        ["--source-path-file", "source", "--output-plan", "plan", "--plan", "existing"],
+        ["--source-path-file", "source", "--output-plan", "plan", "--receipt", "receipt"],
+        ["--plan", "plan", "--backup-manifest", "backup", "--receipt", "receipt"],
+    ],
+)
+def test_cursor_authority_reconcile_cli_rejects_mixed_or_missing_mode_options(
+    cli_runner: CliRunner,
+    args: list[str],
+) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "cursor-authority-reconcile", *args],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "requires" in result.output or "accepts only" in result.output
 
 
 def test_raw_authority_frontier_cli_replaces_incident_specific_commands(
