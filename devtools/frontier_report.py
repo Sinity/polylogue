@@ -1,4 +1,15 @@
-"""Report Beads frontier batches for the Polylogue devloop."""
+"""Derive the execution focus from the complete Beads frontier.
+
+The report keeps three deliberately separate sets:
+
+* active ambition: every open or in-progress Bead;
+* active set: Beads explicitly admitted through structured frontier metadata;
+* execution focus: ready, unclaimed work selected after declared resource and
+  footprint-conflict constraints.
+
+It only reports those derivations.  It never claims, releases, truncates, or
+otherwise mutates Beads admission state.
+"""
 
 from __future__ import annotations
 
@@ -7,51 +18,28 @@ import json
 import subprocess
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from devtools import bead_cluster
+
 ROOT = Path(__file__).resolve().parents[1]
 
-
-@dataclass(frozen=True, slots=True)
-class ClassifiedIssue:
-    issue: dict[str, Any]
-    subsystem: str
-    proof_cost: str
-    runtime_risk: str
-    subagent_suitability: str
-    schema_lane: bool
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.issue.get("id"),
-            "title": self.issue.get("title"),
-            "status": self.issue.get("status"),
-            "priority": self.issue.get("priority"),
-            "type": self.issue.get("issue_type"),
-            "labels": self.issue.get("labels", []),
-            "subsystem": self.subsystem,
-            "proof_cost": self.proof_cost,
-            "runtime_risk": self.runtime_risk,
-            "subagent_suitability": self.subagent_suitability,
-            "schema_lane": self.schema_lane,
-        }
+# This is a focus-selection policy, not an active-set cap.  It is visible in
+# every JSON report, so a coordinator can see exactly why a ready Bead waits.
+RESOURCE_POLICY: dict[str, dict[str, Any]] = {
+    "schema-lane": {"max_parallel": 1, "reason": "schema changes serialize through the active schema owner"},
+    "live-state": {"max_parallel": 1, "reason": "live-state work requires one operator-controlled lane"},
+    "ordinary": {"max_parallel": None, "reason": "no shared resource limit declared"},
+}
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="devtools workspace frontier",
-        description="Classify ready and in-progress Beads into devloop batches.",
+        description="Derive a complete, non-mutating execution focus from live Beads state.",
     )
     parser.add_argument("--repo", type=Path, default=ROOT, help="Repository root containing the Beads workspace.")
-    parser.add_argument("--limit", type=int, default=40, help="Maximum ready Beads to inspect.")
-    parser.add_argument(
-        "--include-in-progress",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Include in-progress Beads as occupied lanes.",
-    )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     parser.add_argument("--out", type=Path, default=None, help="Write the report to this path.")
     return parser
@@ -75,231 +63,220 @@ def _run_bd(repo: Path, args: list[str]) -> list[dict[str, Any]]:
     raise RuntimeError(f"{' '.join(command)} returned {type(payload).__name__}, expected list")
 
 
-def _text(issue: dict[str, Any]) -> str:
-    fields = [
-        issue.get("id"),
-        issue.get("title"),
-        issue.get("description"),
-        issue.get("design"),
-        issue.get("acceptance_criteria"),
-        issue.get("notes"),
-        " ".join(str(label) for label in issue.get("labels", []) if isinstance(label, str)),
-    ]
-    return "\n".join(str(field).lower() for field in fields if field)
+def _labels(issue: dict[str, Any]) -> set[str]:
+    labels = issue.get("labels")
+    return {label for label in labels if isinstance(label, str)} if isinstance(labels, list) else set()
 
 
-def _labels(issue: dict[str, Any]) -> list[str]:
-    labels = issue.get("labels", [])
-    return [str(label) for label in labels] if isinstance(labels, list) else []
+def _metadata(issue: dict[str, Any]) -> dict[str, Any]:
+    metadata = issue.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
 
 
-def _subsystem(issue: dict[str, Any]) -> str:
-    for label in _labels(issue):
-        if label.startswith("area:"):
-            return label.removeprefix("area:")
-    haystack = _text(issue)
-    keyword_map = (
-        ("devloop", ("devloop", "dev-loop", "frontier", "wait-ahead", "subagent")),
-        ("schema", ("migration", "archive_tiers", "ddl", "user_version", "schema_version", "index schema")),
-        ("storage", ("storage", "sqlite", "archive", "blob", "fts", "rebuild")),
-        ("context", ("context", "recall", "memory", "injection", "handoff")),
-        ("demos", ("demo", "artifact", "finding", "cold-reader", "uplift")),
-        ("ops", ("daemon", "ops", "backup", "restore", "hooks", "install")),
-        ("web", ("web", "reader", "ui", "vite", "preact", "browser")),
-        ("mcp", ("mcp", "tool", "server")),
-        ("docs", ("readme", "docs", "doctrine", "positioning")),
-    )
-    for subsystem, keywords in keyword_map:
-        if any(keyword in haystack for keyword in keywords):
-            return subsystem
-    return "unclassified"
+def _priority(issue: dict[str, Any]) -> int:
+    try:
+        return int(issue.get("priority", 2))
+    except (TypeError, ValueError):
+        return 2
 
 
-def _proof_cost(issue: dict[str, Any]) -> str:
-    labels = set(_labels(issue))
-    haystack = _text(issue)
-    if "size:L" in labels or any(term in haystack for term in ("live archive", "rebuild", "verify --all")):
-        return "high"
-    if "size:M" in labels or any(term in haystack for term in ("devtools verify", "integration", "daemon")):
-        return "medium"
-    if "size:S" in labels or any(term in haystack for term in ("focused", "read-only", "docs")):
-        return "low"
-    return "unknown"
+def _is_open(issue: dict[str, Any]) -> bool:
+    return issue.get("status") in {"open", "in_progress"}
 
 
-def _runtime_risk(issue: dict[str, Any]) -> str:
-    haystack = _text(issue)
-    if any(term in haystack for term in ("live archive", "rebuild", "reset", "backup", "restore", "daemon")):
+def _resource_class(issue: dict[str, Any]) -> str:
+    footprint = bead_cluster._extract_footprint(issue)
+    if footprint.migration_slots or "area:schema" in _labels(issue):
+        return "schema-lane"
+    labels = _labels(issue)
+    if "resource:live-state" in labels or "risk:live-state" in labels:
         return "live-state"
-    if any(term in haystack for term in ("migration", "archive_tiers", "storage", "sqlite", "blob", "fts")):
-        return "stateful"
-    if any(term in haystack for term in ("docs", "readme", "report", "audit", "plan")):
-        return "read-only"
-    return "normal"
+    return "ordinary"
 
 
-def _subagent_suitability(issue: dict[str, Any]) -> str:
-    haystack = _text(issue)
-    if any(term in haystack for term in ("audit", "classify", "investigate", "research", "plan", "read-only")):
-        return "read-only-audit"
-    if any(term in haystack for term in ("docs", "readme", "report", "artifact", "catalog")):
-        return "draft-or-artifact"
-    if any(term in haystack for term in ("implementation", "wire", "scaffold", "add", "fix")):
-        return "worker-with-file-ownership"
-    return "conductor-owned"
-
-
-def _schema_lane(issue: dict[str, Any]) -> bool:
-    haystack = _text(issue)
-    return any(
-        term in haystack
-        for term in (
-            "migration",
-            "archive_tiers",
-            "user_version",
-            "schema_version",
-            "index schema",
-            "schema migration",
-            "canonical ddl",
-            " ddl",
-        )
+def _active_set(issues: list[dict[str, Any]]) -> list[str]:
+    return sorted(
+        str(issue["id"])
+        for issue in issues
+        if _is_open(issue) and _metadata(issue).get("frontier") == "active" and issue.get("issue_type") != "epic"
     )
 
 
-def _classify(issue: dict[str, Any]) -> ClassifiedIssue:
-    return ClassifiedIssue(
-        issue=issue,
-        subsystem=_subsystem(issue),
-        proof_cost=_proof_cost(issue),
-        runtime_risk=_runtime_risk(issue),
-        subagent_suitability=_subagent_suitability(issue),
-        schema_lane=_schema_lane(issue),
-    )
+def _critical_path_leverage(issues: list[dict[str, Any]]) -> dict[str, int]:
+    """Count every open downstream Bead a candidate can unblock via blocks edges."""
+    blocked_by: dict[str, set[str]] = defaultdict(set)
+    known = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
+    for issue in known.values():
+        if not _is_open(issue):
+            continue
+        dependencies = issue.get("dependencies")
+        for dependency in dependencies if isinstance(dependencies, list) else []:
+            if not isinstance(dependency, dict) or dependency.get("type") != "blocks":
+                continue
+            target = dependency.get("depends_on_id")
+            if isinstance(target, str) and target in known and _is_open(known[target]):
+                blocked_by[target].add(str(issue["id"]))
+    leverage: dict[str, int] = {}
+    for blocker in blocked_by:
+        reachable: set[str] = set()
+        pending = list(blocked_by[blocker])
+        while pending:
+            child = pending.pop()
+            if child in reachable:
+                continue
+            reachable.add(child)
+            pending.extend(blocked_by.get(child, ()))
+        leverage[blocker] = len(reachable)
+    return leverage
 
 
-def build_report(args: argparse.Namespace) -> dict[str, Any]:
-    ready = _run_bd(args.repo, ["ready", "--limit", str(args.limit)])
-    in_progress = (
-        _run_bd(args.repo, ["list", "--status", "in_progress", "--limit", "0"]) if args.include_in_progress else []
-    )
-    classified = [_classify(issue) for issue in [*ready, *in_progress]]
-    groups: dict[str, list[ClassifiedIssue]] = defaultdict(list)
-    for item in classified:
-        groups[item.subsystem].append(item)
+def _footprint_conflicts(issue: dict[str, Any], occupied: list[dict[str, Any]]) -> list[str]:
+    footprint = bead_cluster._extract_footprint(issue)
+    keys = footprint.overlap_keys() | footprint.contention_keys()
+    conflicts: list[str] = []
+    for other in occupied:
+        other_footprint = bead_cluster._extract_footprint(other)
+        other_keys = other_footprint.overlap_keys() | other_footprint.contention_keys()
+        if keys & other_keys:
+            conflicts.append(str(other["id"]))
+    return sorted(conflicts)
+
+
+def _candidate_row(
+    issue: dict[str, Any], *, leverage: int, occupied: list[dict[str, Any]], ready_ids: set[str]
+) -> dict[str, Any]:
+    resource_class = _resource_class(issue)
     return {
-        "report_version": 1,
-        "command": "devtools workspace frontier",
-        "repo": str(args.repo),
-        "counts": {
-            "ready": len(ready),
-            "in_progress": len(in_progress),
-            "total": len(classified),
-        },
-        "groups": {
-            name: {
-                "count": len(items),
-                "ready": sum(1 for item in items if item.issue.get("status") == "open"),
-                "in_progress": sum(1 for item in items if item.issue.get("status") == "in_progress"),
-                "high_proof_cost": sum(1 for item in items if item.proof_cost == "high"),
-                "read_only_audit": sum(1 for item in items if item.subagent_suitability == "read-only-audit"),
-                "schema_lane": sum(1 for item in items if item.schema_lane),
-                "items": [
-                    item.to_dict()
-                    for item in sorted(
-                        items, key=lambda item: (item.issue.get("priority", 9), str(item.issue.get("id")))
-                    )
-                ],
-            }
-            for name, items in sorted(groups.items())
-        },
-        "recommendations": _recommendations(classified),
+        "id": str(issue["id"]),
+        "title": str(issue.get("title", "")),
+        "status": str(issue.get("status", "unknown")),
+        "priority": _priority(issue),
+        "dependency_ready": str(issue["id"]) in ready_ids,
+        "critical_path_leverage": leverage,
+        "resource_class": resource_class,
+        "conflicts_with_claims": _footprint_conflicts(issue, occupied),
+        "frontier_program_ref": _metadata(issue).get("frontier_program_ref"),
     }
 
 
-def _recommendations(items: list[ClassifiedIssue]) -> list[str]:
-    recommendations: list[str] = []
-    active_subsystems = {item.subsystem for item in items if item.issue.get("status") == "in_progress"}
-    for subsystem in sorted(active_subsystems):
-        ready_same = [item for item in items if item.issue.get("status") == "open" and item.subsystem == subsystem]
-        if ready_same:
-            recommendations.append(
-                f"Batch opportunity: {subsystem} has {len(ready_same)} ready item(s) near an active lane."
-            )
-    audits = [
-        item for item in items if item.issue.get("status") == "open" and item.subagent_suitability == "read-only-audit"
-    ]
-    if audits:
-        ids = ", ".join(str(item.issue.get("id")) for item in audits[:5])
-        recommendations.append(f"Subagent candidates: delegate read-only audit/research for {ids}.")
-    high_live = [
-        item
-        for item in items
-        if item.issue.get("status") == "open" and item.proof_cost == "high" and item.runtime_risk == "live-state"
-    ]
-    if high_live:
-        ids = ", ".join(str(item.issue.get("id")) for item in high_live[:5])
-        recommendations.append(f"Wait-ahead candidates: record devloop-wait before high-cost live proof for {ids}.")
-    if any(item.schema_lane for item in items):
-        recommendations.append("Schema-lane items are present; serialize with the active schema PR owner.")
-    recommendations.append(
-        "Velocity/Meta is mandatory: record a no-op reason, batch grouping, delegation, friction fix, or follow-up."
+def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) -> dict[str, Any]:
+    """Select every executable candidate permitted by the declared policy.
+
+    Claims occupy resource classes and footprint keys.  Candidates remain in
+    the report whether selected or deferred, making this a transparent focus
+    derivation rather than a hidden admission or count-pruning mechanism.
+    """
+    open_issues = [issue for issue in issues if _is_open(issue)]
+    claims = sorted(
+        (issue for issue in open_issues if issue.get("status") == "in_progress"), key=lambda item: str(item["id"])
     )
-    return recommendations
+    leverage = _critical_path_leverage(issues)
+    candidates = [
+        _candidate_row(issue, leverage=leverage.get(str(issue["id"]), 0), occupied=claims, ready_ids=ready_ids)
+        for issue in open_issues
+        if issue.get("status") == "open" and str(issue["id"]) in ready_ids and issue.get("issue_type") != "epic"
+    ]
+    candidates.sort(key=lambda row: (row["priority"], -row["critical_path_leverage"], row["id"]))
+
+    occupied_by_resource: dict[str, list[str]] = defaultdict(list)
+    for claim in claims:
+        occupied_by_resource[_resource_class(claim)].append(str(claim["id"]))
+    selected: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
+    selected_issues: list[dict[str, Any]] = []
+    by_id = {str(issue["id"]): issue for issue in open_issues}
+    for candidate in candidates:
+        resource_class = str(candidate["resource_class"])
+        policy = RESOURCE_POLICY[resource_class]
+        occupied_ids = sorted(occupied_by_resource[resource_class])
+        conflicts = list(candidate["conflicts_with_claims"])
+        selected_conflicts = _footprint_conflicts(by_id[candidate["id"]], selected_issues)
+        if conflicts:
+            candidate["focus_state"] = "deferred"
+            candidate["reason"] = f"footprint conflict with active claim(s): {', '.join(conflicts)}"
+            deferred.append(candidate)
+        elif selected_conflicts:
+            candidate["focus_state"] = "deferred"
+            candidate["reason"] = f"footprint conflict with selected focus: {', '.join(selected_conflicts)}"
+            deferred.append(candidate)
+        elif policy["max_parallel"] is not None and occupied_ids:
+            candidate["focus_state"] = "deferred"
+            candidate["reason"] = f"{resource_class} occupied by claim(s): {', '.join(occupied_ids)}"
+            deferred.append(candidate)
+        elif policy["max_parallel"] is not None and any(item["resource_class"] == resource_class for item in selected):
+            candidate["focus_state"] = "deferred"
+            candidate["reason"] = f"{resource_class} already selected under declared max_parallel policy"
+            deferred.append(candidate)
+        else:
+            candidate["focus_state"] = "focus"
+            candidate["reason"] = "ready, unclaimed, and permitted by declared resource policy"
+            selected.append(candidate)
+            selected_issues.append(by_id[candidate["id"]])
+    return {
+        "resource_policy": RESOURCE_POLICY,
+        "occupied_claims": [str(issue["id"]) for issue in claims],
+        "candidates": candidates,
+        "focus": selected,
+        "deferred": deferred,
+    }
+
+
+def build_report(issues: list[dict[str, Any]], ready: list[dict[str, Any]], *, repo: Path) -> dict[str, Any]:
+    ready_ids = {str(issue["id"]) for issue in ready if isinstance(issue.get("id"), str)}
+    execution_focus = derive_execution_focus(issues, ready_ids)
+    open_issues = [issue for issue in issues if _is_open(issue)]
+    claims = [issue for issue in open_issues if issue.get("status") == "in_progress"]
+    return {
+        "report_version": 2,
+        "command": "devtools workspace frontier",
+        "repo": str(repo),
+        "counts": {
+            "ambition": len(open_issues),
+            "active_set": len(_active_set(issues)),
+            "claims": len(claims),
+            "dependency_ready": len(ready_ids),
+            "execution_focus": len(execution_focus["focus"]),
+            "deferred": len(execution_focus["deferred"]),
+        },
+        "active_set": _active_set(issues),
+        "execution_focus": execution_focus,
+    }
 
 
 def _render_markdown(report: dict[str, Any]) -> str:
+    counts = report["counts"]
     lines = [
-        "# Devloop Frontier",
+        "# Execution Focus",
         "",
         f"repo: `{report['repo']}`",
         (
             "counts: "
-            f"ready={report['counts']['ready']} "
-            f"in_progress={report['counts']['in_progress']} "
-            f"total={report['counts']['total']}"
+            f"ambition={counts['ambition']} active_set={counts['active_set']} claims={counts['claims']} "
+            f"dependency_ready={counts['dependency_ready']} execution_focus={counts['execution_focus']} "
+            f"deferred={counts['deferred']}"
         ),
         "",
-        "## Recommendations",
+        "## Focus",
         "",
     ]
-    lines.extend(f"- {item}" for item in report["recommendations"])
-    lines.append("")
-    for name, group in report["groups"].items():
-        lines.extend(
-            [
-                f"## {name}",
-                "",
-                (
-                    f"count={group['count']} ready={group['ready']} in_progress={group['in_progress']} "
-                    f"high_proof_cost={group['high_proof_cost']} read_only_audit={group['read_only_audit']} "
-                    f"schema_lane={group['schema_lane']}"
-                ),
-                "",
-            ]
-        )
-        for item in group["items"]:
-            markers = [
-                f"proof:{item['proof_cost']}",
-                f"risk:{item['runtime_risk']}",
-                f"subagent:{item['subagent_suitability']}",
-            ]
-            if item["schema_lane"]:
-                markers.append("schema-lane")
-            lines.append(
-                f"- `{item['id']}` P{item['priority']} {item['status']} - {item['title']} ({', '.join(markers)})"
-            )
-        lines.append("")
+    for item in report["execution_focus"]["focus"]:
+        lines.append(f"- `{item['id']}` P{item['priority']} leverage={item['critical_path_leverage']} {item['title']}")
+    lines.extend(["", "## Deferred", ""])
+    for item in report["execution_focus"]["deferred"]:
+        lines.append(f"- `{item['id']}` P{item['priority']} {item['reason']}")
     return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        report = build_report(args)
+        issues = _run_bd(args.repo, ["list", "--all", "--limit", "0"])
+        ready = _run_bd(args.repo, ["ready", "--limit", "0"])
+        report = build_report(issues, ready, repo=args.repo)
     except RuntimeError as exc:
         print(f"frontier report failed: {exc}", file=sys.stderr)
         return 1
-    output = json.dumps(report, indent=2) + "\n" if args.json else _render_markdown(report) + "\n"
+    output = json.dumps(report, indent=2, sort_keys=True) + "\n" if args.json else _render_markdown(report) + "\n"
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(output, encoding="utf-8")

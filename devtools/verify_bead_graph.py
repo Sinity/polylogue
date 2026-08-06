@@ -1,34 +1,23 @@
-"""Bead-graph invariant lint (polylogue variant).
+"""Bead-graph invariant lint and full missing-AC census.
 
-Run before shipping bead-state deltas. Universal invariants: no cycles; no
-open bead without acceptance criteria; no duplicate ``wave:`` labels; no
-malformed (non-numeric) ``wave:`` labels; no wave inversions where both
-sides carry waves.
+Run before shipping Beads state.  The command reads live structured ``bd``
+state through ``bd dep cycles`` and unbounded ``bd list --all --json``.  It
+never treats prose fields, titles, or labels as acceptance criteria.
 
-INTENTIONAL DIVERGENCE from sinex: multi-area labels are polylogue
-convention, so ``area:`` duplicates are NOT flagged here -- only duplicate
-``wave:`` labels are (the ``lane:``/``delivery:``/``horizon:`` taxonomy is
-local to this repo).
-
-This checks *live* ``bd`` query state (``bd dep cycles`` / ``bd list --all
---json``), not the exported ``.beads/issues.jsonl`` snapshot that
-``devtools lab policy backlog-hygiene`` reads — run it right before shipping
-a bead-state delta, so it sees whatever is live in the local Dolt DB even if
-not yet re-exported.
-
-NB: ``bd list --json`` dependency objects use ``type``/``depends_on_id``
-(``bd show --json`` differs).
-
-This module supersedes the standalone ``.agent/scripts/bd-graph-lint`` shell
-script (ported so it runs through the standard devtools command surface
-instead of requiring a manually-invoked path).
+Besides dependency-cycle and wave checks, the report validates that each
+Bead has zero or one canonical parent derived solely from ``parent-child``
+dependency records.  The JSON output is deliberately complete and stable so
+the coordinator can batch the real missing-AC population without weakening
+the fail-closed lint.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,23 +30,14 @@ class Finding:
 
 
 def _wave(issue: dict[str, Any]) -> tuple[int | None, Finding | None]:
-    """Parse the issue's ``wave:`` label.
-
-    Returns ``(value, malformed_finding)``: ``value`` is the parsed wave
-    number, or ``None`` if there is no ``wave:`` label *or* the label's
-    suffix isn't a plain integer (e.g. ``wave:later``). In the malformed
-    case a ``Finding`` is also returned so the caller can surface it as a
-    policy failure -- a bead carrying a `wave:` label the lint cannot
-    parse is a lint bug, not a silently-ignorable non-participant in wave
-    ordering.
-    """
+    """Parse the issue's ``wave:`` label."""
     for label in issue.get("labels") or []:
-        if label.startswith("wave:"):
+        if isinstance(label, str) and label.startswith("wave:"):
             raw = label[len("wave:") :]
             try:
                 return int(raw), None
             except ValueError:
-                return None, Finding("malformed-wave", issue["id"], f"non-numeric wave label: {label!r}")
+                return None, Finding("malformed-wave", str(issue["id"]), f"non-numeric wave label: {label!r}")
     return None, None
 
 
@@ -68,6 +48,7 @@ def _run_bd_dep_cycles() -> tuple[bool, str]:
 
 
 def _run_bd_list_all() -> list[dict[str, Any]]:
+    """Load the complete live population; ``-n 0`` is never a display page."""
     result = subprocess.run(
         ["bd", "list", "--all", "-n", "0", "--json"],
         capture_output=True,
@@ -75,82 +56,245 @@ def _run_bd_list_all() -> list[dict[str, Any]]:
         check=True,
     )
     payload = json.loads(result.stdout)
-    return payload if isinstance(payload, list) else []
+    if not isinstance(payload, list):
+        raise RuntimeError(f"bd list returned {type(payload).__name__}, expected list")
+    return [issue for issue in payload if isinstance(issue, dict)]
 
 
-def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
-    by_id = {issue["id"]: issue for issue in issues}
+def _metadata(issue: dict[str, Any]) -> dict[str, Any]:
+    value = issue.get("metadata")
+    return value if isinstance(value, dict) else {}
+
+
+def _labels(issue: dict[str, Any]) -> list[str]:
+    value = issue.get("labels")
+    return sorted(label for label in value if isinstance(label, str)) if isinstance(value, list) else []
+
+
+def _priority(issue: dict[str, Any]) -> int:
+    value = issue.get("priority", 2)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 2
+
+
+def _parent_targets(issue: dict[str, Any]) -> set[str]:
+    targets: set[str] = set()
+    dependencies = issue.get("dependencies")
+    if not isinstance(dependencies, list):
+        return targets
+    for dependency in dependencies:
+        if not isinstance(dependency, dict) or dependency.get("type") != "parent-child":
+            continue
+        target = dependency.get("depends_on_id")
+        if isinstance(target, str) and target:
+            targets.add(target)
+    return targets
+
+
+def canonical_parent_map(issues: list[dict[str, Any]]) -> dict[str, str | None]:
+    """Return the structured canonical parent for every known issue.
+
+    A zero-parent issue maps to ``None``.  Multiple parent-child targets are
+    intentionally represented as ``None`` because there is no canonical
+    choice until the graph validator reports and an operator repairs it.
+    """
+    parents: dict[str, str | None] = {}
+    for issue in issues:
+        bead_id = str(issue.get("id", ""))
+        targets = _parent_targets(issue)
+        parents[bead_id] = next(iter(targets)) if len(targets) == 1 else None
+    return parents
+
+
+def _parent_findings(issues: list[dict[str, Any]]) -> list[Finding]:
+    """Validate structured parent-child edges, independent of Bead prose."""
+    by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
     findings: list[Finding] = []
-
-    # Parse each open issue's wave exactly once: a malformed `wave:` label
-    # becomes a policy finding here, not a silent skip re-triggered on every
-    # dependent that happens to reference the bead.
-    waves: dict[str, int | None] = {}
-    for issue in issues:
-        if issue.get("status") == "closed":
+    canonical: dict[str, str] = {}
+    for bead_id, issue in sorted(by_id.items()):
+        targets = _parent_targets(issue)
+        if len(targets) > 1:
+            findings.append(Finding("multiple-parents", bead_id, f"parent-child targets={sorted(targets)}"))
             continue
-        wave_value, malformed = _wave(issue)
-        waves[issue["id"]] = wave_value
-        if malformed is not None:
-            findings.append(malformed)
-
-    for issue in issues:
-        if issue.get("status") == "closed":
+        if not targets:
             continue
-        labels = issue.get("labels") or []
-        wave_labels = [label for label in labels if label.startswith("wave:")]
-        if len(wave_labels) > 1:
-            findings.append(Finding("duplicate-wave", issue["id"], f"labels={wave_labels}"))
-        if not (issue.get("acceptance_criteria") or "").strip():
-            findings.append(Finding("missing-ac", issue["id"], str(issue.get("title", ""))[:60]))
-        wv = waves.get(issue["id"])
-        for dep in issue.get("dependencies") or []:
-            if dep.get("type") != "blocks":
-                continue
-            dep_issue = by_id.get(dep.get("depends_on_id"))
-            if dep_issue is None or dep_issue.get("status") == "closed":
-                continue
-            dw = waves.get(dep_issue["id"])
-            if wv is not None and dw is not None and dw > wv:
-                findings.append(
-                    Finding(
-                        "wave-inversion",
-                        issue["id"],
-                        f"(wave:{wv}) <- {dep_issue['id']} (wave:{dw})",
-                    )
-                )
+        parent_id = next(iter(targets))
+        if parent_id not in by_id:
+            findings.append(Finding("missing-parent", bead_id, f"parent-child target {parent_id!r} does not exist"))
+            continue
+        if parent_id == bead_id:
+            findings.append(Finding("parent-self-cycle", bead_id, "parent-child target is the child itself"))
+            continue
+        canonical[bead_id] = parent_id
+
+    visited: set[str] = set()
+    for start in sorted(canonical):
+        if start in visited:
+            continue
+        path: list[str] = []
+        index: dict[str, int] = {}
+        node = start
+        while node in canonical and node not in visited:
+            if node in index:
+                cycle = path[index[node] :] + [node]
+                findings.append(Finding("parent-cycle", node, "parent-child cycle: " + " -> ".join(cycle)))
+                break
+            index[node] = len(path)
+            path.append(node)
+            node = canonical[node]
+        visited.update(path)
     return findings
 
 
+def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
+    by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
+    findings: list[Finding] = _parent_findings(issues)
+
+    waves: dict[str, int | None] = {}
+    for issue_id, issue in sorted(by_id.items()):
+        if issue.get("status") == "closed":
+            continue
+        wave_value, malformed = _wave(issue)
+        waves[issue_id] = wave_value
+        if malformed is not None:
+            findings.append(malformed)
+
+    for issue_id, issue in sorted(by_id.items()):
+        if issue.get("status") == "closed":
+            continue
+        wave_labels = [label for label in _labels(issue) if label.startswith("wave:")]
+        if len(wave_labels) > 1:
+            findings.append(Finding("duplicate-wave", issue_id, f"labels={wave_labels}"))
+        if not str(issue.get("acceptance_criteria") or "").strip():
+            findings.append(Finding("missing-ac", issue_id, str(issue.get("title", ""))[:60]))
+        wave_value = waves.get(issue_id)
+        dependencies = issue.get("dependencies")
+        for dependency in dependencies if isinstance(dependencies, list) else []:
+            if not isinstance(dependency, dict) or dependency.get("type") != "blocks":
+                continue
+            blocker_id = dependency.get("depends_on_id")
+            blocker = by_id.get(str(blocker_id))
+            if blocker is None or blocker.get("status") == "closed":
+                continue
+            blocker_wave = waves.get(str(blocker_id))
+            if wave_value is not None and blocker_wave is not None and blocker_wave > wave_value:
+                findings.append(
+                    Finding("wave-inversion", issue_id, f"(wave:{wave_value}) <- {blocker_id} (wave:{blocker_wave})")
+                )
+    return sorted(findings, key=lambda finding: (finding.kind, finding.bead_id, finding.detail))
+
+
+def _campaigns(issue: dict[str, Any]) -> list[str]:
+    """Read campaign declarations from structured metadata or labels only."""
+    values: set[str] = set()
+    metadata_campaign = _metadata(issue).get("campaign")
+    if isinstance(metadata_campaign, str) and metadata_campaign:
+        values.add(metadata_campaign)
+    elif isinstance(metadata_campaign, list):
+        values.update(value for value in metadata_campaign if isinstance(value, str) and value)
+    values.update(label.removeprefix("campaign:") for label in _labels(issue) if label.startswith("campaign:"))
+    return sorted(values)
+
+
+def _partition(items: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any]]:
+    groups: dict[str, list[str]] = defaultdict(list)
+    for item in items:
+        groups[str(item[key])].append(str(item["id"]))
+    return {name: {"count": len(ids), "ids": sorted(ids)} for name, ids in sorted(groups.items())}
+
+
+def missing_ac_census(issues: list[dict[str, Any]]) -> dict[str, Any]:
+    """Produce a complete, deterministic census of fail-closed missing ACs."""
+    parents = canonical_parent_map(issues)
+    missing_ids = {finding.bead_id for finding in collect_findings(issues) if finding.kind == "missing-ac"}
+    rows: list[dict[str, Any]] = []
+    for issue in issues:
+        bead_id = str(issue.get("id", ""))
+        if bead_id not in missing_ids:
+            continue
+        program = _metadata(issue).get("frontier_program_ref")
+        program_or_parent = (
+            str(program) if isinstance(program, str) and program else parents.get(bead_id) or "unparented"
+        )
+        campaigns = _campaigns(issue)
+        rows.append(
+            {
+                "id": bead_id,
+                "status": str(issue.get("status", "unknown")),
+                "priority": _priority(issue),
+                "program_or_parent": program_or_parent,
+                "campaign_relevance": "declared" if campaigns else "none",
+                "campaigns": campaigns,
+            }
+        )
+    rows.sort(key=lambda row: (row["status"], row["priority"], row["program_or_parent"], row["id"]))
+    return {
+        "report_version": 1,
+        "total": len(rows),
+        "by_status": _partition(rows, "status"),
+        "by_priority": _partition(rows, "priority"),
+        "by_program_or_parent": _partition(rows, "program_or_parent"),
+        "by_campaign_relevance": _partition(rows, "campaign_relevance"),
+        "items": rows,
+    }
+
+
+def build_report(issues: list[dict[str, Any]], *, cycles_ok: bool, cycles_output: str) -> dict[str, Any]:
+    findings = collect_findings(issues)
+    by_kind: dict[str, int] = defaultdict(int)
+    for finding in findings:
+        by_kind[finding.kind] += 1
+    return {
+        "report_version": 1,
+        "cycles": {"ok": cycles_ok, "output": cycles_output},
+        "issues_scanned": len(issues),
+        "findings": [{"kind": f.kind, "id": f.bead_id, "detail": f.detail} for f in findings],
+        "counts": dict(sorted(by_kind.items())),
+        "missing_ac_census": missing_ac_census(issues),
+    }
+
+
+def _format_report(report: dict[str, Any]) -> str:
+    lines: list[str] = []
+    cycle_output = report["cycles"]["output"]
+    if cycle_output:
+        lines.append(str(cycle_output))
+    for finding in report["findings"]:
+        lines.append(f"{finding['kind']}: {finding['id']} {finding['detail']}")
+    counts = report["counts"]
+    lines.append(
+        "violations: "
+        f"dup_labels={counts.get('duplicate-wave', 0)} "
+        f"inversions={counts.get('wave-inversion', 0)} "
+        f"missing_ac={counts.get('missing-ac', 0)} "
+        f"malformed_wave={counts.get('malformed-wave', 0)} "
+        f"parent_integrity={sum(value for key, value in counts.items() if key.startswith('parent-') or key in {'multiple-parents', 'missing-parent'})}"
+    )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
-    del argv  # no options; mirrors the original script's zero-argument shape
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit the complete machine-readable graph report")
+    args = parser.parse_args(argv)
 
     cycles_ok, cycles_output = _run_bd_dep_cycles()
-    if cycles_output:
-        print(cycles_output)
-    if not cycles_ok:
-        print("bead-graph: `bd dep cycles` reported a failure (see above)", file=sys.stderr)
+    try:
+        issues = _run_bd_list_all()
+    except (subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
+        if args.json:
+            print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
+        else:
+            print(f"bead-graph: failed to load live Beads state: {exc}", file=sys.stderr)
         return 1
-
-    issues = _run_bd_list_all()
-    findings = collect_findings(issues)
-
-    dup = sum(1 for f in findings if f.kind == "duplicate-wave")
-    inv = sum(1 for f in findings if f.kind == "wave-inversion")
-    noac = sum(1 for f in findings if f.kind == "missing-ac")
-    malformed = sum(1 for f in findings if f.kind == "malformed-wave")
-    for f in findings:
-        if f.kind == "duplicate-wave":
-            print(f"duplicate-wave: {f.bead_id} {f.detail}")
-        elif f.kind == "missing-ac":
-            print(f"missing-AC: {f.bead_id} {f.detail}")
-        elif f.kind == "wave-inversion":
-            print(f"wave-inversion: {f.bead_id} {f.detail}")
-        elif f.kind == "malformed-wave":
-            print(f"malformed-wave: {f.bead_id} {f.detail}")
-
-    print(f"violations: dup_labels={dup} inversions={inv} missing_ac={noac} malformed_wave={malformed}")
-    return 1 if (dup or inv or noac or malformed) else 0
+    report = build_report(issues, cycles_ok=cycles_ok, cycles_output=cycles_output)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(_format_report(report))
+    return 0 if cycles_ok and not report["findings"] else 1
 
 
 if __name__ == "__main__":

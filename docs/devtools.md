@@ -25,6 +25,20 @@ Routine command placement:
 - prefer validation lanes and `devtools verify --lab` to compose executable
   lab checks rather than duplicating domain checks inside `devtools verify`.
 
+## Beads execution sets
+
+Treat the Beads population as four distinct, derived sets. Full ambition is every open or in-progress Bead. The active set is the explicitly admitted non-epic work with `metadata.frontier=active`. Execution focus is the ready, unclaimed subset that the report can schedule after existing claims, direct blocking leverage, footprint conflicts, and its declared schema/live-state resource policy. Dependency-ready means that `bd ready` currently reports no unmet hard dependency; it does not imply that the item belongs in the active set or is safe to run alongside another lane.
+
+Use the complete structured surfaces, never an output page, to make that distinction:
+
+```bash
+devtools workspace frontier --json
+devtools lab policy bead-graph --json
+devtools lab policy backlog-hygiene --json
+```
+
+`workspace frontier --json` reports every selected and deferred execution-focus candidate, the occupied claims, and the policy that caused each deferral. It never changes claims or admission metadata. `lab policy bead-graph --json` stays fail-closed for empty `acceptance_criteria`, validates parent-child integrity from dependency records, and includes every missing-AC ID with deterministic partitions by status, priority, program-or-parent, and declared campaign relevance. `backlog-hygiene --json` remains the bounded exported-snapshot structure gate for the active-set metadata itself.
+
 <!-- BEGIN GENERATED: devtools-command-catalog -->
 ## Command Catalog
 
@@ -48,7 +62,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
 | `devtools lab policy backlog-hygiene` | Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 20 checks over the Beads export catching dangling dependency refs, blocks-cycles, missing horizon/AC/design content on tech-tree beads, P0/P1 beads without acceptance criteria, unlabeled non-epic beads, epics with no members or description, stale 'adopted' decisions left open, duplicate titles, bead ids named but never created, an unclean/corrupt bd JSONL sync receipt (S1, consuming polylogue-gxjh.1's monotonic sync contract), an active leaf that is itself an epic (F1), an active leaf with a missing/dangling/mismatched program ref (F2), a stale in_progress claim with no recent activity (F3, configurable window), and a frontier_program=active program with no admitted active leaves (F4) -- catches backlog structure drift before it needs an archaeology sweep to recover, instead of only a manually-invoked script. Also reports a non-blocking active-set size diagnostic (soft target/warn bands, never a hard cap or failure). |
-| `devtools lab policy bead-graph` | Run right before shipping a bead-state delta (matches the sinex bead-graph-lint convention). Checks LIVE `bd dep cycles` / `bd list --all --json` output rather than the exported .beads/issues.jsonl snapshot, so it catches drift not yet re-exported. INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:` labels are flagged (polylogue's `lane:`/`delivery:`/`horizon:` taxonomy is local and not enforced here). |
+| `devtools lab policy bead-graph` | Run right before shipping a bead-state delta (matches the sinex bead-graph-lint convention). Checks LIVE `bd dep cycles` / `bd list --all --json` output rather than the exported .beads/issues.jsonl snapshot, so it catches drift not yet re-exported. It fails closed for real missing acceptance criteria and validates zero-or-one structured parent-child parents. `--json` emits the complete deterministic missing-AC census, never a display page. INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:` labels are flagged (polylogue's `lane:`/`delivery:`/`horizon:` taxonomy is local and not enforced here). |
 | `devtools lab policy campaign-archive-boundaries` | Catch a regression of the phantom-benchmark.db bug (polylogue-ovme.3): a campaign reintroducing a 'benchmark.db' sentinel, an ad hoc tier-path sibling derivation, or an entry point (generate_archive/run_full_campaign/run_campaign._run) that no longer routes through CampaignArchiveLocation. Scoped to the devtools campaign boundary only -- the broader storage/diagnostics/daemon/maintenance/transitions boundary audit is polylogue-ovme.2's migration surface. |
 | `devtools lab policy demo-packet-registry` | Enforce the 212 portfolio contract (polylogue-212.7): every demo prompt in .agent/demos/registry.json must have a packet directory carrying PROMPT.md, finding.yaml (five-part provenance stanza), report.md (fixed section order), evidence.ndjson, queries.ndjson, checks.json, and run.log. Catches a missing or malformed packet before it silently drops out of the demo shelf. |
 | `devtools lab policy demo-tour-freshness` | Catch drift between what `polylogue demo tour` actually emits at runtime (transcript, report, per-step command output, recording tape) and the committed copies under docs/examples/demo-tour/, modulo an explicit wall-clock-duration mask (polylogue-3tl.17). Runs the real tour (~10s), so it lives in the lab tier rather than --quick. |
@@ -168,7 +182,7 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab lanes` | Run named validation lanes. |
 | `devtools lab policy backlog-hygiene` | Verify Beads backlog structure invariants (.beads/issues.jsonl). |
-| `devtools lab policy bead-graph` | Bead-graph invariant lint over live `bd` state (cycles, wave labels/inversions, missing AC). |
+| `devtools lab policy bead-graph` | Bead-graph invariant lint and complete missing-AC census over live `bd` state. |
 | `devtools lab policy campaign-archive-boundaries` | Verify devtools synthetic benchmark/scale campaigns route through ArchiveLocation. |
 | `devtools lab policy classifier-fingerprints` | Verify parser/classifier decision-boundary changes are declared as reparse-requiring or acknowledged. |
 | `devtools lab policy demo-packet-registry` | Verify every registered 212 demo has a conforming Demo Finding Packet. |
@@ -272,7 +286,7 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
-| `devtools workspace frontier` | Classify ready and in-progress Beads into devloop batches. |
+| `devtools workspace frontier` | Derive a complete, non-mutating execution focus from live Beads state. |
 | `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools workspace lane-brief` | Generate a dispatch brief for a bead lane with live footprint/prior-art evidence. |
 | `devtools workspace lane-init` | Provision a fanout lane worktree: branch, isolated venv, guard check, ledger record. |

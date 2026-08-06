@@ -66,6 +66,16 @@ def test_verification_lab_surface_is_explicit_and_implemented() -> None:
         assert callable(spec.resolve_main())
 
 
+def test_bead_graph_and_frontier_catalogs_expose_complete_json_reports() -> None:
+    graph = COMMANDS["lab policy bead-graph"]
+    frontier = COMMANDS["workspace frontier"]
+
+    assert "--json" in graph.examples[-1]
+    assert "missing acceptance criteria" in graph.use_when
+    assert any("--json" in example for example in frontier.examples)
+    assert "execution focus" in frontier.description
+
+
 def test_workspace_dispositions_cover_the_named_utf_entries() -> None:
     expected = {
         "workspace index-fast-forward",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from devtools import verify_bead_graph
@@ -12,6 +14,8 @@ def _issue(
     labels: list[str] | None = None,
     acceptance_criteria: str = "some AC",
     dependencies: list[dict[str, str]] | None = None,
+    priority: int = 2,
+    metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "id": id,
@@ -20,6 +24,8 @@ def _issue(
         "labels": labels if labels is not None else [],
         "acceptance_criteria": acceptance_criteria,
         "dependencies": dependencies if dependencies is not None else [],
+        "priority": priority,
+        "metadata": metadata if metadata is not None else {},
     }
 
 
@@ -153,4 +159,91 @@ def test_main_exits_zero_when_all_waves_are_well_formed(
 
     out = capsys.readouterr().out
     assert rc == 0
-    assert "violations: dup_labels=0 inversions=0 missing_ac=0 malformed_wave=0" in out
+    assert "violations: dup_labels=0 inversions=0 missing_ac=0 malformed_wave=0 parent_integrity=0" in out
+
+
+def test_parent_child_validation_allows_zero_or_one_canonical_parent() -> None:
+    issues = [
+        _issue("polylogue-parent"),
+        _issue("polylogue-child", dependencies=[{"type": "parent-child", "depends_on_id": "polylogue-parent"}]),
+        _issue("polylogue-root"),
+    ]
+
+    assert verify_bead_graph.canonical_parent_map(issues) == {
+        "polylogue-parent": None,
+        "polylogue-child": "polylogue-parent",
+        "polylogue-root": None,
+    }
+    assert not [finding for finding in verify_bead_graph.collect_findings(issues) if "parent" in finding.kind]
+
+
+def test_parent_child_validation_rejects_multiple_missing_and_cyclic_parents() -> None:
+    issues = [
+        _issue("polylogue-a", dependencies=[{"type": "parent-child", "depends_on_id": "polylogue-b"}]),
+        _issue(
+            "polylogue-b",
+            dependencies=[
+                {"type": "parent-child", "depends_on_id": "polylogue-a"},
+                {"type": "parent-child", "depends_on_id": "polylogue-c"},
+            ],
+        ),
+        _issue("polylogue-d", dependencies=[{"type": "parent-child", "depends_on_id": "polylogue-absent"}]),
+    ]
+
+    findings = verify_bead_graph.collect_findings(issues)
+    assert {(finding.kind, finding.bead_id) for finding in findings} >= {
+        ("multiple-parents", "polylogue-b"),
+        ("missing-parent", "polylogue-d"),
+    }
+
+
+def test_parent_relationship_survives_json_import_export_and_merge_shape() -> None:
+    """The production census relies only on structured dependency records."""
+    exported = [
+        _issue("polylogue-program"),
+        _issue(
+            "polylogue-child",
+            dependencies=[{"type": "parent-child", "depends_on_id": "polylogue-program"}],
+            acceptance_criteria="",
+        ),
+    ]
+    imported = json.loads(json.dumps(exported))
+    merged = [*imported, _issue("polylogue-unrelated")]
+
+    report = verify_bead_graph.build_report(merged, cycles_ok=True, cycles_output="")
+
+    assert report["counts"].get("multiple-parents", 0) == 0
+    item = report["missing_ac_census"]["items"][0]
+    assert item["id"] == "polylogue-child"
+    assert item["program_or_parent"] == "polylogue-program"
+
+
+def test_json_report_lists_every_missing_ac_with_deterministic_partitions(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    issues = [
+        _issue("polylogue-parent", status="open"),
+        _issue(
+            "polylogue-a",
+            status="open",
+            priority=1,
+            acceptance_criteria="",
+            dependencies=[{"type": "parent-child", "depends_on_id": "polylogue-parent"}],
+            labels=["campaign:reindex"],
+        ),
+        _issue("polylogue-b", status="in_progress", priority=2, acceptance_criteria=""),
+        _issue("polylogue-c", status="closed", acceptance_criteria=""),
+    ]
+    monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (True, "cycle check clean"))
+    monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: issues)
+
+    assert verify_bead_graph.main(["--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+
+    census = payload["missing_ac_census"]
+    assert census["total"] == 2
+    assert [item["id"] for item in census["items"]] == ["polylogue-b", "polylogue-a"]
+    assert census["by_status"]["open"] == {"count": 1, "ids": ["polylogue-a"]}
+    assert census["by_priority"]["1"] == {"count": 1, "ids": ["polylogue-a"]}
+    assert census["by_program_or_parent"]["polylogue-parent"]["ids"] == ["polylogue-a"]
+    assert census["by_campaign_relevance"]["declared"]["ids"] == ["polylogue-a"]
