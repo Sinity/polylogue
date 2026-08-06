@@ -274,7 +274,10 @@ def _readiness_count(readiness: dict[str, object], key: str) -> int:
 
 
 @pytest.mark.timeout(300)
-def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.uses_real_clock("waits for a real subprocess replay checkpoint and kill/resume boundary")
+def test_sanitized_codex_804_revision_recovery_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
     """Exercise acquisition through candidate promotion at incident scale.
 
     Anti-vacuity: deleting the production ``AcquisitionService`` call from
@@ -284,6 +287,8 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     inactive generation for the recovery assertions below.
     """
 
+    _codex_payload.cache_clear()
+    request.addfinalizer(_codex_payload.cache_clear)
     root = tmp_path / "codex-804-proof"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     initialize_active_archive_root(root)
@@ -372,36 +377,60 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     assert transaction.status == "running"
     transaction_path = store.transactions_root / f"{operation_id}.json"
     assert transaction_path.is_file()
-    crash_script = """
-import os
+    replay_script = """
 import sys
 from pathlib import Path
 
-from polylogue.storage.index_generation import IndexGenerationStore
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 
 root = Path(sys.argv[1])
 operation_id = sys.argv[2]
-transaction = IndexGenerationStore.for_archive_root(root).load_transaction(operation_id)
-if transaction.status != "running" or transaction.processed_raw_count != 0:
-    raise SystemExit(f"unexpected pre-replay transaction: {transaction.status} {transaction.processed_raw_count}")
-os._exit(137)
+receipt = Path(sys.argv[3])
+result = rebuild_index_from_source_sync(
+    RebuildIndexRequest(
+        archive_root=root,
+        operation_id=operation_id,
+        promote=False,
+        schema_inference_receipt_path=receipt,
+        raw_batch_size=8,
+    )
+)
+print(result.status)
 """
     replay_before = _resource_sample(root)
     replay_started = time.perf_counter()
-    crashed_process = subprocess.run(
-        [sys.executable, "-c", crash_script, str(root), operation_id],
+    replay_process = subprocess.Popen(
+        [sys.executable, "-c", replay_script, str(root), operation_id, str(schema_inference_receipt_path)],
         cwd=Path.cwd(),
-        check=False,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
     )
-    assert crashed_process.returncode == 137, crashed_process.stderr
+    replay_deadline = time.monotonic() + 120
+    while time.monotonic() < replay_deadline:
+        persisted = store.load_transaction(operation_id)
+        if persisted.processed_raw_count > 0:
+            replay_process.kill()
+            break
+        returncode = replay_process.poll()
+        if returncode is not None:
+            stdout = replay_process.stdout.read() if replay_process.stdout is not None else ""
+            stderr = replay_process.stderr.read() if replay_process.stderr is not None else ""
+            raise AssertionError(
+                f"replay exited before durable progress: {returncode}; stdout={stdout}; stderr={stderr}"
+            )
+        time.sleep(0.1)
+    else:
+        replay_process.kill()
+        raise AssertionError("replay did not checkpoint durable progress before the interruption deadline")
+    replay_returncode = replay_process.wait(timeout=30)
+    assert replay_returncode == -9
     persisted = store.load_transaction(operation_id)
-    assert persisted.status == "running"
-    assert persisted.processed_raw_count == 0
-    with sqlite3.connect(root / "source.db") as conn:
-        assert int(conn.execute("SELECT COUNT(*) FROM raw_session_memberships").fetchone()[0]) == 0
-        assert int(conn.execute("SELECT COUNT(*) FROM raw_membership_census").fetchone()[0]) == 0
+    assert persisted.status == "paused"
+    assert persisted.processed_raw_count > 0
+    interrupted_generation = store.load(persisted.generation_id)
+    with sqlite3.connect(interrupted_generation.index_path) as conn:
+        assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) > 0
     assert store.active_pointer.resolve(strict=True) == active_before
     phases.append(
         _phase(
