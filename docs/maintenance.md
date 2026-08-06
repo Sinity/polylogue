@@ -66,7 +66,9 @@ only that absent file through the archive ownership gate:
 polylogue ops maintenance migrate-tier audit --initialize-missing --output-format json
 ```
 
-The flag refuses any existing path and never replaces durable data. Run
+The flag stages the canonical database in the private archive directory and
+publishes it with an atomic no-replace link. It refuses any existing path,
+including one created concurrently, and never replaces durable data. Run
 `migrate-tier source`, `migrate-tier user`, and `migrate-tier audit` for
 existing tiers when the target package requires numbered migrations, then
 deploy that exact package. Run the preflight again and require a ready result

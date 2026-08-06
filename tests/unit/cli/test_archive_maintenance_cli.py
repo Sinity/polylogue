@@ -2075,6 +2075,54 @@ def test_migrate_tier_cli_missing_initialization_refuses_an_existing_tier(
     assert audit_db.read_bytes() == before
 
 
+def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_replacement(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+    audit_db.unlink()
+    raced_bytes = b"concurrent durable owner\n"
+    real_link = os.link
+
+    def create_target_before_publish(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        Path(destination).write_bytes(raced_bytes)
+        real_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.link", create_target_before_publish)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "appeared during initialization; refusing to replace it" in json.loads(result.stdout)["error"]
+    assert audit_db.read_bytes() == raced_bytes
+    assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
+
+
 def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
     cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:
