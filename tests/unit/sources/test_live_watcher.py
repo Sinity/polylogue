@@ -341,6 +341,19 @@ async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Pa
     watcher.stop()
 
 
+@pytest.mark.asyncio
+async def test_cursor_authority_seam_blocks_normal_live_route_before_writes(tmp_path: Path) -> None:
+    """The exact selector exercises the production live authority seam."""
+    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    before = _live_archive_snapshot(tmp_path)
+
+    with pytest.raises(CursorAuthorityBlockedError, match="source-selection gate blocked"):
+        await watcher._ingest_files([source_path])
+
+    assert _live_archive_snapshot(tmp_path) == before
+    watcher.stop()
+
+
 def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
