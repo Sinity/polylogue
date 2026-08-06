@@ -1398,16 +1398,12 @@ def _check_archive_verification_registry_medium() -> list[HealthAlert]:
     now = datetime.now(UTC).isoformat()
     try:
         from polylogue.maintenance.archive_verification import (
-            ARCHIVE_VERIFICATION_CHECKS,
-            ArchiveVerificationCheckClass,
+            ArchiveVerificationDaemonSchedule,
+            archive_verification_health_check_names,
             verify_archive,
         )
 
-        scheduled_names = [
-            spec.name
-            for spec in ARCHIVE_VERIFICATION_CHECKS
-            if spec.check_class in (ArchiveVerificationCheckClass.LIVENESS, ArchiveVerificationCheckClass.FRESHNESS)
-        ]
+        scheduled_names = archive_verification_health_check_names(ArchiveVerificationDaemonSchedule.MEDIUM)
         if not scheduled_names:
             return []
         report = verify_archive(archive_root(), checks=scheduled_names)

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -112,6 +112,31 @@ class ArchiveVerificationCheckClass(str, Enum):
     spec)."""
 
 
+class ArchiveVerificationExecutionPhase(str, Enum):
+    """Named production bindings selected directly from the check registry."""
+
+    LIVE_ARCHIVE = "live-archive"
+    REINDEX_SOURCE_PREFLIGHT = "reindex-source-preflight"
+    REINDEX_INDEX_CANDIDATE = "reindex-index-candidate"
+    REINDEX_CROSS_TIER_CANDIDATE = "reindex-cross-tier-candidate"
+    REINDEX_CANARY_CANDIDATE = "reindex-canary-candidate"
+    CORPUS_FIDELITY = "corpus-fidelity"
+
+
+class ArchiveVerificationCandidateMode(str, Enum):
+    """How a check sees an inactive index generation, if it is applicable."""
+
+    NONE = "none"
+    INDEX_ROOT = "index-root"
+    CROSS_TIER = "cross-tier"
+
+
+class ArchiveVerificationDaemonSchedule(str, Enum):
+    """Daemon health cadence for live-archive verification checks."""
+
+    MEDIUM = "medium"
+
+
 @dataclass(frozen=True)
 class ArchiveVerificationWaiver:
     """A known-red-on-live acknowledgement for one registry check.
@@ -132,21 +157,30 @@ class ArchiveVerificationWaiver:
     reason: str
 
 
-#: Checks with a currently-open, already-tracked live finding: the check
-#: keeps reporting its true ``error`` status (evidence is never suppressed),
-#: but :attr:`ArchiveVerificationReport.blocking` excludes it so an unrelated
-#: gate (e.g. the reindex acceptance run) doesn't trip on a distinct,
-#: separately-owned bug. Remove an entry only alongside closing its bead.
-ARCHIVE_VERIFICATION_WAIVERS: dict[str, ArchiveVerificationWaiver] = {
-    "embeddings-refs-liveness": ArchiveVerificationWaiver(
-        bead_id="polylogue-feu0",
-        reason=(
-            "4,186 message_embedding_refs point at messages no longer in index.db "
-            "(known, undrained catch-up debt as of 2026-08-03; embeddings convergence "
-            "is a separate async lane from index materialization)"
-        ),
-    ),
-}
+@dataclass(frozen=True)
+class ArchiveVerificationIncident:
+    """The tracked incident and invariant identity that owns one predicate."""
+
+    bead_id: str
+    invariant_id: str
+
+
+@dataclass(frozen=True)
+class ArchiveVerificationGroundTruthUniverse:
+    """Durable evidence a check audits, independent of the mechanism under test."""
+
+    tables: tuple[str, ...]
+    description: str
+
+
+@dataclass(frozen=True)
+class ArchiveVerificationRedTwin:
+    """Plane-1 fixture mutation that proves a check can become non-green."""
+
+    fixture: str
+    mutation: str
+    test_name: str
+
 
 #: index-tier tables the planner-stats check expects ``ANALYZE`` coverage for
 #: (polylogue-l3tk: fresh generations without stats pick pathological plans).
@@ -305,6 +339,14 @@ class ArchiveVerificationCheckSpec:
     #: check added without a class tag is a construction-time TypeError, not a
     #: silent "" that would slip past classification).
     check_class: ArchiveVerificationCheckClass
+    incident: ArchiveVerificationIncident | None
+    ground_truth_universe: ArchiveVerificationGroundTruthUniverse | None
+    red_twin: ArchiveVerificationRedTwin | None
+    execution_phases: frozenset[ArchiveVerificationExecutionPhase]
+    candidate_mode: ArchiveVerificationCandidateMode
+    daemon_schedule: ArchiveVerificationDaemonSchedule | None
+    waiver: ArchiveVerificationWaiver | None
+    live_receipt_required: bool
     #: Optional candidate-index execution path for checks that combine the
     #: durable archive root with an inactive generation before promotion.
     candidate_run: ArchiveVerificationCandidateCheckFn | None = None
@@ -2549,251 +2591,579 @@ def _check_user_tier_refs_at_candidate(
 # Registry + entrypoint
 # ---------------------------------------------------------------------------
 
+
+def _phases(*phases: ArchiveVerificationExecutionPhase) -> frozenset[ArchiveVerificationExecutionPhase]:
+    return frozenset((ArchiveVerificationExecutionPhase.LIVE_ARCHIVE, *phases))
+
+
+def _red_twin(fixture: str, mutation: str, test_name: str) -> ArchiveVerificationRedTwin:
+    return ArchiveVerificationRedTwin(fixture=fixture, mutation=mutation, test_name=test_name)
+
+
+def _registry_spec(
+    name: str,
+    description: str,
+    run: ArchiveVerificationCheckFn,
+    check_class: ArchiveVerificationCheckClass,
+    *,
+    incident_bead: str,
+    universe_tables: tuple[str, ...],
+    red_twin: ArchiveVerificationRedTwin | None,
+    execution_phases: frozenset[ArchiveVerificationExecutionPhase],
+    candidate_mode: ArchiveVerificationCandidateMode,
+    candidate_run: ArchiveVerificationCandidateCheckFn | None = None,
+    daemon_schedule: ArchiveVerificationDaemonSchedule | None = None,
+    waiver: ArchiveVerificationWaiver | None = None,
+    live_receipt_required: bool,
+) -> ArchiveVerificationCheckSpec:
+    return ArchiveVerificationCheckSpec(
+        name=name,
+        description=description,
+        run=run,
+        check_class=check_class,
+        incident=ArchiveVerificationIncident(bead_id=incident_bead, invariant_id=name),
+        ground_truth_universe=ArchiveVerificationGroundTruthUniverse(tables=universe_tables, description=description),
+        red_twin=red_twin,
+        execution_phases=execution_phases,
+        candidate_mode=candidate_mode,
+        daemon_schedule=daemon_schedule,
+        waiver=waiver,
+        live_receipt_required=live_receipt_required,
+        candidate_run=candidate_run,
+    )
+
+
+_CROSS_TIER = ArchiveVerificationCandidateMode.CROSS_TIER
+_INDEX_ROOT = ArchiveVerificationCandidateMode.INDEX_ROOT
+_NO_CANDIDATE = ArchiveVerificationCandidateMode.NONE
+_MEDIUM = ArchiveVerificationDaemonSchedule.MEDIUM
+
+
 ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "tier-schema",
         "Tier presence and PRAGMA user_version vs the canonical ARCHIVE_TIER_SPECS.",
         _check_tier_schema,
         ArchiveVerificationCheckClass.CONFIG,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("source.db", "index.db", "embeddings.db", "user.db", "ops.db"),
+        red_twin=_red_twin("coherent-archive", "remove a tier", "test_missing_tier_trips_tier_schema_check"),
+        execution_phases=_phases(),
+        candidate_mode=_NO_CANDIDATE,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "pointer-coherence",
         "Conventional index.db path vs the active .index-active-pointer generation (polylogue-k8kj class).",
         _check_pointer_coherence,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+        incident_bead="polylogue-k8kj",
+        universe_tables=(".index-active-pointer", "index.db"),
+        red_twin=_red_twin(
+            "coherent-archive", "stale active pointer", "test_stale_pointer_trips_pointer_coherence_check"
+        ),
+        execution_phases=_phases(),
+        candidate_mode=_NO_CANDIDATE,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "source-index-coverage",
         "Every raw_sessions logical head is indexed or typed (parse_error/non_session/quarantined); "
         "untyped gaps and index-orphans (raw_id ground truth, not the census ledger, polylogue-in24n) block.",
         _check_source_index_coverage,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
-        _check_source_index_coverage_at_candidate,
+        incident_bead="polylogue-in24n",
+        universe_tables=("source.db.raw_sessions", "index.db.sessions"),
+        red_twin=_red_twin(
+            "coherent-archive", "untyped raw head", "test_raw_with_no_typed_refusal_and_no_session_is_untyped_gap"
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_source_index_coverage_at_candidate,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "fts-parity",
         "messages_fts and blocks_command_trigram exactly cover their source rows, archive-wide.",
         _check_fts_parity,
         ArchiveVerificationCheckClass.FIDELITY,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("index.db.messages", "index.db.blocks"),
+        red_twin=_red_twin("coherent-archive", "delete FTS row", "test_deleted_fts_row_trips_message_fts_parity"),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE),
+        candidate_mode=_INDEX_ROOT,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "lineage-sanity",
         "session_links.resolved_dst_session_id / branch_point_message_id resolve to real sessions/messages.",
         _check_lineage_sanity,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("index.db.session_links", "index.db.sessions", "index.db.messages"),
+        red_twin=_red_twin(
+            "coherent-archive", "dangling lineage destination", "test_dangling_resolved_dst_trips_lineage_sanity"
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE),
+        candidate_mode=_INDEX_ROOT,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "enum-superset-check",
         "Live origin/dst_origin CHECK lists on disk are a superset of the current Origin enum (polylogue-t0m73 I2).",
         _check_enum_superset,
         ArchiveVerificationCheckClass.CONFIG,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("source.db.sqlite_master", "index.db.sqlite_master"),
+        red_twin=_red_twin(
+            "coherent-archive", "remove Origin CHECK value", "test_missing_enum_value_trips_enum_superset_check"
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE),
+        candidate_mode=_INDEX_ROOT,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "blob-refs-liveness",
         "Every blob_refs row resolves in its ref_type's referent table -- the GC liveness oracle is a join, "
         "not membership in blob_refs itself (polylogue-t0m73 I3).",
         _check_blob_refs_liveness,
         ArchiveVerificationCheckClass.LIVENESS,
-        _check_blob_refs_liveness_at_candidate,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("source.db.blob_refs", "source.db.raw_sessions"),
+        red_twin=_red_twin(
+            "coherent-archive", "orphan blob reference", "test_blob_ref_with_no_referent_trips_blob_refs_liveness"
+        ),
+        execution_phases=_phases(
+            ArchiveVerificationExecutionPhase.REINDEX_SOURCE_PREFLIGHT,
+            ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+        ),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_blob_refs_liveness_at_candidate,
+        daemon_schedule=_MEDIUM,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "blob-integrity",
         "A full physical scan finds no missing, corrupted, orphaned, or invalid blob-namespace entries.",
         _check_blob_integrity,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
-        _check_blob_integrity_at_candidate,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("source.db.raw_sessions", "blob/"),
+        red_twin=_red_twin("coherent-archive", "missing or corrupt blob", "test_full_blob_integrity_red_twin"),
+        execution_phases=_phases(
+            ArchiveVerificationExecutionPhase.REINDEX_SOURCE_PREFLIGHT,
+            ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+        ),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_blob_integrity_at_candidate,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "attachment-acquisition-debt",
         "Every acquired attachment has physical bytes and remains reachable from an attachment reference.",
         _check_attachment_acquisition_debt,
         ArchiveVerificationCheckClass.LIVENESS,
-        _check_attachment_acquisition_debt_at_candidate,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("index.db.attachments", "index.db.attachment_refs", "blob/"),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "unreachable acquired attachment",
+            "test_acquired_unreachable_attachment_debt_is_blocking",
+        ),
+        execution_phases=_phases(
+            ArchiveVerificationExecutionPhase.REINDEX_SOURCE_PREFLIGHT,
+            ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+        ),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_attachment_acquisition_debt_at_candidate,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "raw-failure-lifecycle",
         "Every retained raw parse or validation failure has typed deferred or terminal lifecycle evidence.",
         _check_raw_failure_lifecycle,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
-        _check_raw_failure_lifecycle_at_candidate,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("source.db.raw_sessions", "source.db.raw_failures"),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "raw failure without lifecycle evidence",
+            "test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures",
+        ),
+        execution_phases=_phases(
+            ArchiveVerificationExecutionPhase.REINDEX_SOURCE_PREFLIGHT,
+            ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+        ),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_raw_failure_lifecycle_at_candidate,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "blob-reference-closure",
         "Every raw session has exactly one matching raw_payload ref and every acquired attachment is reachable by attachment_refs.",
         _check_blob_reference_closure,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
-        _check_blob_reference_closure_at_index_path,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("source.db.raw_sessions", "source.db.blob_refs", "index.db.attachments"),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "acquired attachment without reference",
+            "test_blob_reference_closure_rejects_acquired_attachment_without_ref",
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_blob_reference_closure_at_index_path,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "pathology-zoo-invariants",
         "Every present pathology-zoo member satisfies its production-owned invariant.",
         _check_pathology_zoo_invariants,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
-        _check_pathology_zoo_invariants_at_index_path,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("source.db.raw_sessions", "index.db.sessions"),
+        red_twin=_red_twin("pathology-zoo", "registered member mutation", "test_pathology_zoo_invariants_red_twin"),
+        execution_phases=_phases(
+            ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+            ArchiveVerificationExecutionPhase.REINDEX_CANARY_CANDIDATE,
+        ),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_pathology_zoo_invariants_at_index_path,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "embeddings-refs-liveness",
         "message_embedding_refs resolve to live index.db messages (feu0-class dead-vector detection, "
         "polylogue-t0m73 I4).",
         _check_embeddings_refs_liveness,
         ArchiveVerificationCheckClass.LIVENESS,
-        _check_embeddings_refs_liveness_at_candidate,
+        incident_bead="polylogue-feu0",
+        universe_tables=("embeddings.db.message_embedding_refs", "index.db.messages"),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "orphan embedding reference",
+            "test_orphaned_embedding_ref_trips_embeddings_refs_liveness",
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_embeddings_refs_liveness_at_candidate,
+        daemon_schedule=_MEDIUM,
+        waiver=ArchiveVerificationWaiver(
+            bead_id="polylogue-feu0",
+            reason=(
+                "4,186 message_embedding_refs point at messages no longer in index.db "
+                "(known, undrained catch-up debt as of 2026-08-03; embeddings convergence "
+                "is a separate async lane from index materialization)"
+            ),
+        ),
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "session-lineage-acyclic",
         "sessions.parent_session_id chains never close a cycle (polylogue-t0m73 I5).",
         _check_session_lineage_acyclic,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("index.db.sessions",),
+        red_twin=_red_twin(
+            "coherent-archive", "parent cycle", "test_parent_session_id_cycle_trips_session_lineage_acyclic"
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE),
+        candidate_mode=_INDEX_ROOT,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "message-count-projection",
         "sessions.message_count matches COUNT(messages) per session (polylogue-t0m73 I8).",
         _check_message_count_projection,
         ArchiveVerificationCheckClass.CONSERVATION,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("index.db.sessions", "index.db.messages"),
+        red_twin=_red_twin(
+            "coherent-archive", "drifted message_count", "test_drifted_message_count_trips_message_count_projection"
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE),
+        candidate_mode=_INDEX_ROOT,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "session-fingerprint-stamps",
         "Every indexed session carries current, unmixed parser and lowering semantic stamps (polylogue-xselt).",
         _check_session_fingerprint_stamps,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+        incident_bead="polylogue-xselt",
+        universe_tables=("index.db.sessions",),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "missing semantic stamp",
+            "test_reindex_acceptance_rejects_missing_semantic_stamp_coverage",
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE),
+        candidate_mode=_INDEX_ROOT,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "planner-stats",
         "sqlite_stat1 covers blocks/messages/action_pairs (polylogue-l3tk class, warn-level).",
         _check_planner_stats,
         ArchiveVerificationCheckClass.FRESHNESS,
+        incident_bead="polylogue-l3tk",
+        universe_tables=("index.db.sqlite_stat1",),
+        red_twin=_red_twin(
+            "coherent-archive", "missing planner statistics", "test_missing_sqlite_stat1_is_warning_not_error"
+        ),
+        execution_phases=_phases(),
+        candidate_mode=_NO_CANDIDATE,
+        daemon_schedule=_MEDIUM,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "counts-summary",
         "Archive-wide session/message/block counts and origin breakdown (numbers-freeze starter).",
         _check_counts_summary,
         ArchiveVerificationCheckClass.COMPLEXITY,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("index.db.sessions", "index.db.messages", "index.db.blocks"),
+        red_twin=None,
+        execution_phases=_phases(),
+        candidate_mode=_NO_CANDIDATE,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "convergence-freshness",
         "An open unindexed backlog (I1's universe) with no daemon/convergence activity in the last 24h is "
         "stalled, not async lag (polylogue-t0m73 I6).",
         _check_convergence_freshness,
         ArchiveVerificationCheckClass.FRESHNESS,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("source.db.raw_sessions", "ops.db.ingest_attempts"),
+        red_twin=_red_twin(
+            "coherent-archive", "stalled materialization backlog", "test_stalled_backlog_trips_convergence_freshness"
+        ),
+        execution_phases=_phases(),
+        candidate_mode=_NO_CANDIDATE,
+        daemon_schedule=_MEDIUM,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "user-tier-refs",
         "assertions.target_ref of kind session/message resolves to a live index.db row (polylogue-t0m73 I10).",
         _check_user_tier_refs,
         ArchiveVerificationCheckClass.LIVENESS,
-        _check_user_tier_refs_at_candidate,
+        incident_bead="polylogue-t0m73",
+        universe_tables=("user.db.assertions", "index.db.sessions", "index.db.messages"),
+        red_twin=_red_twin(
+            "coherent-archive", "dangling assertion target", "test_dangling_assertion_target_trips_user_tier_refs"
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_user_tier_refs_at_candidate,
+        daemon_schedule=_MEDIUM,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "excluded-cursor-vocabulary-honesty",
         "No excluded ingest_cursor row carries a live next_retry_at (would misreport as retry-due, polylogue-ix5r).",
         _check_excluded_cursor_vocabulary_honesty,
         ArchiveVerificationCheckClass.LIVENESS,
-        lambda archive_root, _index_path, sample_limit: _check_excluded_cursor_vocabulary_honesty(
+        incident_bead="polylogue-ix5r",
+        universe_tables=("ops.db.ingest_cursor",),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "excluded cursor with retry",
+            "test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty",
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=lambda archive_root, _index_path, sample_limit: _check_excluded_cursor_vocabulary_honesty(
             archive_root, sample_limit
         ),
+        daemon_schedule=_MEDIUM,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "stalled-append-cursor-freshness",
         "No non-excluded ingest_cursor row sits behind its file's current size for longer than "
         "the stall-escalation threshold (polylogue-2qrx).",
         _check_stalled_append_cursor_freshness,
         ArchiveVerificationCheckClass.LIVENESS,
-        lambda archive_root, _index_path, sample_limit: _check_stalled_append_cursor_freshness(
+        incident_bead="polylogue-2qrx",
+        universe_tables=("ops.db.ingest_cursor",),
+        red_twin=_red_twin(
+            "coherent-archive", "stalled append cursor", "test_stalled_append_cursor_trips_freshness_check"
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=lambda archive_root, _index_path, sample_limit: _check_stalled_append_cursor_freshness(
             archive_root, sample_limit
         ),
+        daemon_schedule=_MEDIUM,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "raw-quarantine-group-dedup",
         "No raw_sessions row is an unindexed byte-identical duplicate of another sharing its "
         "source_path within a fully-quarantined group (polylogue-zm4w8).",
         _check_raw_quarantine_group_dedup,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+        incident_bead="polylogue-zm4w8",
+        universe_tables=("source.db.raw_sessions", "index.db.sessions"),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "unindexed duplicate quarantined group",
+            "test_fully_quarantined_duplicate_group_trips_raw_quarantine_group_dedup",
+        ),
+        execution_phases=_phases(),
+        candidate_mode=_NO_CANDIDATE,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "corpus-absences",
         "Every source-backed logical corpus document is represented by an indexed session (polylogue-f1vg).",
         _check_corpus_absences,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
-        _check_corpus_absences_at_index_path,
+        incident_bead="polylogue-f1vg",
+        universe_tables=("source.db.raw_session_memberships", "index.db.sessions"),
+        red_twin=_red_twin(
+            "corpus-fidelity-archive", "missing indexed logical document", "test_corpus_absences_red_twin"
+        ),
+        execution_phases=_phases(
+            ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+            ArchiveVerificationExecutionPhase.CORPUS_FIDELITY,
+        ),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_corpus_absences_at_index_path,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "corpus-attachment-fidelity",
         "Every attachment reference is acquired or explicitly typed unavailable, bucketed by origin and upload origin (polylogue-f1vg).",
         _check_corpus_attachment_fidelity,
         ArchiveVerificationCheckClass.FIDELITY,
-        _check_corpus_attachment_fidelity_at_index_path,
+        incident_bead="polylogue-f1vg",
+        universe_tables=("index.db.attachments", "index.db.attachment_refs"),
+        red_twin=_red_twin(
+            "corpus-fidelity-archive", "unfetched attachment reference", "test_corpus_attachment_fidelity_red_twin"
+        ),
+        execution_phases=_phases(
+            ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+            ArchiveVerificationExecutionPhase.CORPUS_FIDELITY,
+        ),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_corpus_attachment_fidelity_at_index_path,
+        live_receipt_required=True,
     ),
-    ArchiveVerificationCheckSpec(
+    _registry_spec(
         "corpus-revision-fidelity",
         "Indexed comparable evidence is not smaller than the best recorded source revision (polylogue-f1vg).",
         _check_corpus_revision_fidelity,
         ArchiveVerificationCheckClass.FIDELITY,
-        _check_corpus_revision_fidelity_at_index_path,
+        incident_bead="polylogue-f1vg",
+        universe_tables=("source.db.raw_session_memberships", "index.db.sessions", "index.db.messages"),
+        red_twin=_red_twin(
+            "corpus-fidelity-archive", "candidate revision shortfall", "test_corpus_revision_fidelity_red_twin"
+        ),
+        execution_phases=_phases(
+            ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+            ArchiveVerificationExecutionPhase.CORPUS_FIDELITY,
+        ),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_corpus_revision_fidelity_at_index_path,
+        live_receipt_required=True,
     ),
 )
 
 ARCHIVE_VERIFICATION_CHECK_NAMES: tuple[str, ...] = tuple(spec.name for spec in ARCHIVE_VERIFICATION_CHECKS)
 
-#: The corpus-fidelity checks exposed by the post-rebuild acceptance command.
-#: Keeping this selection beside the registry prevents a surface from
-#: re-declaring the check names or drifting away from the production gate.
-CORPUS_FIDELITY_CHECKS: tuple[str, ...] = (
-    "corpus-absences",
-    "corpus-attachment-fidelity",
-    "corpus-revision-fidelity",
-)
 
-#: Index-only checks run against the inactive generation before promotion.
-#: Cross-tier checks live in :data:`REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS`
-#: because a generation directory contains only ``index.db``.
-REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
-    "fts-parity",
-    "lineage-sanity",
-    "enum-superset-check",
-    "session-lineage-acyclic",
-    "message-count-projection",
-    "session-fingerprint-stamps",
-)
+def archive_verification_check_names_for_phase(
+    phase: ArchiveVerificationExecutionPhase,
+) -> tuple[str, ...]:
+    """Return one execution binding without maintaining a second name list."""
+    return tuple(spec.name for spec in ARCHIVE_VERIFICATION_CHECKS if phase in spec.execution_phases)
 
-#: Full rebuild candidate checks that need durable archive tiers as well as
-#: the inactive generation's index. This is the strict promotion profile:
-#: source/index coverage, blob refs, embeddings refs, user refs, both cursor
-#: checks, and the existing corpus/pathology checks. Every entry has a
-#: candidate runner so ``index_path_override`` cannot silently inspect the
-#: active generation.
-REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS: tuple[str, ...] = (
-    "blob-reference-closure",
-    "raw-failure-lifecycle",
-    "source-index-coverage",
-    "blob-refs-liveness",
-    "blob-integrity",
-    "attachment-acquisition-debt",
-    "raw-failure-lifecycle",
-    "embeddings-refs-liveness",
-    "user-tier-refs",
-    "excluded-cursor-vocabulary-honesty",
-    "stalled-append-cursor-freshness",
-    "corpus-absences",
-    "corpus-attachment-fidelity",
-    "corpus-revision-fidelity",
-    "pathology-zoo-invariants",
-)
 
-# These checks run before an inactive generation is created. They are kept
-# separate from the candidate profile because an empty archive has no index
-# attachment tier yet, so that check may legitimately return SKIP here.
-REINDEX_SOURCE_PREFLIGHT_CHECKS: tuple[str, ...] = (
-    "blob-refs-liveness",
-    "blob-integrity",
-    "attachment-acquisition-debt",
-    "raw-failure-lifecycle",
-)
+def archive_verification_health_check_names(
+    schedule: ArchiveVerificationDaemonSchedule,
+) -> tuple[str, ...]:
+    """Return live checks for one daemon health cadence from the registry."""
+    return tuple(spec.name for spec in ARCHIVE_VERIFICATION_CHECKS if spec.daemon_schedule is schedule)
 
-#: A partial reindex-canary candidate is intentionally not a complete source
-#: replay, so full corpus-fidelity checks would reject every useful canary.
-#: Its candidate-specific gate still runs the pathology-zoo contract against
-#: the candidate index and the durable source tiers.
-REINDEX_CANARY_ACCEPTANCE_CHECKS: tuple[str, ...] = ("pathology-zoo-invariants",)
+
+# Compatibility exports for existing callers. Their values are projections of
+# the one registry above, never hand-maintained membership lists.
+CORPUS_FIDELITY_CHECKS = archive_verification_check_names_for_phase(ArchiveVerificationExecutionPhase.CORPUS_FIDELITY)
+REINDEX_ACCEPTANCE_CHECKS = archive_verification_check_names_for_phase(
+    ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE
+)
+REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS = archive_verification_check_names_for_phase(
+    ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE
+)
+REINDEX_SOURCE_PREFLIGHT_CHECKS = archive_verification_check_names_for_phase(
+    ArchiveVerificationExecutionPhase.REINDEX_SOURCE_PREFLIGHT
+)
+REINDEX_CANARY_ACCEPTANCE_CHECKS = archive_verification_check_names_for_phase(
+    ArchiveVerificationExecutionPhase.REINDEX_CANARY_CANDIDATE
+)
+ARCHIVE_VERIFICATION_WAIVERS: dict[str, ArchiveVerificationWaiver] = {
+    spec.name: spec.waiver for spec in ARCHIVE_VERIFICATION_CHECKS if spec.waiver is not None
+}
+
+
+def validate_archive_verification_registry(
+    *,
+    waiver_bead_statuses: Mapping[str, str] | None = None,
+) -> None:
+    """Reject incomplete bindings before they can silently bypass a plane.
+
+    The production verifier calls this structural part on every invocation.
+    A Beads-aware caller can additionally pass its structured status snapshot;
+    then any waiver whose bead is missing or no longer open is rejected.
+    This module intentionally does not invoke ``bd`` or read a mutable task
+    database itself.
+    """
+    errors: list[str] = []
+    candidate_phases = {
+        ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+        ArchiveVerificationExecutionPhase.REINDEX_CANARY_CANDIDATE,
+    }
+    for spec in ARCHIVE_VERIFICATION_CHECKS:
+        if spec.incident is None or not spec.incident.bead_id or not spec.incident.invariant_id:
+            errors.append(f"{spec.name}: missing incident identity")
+        if spec.ground_truth_universe is None or not spec.ground_truth_universe.tables:
+            errors.append(f"{spec.name}: missing ground-truth universe")
+        if not spec.execution_phases:
+            errors.append(f"{spec.name}: missing execution phase")
+        if not spec.live_receipt_required:
+            errors.append(f"{spec.name}: missing live-receipt requirement")
+        if spec.check_class is ArchiveVerificationCheckClass.COMPLEXITY:
+            if spec.red_twin is not None:
+                errors.append(f"{spec.name}: complexity check must not declare a red twin")
+        elif spec.red_twin is None or not all((spec.red_twin.fixture, spec.red_twin.mutation, spec.red_twin.test_name)):
+            errors.append(f"{spec.name}: missing red fixture/mutation")
+
+        requires_candidate_runner = bool(candidate_phases & spec.execution_phases)
+        if requires_candidate_runner and (
+            spec.candidate_mode is not ArchiveVerificationCandidateMode.CROSS_TIER or spec.candidate_run is None
+        ):
+            errors.append(f"{spec.name}: candidate-required phase has no candidate runner")
+        if not requires_candidate_runner and spec.candidate_mode is ArchiveVerificationCandidateMode.CROSS_TIER:
+            errors.append(f"{spec.name}: cross-tier candidate mode has no candidate-required phase")
+        if spec.candidate_mode is not ArchiveVerificationCandidateMode.CROSS_TIER and spec.candidate_run is not None:
+            errors.append(f"{spec.name}: non-cross-tier candidate mode has a candidate runner")
+        if ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE in spec.execution_phases and (
+            spec.candidate_mode is not ArchiveVerificationCandidateMode.INDEX_ROOT
+        ):
+            errors.append(f"{spec.name}: index-candidate phase must use index-root mode")
+
+        if spec.waiver is not None and waiver_bead_statuses is not None:
+            status = waiver_bead_statuses.get(spec.waiver.bead_id)
+            if status is None:
+                errors.append(f"{spec.name}: waiver bead {spec.waiver.bead_id} is unknown")
+            elif status != "open":
+                errors.append(f"{spec.name}: waiver bead {spec.waiver.bead_id} is {status}, not open")
+    if errors:
+        raise ValueError("invalid archive verification registry: " + "; ".join(errors))
 
 
 def _select_check_specs(checks: Sequence[str] | None) -> tuple[ArchiveVerificationCheckSpec, ...]:
@@ -2829,6 +3199,7 @@ def verify_archive(
     that inactive generation's real index while retaining durable tiers from
     ``archive_root``.
     """
+    validate_archive_verification_registry()
     specs = _select_check_specs(checks)
     if index_path_override is not None:
         unsupported = [spec.name for spec in specs if spec.candidate_run is None]
@@ -2855,7 +3226,7 @@ def verify_archive(
         if isinstance(result, ArchiveVerificationCheck):
             result.check_class = spec.check_class.value
             if result.status is OutcomeStatus.ERROR:
-                waiver = ARCHIVE_VERIFICATION_WAIVERS.get(spec.name)
+                waiver = spec.waiver
                 if waiver is not None:
                     result.waived_bead_id = waiver.bead_id
                     result.evidence.setdefault("waiver", {"bead_id": waiver.bead_id, "reason": waiver.reason})
@@ -2879,12 +3250,21 @@ __all__ = [
     "REINDEX_SOURCE_PREFLIGHT_CHECKS",
     "ArchiveVerificationCheck",
     "ArchiveVerificationCheckClass",
+    "ArchiveVerificationCandidateMode",
+    "ArchiveVerificationDaemonSchedule",
+    "ArchiveVerificationExecutionPhase",
     "ArchiveVerificationCheckSpec",
+    "ArchiveVerificationGroundTruthUniverse",
+    "ArchiveVerificationIncident",
+    "ArchiveVerificationRedTwin",
     "ArchiveVerificationReport",
     "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
     "read_raw_failure_lifecycle",
     "passes_strict_acceptance",
     "strict_acceptance_failures",
+    "archive_verification_check_names_for_phase",
+    "archive_verification_health_check_names",
+    "validate_archive_verification_registry",
     "verify_archive",
 ]

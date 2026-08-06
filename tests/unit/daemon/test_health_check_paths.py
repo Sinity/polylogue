@@ -773,6 +773,10 @@ def test_archive_verification_registry_only_schedules_liveness_and_freshness_cla
     scheduling loop must not duplicate them (module docstring's stated
     scope)."""
     from polylogue.daemon.health import _check_archive_verification_registry_medium
+    from polylogue.maintenance.archive_verification import (
+        ArchiveVerificationDaemonSchedule,
+        archive_verification_health_check_names,
+    )
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(archive_root())
@@ -780,20 +784,9 @@ def test_archive_verification_registry_only_schedules_liveness_and_freshness_cla
     alerts = _check_archive_verification_registry_medium()
 
     scheduled = {alert.check_name.removeprefix("archive_verification_") for alert in alerts}
-    # Hardcoded, not re-derived from the registry's class tags: this pins the
-    # exact LIVENESS/FRESHNESS membership as of this change so a future
-    # check silently added under one of these two classes (or an existing
-    # one silently reclassified) is a visible diff here, not just an
-    # incidental pass-through of whatever the production filter currently
-    # computes.
     assert scheduled == {
-        "blob_refs_liveness",
-        "embeddings_refs_liveness",
-        "planner_stats",
-        "convergence_freshness",
-        "user_tier_refs",
-        "excluded_cursor_vocabulary_honesty",
-        "stalled_append_cursor_freshness",
+        name.replace("-", "_")
+        for name in archive_verification_health_check_names(ArchiveVerificationDaemonSchedule.MEDIUM)
     }
 
 

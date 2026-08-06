@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from shutil import copytree
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -26,9 +27,12 @@ from polylogue.maintenance.archive_verification import (
     REINDEX_SOURCE_PREFLIGHT_CHECKS,
     ArchiveVerificationCheck,
     ArchiveVerificationCheckClass,
+    ArchiveVerificationExecutionPhase,
     ArchiveVerificationReport,
     ArchiveVerificationWaiver,
+    archive_verification_check_names_for_phase,
     passes_strict_acceptance,
+    validate_archive_verification_registry,
     verify_archive,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
@@ -652,10 +656,7 @@ def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch
     # how a real regression in one check function would surface: the crash
     # is contained to that check's own result, not the whole report.
     broken_specs = tuple(
-        module.ArchiveVerificationCheckSpec(spec.name, spec.description, _boom, spec.check_class)
-        if spec.name == "fts-parity"
-        else spec
-        for spec in module.ARCHIVE_VERIFICATION_CHECKS
+        replace(spec, run=_boom) if spec.name == "fts-parity" else spec for spec in module.ARCHIVE_VERIFICATION_CHECKS
     )
     monkeypatch.setattr(module, "ARCHIVE_VERIFICATION_CHECKS", broken_specs)
 
@@ -1415,6 +1416,124 @@ def test_every_registered_check_has_a_class_tag() -> None:
         assert isinstance(spec.check_class, ArchiveVerificationCheckClass), spec.name
 
 
+@pytest.mark.parametrize(
+    ("missing_field", "message"),
+    (
+        ("incident", "missing incident identity"),
+        ("ground_truth_universe", "missing ground-truth universe"),
+        ("red_twin", "missing red fixture/mutation"),
+        ("execution_phases", "missing execution phase"),
+        ("live_receipt_required", "missing live-receipt requirement"),
+    ),
+)
+def test_registry_rejects_missing_metadata_before_real_archive_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_field: Literal[
+        "incident", "ground_truth_universe", "red_twin", "execution_phases", "live_receipt_required"
+    ],
+    message: str,
+) -> None:
+    """A malformed binding must fail before the production verifier can report green."""
+    _seed_coherent_archive(tmp_path)
+    from polylogue.maintenance import archive_verification as module
+
+    source_coverage = next(spec for spec in module.ARCHIVE_VERIFICATION_CHECKS if spec.name == "source-index-coverage")
+    if missing_field == "incident":
+        malformed = replace(source_coverage, incident=None)
+    elif missing_field == "ground_truth_universe":
+        malformed = replace(source_coverage, ground_truth_universe=None)
+    elif missing_field == "red_twin":
+        malformed = replace(source_coverage, red_twin=None)
+    elif missing_field == "execution_phases":
+        malformed = replace(source_coverage, execution_phases=frozenset())
+    else:
+        malformed = replace(source_coverage, live_receipt_required=False)
+
+    monkeypatch.setattr(
+        module,
+        "ARCHIVE_VERIFICATION_CHECKS",
+        tuple(
+            malformed if spec.name == "source-index-coverage" else spec for spec in module.ARCHIVE_VERIFICATION_CHECKS
+        ),
+    )
+
+    with pytest.raises(ValueError, match=f"source-index-coverage: {message}"):
+        module.verify_archive(tmp_path)
+
+
+def test_registry_rejects_candidate_phase_without_runner_before_real_candidate_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real verifier refuses a promotion-bound check that cannot inspect the candidate."""
+    _seed_coherent_archive(tmp_path)
+    from polylogue.maintenance import archive_verification as module
+
+    monkeypatch.setattr(
+        module,
+        "ARCHIVE_VERIFICATION_CHECKS",
+        tuple(
+            replace(spec, candidate_run=None) if spec.name == "pathology-zoo-invariants" else spec
+            for spec in module.ARCHIVE_VERIFICATION_CHECKS
+        ),
+    )
+
+    with pytest.raises(ValueError, match="pathology-zoo-invariants: candidate-required phase has no candidate runner"):
+        module.verify_archive(tmp_path, index_path_override=tmp_path / "index.db")
+
+
+def test_registry_rejects_closed_or_unknown_waiver_beads() -> None:
+    """Waiver validity is resolved from the check spec, not a second waiver table."""
+    with pytest.raises(ValueError, match="embeddings-refs-liveness: waiver bead polylogue-feu0 is closed"):
+        validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "closed"})
+    with pytest.raises(ValueError, match="embeddings-refs-liveness: waiver bead polylogue-feu0 is unknown"):
+        validate_archive_verification_registry(waiver_bead_statuses={})
+
+    validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "open"})
+
+
+def test_registry_execution_phase_projections_do_not_keep_handwritten_membership_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing metadata changes the selector without a matching list edit."""
+    from polylogue.maintenance import archive_verification as module
+
+    assert (
+        archive_verification_check_names_for_phase(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE)
+        == REINDEX_ACCEPTANCE_CHECKS
+    )
+    assert (
+        archive_verification_check_names_for_phase(ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE)
+        == REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
+    )
+    assert (
+        archive_verification_check_names_for_phase(ArchiveVerificationExecutionPhase.REINDEX_SOURCE_PREFLIGHT)
+        == REINDEX_SOURCE_PREFLIGHT_CHECKS
+    )
+    assert (
+        archive_verification_check_names_for_phase(ArchiveVerificationExecutionPhase.REINDEX_CANARY_CANDIDATE)
+        == REINDEX_CANARY_ACCEPTANCE_CHECKS
+    )
+
+    monkeypatch.setattr(
+        module,
+        "ARCHIVE_VERIFICATION_CHECKS",
+        tuple(
+            replace(
+                spec,
+                execution_phases=spec.execution_phases | {ArchiveVerificationExecutionPhase.CORPUS_FIDELITY},
+            )
+            if spec.name == "pathology-zoo-invariants"
+            else spec
+            for spec in module.ARCHIVE_VERIFICATION_CHECKS
+        ),
+    )
+
+    assert "pathology-zoo-invariants" in module.archive_verification_check_names_for_phase(
+        ArchiveVerificationExecutionPhase.CORPUS_FIDELITY
+    )
+
+
 def test_pathology_zoo_contract_is_production_owned_and_registered() -> None:
     """The archive verifier, rather than tests, owns the zoo's enforcement boundary."""
     from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST
@@ -1456,8 +1575,13 @@ def test_waived_check_still_reports_error_but_does_not_block(tmp_path: Path, mon
 
     monkeypatch.setattr(
         module,
-        "ARCHIVE_VERIFICATION_WAIVERS",
-        {"embeddings-refs-liveness": ArchiveVerificationWaiver(bead_id="polylogue-test", reason="synthetic")},
+        "ARCHIVE_VERIFICATION_CHECKS",
+        tuple(
+            replace(spec, waiver=ArchiveVerificationWaiver(bead_id="polylogue-test", reason="synthetic"))
+            if spec.name == "embeddings-refs-liveness"
+            else spec
+            for spec in module.ARCHIVE_VERIFICATION_CHECKS
+        ),
     )
 
     report = module.verify_archive(tmp_path, checks=("embeddings-refs-liveness",))
@@ -1588,40 +1712,11 @@ def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path:
 # RED-TWIN contract rule (polylogue-t0m73): structural enforcement
 # ---------------------------------------------------------------------------
 
-#: Maps every registry check name to the name of the test function in *this*
-#: module that proves a fixture mutation flips it to a non-OK status. This
-#: is the RED-TWIN contract rule's structural carrier: a check without an
-#: entry here (or whose named function doesn't exist) fails
-#: ``test_every_non_complexity_check_has_a_red_twin_test`` below, rather
-#: than silently shipping a check nobody has proven can ever go red.
-#: ``COMPLEXITY``-class checks (report-only, never pass/fail by design --
-#: see :class:`ArchiveVerificationCheckClass`) are exempt.
+#: The registry, not this test module, owns red-twin identity. This view keeps
+#: the existing function-presence contract while making fixture/mutation
+#: metadata the single source of truth.
 RED_TWIN_TESTS: dict[str, str] = {
-    "tier-schema": "test_missing_tier_trips_tier_schema_check",
-    "pointer-coherence": "test_stale_pointer_trips_pointer_coherence_check",
-    "source-index-coverage": "test_raw_with_no_typed_refusal_and_no_session_is_untyped_gap",
-    "fts-parity": "test_deleted_fts_row_trips_message_fts_parity",
-    "lineage-sanity": "test_dangling_resolved_dst_trips_lineage_sanity",
-    "enum-superset-check": "test_missing_enum_value_trips_enum_superset_check",
-    "blob-refs-liveness": "test_blob_ref_with_no_referent_trips_blob_refs_liveness",
-    "blob-reference-closure": "test_blob_reference_closure_rejects_acquired_attachment_without_ref",
-    "blob-integrity": "test_full_blob_integrity_red_twin",
-    "attachment-acquisition-debt": "test_acquired_unreachable_attachment_debt_is_blocking",
-    "raw-failure-lifecycle": "test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures",
-    "pathology-zoo-invariants": "test_pathology_zoo_invariants_red_twin",
-    "embeddings-refs-liveness": "test_orphaned_embedding_ref_trips_embeddings_refs_liveness",
-    "session-lineage-acyclic": "test_parent_session_id_cycle_trips_session_lineage_acyclic",
-    "message-count-projection": "test_drifted_message_count_trips_message_count_projection",
-    "session-fingerprint-stamps": "test_reindex_acceptance_rejects_missing_semantic_stamp_coverage",
-    "planner-stats": "test_missing_sqlite_stat1_is_warning_not_error",
-    "convergence-freshness": "test_stalled_backlog_trips_convergence_freshness",
-    "user-tier-refs": "test_dangling_assertion_target_trips_user_tier_refs",
-    "excluded-cursor-vocabulary-honesty": "test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty",
-    "stalled-append-cursor-freshness": "test_stalled_append_cursor_trips_freshness_check",
-    "raw-quarantine-group-dedup": "test_fully_quarantined_duplicate_group_trips_raw_quarantine_group_dedup",
-    "corpus-absences": "test_corpus_absences_red_twin",
-    "corpus-attachment-fidelity": "test_corpus_attachment_fidelity_red_twin",
-    "corpus-revision-fidelity": "test_corpus_revision_fidelity_red_twin",
+    spec.name: spec.red_twin.test_name for spec in ARCHIVE_VERIFICATION_CHECKS if spec.red_twin is not None
 }
 
 
