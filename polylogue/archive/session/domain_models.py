@@ -36,6 +36,8 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     id: SessionId
     origin: Origin
     title: str | None = None
+    # Read-time projection over current structural evidence. Never persisted.
+    display_label: str | None = None
     title_source: TitleSource | None = None
     # Specific provenance beyond title_source's coarse strategy label: exact
     # evidence reference plus a 0..1 confidence signal (polylogue-ih67).
@@ -97,6 +99,8 @@ class Session(SessionRuntimeMixin, BaseModel):
     id: SessionId
     origin: Origin
     title: str | None = None
+    # Read-time projection over current structural evidence. Never persisted.
+    display_label: str | None = None
     title_source: TitleSource | None = None
     # Specific provenance beyond title_source's coarse strategy label: exact
     # evidence reference plus a 0..1 confidence signal (polylogue-ih67).

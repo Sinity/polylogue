@@ -79,15 +79,12 @@ def test_archive_store_summary_reads_expose_title_source(tmp_path: Path) -> None
         assert [s.title_source for s in listed if s.session_id == session_id] == ["origin"]
 
 
-def test_titleless_session_falls_back_to_structural_label(tmp_path: Path) -> None:
-    """polylogue-cijx.4 decision 3: a session with no provider title reads a
-    computed structural label (never a bare/blank title), sourced ``"path"``.
+def test_titleless_session_exposes_structural_display_label(tmp_path: Path) -> None:
+    """A titleless session reads a computed label without title provenance.
 
-    This is a read-time-only projection: ``sessions.title`` itself stays
-    ``NULL`` in storage -- only the ``ArchiveSessionSummary`` read model is
-    backfilled, exercised here through the real ``ArchiveStore.read_summary``/
-    ``list_summaries`` production routes (not a direct call into
-    ``session_structural_label_for_session``).
+    This is exercised through the real ``ArchiveStore.read_summary``/
+    ``list_summaries`` production routes, not a direct call into the label
+    helper.
     """
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -100,14 +97,16 @@ def test_titleless_session_falls_back_to_structural_label(tmp_path: Path) -> Non
     with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
         session_id = archive.resolve_session_id("codex-ts-notitle")
         summary = archive.read_summary(session_id)
-        assert summary.title == "1 msgs"
-        assert summary.title_source == "path"
+        assert summary.title is None
+        assert summary.display_label == "1 msgs"
+        assert summary.title_source is None
 
         listed = archive.list_summaries(origin="codex-session", limit=10, offset=0)
         matched = [s for s in listed if s.session_id == session_id]
         assert len(matched) == 1
-        assert matched[0].title == "1 msgs"
-        assert matched[0].title_source == "path"
+        assert matched[0].title is None
+        assert matched[0].display_label == "1 msgs"
+        assert matched[0].title_source is None
 
 
 def test_no_title_source_falls_back_to_structural_label(tmp_path: Path) -> None:
@@ -161,14 +160,16 @@ def test_no_title_source_falls_back_to_structural_label(tmp_path: Path) -> None:
     with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
         session_id = archive.resolve_session_id("raw-uuid-1234")
         summary = archive.read_summary(session_id)
-        assert summary.title != "raw-uuid-1234"
-        assert summary.title_source == "path"
+        assert summary.title is None
+        assert summary.display_label == "1 msgs"
+        assert summary.title_source is None
 
         listed = archive.list_summaries(origin="claude-code-session", limit=10, offset=0)
         matched = [s for s in listed if s.session_id == session_id]
         assert len(matched) == 1
-        assert matched[0].title != "raw-uuid-1234"
-        assert matched[0].title_source == "path"
+        assert matched[0].title is None
+        assert matched[0].display_label == "1 msgs"
+        assert matched[0].title_source is None
 
 
 @pytest.mark.asyncio

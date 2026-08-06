@@ -175,7 +175,7 @@ def archive_summary_payload(summary: ArchiveSessionSummary) -> MCPSessionSummary
     return MCPSessionSummaryPayload(
         id=session_id,
         origin=summary.origin,
-        title=summary.title or "(untitled)",
+        title=summary.display_label or summary.title or "(untitled)",
         message_count=summary.message_count,
         target_ref=TargetRefPayload.session(session_id),
         anchor=reader_anchor("session", session_id),
