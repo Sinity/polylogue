@@ -23,7 +23,7 @@ The production-route cycle fixture separately proves a `quarantined` closing edg
 
 ## Live residue
 
-No live archive was opened or mutated in this lane. The live database path is outside the assigned worktree and is excluded by the repository operating boundary. Therefore this report does not claim live zero-empty counts, archive convergence, or a post-reindex status distribution. The remaining named follow-up is `polylogue-topology-live-proof`: run the read-only census against the approved live or activated candidate index, retain the generated receipt, and compare `effective_status_counts`, `empty_effective_status_count`, `empty_method_count`, `cycle_evidence_count`, and `unresolved_read_sample`.
+No live archive was opened or mutated in this lane. The live database path is outside the assigned worktree and is excluded by the repository operating boundary. Therefore this report does not claim live zero-empty counts, archive convergence, or a post-reindex status distribution. The remaining named follow-up is `polylogue-live-operation-receipts`: run the read-only census against the approved live or activated candidate index, retain the generated receipt, and compare `effective_status_counts`, `empty_effective_status_count`, `empty_method_count`, `cycle_evidence_count`, and `unresolved_read_sample`.
 
 ## Verification
 

@@ -331,14 +331,17 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
     rows = _rows(
         conn,
         """
-        SELECT l.src_session_id AS session_id, l.dst_native_id AS parent_native_id,
-               COUNT(m.message_id) AS stored_messages
+        SELECT l.src_session_id AS session_id,
+               l.dst_origin AS parent_origin,
+               l.dst_native_id AS parent_native_id,
+               l.link_type,
+               COUNT(DISTINCT m.message_id) AS stored_messages
         FROM session_links l
         LEFT JOIN messages m ON m.session_id = l.src_session_id
         WHERE l.resolved_dst_session_id IS NULL
           AND COALESCE(NULLIF(TRIM(l.status), ''), 'unresolved') = 'unresolved'
-        GROUP BY l.src_session_id, l.dst_native_id
-        ORDER BY l.src_session_id, l.dst_native_id
+        GROUP BY l.src_session_id, l.dst_origin, l.dst_native_id, l.link_type
+        ORDER BY l.src_session_id, l.dst_origin, l.dst_native_id, l.link_type
         LIMIT ?
         """,
         (limit,),

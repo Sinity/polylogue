@@ -297,6 +297,32 @@ def test_lineage_validation_proves_unresolved_reads_stay_child_local(tmp_path: P
     assert report["verdict"]["external_counts_citable"] is True
 
 
+def test_lineage_validation_samples_distinct_unresolved_edges_without_multiplying_messages(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root, with_unresolved=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_links
+                (src_session_id, dst_origin, dst_native_id, link_type, status,
+                 resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
+            VALUES ('orphan', 'codex-session', 'missing-parent', 'subagent', NULL,
+                    NULL, 'parent-tool-use-id', '{}', NULL, 'spawned-fresh')
+            """
+        )
+        conn.commit()
+
+    report = lineage_validation.build_report(_args(archive_root))
+
+    sample = report["lineage"]["topology"]["unresolved_read_sample"]
+    assert sample["safe"] is True
+    assert sample["sampled"] == 2
+    assert {row["link_type"] for row in sample["rows"]} == {"continuation", "subagent"}
+    assert {row["stored_messages"] for row in sample["rows"]} == {1}
+    assert {row["served_messages"] for row in sample["rows"]} == {1}
+    assert report["verdict"]["external_counts_citable"] is True
+
+
 def test_lineage_validation_proves_writer_candidate_and_snapshot_identity(tmp_path: Path) -> None:
     archive_root = tmp_path / "candidate"
     db = _make_writer_candidate(archive_root)
