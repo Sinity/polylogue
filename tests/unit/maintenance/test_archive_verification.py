@@ -40,7 +40,11 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.pathology_zoo import build_pathology_zoo, make_pathology_zoo_member_red
+from tests.infra.pathology_zoo import (
+    CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
+    build_pathology_zoo,
+    make_pathology_zoo_member_red,
+)
 from tests.infra.workload_artifacts import SeededArchiveArtifact
 
 
@@ -1536,9 +1540,11 @@ def test_registry_execution_phase_projections_do_not_keep_handwritten_membership
 
 def test_pathology_zoo_contract_is_production_owned_and_registered() -> None:
     """The archive verifier, rather than tests, owns the zoo's enforcement boundary."""
-    from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST
+    from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, pathology_zoo_manifest
 
-    assert len(PATHOLOGY_ZOO_MANIFEST) == 17
+    registered_manifest = pathology_zoo_manifest()
+    assert registered_manifest is PATHOLOGY_ZOO_MANIFEST
+    assert len({member.member_id for member in registered_manifest}) == len(registered_manifest)
     assert "pathology-zoo-invariants" in ARCHIVE_VERIFICATION_CHECK_NAMES
 
 
@@ -1797,6 +1803,51 @@ def test_pathology_zoo_invariants_red_twin(tmp_path: Path) -> None:
         check = _check(red, "pathology-zoo-invariants")
         assert check.status is OutcomeStatus.ERROR, member.invariant.condition
         assert member.member_id in check.evidence["failed_member_ids"]
+
+
+def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic_drift(tmp_path: Path) -> None:
+    """The Claude registry check fails for hash and either membership verdict drift."""
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+
+    for drift in ("hash", "applied", "superseded_equivalent"):
+        mutated_root = tmp_path / f"claude-vintage-{drift}"
+        copytree(zoo.archive_root, mutated_root)
+        with sqlite3.connect(mutated_root / "source.db") as conn:
+            rows = conn.execute(
+                """
+                SELECT r.raw_id, m.normalized_content_hash, m.decision
+                FROM raw_sessions AS r
+                JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                WHERE r.native_id = ?
+                ORDER BY r.source_path
+                """,
+                (CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,),
+            ).fetchall()
+            assert len(rows) == 2
+
+            if drift == "hash":
+                raw_id, content_hash, _decision = rows[0]
+                original_hash = bytes(content_hash)
+                drifted_hash = bytearray(original_hash)
+                drifted_hash[0] ^= 0xFF
+                if bytes(drifted_hash) == bytes(rows[1][1]):
+                    drifted_hash[1] ^= 0xFF
+                conn.execute(
+                    "UPDATE raw_session_memberships SET normalized_content_hash = ? WHERE raw_id = ?",
+                    (bytes(drifted_hash), raw_id),
+                )
+            else:
+                raw_id = next(row[0] for row in rows if row[2] == drift)
+                conn.execute(
+                    "UPDATE raw_session_memberships SET decision = 'superseded_prefix' WHERE raw_id = ?",
+                    (raw_id,),
+                )
+            conn.commit()
+
+        red = verify_archive(mutated_root, checks=("pathology-zoo-invariants",))
+        check = _check(red, "pathology-zoo-invariants")
+        assert check.status is OutcomeStatus.ERROR
+        assert "claude-vintage-live-proof" in check.evidence["failed_member_ids"]
 
 
 def test_pathology_zoo_candidate_check_uses_candidate_index_and_durable_source(tmp_path: Path) -> None:
