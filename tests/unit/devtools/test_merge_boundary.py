@@ -165,6 +165,8 @@ def test_merge_strips_doubled_pr_suffix_before_merging(monkeypatch: pytest.Monke
     assert exit_code == 0
     subject_index = captured["cmd"].index("--subject") + 1
     assert captured["cmd"][subject_index] == "fix: thing (#42)"
+    match_index = captured["cmd"].index("--match-head-commit") + 1
+    assert captured["cmd"][match_index] == "abc123"
 
 
 def test_merge_refuses_when_pr_not_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

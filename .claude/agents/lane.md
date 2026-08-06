@@ -109,6 +109,15 @@ Open a PR (branch off `master`, conventional commit-style subject,
   rejected if there was a real fork.
 - **Verification** — the exact commands you ran and the output line that
   matters, not "tests pass".
+- **Bead disposition matrix** — one whole-Bead disposition per assigned ID,
+  typed evidence refs, and an existing open successor for every residual
+  outcome.
+
+Before publishing the PR as non-draft, render the versioned embedded carrier
+with `devtools workspace pr-scope render --input <scope.json>`, put that exact
+comment beside the human matrix, and validate the published PR with
+`devtools workspace pr-scope check --pr <N>`. Never infer a disposition from
+Bead acceptance prose or invent a successor ID.
 
 Reference any bead with neutral wording only (`Ref polylogue-xxxx` /
 `Ref #N`). **Never use GitHub resolver keywords** (closes/fixes/resolves)

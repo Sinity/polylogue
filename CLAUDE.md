@@ -383,7 +383,13 @@ workflow, not optional conveniences — use them at the point named, every time:
   it in the PR body beside the human whole-Bead disposition matrix, then run
   `devtools workspace pr-scope check --pr <PR>`. The carrier binds the exact
   head SHA, canonical Bead records, typed dispositions, evidence refs, and
-  open successors for residual work; it never parses acceptance prose.
+  open successors for residual work; it never parses acceptance prose. After
+  the final commit is created, regenerate the carrier for that exact SHA and
+  update the PR body before pushing; CircleCI does not rerun for a body-only
+  edit.
+  CircleCI uses `pr-scope check-ci`, resolves PR metadata through public GitHub
+  REST when `CIRCLE_PULL_REQUEST` is absent, and executes the validator from
+  the PR base revision so a PR cannot weaken its own scope gate.
 - **Immediately after spawning a worktree-isolated lane, not after it reports
   back**: `devtools workspace verify-worktree <path> --expect-branch
   <branch>` — confirms the worktree is real and isolated before the lane has

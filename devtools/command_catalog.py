@@ -782,6 +782,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace pr-scope render --input .agent/pr-scope.json > /tmp/pr-scope.md",
             "devtools workspace pr-scope check --pr 3517",
+            "devtools workspace pr-scope check-ci --pr 3517 --repo Sinity/polylogue --expected-head-sha $(git rev-parse HEAD)",
             "devtools workspace pr-scope check --body-file pr-body.md --head-sha $(git rev-parse HEAD)",
         ),
     ),
@@ -829,8 +830,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Replace a bare `gh pr merge --squash` with this at the actual merge boundary "
             "(polylogue-ct3r2 / polylogue-t6iga: duplicate filings of the same finding -- "
             "`merge-gate record/check` and the one-full-verify-per-train rule both existed but "
-            "fired only if a coordinator remembered to invoke them). `merge <PR>` auto-records a "
-            "validates the non-draft PR's structured scope carrier and auto-records a merge-gate receipt if none is fresh for the current head sha (running `--command`, "
+            "fired only if a coordinator remembered to invoke them). `merge <PR>` validates the non-draft PR's structured scope carrier and auto-records a merge-gate receipt if none is fresh for the current head sha (running `--command`, "
             'default "devtools verify"), runs `merge-gate check` and refuses to merge on any '
             "BLOCK, strips a doubled `(#N) (#N)` squash-subject suffix (the 2026-07-12/13 "
             "incident), then runs the actual `gh pr merge --squash`. `--dry-run` runs every check "
