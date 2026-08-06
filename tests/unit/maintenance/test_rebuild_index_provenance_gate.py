@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -12,14 +14,17 @@ from typing import Any, cast
 import pytest
 
 import polylogue.maintenance.rebuild_index as rebuild_index_module
+import polylogue.maintenance.schema_inference_gate as schema_gate_module
 import polylogue.maintenance.sharded_rebuild as sharded_rebuild_module
+import polylogue.storage.index_generation as index_generation_module
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.config import Config
 from polylogue.core.enums import Provider
+from polylogue.daemon import bulk_rebuild as bulk_rebuild_module
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.maintenance.sharded_rebuild import shard_raw_ids
 from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
-from polylogue.storage.archive_identity import OwnedArchiveLocation
+from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import (
     IndexGeneration,
@@ -805,3 +810,240 @@ def test_pointer_flip_records_post_promotion_attestation_failure(
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve(strict=True) == Path(
         cast(str, result.generation["index_path"])
     ).resolve(strict=True)
+
+
+def test_daemon_does_not_route_promoted_attestation_failure_back_to_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal active operation is not handed to the rebuild engine again."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    original_checkpoint = IndexGenerationStore.checkpoint_transaction
+
+    def fail_promoted_checkpoint(self: IndexGenerationStore, transaction: object, **kwargs: object) -> object:
+        if kwargs.get("status") == "promoted":
+            raise OSError("simulated post-promotion attestation failure")
+        return original_checkpoint(self, transaction, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(IndexGenerationStore, "checkpoint_transaction", fail_promoted_checkpoint)
+    rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path, promote=True)
+    )
+    store = IndexGenerationStore.for_archive_root(root)
+    operation_id = next(path.stem for path in store.transactions_root.glob("*.json"))
+    terminal = store.load_transaction(operation_id)
+    assert terminal.status == "promoted-attestation-failed"
+    assert bulk_rebuild_module.has_resumable_daemon_bulk_rebuild_transaction(root) is False
+
+    monkeypatch.setattr(
+        bulk_rebuild_module,
+        "resolve_or_start_daemon_bulk_rebuild_transaction",
+        lambda *args, **kwargs: terminal,
+    )
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    monkeypatch.setattr(bulk_rebuild_module, "_validate_rebuild_provenance_receipt", lambda *args, **kwargs: None)
+    rebuild_called = False
+
+    def unexpected_rebuild(*args: object, **kwargs: object) -> object:
+        nonlocal rebuild_called
+        rebuild_called = True
+        raise AssertionError("terminal daemon operation was routed back to rebuild")
+
+    monkeypatch.setattr(rebuild_index_module, "rebuild_index_from_source_sync", unexpected_rebuild)
+    result = asyncio.run(
+        bulk_rebuild_module.run_daemon_bulk_rebuild_pass(
+            config=Config(archive_root=root, render_root=root / "render", sources=[]),
+            parse_stage=cast(Any, object()),
+            max_payload_bytes=1,
+        )
+    )
+    assert result is None
+    assert rebuild_called is False
+    active_generation = store.load(terminal.generation_id)
+    assert store.active_pointer.resolve(strict=True) == Path(active_generation.index_path).resolve(strict=True)
+
+
+def test_validation_rejection_cannot_stale_transaction_before_ownership(
+    tmp_path: Path,
+) -> None:
+    """A live archive owner rejects the invocation before transaction mutation."""
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    first = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            schema_inference_receipt_path=receipt_path,
+            raw_batch_size=1,
+            promote=False,
+        )
+    )
+    assert first.transaction is not None
+    operation_id = str(first.transaction["operation_id"])
+    store = IndexGenerationStore.for_archive_root(root)
+    before = store.load_transaction(operation_id)
+
+    owner = OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+    try:
+        with pytest.raises(ArchiveOwnershipError):
+            rebuild_index_from_source_sync(
+                RebuildIndexRequest(
+                    archive_root=root,
+                    schema_inference_receipt_path=receipt_path,
+                    operation_id=operation_id,
+                    raw_batch_size=1,
+                    promote=False,
+                )
+            )
+    finally:
+        owner.release()
+
+    assert store.load_transaction(operation_id) == before
+
+
+@pytest.mark.parametrize(
+    "exception_type",
+    [KeyboardInterrupt, asyncio.CancelledError, SystemExit],
+    ids=["keyboard-interrupt", "cancelled", "control-flow-base-exception"],
+)
+def test_validation_control_flow_does_not_change_resumability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exception_type: type[BaseException]
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    first = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            schema_inference_receipt_path=receipt_path,
+            raw_batch_size=1,
+            promote=False,
+        )
+    )
+    assert first.transaction is not None
+    operation_id = str(first.transaction["operation_id"])
+
+    def raise_control_flow(*args: object, **kwargs: object) -> object:
+        raise exception_type("validation interrupted")
+
+    monkeypatch.setattr(rebuild_index_module, "_validate_rebuild_provenance_receipt", raise_control_flow)
+    with pytest.raises(exception_type, match="validation interrupted"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=operation_id,
+                raw_batch_size=1,
+                promote=False,
+            )
+        )
+    assert IndexGenerationStore.for_archive_root(root).load_transaction(operation_id).status == "paused"
+
+
+def test_external_rewrite_with_preserved_size_inode_and_mtime_is_rehashed(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    first = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            schema_inference_receipt_path=receipt_path,
+            raw_batch_size=1,
+            promote=False,
+        )
+    )
+    assert first.transaction is not None
+    operation_id = str(first.transaction["operation_id"])
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    origin = receipt["ground_truth_inputs"]["origins"]["codex-session"]
+    external_path = Path(origin["declared_roots"][0]) / origin["external_inventory"][0]["relative_path"]
+    before = external_path.stat()
+    original = external_path.read_bytes()
+    replacement = bytes(byte ^ 0xFF for byte in original)
+    external_path.write_bytes(replacement)
+    os.utime(external_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = external_path.stat()
+    assert after.st_ino == before.st_ino
+    assert after.st_size == before.st_size
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert replacement != original
+
+    with pytest.raises(RuntimeError, match="external ground-truth corpus changed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=operation_id,
+                raw_batch_size=1,
+                promote=False,
+            )
+        )
+
+
+def test_full_blob_verification_supplies_referenced_snapshot_without_rehash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    with sqlite3.connect(root / "source.db") as source:
+        referenced_hashes = {bytes(row[0]).hex() for row in source.execute("SELECT blob_hash FROM raw_sessions")}
+    verify_calls = 0
+    original_verify = BlobStore.verify
+
+    def count_verify(self: BlobStore, blob_hash: str) -> bool:
+        nonlocal verify_calls
+        verify_calls += 1
+        return original_verify(self, blob_hash)
+
+    monkeypatch.setattr(BlobStore, "verify", count_verify)
+    evidence = schema_gate_module._full_blob_hash_evidence(root, referenced_hashes=referenced_hashes)
+    assert evidence["passed"] is True
+    assert verify_calls == 0
+    snapshot = cast(dict[str, object], evidence["referenced_blob_integrity_snapshot"])
+    assert snapshot["verifier"] == "polylogue.storage.blob_store.BlobStore.verify_all"
+    assert snapshot["passed"] is True
+
+
+def test_source_evidence_snapshot_streams_raw_session_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    sqlite_module = cast(Any, index_generation_module).sqlite3
+    real_connect = sqlite_module.connect
+
+    class GuardedCursor:
+        def __init__(self, cursor: sqlite3.Cursor, sql: str) -> None:
+            self._cursor = cursor
+            self._sql = sql
+
+        def __iter__(self) -> GuardedCursor:
+            return self
+
+        def __next__(self) -> tuple[object, ...]:
+            return next(self._cursor)
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            if "FROM RAW_SESSIONS" in self._sql.upper():
+                raise AssertionError("raw_sessions evidence must be consumed as a stream")
+            return self._cursor.fetchall()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._cursor, name)
+
+    class GuardedConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+
+        def execute(self, sql: str, parameters: object = ()) -> GuardedCursor:
+            return GuardedCursor(self._connection.execute(sql, cast(Any, parameters)), sql)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._connection, name)
+
+    def guarded_connect(*args: object, **kwargs: object) -> GuardedConnection:
+        return GuardedConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(sqlite_module, "connect", guarded_connect)
+    assert index_generation_module.rebuild_source_evidence_snapshot(root)
