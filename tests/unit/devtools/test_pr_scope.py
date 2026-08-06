@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 from urllib import request
@@ -303,6 +304,23 @@ def test_ci_check_bootstraps_once_when_base_has_no_validator(
         )
         == 0
     )
+
+
+def test_fetch_base_validator_prefers_local_base_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    github_fetch = MagicMock()
+    monkeypatch.setattr(pr_scope, "_github_request_bytes", github_fetch)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=["git", "show"], returncode=0, stdout=b"base validator", stderr=b""
+        ),
+    )
+
+    assert pr_scope.fetch_base_validator_source(repository="Sinity/polylogue", base_sha="b" * 40) == b"base validator"
+    github_fetch.assert_not_called()
 
 
 def test_check_rejects_carrier_bound_to_a_different_head_sha(
