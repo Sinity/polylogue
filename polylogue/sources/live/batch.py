@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import sqlite3
 import time
 import zipfile
-from collections.abc import Awaitable, Callable, Iterable
-from contextlib import closing
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -142,6 +143,7 @@ from polylogue.sources.sqlite_snapshot import (
     original_sqlite_source_path,
     snapshot_sqlite_to_blob,
 )
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ActiveByteRevisionChainError
@@ -161,6 +163,61 @@ logger = get_logger(__name__)
 
 class CursorAuthorityBlockedError(RuntimeError):
     """The canonical raw frontier proof did not authorize live source selection."""
+
+
+@dataclass(slots=True)
+class CursorAuthorityAuthorization:
+    """Single-use, exact-use exception to the live cursor authority gate.
+
+    This token is deliberately process-local and context-local.  It is not a
+    switch, environment variable, or archive setting.  The reconciliation
+    command creates one only after re-proving the selected path and frontier;
+    the first gate check consumes it.
+    """
+
+    source_path_digest: str
+    cursor_byte_offset: int
+    accepted_frontier: int
+    plan_digest: str
+    force_full_ingest: bool = False
+    consumed: bool = False
+
+
+_CURSOR_AUTHORIZATION: contextvars.ContextVar[CursorAuthorityAuthorization | None] = contextvars.ContextVar(
+    "polylogue_cursor_authority_authorization",
+    default=None,
+)
+
+
+def cursor_authority_path_digest(path: Path) -> str:
+    """Digest one resolved source path without retaining its private text."""
+
+    return sha256(str(path.resolve()).encode("utf-8")).hexdigest()
+
+
+@contextmanager
+def scoped_cursor_authority_authorization(
+    *,
+    source_path_digest: str,
+    cursor_byte_offset: int,
+    accepted_frontier: int,
+    plan_digest: str,
+    force_full_ingest: bool = False,
+) -> Iterator[None]:
+    """Install one exact-use authorization for the normal ingest route."""
+
+    authorization = CursorAuthorityAuthorization(
+        source_path_digest=source_path_digest,
+        cursor_byte_offset=cursor_byte_offset,
+        accepted_frontier=accepted_frontier,
+        plan_digest=plan_digest,
+        force_full_ingest=force_full_ingest,
+    )
+    marker = _CURSOR_AUTHORIZATION.set(authorization)
+    try:
+        yield
+    finally:
+        _CURSOR_AUTHORIZATION.reset(marker)
 
 
 # polylogue-0jf4: known ~/.codex live SQLite state filenames, matched by name
@@ -507,16 +564,67 @@ class LiveBatchProcessor:
         with raw convergence, recovery, and reindex.
         """
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-        if not (archive_root / "source.db").is_file() or not (archive_root / "index.db").is_file():
+        if (
+            not (archive_root / "source.db").is_file()
+            or not ArchiveLocation.resolve(archive_root).active_index_path.is_file()
+        ):
             return None
         from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
 
         return raw_frontier_source_selection_block_reason(archive_root)
 
-    def require_cursor_authority(self) -> None:
+    def _consume_scoped_cursor_authority(self, paths: Iterable[Path]) -> CursorAuthorityAuthorization:
+        authorization = _CURSOR_AUTHORIZATION.get()
+        if authorization is None:
+            raise CursorAuthorityBlockedError("scoped cursor authority authorization is missing")
+        if authorization.consumed:
+            raise CursorAuthorityBlockedError("scoped cursor authority authorization was already consumed")
+        selected_paths = tuple(path.resolve() for path in paths)
+        if (
+            len(selected_paths) != 1
+            or cursor_authority_path_digest(selected_paths[0]) != authorization.source_path_digest
+        ):
+            raise CursorAuthorityBlockedError("scoped cursor authority authorization does not match the selected path")
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        from polylogue.readiness.capability import raw_frontier_integrity_projection
+        from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
+
+        projection = raw_frontier_integrity_projection(
+            archive_root,
+            raw_materialization_readiness_snapshot(archive_root),
+            sample_limit=100,
+        )
+        if (
+            projection.overall_status != "violated"
+            or projection.broken_head_count
+            or projection.missing_source_raw_count
+            or projection.cursor_ahead_count != 1
+            or len(projection.cursor_ahead_samples) != 1
+        ):
+            raise CursorAuthorityBlockedError("scoped cursor authority no longer matches the global violation set")
+        sample = projection.cursor_ahead_samples[0]
+        if (
+            cursor_authority_path_digest(Path(sample.source_path)) != authorization.source_path_digest
+            or sample.cursor_byte_offset != authorization.cursor_byte_offset
+            or sample.accepted_frontier != authorization.accepted_frontier
+        ):
+            raise CursorAuthorityBlockedError("scoped cursor authority frontier binding changed")
+        authorization.consumed = True
+        return authorization
+
+    def require_cursor_authority(self, paths: Iterable[Path] | None = None) -> CursorAuthorityAuthorization | None:
         """Fail closed before a live batch can create attempts or write data."""
-        if reason := self.cursor_authority_block_reason():
-            raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
+        reason = self.cursor_authority_block_reason()
+        authorization = _CURSOR_AUTHORIZATION.get()
+        if reason is None:
+            if authorization is not None:
+                raise CursorAuthorityBlockedError("scoped cursor authority authorization has no planned violation")
+            return None
+        if authorization is not None:
+            if paths is None:
+                raise CursorAuthorityBlockedError("scoped cursor authority requires an exact selected path")
+            return self._consume_scoped_cursor_authority(paths)
+        raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
 
     async def ingest_files(
         self,
@@ -528,7 +636,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics."""
-        self.require_cursor_authority()
+        authorization = self.require_cursor_authority(paths)
         if is_fully_degraded():
             # The daemon has been marked structurally unable to ingest (e.g.
             # schema mismatch detected at preflight or on the first batch).
@@ -563,6 +671,14 @@ class LiveBatchProcessor:
             parse_time_s=0.0,
             convergence_time_s=0.0,
             total_time_s=0.0,
+            stage_payload=(
+                {
+                    "cursor_authority_plan_digest": authorization.plan_digest,
+                    "cursor_authority_path_digest": authorization.source_path_digest,
+                }
+                if authorization is not None
+                else None
+            ),
         )
         source_payload_read_bytes = 0
         cursor_fingerprint_read_bytes = 0
@@ -696,6 +812,9 @@ class LiveBatchProcessor:
                 deferred_paths.append(plan.path)
 
         for path in paths:
+            if authorization is not None and authorization.force_full_ingest:
+                full_paths.append(path)
+                continue
             if is_fully_degraded():
                 full_paths.append(path)
                 continue
@@ -2110,7 +2229,9 @@ class LiveBatchProcessor:
         return result
 
     def _archive_active(self, archive_root: Path) -> bool:
-        return (archive_root / "index.db").exists() and (archive_root / "source.db").exists()
+        return (
+            ArchiveLocation.resolve(archive_root).active_index_path.exists() and (archive_root / "source.db").exists()
+        )
 
     def _archive_storage_probe_payload(
         self,
@@ -2119,7 +2240,14 @@ class LiveBatchProcessor:
         archive_active: bool,
         archive_bootstrapped: bool,
     ) -> dict[str, object]:
-        tier_paths = {spec.tier.value: archive_root / spec.filename for spec in ARCHIVE_TIER_SPECS.values()}
+        tier_paths = {
+            spec.tier.value: (
+                ArchiveLocation.resolve(archive_root).active_index_path
+                if spec.tier.value == "index"
+                else archive_root / spec.filename
+            )
+            for spec in ARCHIVE_TIER_SPECS.values()
+        }
         present = [tier for tier, path in tier_paths.items() if path.exists()]
         missing = [tier for tier, path in tier_paths.items() if not path.exists()]
         user_versions: dict[str, int | None] = {}
@@ -3417,7 +3545,7 @@ class LiveBatchProcessor:
 
     def _archive_has_native_session(self, origin: str, native_id: str) -> bool:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-        index_db = archive_root / "index.db"
+        index_db = ArchiveLocation.resolve(archive_root).active_index_path
         if not index_db.exists():
             return False
         try:
@@ -3440,7 +3568,7 @@ class LiveBatchProcessor:
 
     def _existing_archive_session_native_id(self, path: Path) -> str | None:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-        index_db = archive_root / "index.db"
+        index_db = ArchiveLocation.resolve(archive_root).active_index_path
         source_db = archive_root / "source.db"
         if not index_db.exists() or not source_db.exists():
             return None
@@ -3504,7 +3632,7 @@ class LiveBatchProcessor:
 
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
-        index_db = archive_root / "index.db"
+        index_db = ArchiveLocation.resolve(archive_root).active_index_path
         if not source_db.exists():
             return
         with closing(sqlite3.connect(source_db)) as conn, conn:
