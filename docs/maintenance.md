@@ -9,8 +9,8 @@ common operational incidents.
 ## Applying a durable schema change train
 
 Durable schema changes are an offline release operation. Before applying a
-`source.db` or `user.db` migration above its adoption floor, confirm that the
-release contains the matching `migrations/{source,user}/NNN.train.json`
+`source.db`, `user.db`, or `audit.db` migration above its adoption floor,
+confirm that the release contains the matching `migrations/{source,user,audit}/NNN.train.json`
 sidecar. The sidecar reserves the exact slot and SQL hash and records the
 runtime and restart evidence needed for the change.
 
@@ -58,8 +58,9 @@ transaction creation before any bookkeeping or candidate generation.
 
 For a safe deployment recovery, first choose the exact target package commit.
 With the daemon stopped, create a fresh verified full-evidence backup, run
-`migrate-tier source` and `migrate-tier user` when the target package requires
-them, then deploy that exact package. Run the preflight above and require a
+`migrate-tier source`, `migrate-tier user`, and `migrate-tier audit` when the
+target package requires them, then deploy that exact package. Run the preflight
+above and require a
 ready result before invoking `polylogue ops maintenance rebuild-index`; use
 that blue-green command rather than `ops reset --index` for an active managed
 generation. Restart the daemon only after the rebuilt generation is promoted
