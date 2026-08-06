@@ -93,7 +93,8 @@ def _seed_byte_authority(root: Path, path: Path, *, native_id: str) -> None:
             native_id=native_id,
             revision=revision,
         )
-    with sqlite3.connect(root / "index.db") as conn:
+    conn = sqlite3.connect(root / "index.db")
+    try:
         conn.execute(
             """
             INSERT INTO raw_revision_heads (
@@ -113,6 +114,8 @@ def _seed_byte_authority(root: Path, path: Path, *, native_id: str) -> None:
             ),
         )
         conn.commit()
+    finally:
+        conn.close()
 
 
 def _attempts_for_path(root: Path, path: Path) -> list[dict[str, object]]:
