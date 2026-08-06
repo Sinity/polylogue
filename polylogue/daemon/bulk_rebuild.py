@@ -144,10 +144,12 @@ DAEMON_BULK_REBUILD_BATCH_SIZE = 500
 
 #: Transaction statuses that mean "not resumable, retire and start fresh at
 #: the same well-known operation id": ``promoted`` (a prior build already
-#: succeeded and is now the active index), ``stale`` (source evidence
-#: changed mid-build), ``failed`` (a pass raised; automagic doctrine retries
-#: rather than waiting on an operator to intervene).
-_TERMINAL_NOT_RESUMABLE = frozenset({"promoted", "stale", "failed"})
+#: succeeded and is now the active index), ``promoted-attestation-failed`` (a
+#: build succeeded and is active, but a post-promotion receipt write failed),
+#: ``stale`` (source evidence changed mid-build), and ``failed`` (a pass
+#: raised; automagic doctrine retries rather than waiting on an operator to
+#: intervene).
+_TERMINAL_NOT_RESUMABLE = frozenset({"promoted", "promoted-attestation-failed", "stale", "failed"})
 
 
 def _preflight_raw_failure_lifecycle(root: Path) -> None:
@@ -224,11 +226,12 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
 
         if transaction is not None:
             # Terminal: retire the old candidate/transaction record before
-            # reusing the well-known operation id. A "promoted" generation is
+            # reusing the well-known operation id. A promoted generation,
+            # including one with a failed post-promotion attestation, is
             # already the active index (nothing to discard); "stale"/"failed"
             # candidates are still inactive and safe to discard.
             cleanup_errors: list[BaseException] = []
-            if transaction.status != "promoted":
+            if transaction.status not in {"promoted", "promoted-attestation-failed"}:
                 try:
                     generation = store.load(transaction.generation_id)
                 except BaseException as exc:
@@ -340,7 +343,7 @@ async def run_daemon_bulk_rebuild_pass(
         root,
         schema_inference_receipt_path=receipt_path,
     )
-    if transaction.status == "promoted":
+    if transaction.status in {"promoted", "promoted-attestation-failed"}:
         return None
 
     location = ArchiveLocation.resolve(root)

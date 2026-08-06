@@ -1184,8 +1184,10 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
             FROM raw_sessions
             ORDER BY raw_id
             """
-        ).fetchall()
+        )
+        origins: set[str] = set()
         for row in rows:
+            origins.add(str(row[1]))
             for value in row:
                 if value is None:
                     encoded = b"n"
@@ -1197,13 +1199,13 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
                     encoded = b"i" + str(value).encode()
                 digest.update(len(encoded).to_bytes(8, "big"))
                 digest.update(encoded)
-        origins = sorted({str(row[1]) for row in rows})
+        sorted_origins = sorted(origins)
         digest.update(b"parser-lowering-semantic-fingerprints\0")
         digest.update(b"lowering\0")
         lowering = lowering_fingerprint()
         digest.update(len(lowering).to_bytes(8, "big"))
         digest.update(lowering.encode())
-        for origin in origins:
+        for origin in sorted_origins:
             parser = parser_fingerprint_for_origin(origin)
             for value in (origin, parser):
                 encoded = value.encode()

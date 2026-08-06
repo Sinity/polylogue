@@ -195,7 +195,7 @@ def _validate_rebuild_provenance_receipt(
 
 
 def _mark_rebuild_transaction_stale_after_provenance_failure(
-    root: Path, operation_id: str | None, error: BaseException
+    root: Path, operation_id: str | None, error: RebuildProvenanceError
 ) -> None:
     """Terminally classify a resumable pass whose next admission failed.
 
@@ -1238,11 +1238,18 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     # validation rather than accidentally reusing another archive/pass.
     _ACTIVE_EXTERNAL_INVENTORY_TOKEN.set(None)
     require_rebuild_schema_currency(root)
+    initial_provenance_error: RebuildProvenanceError | None = None
     try:
         consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
-    except BaseException as exc:
-        _mark_rebuild_transaction_stale_after_provenance_failure(root, request.operation_id, exc)
-        raise
+    except RebuildProvenanceError as exc:
+        if request.operation_id is None:
+            raise
+        # A resumable operation may need to be retired because this admission
+        # failed, but that lifecycle mutation must wait until both ownership
+        # boundaries are held. Control-flow exceptions are intentionally not
+        # caught here and therefore never change resumability.
+        initial_provenance_error = exc
+        consumed_evidence = {}
     location = ArchiveLocation.resolve(root)
     # The joined raw-frontier projection is rooted at the co-located active
     # index. A split-root canary intentionally points that index elsewhere and
@@ -1280,7 +1287,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     try:
         assert_owns_archive_location(owned, location)
         require_rebuild_schema_currency(root)
-        try:
+        if initial_provenance_error is None:
             consumed_evidence = _validate_rebuild_provenance_receipt(
                 root,
                 request.schema_inference_receipt_path,
@@ -1288,13 +1295,15 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                     dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})
                 ),
             )
-        except BaseException as exc:
-            _mark_rebuild_transaction_stale_after_provenance_failure(root, request.operation_id, exc)
-            raise
         # The lease is itself lifecycle state guarded by the provenance gate.
         # Revalidate again under the lease immediately before the owned body
         # can create or mutate a candidate/transaction.
         with RebuildLease(root):
+            if initial_provenance_error is not None:
+                _mark_rebuild_transaction_stale_after_provenance_failure(
+                    root, request.operation_id, initial_provenance_error
+                )
+                raise initial_provenance_error
             try:
                 consumed_evidence = _validate_rebuild_provenance_receipt(
                     root,
@@ -1303,7 +1312,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                         dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})
                     ),
                 )
-            except BaseException as exc:
+            except RebuildProvenanceError as exc:
                 _mark_rebuild_transaction_stale_after_provenance_failure(root, request.operation_id, exc)
                 raise
             return await _rebuild_index_from_source_owned(

@@ -803,6 +803,8 @@ def _full_blob_hash_evidence(archive_root: Path, *, referenced_hashes: set[str])
         errors.append("BlobStore.verify_all truncated before a complete result")
     if missing_references:
         errors.append("referenced source blobs are absent from the verified blob root")
+    failed_hashes = {failure.hash for failure in verification.failures if failure.hash}
+    verified_hashes = set() if verification.truncated else canonical_hashes - failed_hashes
     return {
         "passed": not errors,
         "verifier": {
@@ -823,38 +825,47 @@ def _full_blob_hash_evidence(archive_root: Path, *, referenced_hashes: set[str])
         ],
         "missing_references": _sample(missing_references, DEFAULT_SAMPLE_LIMIT),
         "referenced_blob_integrity_snapshot": _referenced_blob_integrity_snapshot(
-            archive_root, referenced_hashes=referenced_hashes
+            archive_root, referenced_hashes=referenced_hashes, verified_hashes=verified_hashes
         ),
         "errors": errors,
         "reason": "; ".join(errors) if errors else None,
     }
 
 
-def _referenced_blob_integrity_snapshot(archive_root: Path, *, referenced_hashes: set[str]) -> dict[str, object]:
+def _referenced_blob_integrity_snapshot(
+    archive_root: Path,
+    *,
+    referenced_hashes: set[str],
+    verified_hashes: set[str] | None = None,
+) -> dict[str, object]:
     """Verify and bind the current bytes for every source-referenced blob.
 
-    The source.db hash is only the expected identity. The ``BlobStore.verify``
-    calls below establish that the bytes currently on disk still have that
-    identity, and the resulting per-hash snapshot is suitable for comparing a
-    candidate-readiness proof against a later receipt.
+    The source.db hash is the expected content identity. When
+    ``verified_hashes`` is supplied, it is the completed ``verify_all`` result
+    and this function records that evidence without rehashing the referenced
+    blobs. The fallback performs direct verification for callers that do not
+    already own a complete scan.
     """
 
     store = BlobStore(archive_root / "blob")
     entries: list[dict[str, object]] = []
     for blob_hash in sorted(referenced_hashes):
         path = store.blob_path(blob_hash)
-        verified = store.verify(blob_hash)
+        verified = blob_hash in verified_hashes if verified_hashes is not None else store.verify(blob_hash)
         item: dict[str, object] = {"blob_hash": blob_hash, "verified": verified}
         try:
-            stat = path.stat()
-            item.update({"size": stat.st_size, "inode": stat.st_ino, "mtime_ns": stat.st_mtime_ns})
+            item["size"] = path.stat().st_size
         except OSError as exc:
             item["stat_error"] = str(exc)
         entries.append(item)
     encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return {
-        "algorithm": "sha256-referenced-blob-integrity-v1",
-        "verifier": "polylogue.storage.blob_store.BlobStore.verify",
+        "algorithm": "sha256-referenced-blob-integrity-v2",
+        "verifier": (
+            "polylogue.storage.blob_store.BlobStore.verify_all"
+            if verified_hashes is not None
+            else "polylogue.storage.blob_store.BlobStore.verify"
+        ),
         "referenced_count": len(entries),
         "passed": all(bool(item.get("verified")) for item in entries),
         "entries": entries,
@@ -904,12 +915,12 @@ def _external_inventory(roots: Sequence[Path]) -> list[_ExternalGroundTruthFile]
 
 
 def _external_inventory_change_detector(roots: Sequence[Path]) -> dict[str, object]:
-    """Return metadata-only evidence for a previously hashed corpus.
+    """Return metadata evidence that detects writes before rehashing.
 
-    The detector walks and stats files without opening them. A changed
-    detector triggers the authoritative full inventory hash; an unchanged
-    detector reuses the first full inventory instead of hashing a multi-GiB
-    corpus on every rebuild checkpoint.
+    The detector walks and stats files without opening them. ``ctime_ns`` is
+    included because an in-place rewrite can preserve size, inode, and mtime;
+    a changed detector then triggers the authoritative full inventory hash.
+    The detector is only a change signal, never content identity by itself.
     """
 
     entries: list[dict[str, object]] = []
@@ -925,12 +936,13 @@ def _external_inventory_change_detector(roots: Sequence[Path]) -> dict[str, obje
                     "size": stat.st_size,
                     "inode": stat.st_ino,
                     "mtime_ns": stat.st_mtime_ns,
+                    "ctime_ns": stat.st_ctime_ns,
                 }
             )
     entries.sort(key=lambda item: (int(cast(int, item["root_index"])), str(item["relative_path"])))
     encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return {
-        "algorithm": "sha256-stat-inventory-v1",
+        "algorithm": "sha256-stat-inventory-v2",
         "entry_count": len(entries),
         "digest": hashlib.sha256(encoded).hexdigest(),
     }
