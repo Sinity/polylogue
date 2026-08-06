@@ -585,6 +585,12 @@ def test_inventory_change_detector_triggers_rehash_without_changing_content_iden
     refreshed = gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
     assert inventory_calls == 1
     refreshed_token = cast(dict[str, object], refreshed["external_ground_truth_inventory_token"])
+    original_origin_token = cast(dict[str, object], token["origins"])["codex-session"]
+    refreshed_origin_token = cast(dict[str, object], refreshed_token["origins"])["codex-session"]
+    assert (
+        cast(dict[str, object], refreshed_origin_token)["inventory_change_detector"]
+        != cast(dict[str, object], original_origin_token)["inventory_change_detector"]
+    )
     gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=refreshed_token)
     assert inventory_calls == 1, "a successful rehash must refresh the detector token"
 
