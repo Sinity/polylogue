@@ -2,11 +2,11 @@
 
 ## Scope
 
-This report records the proof surface implemented for `polylogue-topology-live-proof`. The census reuses `devtools workspace lineage-validation` and the production topology write/read seams. The candidate evidence is a focused archive fixture written by `write_parsed_session_to_archive`; it is not a claim about the operator's live archive.
+This report records the proof surface implemented for `polylogue-topology-live-proof`. The census reuses `devtools workspace lineage-validation` and the production topology write/read seams. The candidate evidence is a frozen test index populated by `write_parsed_session_to_archive`; it is not a claim about the operator's live archive.
 
 ## Candidate proof
 
-The candidate fixture contains two resolved links and one unresolved native-parent link. The production writer supplies a non-empty method for all three rows. The census derives the ordinary `resolved` and `unresolved` states from `resolved_dst_session_id`, while preserving the nullable raw `status` column contract. The bounded unresolved-parent read sample exercises `read_archive_session_envelope` and proves the child remains child-local: no parent session is composed, and the served message count equals the child-owned count.
+The candidate fixture contains two resolved links and one unresolved native-parent link, all written through the production writer. The production writer supplies a non-empty method for all three rows. The census derives the ordinary `resolved` and `unresolved` states from `resolved_dst_session_id`, while preserving the nullable raw `status` column contract. The bounded unresolved-parent read sample exercises `read_archive_session_envelope` and proves the child remains child-local: no parent session is composed, and the served message count equals the child-owned count. Each receipt binds the report to the database and any SQLite sidecars by content digest, file identity, and a held read transaction; a source change produces a different receipt binding.
 
 | Evidence | Result |
 | --- | ---: |
@@ -17,6 +17,7 @@ The candidate fixture contains two resolved links and one unresolved native-pare
 | unresolved-parent reads sampled | `1` |
 | unresolved-parent reads safe | `true` |
 | cycle-quarantine evidence in candidate | `0` |
+| candidate snapshot stable during census | `true` |
 
 The production-route cycle fixture separately proves a `quarantined` closing edge with `cycle_rejected` evidence. Its census has `resolved=1`, `quarantined=1`, zero empty effective states, zero empty methods, and one cycle-evidence row.
 
