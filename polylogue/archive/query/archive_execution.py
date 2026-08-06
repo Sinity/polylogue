@@ -186,6 +186,7 @@ def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
         id=SessionId(summary.session_id),
         origin=Origin.from_string(summary.origin),
         title=summary.title,
+        display_label=summary.display_label,
         title_source=_coerce_title_source(summary.title_source),
         title_ref=summary.title_ref,
         title_confidence=summary.title_confidence,
@@ -267,7 +268,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message
     )
 
 
-def _session_to_session(session: ArchiveSessionEnvelope) -> Session:
+def _session_to_session(session: ArchiveSessionEnvelope, *, display_label: str | None = None) -> Session:
     from polylogue.archive.session.branch_type import BranchType
 
     origin = Origin.from_string(session.origin)
@@ -276,7 +277,8 @@ def _session_to_session(session: ArchiveSessionEnvelope) -> Session:
     return Session(
         id=SessionId(session.session_id),
         origin=origin,
-        title=session.title,
+        title=session.title if session.title_source in {"origin", "heuristic"} else None,
+        display_label=display_label,
         title_source=_coerce_title_source(session.title_source),
         title_ref=session.title_ref,
         title_confidence=session.title_confidence,
@@ -501,7 +503,10 @@ async def list_archive(
             default_limit=default_limit,
         )
         sessions = _attach_units_to_domain(
-            [_session_to_session(archive.read_session(summary.session_id)) for summary in archive_rows],
+            [
+                _session_to_session(archive.read_session(summary.session_id), display_label=summary.display_label)
+                for summary in archive_rows
+            ],
             archive,
             with_units,
             with_unit_fields,

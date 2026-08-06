@@ -346,11 +346,9 @@ class TitleSource(PolylogueStrEnum):
     ``UNKNOWN`` was a second, redundant spelling of "no title evidence" on an
     already-nullable column (every read site branching on ``title_source``
     treated ``NULL`` and ``'unknown'`` identically) -- deleted in favor of
-    ``NULL`` alone. ``PATH`` looks unused the same way at a glance (nothing
-    ever *stores* it in ``sessions.title_source``), but it has a genuine
-    read-time producer: ``archive_tiers/archive.py``'s ``_summary_from_row``
-    assigns it whenever a session has neither a real provider title nor a
-    display name, synthesizing a structural label instead -- kept.
+    ``NULL`` alone. ``PATH`` is retained for compatibility with legacy rows,
+    but current read-time display-label projection leaves ``title_source``
+    NULL when a session has no provider title.
     """
 
     ORIGIN = "origin"

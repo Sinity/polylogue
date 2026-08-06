@@ -11,6 +11,10 @@ from collections.abc import Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polylogue.storage.blob_gc import OrphanedBlobRefCensus
 
 from polylogue.config import Config
 from polylogue.daemon.write_coordinator import daemon_write_lease_active
@@ -908,6 +912,15 @@ def reconcile_blob_ref_liveness(
         backup_manifest=backup_manifest,
         post_classification=post_classification,
     )
+
+
+def census_blob_ref_liveness(archive_root: Path) -> OrphanedBlobRefCensus:
+    """Return the privacy-safe source-tier blob-ref census without mutation."""
+    from polylogue.storage.blob_gc import census_orphaned_blob_refs
+
+    source_db = archive_root / "source.db"
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+        return census_orphaned_blob_refs(conn)
 
 
 __all__ = [

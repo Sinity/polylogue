@@ -205,6 +205,40 @@ def _table_has_blob_hash_column(conn: sqlite3.Connection, table: str) -> bool:
     return any(str(row[1]) == "blob_hash" for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
+def _temporary_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _prepare_legacy_hook_liveness(conn: sqlite3.Connection) -> str:
+    """Prepare the canonical legacy-hook reconciliation stage for this connection."""
+    if _temporary_table_exists(conn, "hook_payload_ref_reconciliation_matches") and _temporary_table_exists(
+        conn, "hook_payload_ref_reconciliation_ambiguous"
+    ):
+        return "ready"
+    if not _table_exists(conn, "raw_hook_events"):
+        return "not_applicable"
+    hook_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_hook_events)")}
+    required = {"hook_event_id", "origin", "native_id", "source_path", "blob_hash"}
+    if required - hook_columns:
+        return "unavailable"
+    try:
+        # Reuse the same bounded, ambiguity-aware stage that the offline
+        # reconciliation classifier uses. GC only reads its match tables.
+        from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
+
+        _create_match_stage(conn)
+    except sqlite3.Error:
+        logger.warning("Could not stage legacy hook evidence for blob GC; retaining candidate blobs")
+        return "unavailable"
+    return "ready"
+
+
 def _blob_refs_still_live(conn: sqlite3.Connection, blob_bytes: bytes) -> bool:
     """Return True if some ``blob_refs`` row for this hash has a live referent.
 
@@ -215,22 +249,68 @@ def _blob_refs_still_live(conn: sqlite3.Connection, blob_bytes: bytes) -> bool:
     (see ``_BLOB_REF_LIVENESS_JOIN``) still has the row identified by
     ``ref_id``. A hook-event blob ref whose ``raw_hook_events`` row was
     deleted, or a stale ref left behind by a since-reverted write, no longer
-    joins to anything and is correctly treated as dead here.
+    joins to anything and is correctly treated as dead here. Unknown ref
+    types and known types whose referent table or key column is unavailable
+    are retained because GC cannot prove them dead.
     """
-    if not _table_exists(conn, "blob_refs") or not _blob_refs_has_ref_type_column(conn):
+    if not _table_exists(conn, "blob_refs"):
         return False
+    if not _blob_refs_has_ref_type_column(conn):
+        # A legacy or malformed reference table cannot prove that its rows are
+        # dead. Keep the blob until an offline integrity tool records a typed
+        # disposition; GC must never turn an unknown schema into evidence loss.
+        return True
+    ref_types = {
+        str(row[0])
+        for row in conn.execute("SELECT DISTINCT ref_type FROM blob_refs WHERE blob_hash = ?", (blob_bytes,))
+    }
+    if not ref_types:
+        return False
+    known_ref_types = {ref_type for ref_type, _table, _column in _BLOB_REF_LIVENESS_JOIN}
+    if ref_types - known_ref_types:
+        # Reconciliation reports unknown ref types as a blocker. GC follows
+        # the same fail-closed rule instead of deleting unclassified evidence.
+        return True
+    if "raw_payload" in ref_types:
+        legacy_hook_status = _prepare_legacy_hook_liveness(conn)
+        if legacy_hook_status == "unavailable":
+            return True
+        if legacy_hook_status == "ready":
+            legacy_hook_row = conn.execute(
+                """
+                SELECT 1
+                FROM temp.hook_payload_ref_reconciliation_matches
+                WHERE blob_hash = ?
+                UNION ALL
+                SELECT 1
+                FROM temp.hook_payload_ref_reconciliation_ambiguous
+                WHERE blob_hash = ?
+                LIMIT 1
+                """,
+                (blob_bytes, blob_bytes),
+            ).fetchone()
+            if legacy_hook_row is not None:
+                return True
     clauses = [
         f"(ref_type = ? AND EXISTS (SELECT 1 FROM {referent_table} WHERE {referent_table}.{referent_column} = blob_refs.ref_id))"
         for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN
-        if _table_exists(conn, referent_table)
+        if ref_type in ref_types
     ]
+    params: list[str] = []
+    for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN:
+        if ref_type not in ref_types:
+            continue
+        if not _table_exists(conn, referent_table):
+            # The type is known, but this archive cannot evaluate its join.
+            # Keep the blob until the missing referent surface is restored or
+            # an integrity tool records a disposition.
+            return True
+        referent_columns = {row[1] for row in conn.execute(f"PRAGMA table_info({referent_table})")}
+        if referent_column not in referent_columns:
+            return True
+        params.append(ref_type)
     if not clauses:
         return False
-    params = [
-        ref_type
-        for ref_type, referent_table, _referent_column in _BLOB_REF_LIVENESS_JOIN
-        if _table_exists(conn, referent_table)
-    ]
     query = f"SELECT 1 FROM blob_refs WHERE blob_hash = ? AND ({' OR '.join(clauses)}) LIMIT 1"
     row = conn.execute(query, (blob_bytes, *params)).fetchone()
     return row is not None
@@ -647,51 +727,166 @@ class OrphanedBlobRefCensus:
     A "orphaned" row here is exactly the shape blob GC's liveness join
     (``_blob_refs_still_live``) treats as dead: its ``ref_type`` names a
     referent table, but no row in that table has the ``ref_id`` this row
-    claims. These rows are harmless (GC already reclaims their blob once it
-    ages out) but their *count* is operator-relevant evidence of how much
-    write-time drift (deleted rows, since-fixed bugs like the hook-payload one
-    this census was built for) has accumulated. Intended to be read by a
-    daemon health/expensive tier; wiring that in is left to the caller
-    (polylogue-tfzw0 explicitly defers "wire into health tiers" as optional).
+    claims. Their *count* is operator-relevant evidence of how much write-time
+    drift (deleted rows, since-fixed bugs like the hook-payload one this census
+    was built for) has accumulated. Unavailable schemas and unknown ref types
+    are counted as dispositions rather than treated as dead. Intended to be
+    read by a daemon health/expensive tier; wiring that in is left to the
+    caller (polylogue-tfzw0 explicitly defers "wire into health tiers" as
+    optional).
     """
 
     total: int
     by_ref_type: dict[str, int]
+    scanned_count: int = 0
+    ref_type_counts: dict[str, int] | None = None
+    unknown_ref_types: dict[str, int] | None = None
+    unavailable_ref_types: dict[str, int] | None = None
+    schema_unavailable_count: int = 0
+    deferred_by_ref_type: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"total": self.total, "by_ref_type": dict(self.by_ref_type)}
+        return {
+            "scanned_count": self.scanned_count,
+            "ref_type_counts": dict(self.ref_type_counts or {}),
+            "total": self.total,
+            "by_ref_type": dict(self.by_ref_type),
+            "unknown_ref_types": dict(self.unknown_ref_types or {}),
+            "unavailable_ref_types": dict(self.unavailable_ref_types or {}),
+            "schema_unavailable_count": self.schema_unavailable_count,
+            "deferred_by_ref_type": dict(self.deferred_by_ref_type or {}),
+        }
+
+    def to_privacy_safe_dict(self) -> dict[str, object]:
+        """Serialize aggregate counts without exposing database-derived names."""
+        payload = self.to_dict()
+        known_ref_types = {ref_type for ref_type, _table, _column in BLOB_REF_LIVENESS_JOIN}
+        ref_type_counts = self.ref_type_counts or {}
+        payload["ref_type_counts"] = {
+            ref_type: count for ref_type, count in ref_type_counts.items() if ref_type in known_ref_types
+        }
+        payload.pop("unknown_ref_types", None)
+        payload["unknown_ref_type_count"] = sum(
+            count for ref_type, count in ref_type_counts.items() if ref_type not in known_ref_types
+        )
+        return payload
 
 
 def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus:
     """Count ``blob_refs`` rows whose ``ref_id`` has no live referent, per ref_type.
 
     Read-only; safe to call against a live connection or a read-only handle.
-    A ``ref_type`` whose referent table does not exist (an old archive
-    predating that table) is skipped rather than counted as fully orphaned --
-    its rows are simply not evaluable, the same conservative stance
-    ``_blob_refs_still_live`` takes.
+    A ``ref_type`` whose referent table or key column does not exist (an old
+    archive predating that table) is reported as unavailable rather than
+    counted as fully orphaned. Unknown ref types are reported separately.
+    Neither disposition is included in ``total`` because neither is proven
+    dead, matching the fail-closed stance ``_blob_refs_still_live`` takes.
     """
-    if not _table_exists(conn, "blob_refs"):
-        return OrphanedBlobRefCensus(total=0, by_ref_type={})
+    if not _table_exists(conn, "blob_refs") or not _blob_refs_has_ref_type_column(conn):
+        count = (
+            int(conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0]) if _table_exists(conn, "blob_refs") else 0
+        )
+        return OrphanedBlobRefCensus(total=0, by_ref_type={}, schema_unavailable_count=count)
+    ref_type_counts = {
+        str(row[0]): int(row[1])
+        for row in conn.execute("SELECT ref_type, COUNT(*) FROM blob_refs GROUP BY ref_type ORDER BY ref_type")
+    }
     by_ref_type: dict[str, int] = {}
+    unknown_ref_types: dict[str, int] = {}
+    unavailable_ref_types: dict[str, int] = {}
+    deferred_by_ref_type: dict[str, int] = {}
+    legacy_hook_status = "not_applicable"
+    if ref_type_counts.get("raw_payload"):
+        legacy_hook_status = _prepare_legacy_hook_liveness(conn)
     for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN:
-        if not _table_exists(conn, referent_table):
+        count = ref_type_counts.get(ref_type, 0)
+        if not count:
             continue
+        if not _table_exists(conn, referent_table):
+            unavailable_ref_types[ref_type] = count
+            continue
+        referent_columns = {row[1] for row in conn.execute(f"PRAGMA table_info({referent_table})")}
+        if referent_column not in referent_columns:
+            unavailable_ref_types[ref_type] = count
+            continue
+        legacy_exclusion = ""
+        if ref_type == "raw_payload" and legacy_hook_status in {"ready", "unavailable"}:
+            orphan_count = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM blob_refs AS b
+                    WHERE b.ref_type = ?
+                      AND NOT EXISTS (SELECT 1 FROM {referent_table} AS r WHERE r.{referent_column} = b.ref_id)
+                    """,
+                    (ref_type,),
+                ).fetchone()[0]
+            )
+            if legacy_hook_status == "unavailable":
+                if orphan_count:
+                    deferred_by_ref_type[ref_type] = orphan_count
+                continue
+            deferred_count = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM blob_refs AS b
+                    WHERE b.ref_type = ?
+                      AND NOT EXISTS (SELECT 1 FROM {referent_table} AS r WHERE r.{referent_column} = b.ref_id)
+                      AND (
+                          EXISTS (
+                              SELECT 1 FROM temp.hook_payload_ref_reconciliation_matches AS m
+                              WHERE m.blob_hash = b.blob_hash AND m.orphaned_ref_id = b.ref_id
+                          )
+                          OR EXISTS (
+                              SELECT 1 FROM temp.hook_payload_ref_reconciliation_ambiguous AS a
+                              WHERE a.blob_hash = b.blob_hash AND a.orphaned_ref_id = b.ref_id
+                          )
+                      )
+                    """,
+                    (ref_type,),
+                ).fetchone()[0]
+            )
+            if deferred_count:
+                deferred_by_ref_type[ref_type] = deferred_count
+            legacy_exclusion = """
+              AND NOT (
+                  EXISTS (
+                      SELECT 1 FROM temp.hook_payload_ref_reconciliation_matches AS m
+                      WHERE m.blob_hash = b.blob_hash AND m.orphaned_ref_id = b.ref_id
+                  )
+                  OR EXISTS (
+                      SELECT 1 FROM temp.hook_payload_ref_reconciliation_ambiguous AS a
+                      WHERE a.blob_hash = b.blob_hash AND a.orphaned_ref_id = b.ref_id
+                  )
+              )
+            """
         row = conn.execute(
             f"""
-            SELECT COUNT(*) FROM blob_refs
-            WHERE ref_type = ?
+            SELECT COUNT(*) FROM blob_refs AS b
+            WHERE b.ref_type = ?
               AND NOT EXISTS (
                   SELECT 1 FROM {referent_table}
-                  WHERE {referent_table}.{referent_column} = blob_refs.ref_id
+                  WHERE {referent_table}.{referent_column} = b.ref_id
               )
+              {legacy_exclusion}
             """,
             (ref_type,),
         ).fetchone()
         count = int(row[0]) if row is not None else 0
         if count:
             by_ref_type[ref_type] = count
-    return OrphanedBlobRefCensus(total=sum(by_ref_type.values()), by_ref_type=by_ref_type)
+    known_ref_types = {ref_type for ref_type, _table, _column in _BLOB_REF_LIVENESS_JOIN}
+    unknown_ref_types = {
+        ref_type: count for ref_type, count in ref_type_counts.items() if ref_type not in known_ref_types
+    }
+    return OrphanedBlobRefCensus(
+        total=sum(by_ref_type.values()),
+        by_ref_type=by_ref_type,
+        scanned_count=sum(ref_type_counts.values()),
+        ref_type_counts=ref_type_counts,
+        unknown_ref_types=unknown_ref_types,
+        unavailable_ref_types=unavailable_ref_types,
+        deferred_by_ref_type=deferred_by_ref_type,
+    )
 
 
 __all__ = [

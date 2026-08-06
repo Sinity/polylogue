@@ -139,7 +139,7 @@ def test_still_referenced_recognizes_archive_source_hash(tmp_path: Path) -> None
     source_conn.commit()
 
     assert _still_referenced(source_conn, blob_hash) is True
-    assert _reference_surfaces(source_conn, blob_hash) == ["current.raw_sessions"]
+    assert _reference_surfaces(source_conn, blob_hash) == ["current.raw_sessions", "current.blob_refs"]
     source_conn.close()
 
 

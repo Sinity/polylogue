@@ -79,8 +79,7 @@ def test_provider_title_wins_over_structural_form() -> None:
 
 
 def test_structural_label_matches_bead_evidence_shape() -> None:
-    """Reproduces the exact example from polylogue-cijx.4's evidence:
-    'polylogue · pipeline/services/ingest_batch/_core.py +26 · 499 msgs'."""
+    """Uses the measured repo/file-count/message-count/date shape."""
     inputs = SessionLabelInputs(
         provider_title=None,
         repo_name="polylogue",
@@ -89,12 +88,10 @@ def test_structural_label_matches_bead_evidence_shape() -> None:
         additional_file_count=26,
         message_count=499,
     )
-    assert (
-        compute_session_structural_label(inputs) == "polylogue · pipeline/services/ingest_batch/_core.py +26 · 499 msgs"
-    )
+    assert compute_session_structural_label(inputs) == "polylogue · 27 files · 499 msgs"
 
 
-def test_structural_label_omits_plus_n_when_only_one_file_touched() -> None:
+def test_structural_label_uses_singular_file_for_one_touched_file() -> None:
     inputs = SessionLabelInputs(
         provider_title=None,
         repo_name="sinex",
@@ -103,7 +100,7 @@ def test_structural_label_omits_plus_n_when_only_one_file_touched() -> None:
         additional_file_count=0,
         message_count=12,
     )
-    assert compute_session_structural_label(inputs) == "sinex · src/main.rs · 12 msgs"
+    assert compute_session_structural_label(inputs) == "sinex · 1 file · 12 msgs"
 
 
 def test_structural_label_degrades_to_message_count_only_with_no_evidence() -> None:
@@ -248,7 +245,7 @@ def test_session_structural_label_for_session_end_to_end(tmp_path: Path) -> None
         message_count=2,
         provider_title=None,
     )
-    assert label == "myrepo · core.py · 2 msgs"
+    assert label == "myrepo · 1 file · 2 msgs"
 
     # A real provider title always wins over the structural form.
     titled_label = session_structural_label_for_session(

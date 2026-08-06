@@ -243,10 +243,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #    read site branching on title_source already treated NULL and 'unknown'
 #    identically), so parsers now leave title_source unset instead of
 #    stamping UNKNOWN. TitleSource.USER is deleted too (zero producers,
-#    write- or read-time). TitleSource.PATH is KEPT despite also having zero
-#    *write*-time producers: archive_tiers/archive.py's `_summary_from_row`
-#    assigns it live at read time whenever a session has neither a real
-#    title nor a display name.
+#    write- or read-time). TitleSource.PATH is KEPT for compatibility with
+#    legacy rows, but current read-time display-label projection leaves
+#    title_source NULL when a session has neither a real title nor a display
+#    name.
 #  - session_links.link_type drops LinkType.REPAIRED (zero producers, and a
 #    same-string collision with the unrelated TopologyEdgeStatus.REPAIRED on
 #    the `status` column of the same table). FORK and RESUME are kept
