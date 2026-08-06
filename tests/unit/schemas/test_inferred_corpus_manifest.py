@@ -8,6 +8,14 @@ from typing import cast
 import pytest
 
 from polylogue.core.json import JSONValue
+from polylogue.maintenance.schema_inference_gate import (
+    run_schema_inference_gate,
+    schema_inference_gate_receipt_digest,
+)
+from polylogue.schemas.operator.receipt import (
+    SchemaInferenceUnsupportedDecision,
+    build_schema_inference_receipt,
+)
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
@@ -21,10 +29,24 @@ from tests.infra.inferred_corpus import (
     read_inferred_corpus_manifest,
     write_inferred_corpus_manifest,
 )
+from tests.unit.maintenance.test_schema_inference_gate import _seed_archive
 
 
 def _registry() -> SchemaRegistry:
     return SchemaRegistry(storage_root=SCHEMA_DIR)
+
+
+def _authoritative_gate(tmp_path: Path) -> tuple[Path, Path, str]:
+    archive_root = tmp_path / "archive"
+    receipt_path = tmp_path / "schema-inference-gate-receipt.json"
+    _seed_archive(archive_root)
+    result = run_schema_inference_gate(
+        archive_root,
+        receipt_path=receipt_path,
+        ground_truth_roots={"codex-session": (tmp_path / "archive-codex-ground-truth",)},
+    )
+    assert result.passed
+    return archive_root, receipt_path, schema_inference_gate_receipt_digest(result.payload)
 
 
 def _catalog_keys(registry: SchemaRegistry) -> set[CorpusManifestKey]:
@@ -86,6 +108,245 @@ def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path
     write_inferred_corpus_manifest(manifest, path)
 
     assert read_inferred_corpus_manifest(path) == manifest
+
+
+def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) -> None:
+    registry = _registry()
+    provider = "codex"
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=(provider,),
+        package_receipt=receipt.to_payload(),
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    path = tmp_path / "campaign.json"
+
+    supported = next(entry for entry in manifest.entries if entry.spec is not None)
+    tampered_schema = replace(supported, generator_schema={"type": "string"})
+    tampered = replace(
+        manifest,
+        entries=tuple(
+            sorted(
+                (tampered_schema if entry is supported else entry for entry in manifest.entries),
+                key=lambda entry: entry.key,
+            )
+        ),
+    )
+    write_inferred_corpus_manifest(tampered, path)
+    with pytest.raises(ValueError, match="package/version/element hashes|generator schema changed"):
+        read_inferred_corpus_manifest(
+            path,
+            campaign_mode=True,
+            registry=registry,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+    tampered_key = replace(supported.key, construct_support=())
+    tampered_entry = replace(supported, key=tampered_key)
+    tampered = replace(
+        manifest,
+        entries=tuple(
+            sorted(
+                (tampered_entry if entry is supported else entry for entry in manifest.entries),
+                key=lambda entry: entry.key,
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="classifier output changed"):
+        build_inferred_corpus_convergence_handoff(
+            tampered,
+            campaign_mode=True,
+            registry=registry,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
+def test_campaign_mode_rejects_catalog_only_manifest(tmp_path: Path) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=_registry())
+    path = tmp_path / "catalog-only.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    with pytest.raises(ValueError, match="catalog-only"):
+        read_inferred_corpus_manifest(path, campaign_mode=True)
+    with pytest.raises(ValueError, match="handoff"):
+        compile_inferred_corpus_manifest(registry=_registry(), campaign_mode=True)
+
+
+def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decisions(tmp_path: Path) -> None:
+    registry = _registry()
+    provider = "codex"
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    receipt = build_schema_inference_receipt(
+        registry,
+        provider=provider,
+        gate_receipt_digest=gate_digest,
+    )
+    compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=(provider,),
+        package_receipt=receipt.to_payload(),
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+
+    tampered_gate = replace(receipt, gate_receipt_digest="b" * 64)
+    with pytest.raises(ValueError, match="different gate receipt digests"):
+        tampered_gate.merged_with(receipt)
+
+    tampered_package = replace(
+        receipt,
+        packages=(replace(receipt.packages[0], package_hash="b" * 64), *receipt.packages[1:]),
+    )
+    with pytest.raises(ValueError, match="package/version/element hashes"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=(provider,),
+            package_receipt=tampered_package.to_payload(),
+            campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
+def test_campaign_rejects_fabricated_gate_digest_even_when_shape_is_valid(tmp_path: Path) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, _gate_digest = _authoritative_gate(tmp_path)
+    receipt = build_schema_inference_receipt(registry, provider="codex", gate_receipt_digest="a" * 64)
+
+    with pytest.raises(ValueError, match="does not match the authoritative PASS receipt"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=("codex",),
+            package_receipt=receipt.to_payload(),
+            campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
+def test_campaign_rejects_tampered_ground_truth_denominators_after_digest_recompute(tmp_path: Path) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    receipt = build_schema_inference_receipt(registry, provider="codex", gate_receipt_digest=gate_digest)
+
+    valid_manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=("codex",),
+        package_receipt=receipt.to_payload(),
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    assert valid_manifest.receipt_state == "package_receipt_attached"
+
+    tampered_gate = json.loads(gate_receipt_path.read_text(encoding="utf-8"))
+    denominators = dict(tampered_gate["ground_truth_denominators"])
+    denominators["documents_known"] += 1
+    tampered_gate["ground_truth_denominators"] = denominators
+    gate_receipt_path.write_text(json.dumps(tampered_gate, sort_keys=True) + "\n", encoding="utf-8")
+    tampered_digest = schema_inference_gate_receipt_digest(tampered_gate)
+    tampered_receipt = build_schema_inference_receipt(
+        registry,
+        provider="codex",
+        gate_receipt_digest=tampered_digest,
+    )
+
+    with pytest.raises(ValueError, match="ground-truth denominators changed"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=("codex",),
+            package_receipt=tampered_receipt.to_payload(),
+            campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
+def test_bundled_registry_relation_annotations_share_one_receipt_classification(tmp_path: Path) -> None:
+    registry = _registry()
+    provider = "chatgpt"
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=(provider,),
+        package_receipt=receipt.to_payload(),
+        campaign_mode=False,
+    )
+
+    expected_annotations = {
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-string-lengths",
+        "x-polylogue-time-deltas",
+    }
+    observed = {
+        item.construct
+        for entry in manifest.entries
+        for item in entry.key.construct_support
+        if item.construct in expected_annotations
+    }
+    assert observed == expected_annotations
+    receipt_decisions = {
+        (item.provider, item.package_version, item.element_kind, item.decision, item.reason, item.details)
+        for item in receipt.unsupported_decisions
+        if item.provider == provider
+    }
+    manifest_decisions: set[tuple[str, str, str, str, str, tuple[str, ...]]] = set()
+    for entry in manifest.entries:
+        if entry.unsupported is None:
+            continue
+        unsupported = entry.unsupported
+        manifest_decisions.add(
+            (
+                entry.key.provider,
+                entry.key.package_version,
+                entry.key.element_kind,
+                "nonrepresentable" if unsupported.reason == "unsupported_json_schema_construct" else "unsupported",
+                unsupported.reason,
+                unsupported.details,
+            )
+        )
+    assert receipt_decisions == manifest_decisions
+    assert all(
+        annotation in details
+        for *_identity, details in receipt_decisions
+        for annotation in expected_annotations
+        if annotation in observed
+    )
+
+    package = receipt.packages[0]
+    if receipt.unsupported_decisions:
+        first = receipt.unsupported_decisions[0]
+        changed = replace(first, decision="unsupported" if first.decision == "nonrepresentable" else "nonrepresentable")
+        tampered_decisions = (changed, *receipt.unsupported_decisions[1:])
+    else:
+        changed = SchemaInferenceUnsupportedDecision(
+            provider=provider,
+            package_version=package.package_version,
+            element_kind="tampered-element",
+            decision="nonrepresentable",
+            reason="tampered decision",
+            details=("tampered_construct",),
+        )
+        tampered_decisions = (changed,)
+    tampered_unsupported = replace(receipt, unsupported_decisions=tuple(sorted(tampered_decisions)))
+    with pytest.raises(ValueError, match="no executable synthetic corpus selection"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=(provider,),
+            package_receipt=tampered_unsupported.to_payload(),
+            campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
 
 
 @pytest.mark.parametrize("field", ["manifest_id", "payload_sha256"])

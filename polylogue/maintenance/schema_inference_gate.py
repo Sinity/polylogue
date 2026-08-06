@@ -15,6 +15,7 @@ import os
 import platform
 import sqlite3
 import sys
+import uuid
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -47,6 +48,7 @@ RECEIPT_FILENAME = "schema-inference-gate-receipt.json"
 SCHEMA_INFERENCE_RECEIPT_ENV = "POLYLOGUE_SCHEMA_INFERENCE_RECEIPT"
 RECEIPT_TTL = timedelta(hours=24)
 RECEIPT_CLOCK_SKEW = timedelta(minutes=5)
+RECEIPT_MAX_AGE_SECONDS = int(RECEIPT_TTL.total_seconds())
 
 _ALLOWED_RESIDUAL_EXPLANATIONS = frozenset(
     {"materialized", "superseded-duplicate", "legitimately-excluded-non-conversation"}
@@ -1365,6 +1367,229 @@ def _as_dict(value: object) -> dict[str, object]:
     return cast(dict[str, object], value) if isinstance(value, dict) else {}
 
 
+def _hard_gate_evidence_payload(
+    query_results: Mapping[str, object], full_blob_hash_verification: Mapping[str, object]
+) -> dict[str, object]:
+    """Return the exact live evidence that a commit is allowed to consume."""
+
+    return {
+        "query_results": dict(query_results),
+        "full_blob_hash_verification": dict(full_blob_hash_verification),
+    }
+
+
+def schema_inference_hard_gate_evidence_digest(
+    query_results: Mapping[str, object], full_blob_hash_verification: Mapping[str, object]
+) -> str:
+    """Digest the complete source-query and blob-verifier evidence payload."""
+
+    evidence = json.dumps(
+        _hard_gate_evidence_payload(query_results, full_blob_hash_verification),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256(evidence.encode("utf-8")).hexdigest()
+
+
+def _validate_schema_inference_gate_payload(
+    payload: Mapping[str, object],
+    *,
+    archive_root: Path,
+    now: datetime | None = None,
+) -> str:
+    """Validate the authoritative PASS receipt consumed by schema commit.
+
+    A verdict alone is not evidence. The handoff contract requires the gate's
+    complete receipt shape, a fresh nonce, the current archive authority
+    identity, and an explicit successful full blob verification.
+    """
+
+    required_fields = {
+        "schema",
+        "gate_version",
+        "generated_at",
+        "receipt_nonce",
+        "verdict",
+        "archive_root",
+        "archive_identity_digest",
+        "schema_identity",
+        "source_schema_identity",
+        "query_results",
+        "source_denominators",
+        "blob_denominators",
+        "ground_truth_denominators",
+        "ground_truth_inputs",
+        "exemptions",
+        "corpus_fidelity",
+        "full_blob_hash_verification",
+        "input_paths",
+        "tool_versions",
+        "pass_fail_reasons",
+        "sample_limit",
+        "hard_gate_evidence_digest",
+    }
+    missing = sorted(required_fields - set(payload))
+    if missing:
+        raise ValueError(f"schema-inference gate receipt is missing authoritative fields: {missing}")
+    if payload.get("schema") != RECEIPT_SCHEMA or payload.get("gate_version") != GATE_VERSION:
+        raise ValueError("schema-inference gate receipt schema or gate version is not authoritative")
+    if payload.get("verdict") != "PASS":
+        raise ValueError("schema-inference gate receipt must have verdict PASS")
+
+    nonce = payload.get("receipt_nonce")
+    try:
+        valid_nonce = isinstance(nonce, str) and uuid.UUID(nonce).hex == nonce.replace("-", "")
+    except ValueError:
+        valid_nonce = False
+    if not valid_nonce:
+        raise ValueError("schema-inference gate receipt must contain a valid receipt nonce")
+
+    generated_at = payload.get("generated_at")
+    if not isinstance(generated_at, str):
+        raise ValueError("schema-inference gate receipt generated_at is required")
+    try:
+        generated = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("schema-inference gate receipt generated_at is invalid") from exc
+    if generated.tzinfo is None:
+        raise ValueError("schema-inference gate receipt generated_at must include a timezone")
+    observed_at = now or datetime.now(UTC)
+    age_seconds = (observed_at - generated.astimezone(UTC)).total_seconds()
+    if age_seconds < -300 or age_seconds > RECEIPT_MAX_AGE_SECONDS:
+        raise ValueError("schema-inference gate receipt is stale or from the future")
+
+    location = ArchiveLocation.resolve(Path(archive_root).absolute())
+    expected_root = location.configured_root
+    recorded_root = payload.get("archive_root")
+    if not isinstance(recorded_root, str) or Path(recorded_root).absolute() != expected_root:
+        raise ValueError("schema-inference gate receipt targets a different archive")
+    try:
+        expected_identity_digest = ArchiveIdentity.resolve_location(location).authority_identity_digest
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise ValueError(f"unable to resolve target archive identity: {exc}") from exc
+    if payload.get("archive_identity_digest") != expected_identity_digest:
+        raise ValueError("schema-inference gate receipt archive identity is stale or mismatched")
+
+    sample_limit = payload.get("sample_limit")
+    if not isinstance(sample_limit, int) or isinstance(sample_limit, bool) or sample_limit <= 0:
+        raise ValueError("schema-inference gate receipt sample_limit is invalid")
+    input_paths = payload.get("input_paths")
+    expected_input_paths = {
+        "archive_root": str(expected_root),
+        "source_db": str(expected_root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename),
+        "active_index_db": str(location.active_index_path),
+        "receipt": str(Path(str(input_paths.get("receipt"))).absolute())
+        if isinstance(input_paths, Mapping) and isinstance(input_paths.get("receipt"), str)
+        else None,
+    }
+    if not isinstance(input_paths, Mapping) or any(
+        input_paths.get(key) != value for key, value in expected_input_paths.items() if key != "receipt"
+    ):
+        raise ValueError("schema-inference gate receipt input paths are not bound to the configured archive")
+
+    try:
+        live_schema_identity = _tier_schema_identity(expected_root, location)
+        with open_readonly_connection(expected_root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename) as source:
+            referenced_hashes = _referenced_blob_hashes(source)
+        live_source_gates = _run_source_gates(
+            expected_root, index_path=location.active_index_path, sample_limit=sample_limit
+        )
+        live_query_results = _as_dict(live_source_gates.get("gates"))
+        live_duplicate_gate = live_source_gates.get("duplicate_gate")
+        if isinstance(live_duplicate_gate, Mapping):
+            live_query_results["zero-unexplained-byte-duplicates"] = dict(live_duplicate_gate)
+        live_full_blob = _full_blob_hash_evidence(expected_root, referenced_hashes=referenced_hashes)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise ValueError(f"unable to recompute schema-inference gate evidence: {exc}") from exc
+    if payload.get("schema_identity") != live_schema_identity or payload.get("source_schema_identity") != _as_dict(
+        _as_dict(live_schema_identity.get("tiers")).get("source")
+    ):
+        raise ValueError("schema-inference gate receipt schema evidence is stale or mismatched")
+    if payload.get("query_results") != live_query_results:
+        raise ValueError("schema-inference gate receipt hard-gate query results changed")
+    if payload.get("source_denominators") != live_source_gates.get("source_counts", {}):
+        raise ValueError("schema-inference gate receipt source denominators changed")
+    if payload.get("blob_denominators") != live_source_gates.get("blob_denominators", {}):
+        raise ValueError("schema-inference gate receipt blob denominators changed")
+    recorded_ground_truth = payload.get("ground_truth_inputs")
+    recorded_origins = recorded_ground_truth.get("origins") if isinstance(recorded_ground_truth, Mapping) else None
+    live_ground_truth_roots: dict[str, tuple[Path, ...]] = {}
+    if isinstance(recorded_origins, Mapping):
+        for origin, raw_evidence in recorded_origins.items():
+            if not isinstance(origin, str) or not isinstance(raw_evidence, Mapping):
+                continue
+            raw_roots = raw_evidence.get("declared_roots")
+            if isinstance(raw_roots, list) and all(isinstance(path, str) for path in raw_roots):
+                live_ground_truth_roots[origin] = tuple(Path(path) for path in raw_roots)
+    live_ground_truth = _ground_truth_evidence(
+        expected_root,
+        index_path=location.active_index_path,
+        source_counts=cast(Mapping[str, Mapping[str, int]], live_source_gates.get("source_counts", {})),
+        roots=live_ground_truth_roots,
+    )
+    if payload.get("ground_truth_inputs") != live_ground_truth:
+        raise ValueError("schema-inference gate receipt ground-truth evidence changed")
+    try:
+        live_fidelity = _fidelity_evidence(
+            verify_archive(expected_root, checks=CORPUS_FIDELITY_CHECKS, sample_limit=sample_limit)
+        )
+    except Exception as exc:
+        raise ValueError(f"unable to recompute schema-inference corpus fidelity: {exc}") from exc
+    fidelity_keys = ("passed", "reasons", "typed_residuals", "denominators")
+    recorded_fidelity = payload.get("corpus_fidelity")
+    if not isinstance(recorded_fidelity, Mapping) or any(
+        recorded_fidelity.get(key) != live_fidelity.get(key) for key in fidelity_keys
+    ):
+        raise ValueError("schema-inference gate receipt corpus-fidelity evidence changed")
+    if payload.get("ground_truth_denominators") != live_fidelity.get("denominators"):
+        raise ValueError("schema-inference gate receipt ground-truth denominators changed")
+
+    full_blob = payload.get("full_blob_hash_verification")
+    if not isinstance(full_blob, Mapping) or full_blob.get("passed") is not True:
+        raise ValueError("schema-inference gate receipt lacks an explicit full_blob_hash_verification PASS")
+    verifier = full_blob.get("verifier")
+    if (
+        not isinstance(verifier, Mapping)
+        or verifier.get("identity") != "polylogue.storage.blob_store.BlobStore.verify_all"
+    ):
+        raise ValueError("schema-inference gate receipt lacks the authoritative full blob verifier")
+    before = full_blob.get("before_snapshot")
+    after = full_blob.get("after_snapshot")
+    if (
+        not isinstance(before, Mapping)
+        or not isinstance(after, Mapping)
+        or not isinstance(before.get("digest"), str)
+        or before.get("digest") != after.get("digest")
+        or full_blob.get("failures") != []
+        or full_blob.get("missing_references") != []
+        or full_blob.get("errors") != []
+    ):
+        raise ValueError("schema-inference gate receipt full blob verification evidence is incomplete")
+    if payload.get("hard_gate_evidence_digest") != schema_inference_hard_gate_evidence_digest(
+        live_query_results, live_full_blob
+    ):
+        raise ValueError("schema-inference gate receipt hard-gate evidence digest does not match live evidence")
+
+    query_results = payload.get("query_results")
+    if (
+        not isinstance(query_results, Mapping)
+        or not query_results
+        or any(not isinstance(result, Mapping) or result.get("passed") is not True for result in query_results.values())
+    ):
+        raise ValueError("schema-inference gate receipt contains a non-passing pristine query gate")
+    corpus_fidelity = payload.get("corpus_fidelity")
+    ground_truth = payload.get("ground_truth_inputs")
+    if not isinstance(corpus_fidelity, Mapping) or corpus_fidelity.get("passed") is not True:
+        raise ValueError("schema-inference gate receipt corpus fidelity is not PASS")
+    if not isinstance(ground_truth, Mapping) or ground_truth.get("passed") is not True:
+        raise ValueError("schema-inference gate receipt ground truth is not PASS")
+    if payload.get("pass_fail_reasons") != []:
+        raise ValueError("schema-inference gate receipt contains pass/fail reasons")
+    return schema_inference_gate_receipt_digest(payload)
+
+
 def _int_or_zero(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
@@ -1609,7 +1834,7 @@ def _parse_receipt_time(value: object) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def validate_schema_inference_gate_receipt(
+def _validate_schema_inference_gate_path(
     receipt_path: Path,
     *,
     archive_root: Path,
@@ -1665,12 +1890,33 @@ def validate_schema_inference_gate_receipt(
     return payload
 
 
+def validate_schema_inference_gate_receipt(
+    payload_or_path: Mapping[str, object] | Path,
+    *,
+    archive_root: Path,
+    now: datetime | None = None,
+) -> str | dict[str, object]:
+    """Validate either an in-memory gate payload or a receipt path.
+
+    Schema commit and inferred-corpus callers already hold the parsed payload,
+    while the CLI schema-generation route owns a receipt path. Both routes use
+    the same authoritative validation contract.
+    """
+
+    if isinstance(payload_or_path, Path):
+        return _validate_schema_inference_gate_path(payload_or_path, archive_root=archive_root, now=now)
+    return _validate_schema_inference_gate_payload(payload_or_path, archive_root=archive_root, now=now)
+
+
 @contextmanager
 def authorize_schema_generation(archive_root: Path, receipt_path: Path) -> Iterator[dict[str, object]]:
     """Hold quiescence for one fresh schema operation or compatible short sequence."""
 
     with schema_inference_quiescence(archive_root):
-        yield validate_schema_inference_gate_receipt(receipt_path, archive_root=archive_root)
+        yield cast(
+            dict[str, object],
+            validate_schema_inference_gate_receipt(receipt_path, archive_root=archive_root),
+        )
 
 
 def _run_schema_inference_gate_locked(
@@ -1781,6 +2027,7 @@ def _run_schema_inference_gate_locked(
         "gate_version": GATE_VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
         "receipt_nonce": uuid4().hex,
+        "sample_limit": sample_limit,
         "verdict": "PASS" if not reasons and passed_hard_gates and schema_identity_ok else "FAIL",
         "archive_root": str(root),
         "archive_identity": archive_receipt_identity,
@@ -1817,6 +2064,10 @@ def _run_schema_inference_gate_locked(
         },
         "pass_fail_reasons": reasons,
     }
+    payload["hard_gate_evidence_digest"] = schema_inference_hard_gate_evidence_digest(
+        cast(Mapping[str, object], payload["query_results"]),
+        cast(Mapping[str, object], full_blob_hash_verification),
+    )
     _write_json(
         safe_receipt_path,
         payload,
@@ -1847,12 +2098,15 @@ __all__ = [
     "DEFAULT_SAMPLE_LIMIT",
     "GROUND_TRUTH_INPUTS",
     "RECEIPT_FILENAME",
+    "RECEIPT_MAX_AGE_SECONDS",
     "RECEIPT_SCHEMA",
     "RECEIPT_CLOCK_SKEW",
     "RECEIPT_TTL",
     "SCHEMA_INFERENCE_RECEIPT_ENV",
     "SchemaInferenceGateError",
     "SchemaInferenceGateResult",
+    "schema_inference_gate_receipt_digest",
+    "schema_inference_hard_gate_evidence_digest",
     "rebuild_source_revision_snapshot",
     "resolve_schema_inference_receipt_reference",
     "authorize_schema_generation",

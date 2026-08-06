@@ -18,10 +18,6 @@ from pathlib import Path
 
 from polylogue.cli.shared.schema_command_support import build_schema_privacy_config
 from polylogue.config import get_config
-from polylogue.maintenance.schema_inference_gate import (
-    authorize_schema_generation,
-    resolve_schema_inference_archive_root,
-)
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
 
@@ -61,6 +57,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--privacy-config", type=Path, default=None, help="Path to TOML privacy config overrides.")
     parser.add_argument(
+        "--schema-inference-gate-receipt",
+        type=Path,
+        required=True,
+        help="Accepted PASS receipt from devtools verify schema-inference-gate.",
+    )
+    parser.add_argument(
         "--dry-run",
         "--check",
         dest="dry_run",
@@ -68,11 +70,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Preview what a commit would change without writing to --output-dir.",
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON.")
-    parser.add_argument(
-        "--schema-inference-receipt",
-        type=Path,
-        help="Fresh authoritative PASS receipt from devtools verify schema-inference-gate.",
-    )
     return parser
 
 
@@ -91,24 +88,26 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = args.output_dir if args.output_dir is not None else DEFAULT_OUTPUT_DIR
 
     config = get_config()
-    if not args.dry_run and args.schema_inference_receipt is None:
-        print("schema-commit: --schema-inference-receipt is required when persisting schema packages", file=sys.stderr)
+    try:
+        result = commit_provider_schema(
+            SchemaCommitRequest(
+                provider=str(args.provider),
+                output_dir=output_dir,
+                archive_root=config.archive_root,
+                db_path=config.db_path,
+                max_samples=args.max_samples,
+                privacy_config=privacy_config,
+                full_corpus=bool(args.full_corpus),
+                dry_run=bool(args.dry_run),
+                schema_inference_gate_receipt_path=args.schema_inference_gate_receipt,
+            )
+        )
+    except ValueError as exc:
+        if args.json:
+            print(json.dumps({"provider": str(args.provider), "success": False, "error": str(exc)}, sort_keys=True))
+        else:
+            print(f"schema-commit: {exc}", file=sys.stderr)
         return 1
-    request = SchemaCommitRequest(
-        provider=str(args.provider),
-        output_dir=output_dir,
-        db_path=config.db_path,
-        max_samples=args.max_samples,
-        privacy_config=privacy_config,
-        full_corpus=bool(args.full_corpus),
-        dry_run=bool(args.dry_run),
-    )
-    if args.dry_run:
-        result = commit_provider_schema(request)
-    else:
-        archive_root = resolve_schema_inference_archive_root(config, fallback_db_path=config.db_path)
-        with authorize_schema_generation(archive_root, args.schema_inference_receipt):
-            result = commit_provider_schema(request)
 
     if not result.success:
         error = result.generation.error or "Schema generation failed"
@@ -124,6 +123,10 @@ def main(argv: list[str] | None = None) -> int:
         mode = "DRY RUN (no files written)" if result.dry_run else f"committed to {output_dir}"
         print(f"schema-commit: {result.provider} -- {mode}")
         print(f"  sample_count={result.generation.sample_count}")
+        if result.handoff is not None:
+            print(f"  handoff_digest={result.handoff.receipt_digest}")
+            if result.handoff_path is not None:
+                print(f"  handoff_path={result.handoff_path}")
         for version_report in result.versions:
             flags = []
             if version_report.narrowed_paths:
