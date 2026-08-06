@@ -23,6 +23,7 @@ REQUIRED_TOPOLOGY_LINK_COLUMNS = frozenset(
     {"dst_native_id", "evidence_json", "link_type", "method", "resolved_dst_session_id", "status"}
 )
 TOPOLOGY_EFFECTIVE_STATES = frozenset({"resolved", "unresolved", "repaired", "quarantined"})
+_SNAPSHOT_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +46,7 @@ def _snapshot_identity(index_db: Path) -> dict[str, Any]:
             files.append({"path": str(path), "present": False})
             continue
         stat = path.stat()
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest = _file_sha256(path)
         files.append(
             {
                 "path": str(path),
@@ -62,6 +63,14 @@ def _snapshot_identity(index_db: Path) -> dict[str, Any]:
         "files": files,
         "sha256": hashlib.sha256(encoded).hexdigest(),
     }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(_SNAPSHOT_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -151,6 +160,34 @@ def _scalar_int(conn: Connection, sql: str, params: Iterable[object] = ()) -> in
 
 def _table_columns(conn: Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _quarantine_evidence_counts(conn: Connection) -> tuple[int, int]:
+    """Count valid cycle evidence and malformed quarantine evidence separately."""
+    cycle_evidence_count = 0
+    malformed_count = 0
+    rows = conn.execute("SELECT evidence_json FROM session_links WHERE TRIM(status) = 'quarantined'").fetchall()
+    for (raw_evidence,) in rows:
+        try:
+            evidence = json.loads(raw_evidence)
+        except (TypeError, ValueError):
+            malformed_count += 1
+            continue
+        cycle_path = evidence.get("cycle_path") if isinstance(evidence, dict) else None
+        detected_at_ms = evidence.get("detected_at_ms") if isinstance(evidence, dict) else None
+        if (
+            isinstance(evidence, dict)
+            and evidence.get("reason") == "cycle_rejected"
+            and isinstance(cycle_path, list)
+            and len(cycle_path) >= 2
+            and all(isinstance(session_id, str) and session_id.strip() for session_id in cycle_path)
+            and isinstance(detected_at_ms, int)
+            and not isinstance(detected_at_ms, bool)
+        ):
+            cycle_evidence_count += 1
+        else:
+            malformed_count += 1
+    return cycle_evidence_count, malformed_count
 
 
 def _logical_session_count(conn: Connection) -> int:
@@ -310,13 +347,18 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
             "checked": False,
             "missing_columns": missing,
             "total": 0,
+            "raw_status_empty_count": 0,
             "empty_effective_status_count": 0,
             "empty_method_count": 0,
             "effective_status_counts": {},
             "method_counts": {},
             "unknown_effective_status_count": 0,
+            "unknown_effective_statuses": {},
             "cycle_evidence_count": 0,
+            "malformed_quarantine_evidence_count": 0,
             "quarantined_without_cycle_evidence": 0,
+            "quarantined_with_resolved_parent_count": 0,
+            "unresolved_count": 0,
             "unresolved_read_sample": {
                 "requested": sample_unresolved,
                 "unresolved_count": 0,
@@ -363,17 +405,18 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
     unknown_states = {
         state: count for state, count in effective_status_counts.items() if state not in TOPOLOGY_EFFECTIVE_STATES
     }
-    cycle_evidence_count = _scalar_int(
+    cycle_evidence_count, malformed_quarantine_evidence_count = _quarantine_evidence_counts(conn)
+    quarantined_count = effective_status_counts.get("quarantined", 0)
+    quarantined_without_cycle_evidence = max(0, quarantined_count - cycle_evidence_count)
+    quarantined_with_resolved_parent_count = _scalar_int(
         conn,
         """
         SELECT COUNT(*)
         FROM session_links
         WHERE TRIM(status) = 'quarantined'
-          AND json_extract(evidence_json, '$.reason') = 'cycle_rejected'
+          AND resolved_dst_session_id IS NOT NULL
         """,
     )
-    quarantined_count = effective_status_counts.get("quarantined", 0)
-    quarantined_without_cycle_evidence = max(0, quarantined_count - cycle_evidence_count)
     unresolved_read_sample = _topology_read_sample(conn, limit=sample_unresolved)
     return {
         "checked": True,
@@ -387,7 +430,9 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
         "unknown_effective_status_count": sum(unknown_states.values()),
         "unknown_effective_statuses": unknown_states,
         "cycle_evidence_count": cycle_evidence_count,
+        "malformed_quarantine_evidence_count": malformed_quarantine_evidence_count,
         "quarantined_without_cycle_evidence": quarantined_without_cycle_evidence,
+        "quarantined_with_resolved_parent_count": quarantined_with_resolved_parent_count,
         "unresolved_count": unresolved_read_sample["unresolved_count"],
         "unresolved_read_sample": unresolved_read_sample,
     }
@@ -501,6 +546,7 @@ def _sample_prefix_sharing(conn: Connection, limit: int, *, max_stored_messages:
             FROM session_links l
             LEFT JOIN messages m ON m.session_id = l.src_session_id
             WHERE l.inheritance = 'prefix-sharing'
+              AND COALESCE(TRIM(l.status), '') != 'quarantined'
             GROUP BY l.src_session_id
             HAVING stored_messages <= ?
         )
@@ -518,6 +564,7 @@ def _sample_prefix_sharing(conn: Connection, limit: int, *, max_stored_messages:
         JOIN sessions s ON s.session_id = l.src_session_id
         LEFT JOIN messages m ON m.session_id = l.src_session_id
         WHERE l.inheritance = 'prefix-sharing'
+          AND COALESCE(TRIM(l.status), '') != 'quarantined'
         GROUP BY l.src_session_id, s.origin, s.native_id, l.resolved_dst_session_id, l.branch_point_message_id
         HAVING stored_messages <= ?
         ORDER BY stored_messages ASC, l.src_session_id
@@ -655,10 +702,10 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
 def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
     index_db = (args.index_db or config.db_path).expanduser().resolve()
-    snapshot_before = _snapshot_identity(index_db)
     conn = open_readonly_connection(index_db)
     try:
         conn.execute("BEGIN")
+        snapshot_before = _snapshot_identity(index_db)
         index_schema_version = _user_version(conn)
         link_columns = _table_columns(conn, "session_links")
         missing_link_columns = sorted(REQUIRED_SESSION_LINK_COLUMNS - link_columns)
@@ -723,6 +770,14 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
             if topology["quarantined_without_cycle_evidence"]:
                 reasons.append(
                     f"{topology['quarantined_without_cycle_evidence']} quarantined topology links lack cycle evidence"
+                )
+            if topology["malformed_quarantine_evidence_count"]:
+                reasons.append(
+                    f"{topology['malformed_quarantine_evidence_count']} quarantined topology links have malformed evidence"
+                )
+            if topology["quarantined_with_resolved_parent_count"]:
+                reasons.append(
+                    f"{topology['quarantined_with_resolved_parent_count']} quarantined topology links still resolve a parent"
                 )
             if topology["unresolved_read_sample"]["status"] == "not_observed":
                 reasons.append(

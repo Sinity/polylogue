@@ -34,7 +34,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope, write_parsed_session_to_archive
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -128,6 +128,34 @@ def test_cross_ingest_cycle_quarantines_the_closing_edge(tmp_path: Path) -> None
     assert census["empty_method_count"] == 0
     assert census["effective_status_counts"] == {"quarantined": 1, "resolved": 1}
     assert census["cycle_evidence_count"] == 1
+    assert census["malformed_quarantine_evidence_count"] == 0
+    assert census["quarantined_with_resolved_parent_count"] == 0
+
+    valid_evidence = link["evidence_json"]
+    conn.execute("UPDATE session_links SET evidence_json = '{malformed' WHERE src_session_id = ?", (a_id,))
+    malformed = census_topology_links(conn, sample_unresolved=0)
+    assert malformed["cycle_evidence_count"] == 0
+    assert malformed["malformed_quarantine_evidence_count"] == 1
+    assert malformed["quarantined_without_cycle_evidence"] == 1
+
+    parent_message_id = conn.execute(
+        "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1", (b_id,)
+    ).fetchone()[0]
+    conn.execute(
+        """
+        UPDATE session_links
+        SET evidence_json = ?, resolved_dst_session_id = ?, branch_point_message_id = ?,
+            inheritance = 'prefix-sharing'
+        WHERE src_session_id = ?
+        """,
+        (valid_evidence, b_id, parent_message_id, a_id),
+    )
+    quarantined_read = read_archive_session_envelope(conn, a_id)
+    assert quarantined_read.parent_session_id is None
+    assert quarantined_read.lineage_inheritance == "none"
+    contradictory = census_topology_links(conn, sample_unresolved=0)
+    assert contradictory["quarantined_with_resolved_parent_count"] == 1
+    assert contradictory["cycle_evidence_count"] == 1
 
     # Anti-vacuity: the census must observe a production-row mutation rather
     # than merely restating the expected fixture shape.

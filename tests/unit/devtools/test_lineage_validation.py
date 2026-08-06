@@ -15,6 +15,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool = False) -> Path:
@@ -306,6 +307,7 @@ def test_lineage_validation_proves_writer_candidate_and_snapshot_identity(tmp_pa
     assert topology["effective_status_counts"] == {"resolved": 2, "unresolved": 1}
     assert topology["empty_effective_status_count"] == 0
     assert topology["empty_method_count"] == 0
+    assert topology["raw_status_empty_count"] == 3
     assert topology["method_counts"] == {"parser-parent": 3}
     assert topology["unresolved_read_sample"]["status"] == "safe"
     assert topology["unresolved_read_sample"]["sampled"] == 1
@@ -335,7 +337,10 @@ def test_lineage_validation_rejects_unobserved_unresolved_reader_sample(tmp_path
     assert "1 unresolved-parent links were not exercised through the reader" in report["verdict"]["reasons"]
 
 
-def test_lineage_validation_binds_explicit_candidate_and_mutation(tmp_path: Path) -> None:
+@pytest.mark.frozen_clock_modules("devtools.lineage_validation")
+def test_lineage_validation_receipt_reproduces_before_binding_mutation(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
     configured_root = tmp_path / "configured"
     candidate_root = tmp_path / "candidate"
     _make_index_db(configured_root)
@@ -343,7 +348,10 @@ def test_lineage_validation_binds_explicit_candidate_and_mutation(tmp_path: Path
 
     first = lineage_validation.build_report(_args(configured_root, index_db=candidate_db))
     assert first["index_db"] == str(candidate_db.resolve())
-    first_snapshot = first["snapshot_identity"]["before"]["sha256"]
+    unchanged = lineage_validation.build_report(_args(configured_root, index_db=candidate_db))
+    assert unchanged["captured_at"] == first["captured_at"] == frozen_clock.now().isoformat()
+    assert unchanged["snapshot_identity"] == first["snapshot_identity"]
+    assert unchanged["receipt_sha256"] == first["receipt_sha256"]
 
     with sqlite3.connect(candidate_db) as conn:
         conn.execute("UPDATE session_links SET method = 'changed' WHERE src_session_id = 'child'")
@@ -351,8 +359,23 @@ def test_lineage_validation_binds_explicit_candidate_and_mutation(tmp_path: Path
     second = lineage_validation.build_report(_args(configured_root, index_db=candidate_db))
 
     assert second["index_db"] == str(candidate_db.resolve())
-    assert second["snapshot_identity"]["before"]["sha256"] != first_snapshot
+    assert second["snapshot_identity"]["before"]["sha256"] != first["snapshot_identity"]["before"]["sha256"]
     assert second["receipt_sha256"] != first["receipt_sha256"]
+
+
+def test_lineage_validation_unchecked_census_has_checked_schema(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    with sqlite3.connect(db) as checked_conn:
+        checked = lineage_validation.census_topology_links(checked_conn, sample_unresolved=0)
+
+    missing_db = tmp_path / "missing.db"
+    with sqlite3.connect(missing_db) as missing_conn:
+        missing_conn.execute("CREATE TABLE session_links (src_session_id TEXT)")
+        unchecked = lineage_validation.census_topology_links(missing_conn, sample_unresolved=0)
+
+    assert unchecked["checked"] is False
+    assert set(unchecked) == set(checked)
 
 
 def test_lineage_validation_catches_empty_method_mutation(tmp_path: Path) -> None:
