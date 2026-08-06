@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
+import pytest
 from hypothesis import given
 
 from tests.infra.corpus_program import (
@@ -13,6 +18,7 @@ from tests.infra.corpus_program import (
     AttachmentArtifact,
     Converge,
     CorpusProgram,
+    CorpusProgramError,
     Crash,
     Duplicate,
     EmitHook,
@@ -24,6 +30,7 @@ from tests.infra.corpus_program import (
     Rebuild,
     Replace,
     Restart,
+    corpus_program_schedule_strategy,
     corpus_program_strategy,
 )
 
@@ -31,9 +38,11 @@ from tests.infra.corpus_program import (
 class RecordingRunner:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.acquired: list[RawArtifact] = []
 
     def acquire(self, artifact: RawArtifact) -> None:
         self.calls.append(f"acquire:{artifact.artifact_id}")
+        self.acquired.append(artifact)
 
     def emit_hook(self, hook: HookArtifact) -> None:
         self.calls.append(f"hook:{hook.hook_event_id}")
@@ -118,6 +127,30 @@ def test_composition_applies_transformations_in_declared_schedule() -> None:
     assert run.state.artifact("c").parent_artifact_id == "a"
 
 
+def test_mutations_reacquire_the_current_transformed_artifact() -> None:
+    attachment = AttachmentArtifact("att", "fixture.txt", "text/plain", b"bytes")
+    program = CorpusProgram(
+        operations=(
+            Acquire("acquire", _artifact("a", b"one")),
+            Append("append", "a", b"two"),
+            Replace("replace", "a", b"replacement"),
+            Duplicate("duplicate", "a", "b"),
+            Fork("fork", "a", "c", "session-c"),
+            Attach("attach", "a", attachment),
+        )
+    )
+    runner = RecordingRunner()
+
+    program.run(runner)
+
+    assert [artifact.artifact_id for artifact in runner.acquired] == ["a", "a", "a", "b", "c", "a"]
+    assert runner.acquired[1].payload == b"onetwo"
+    assert runner.acquired[2].payload == b"replacement"
+    assert runner.acquired[3].payload == b"replacement"
+    assert runner.acquired[4].parent_artifact_id == "a"
+    assert runner.acquired[5].attachments == (attachment,)
+
+
 def test_adversarial_schedule_is_observable_and_cannot_be_ignored() -> None:
     program = CorpusProgram(
         operations=(Acquire("a-op", _artifact("a")), Acquire("b-op", _artifact("b"))),
@@ -135,6 +168,19 @@ def test_generated_programs_have_shrinkable_canonical_round_trips(program: Corpu
     assert CorpusProgram.from_json(program.to_json()) == program
 
 
+@given(corpus_program_strategy(max_operations=8))
+def test_generated_programs_execute_from_evolving_acquired_state(program: CorpusProgram) -> None:
+    run = program.run()
+
+    assert run.state.applied_operation_ids == run.schedule
+    assert set(run.schedule) == {operation.operation_id for operation in program.operations}
+
+
+@given(corpus_program_schedule_strategy(("op-a", "op-b", "op-c")))
+def test_schedule_strategy_returns_operation_id_permutations(schedule: tuple[str, ...]) -> None:
+    assert set(schedule) == {"op-a", "op-b", "op-c"}
+
+
 def test_production_route_composes_acquire_append_and_converge(
     workspace_env: dict[str, Path],
 ) -> None:
@@ -145,7 +191,6 @@ def test_production_route_composes_acquire_append_and_converge(
         operations=(
             Acquire("acquire-v1", _artifact("session", initial)),
             Append("append", "session", delta),
-            Acquire("acquire-v2", _artifact("session", initial + delta)),
             Converge("converge"),
         )
     )
@@ -164,3 +209,96 @@ def test_production_route_composes_acquire_append_and_converge(
         message_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     assert session_count == 1
     assert message_count >= 3
+
+
+def test_production_route_carries_attachment_identity_metadata_and_bytes(
+    workspace_env: dict[str, Path],
+) -> None:
+    fixture_path = Path(__file__).parents[1] / "data" / "codex_event_stream" / "text_only_stream.jsonl"
+    attachment = AttachmentArtifact("att-corpus", "fixture.txt", "text/plain", b"attachment bytes")
+    program = CorpusProgram(
+        operations=(
+            Acquire("acquire", _artifact("session", fixture_path.read_bytes())),
+            Attach("attach", "session", attachment),
+            Converge("converge"),
+        )
+    )
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+
+    program.run(runtime)
+
+    with sqlite3.connect(runtime.archive_root / "index.db") as conn:
+        row = conn.execute(
+            "SELECT a.display_name, a.media_type, a.byte_count, a.acquisition_status, a.blob_hash, n.native_id "
+            "FROM attachments AS a "
+            "JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id "
+            "JOIN attachment_native_ids AS n ON n.ref_id = r.ref_id AND n.id_kind = 'attachment' "
+            "WHERE n.native_id = ?",
+            (attachment.attachment_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[:4] == (attachment.name, attachment.mime_type, len(attachment.payload), "acquired")
+    assert row[5] == attachment.attachment_id
+    blob_hash = row[4]
+    assert isinstance(blob_hash, bytes)
+    assert len(blob_hash) == 32
+    assert runtime._raw_ids["session"]
+
+
+def test_production_route_persists_canonical_hook_envelope(workspace_env: dict[str, Path]) -> None:
+    fixture_path = Path(__file__).parents[1] / "data" / "codex_event_stream" / "text_only_stream.jsonl"
+    hook = _hook()
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    runtime.acquire(_artifact("session", fixture_path.read_bytes()))
+
+    runtime.emit_hook(hook)
+
+    with sqlite3.connect(runtime.archive_root / "source.db") as conn:
+        origin, payload_json = conn.execute(
+            "SELECT origin, payload_json FROM raw_hook_events WHERE hook_event_id = ?",
+            (hook.hook_event_id,),
+        ).fetchone()
+    payload = json.loads(payload_json)
+    assert origin == "claude-code-session"
+    assert payload == {
+        "event_id": hook.hook_event_id,
+        "event_type": hook.event_type,
+        "observed_at_ms": hook.observed_at_ms,
+        "payload": {"session_id": hook.session_native_id},
+        "provider": "claude-code",
+        "session_id": hook.session_native_id,
+        "timestamp": "2025-01-01T00:00:00Z",
+    }
+
+
+def test_promote_reenters_owned_rebuild_boundary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    runtime = ProductionCorpusRuntime(tmp_path / "archive")
+    runtime._rebuild_receipt = SimpleNamespace(transaction={"operation_id": "rebuild-op"})  # type: ignore[assignment]
+    calls: list[object] = []
+
+    async def resume(request: object) -> object:
+        calls.append(request)
+        return object()
+
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source", resume)
+
+    result = runtime.promote()
+
+    assert result is runtime._rebuild_receipt
+    request = cast(Any, calls[0])
+    assert request.operation_id == "rebuild-op"
+    assert request.promote is True
+
+
+def test_emit_hook_refuses_non_object_payload_with_named_reason(tmp_path: Path) -> None:
+    runtime = ProductionCorpusRuntime(tmp_path / "archive")
+    with pytest.raises(CorpusProgramError, match="EmitHook refused: payload is not a JSON object"):
+        runtime.emit_hook(
+            HookArtifact(
+                hook_event_id="bad-hook",
+                provider="codex",
+                event_type="SessionStart",
+                session_native_id="session-1",
+                payload=b"[]",
+            )
+        )

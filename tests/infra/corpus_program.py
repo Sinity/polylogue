@@ -14,6 +14,7 @@ import base64
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -329,7 +330,10 @@ class Append(_Operation):
         artifact = state.artifact(self.artifact_id).with_payload(
             state.artifact(self.artifact_id).payload + self.payload_delta
         )
-        return state.replace_artifact(artifact).mark(self.operation_id)
+        next_state = state.replace_artifact(artifact).mark(self.operation_id)
+        if runner is not None:
+            runner.acquire(next_state.artifact(self.artifact_id))
+        return next_state
 
     def to_dict(self) -> JSONDocument:
         return {**super().to_dict(), "artifact_id": self.artifact_id, "payload_delta_b64": _b64(self.payload_delta)}
@@ -342,9 +346,11 @@ class Replace(_Operation):
     kind: OperationKind = field(default=OperationKind.REPLACE, init=False)
 
     def apply(self, state: CorpusState, runner: CorpusRunner | None) -> CorpusState:
-        return state.replace_artifact(state.artifact(self.artifact_id).with_payload(self.payload)).mark(
-            self.operation_id
-        )
+        artifact = state.artifact(self.artifact_id).with_payload(self.payload)
+        next_state = state.replace_artifact(artifact).mark(self.operation_id)
+        if runner is not None:
+            runner.acquire(next_state.artifact(self.artifact_id))
+        return next_state
 
     def to_dict(self) -> JSONDocument:
         return {**super().to_dict(), "artifact_id": self.artifact_id, "payload_b64": _b64(self.payload)}
@@ -364,7 +370,10 @@ class Duplicate(_Operation):
             artifact_id=self.new_artifact_id,
             source_path=self.new_source_path or f"duplicates/{self.new_artifact_id}.jsonl",
         )
-        return state.add_artifact(copy).mark(self.operation_id)
+        next_state = state.add_artifact(copy).mark(self.operation_id)
+        if runner is not None:
+            runner.acquire(next_state.artifact(self.new_artifact_id))
+        return next_state
 
     def to_dict(self) -> JSONDocument:
         return {
@@ -383,7 +392,7 @@ def _fork_payload(payload: bytes, new_session_id: str, parent_session_id: str) -
     for line in lines:
         try:
             value = json.loads(line)
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             output.append(line)
             continue
         if isinstance(value, dict):
@@ -421,7 +430,10 @@ class Fork(_Operation):
             payload=_fork_payload(source.payload, self.new_session_id, parent_id),
             metadata={**source.metadata, "session_id": self.new_session_id, "parent_session_id": parent_id},
         )
-        return state.add_artifact(child).mark(self.operation_id)
+        next_state = state.add_artifact(child).mark(self.operation_id)
+        if runner is not None:
+            runner.acquire(next_state.artifact(self.new_artifact_id))
+        return next_state
 
     def to_dict(self) -> JSONDocument:
         return {
@@ -439,9 +451,11 @@ class Attach(_Operation):
     kind: OperationKind = field(default=OperationKind.ATTACH, init=False)
 
     def apply(self, state: CorpusState, runner: CorpusRunner | None) -> CorpusState:
-        return state.replace_artifact(state.artifact(self.artifact_id).with_attachment(self.attachment)).mark(
-            self.operation_id
-        )
+        artifact = state.artifact(self.artifact_id).with_attachment(self.attachment)
+        next_state = state.replace_artifact(artifact).mark(self.operation_id)
+        if runner is not None:
+            runner.acquire(next_state.artifact(self.artifact_id))
+        return next_state
 
     def to_dict(self) -> JSONDocument:
         return {**super().to_dict(), "artifact_id": self.artifact_id, "attachment": self.attachment.to_dict()}
@@ -729,16 +743,118 @@ def operation_strategy(*, artifact_ids: Sequence[str] = ("a", "b")) -> Any:
 
 
 def corpus_program_strategy(*, max_operations: int = 8) -> Any:
-    """Generate programs with unique operation ids and a shrinkable schedule."""
+    """Generate executable programs from stateful operation construction."""
     from hypothesis import strategies as st
 
-    return st.lists(operation_strategy(), min_size=1, max_size=max_operations).map(
-        lambda operations: CorpusProgram(
-            operations=tuple(
-                replace(operation, operation_id=f"op-{index}") for index, operation in enumerate(operations)
-            ),
+    @st.composite
+    def _program(draw: Any) -> CorpusProgram:
+        operation_count = draw(st.integers(min_value=1, max_value=max_operations))
+        operation_ids = tuple(f"op-{index}" for index in range(operation_count))
+        schedule = draw(corpus_program_schedule_strategy(operation_ids))
+        state = CorpusState()
+        operations_by_id: dict[str, CorpusOperation] = {}
+        crashed = False
+        rebuild_ready = False
+
+        for step, operation_id in enumerate(schedule):
+            operation: CorpusOperation
+            if not state.artifacts:
+                operation = Acquire(
+                    operation_id,
+                    RawArtifact(
+                        artifact_id="artifact-0",
+                        payload=draw(st.binary(max_size=96)),
+                        source_path="sources/artifact-0.jsonl",
+                        metadata={"session_id": "session-0"},
+                    ),
+                )
+            elif crashed:
+                operation = Restart(operation_id)
+            else:
+                artifact_ids = tuple(artifact.artifact_id for artifact in state.artifacts)
+                choices = ["append", "replace", "duplicate", "fork", "attach", "hook", "crash", "converge", "rebuild"]
+                if rebuild_ready:
+                    choices.append("promote")
+                choice = draw(st.sampled_from(choices))
+                if choice == "append":
+                    operation = Append(operation_id, draw(st.sampled_from(artifact_ids)), draw(st.binary(max_size=32)))
+                elif choice == "replace":
+                    operation = Replace(operation_id, draw(st.sampled_from(artifact_ids)), draw(st.binary(max_size=96)))
+                elif choice == "duplicate":
+                    new_artifact_id = f"artifact-{len(state.artifacts)}"
+                    operation = Duplicate(operation_id, draw(st.sampled_from(artifact_ids)), new_artifact_id)
+                elif choice == "fork":
+                    new_artifact_id = f"artifact-{len(state.artifacts)}"
+                    operation = Fork(
+                        operation_id,
+                        draw(st.sampled_from(artifact_ids)),
+                        new_artifact_id,
+                        f"session-{len(state.artifacts)}",
+                    )
+                elif choice == "attach":
+                    operation = Attach(
+                        operation_id,
+                        draw(st.sampled_from(artifact_ids)),
+                        AttachmentArtifact(
+                            attachment_id=f"attachment-{step}",
+                            name="fixture.bin",
+                            mime_type="application/octet-stream",
+                            payload=draw(st.binary(max_size=32)),
+                        ),
+                    )
+                elif choice == "hook":
+                    operation = EmitHook(
+                        operation_id,
+                        HookArtifact(
+                            hook_event_id=f"hook-{step}",
+                            provider="codex",
+                            event_type="session.created",
+                            session_native_id="session-0",
+                            payload=b"{}",
+                        ),
+                    )
+                elif choice == "crash":
+                    operation = Crash(operation_id)
+                elif choice == "converge":
+                    operation = Converge(operation_id)
+                elif choice == "rebuild":
+                    operation = Rebuild(operation_id)
+                    rebuild_ready = True
+                else:
+                    operation = Promote(operation_id)
+                    rebuild_ready = False
+
+            operations_by_id[operation_id] = operation
+            state = operation.apply(state, None)
+            if operation.kind is OperationKind.ACQUIRE or operation.kind in {
+                OperationKind.APPEND,
+                OperationKind.REPLACE,
+                OperationKind.DUPLICATE,
+                OperationKind.FORK,
+                OperationKind.ATTACH,
+            }:
+                rebuild_ready = False
+            if operation.kind is OperationKind.CRASH:
+                crashed = True
+            elif operation.kind is OperationKind.RESTART:
+                crashed = False
+
+        return CorpusProgram(
+            operations=tuple(operations_by_id[operation_id] for operation_id in operation_ids),
+            schedule=schedule,
         )
-    )
+
+    return _program()
+
+
+def corpus_program_schedule_strategy(operation_ids: Sequence[str]) -> Any:
+    """Return a strategy for permutations of the supplied operation IDs."""
+    from hypothesis import strategies as st
+
+    ids = tuple(operation_ids)
+    if len(set(ids)) != len(ids):
+        raise CorpusProgramError("operation ids must be unique")
+    return st.permutations(ids)
 
 
 class ProductionCorpusRuntime:
@@ -764,15 +880,17 @@ class ProductionCorpusRuntime:
         from polylogue.storage.sqlite import SQLiteBackend
 
         path = self.source_root / _validate_relative_path(artifact.source_path)
+        if artifact.attachments and path.suffix.lower() in {".jsonl", ".ndjson"}:
+            path = path.with_suffix(".json")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(artifact.payload)
+        wire_payload = _attachment_wire_payload(artifact) if artifact.attachments else artifact.payload
+        path.write_bytes(wire_payload)
+        source_name = "browser-capture" if artifact.attachments else artifact.source_name
 
         async def run() -> object:
             backend = SQLiteBackend(db_path=self.archive_root / "index.db")
             try:
-                result = await AcquisitionService(backend).acquire_sources(
-                    [Source(name=artifact.source_name, path=path)]
-                )
+                result = await AcquisitionService(backend).acquire_sources([Source(name=source_name, path=path)])
                 self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids)
                 self._source_paths[artifact.artifact_id] = path
                 return result
@@ -786,23 +904,25 @@ class ProductionCorpusRuntime:
     def emit_hook(self, hook: HookArtifact) -> object:
         self._ensure_running()
         from polylogue.core.enums import Provider
+        from polylogue.core.sources import origin_from_provider
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 
         provider = Provider.from_string(hook.provider)
-        payload = hook.payload
+        event_payload = _normalized_hook_envelope(hook, provider)
+        wire_payload = _canonical_json(event_payload).encode("utf-8")
         with ArchiveStore.open_existing(self.archive_root, read_only=False) as archive:
             result = archive.write_hook_event(
                 provider=provider,
-                payload=payload,
+                payload=wire_payload,
                 source_path=hook.source_path,
                 acquired_at_ms=hook.observed_at_ms,
                 hook_event=ArchiveHookEvent(
                     hook_event_id=hook.hook_event_id,
-                    origin=provider.value,
+                    origin=origin_from_provider(provider),
                     source_path=hook.source_path,
                     event_type=hook.event_type,
-                    payload={"session_id": hook.session_native_id},
+                    payload=event_payload,
                     observed_at_ms=hook.observed_at_ms,
                     native_id=hook.hook_event_id,
                     session_native_id=hook.session_native_id,
@@ -872,15 +992,91 @@ class ProductionCorpusRuntime:
         self._ensure_running()
         if self._rebuild_receipt is None:
             raise CorpusProgramError("Promote requires a preceding Rebuild")
-        from polylogue.storage.index_generation import IndexGenerationStore
+        transaction = self._rebuild_receipt.transaction
+        if not isinstance(transaction, dict):
+            raise CorpusProgramError("Rebuild did not return a durable rebuild transaction")
+        operation_id = transaction.get("operation_id")
+        if not isinstance(operation_id, str):
+            raise CorpusProgramError("Rebuild transaction has no operation id")
+        from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source
 
-        generation_id = self._rebuild_receipt.generation.get("generation_id")
-        if not isinstance(generation_id, str):
-            raise CorpusProgramError("Rebuild did not return an inactive generation")
-        store = IndexGenerationStore.for_archive_root(self.archive_root)
-        result = store.promote(store.load(generation_id))
+        async def run() -> RebuildIndexReceipt:
+            return await rebuild_index_from_source(
+                RebuildIndexRequest(archive_root=self.archive_root, operation_id=operation_id, promote=True)
+            )
+
+        result = asyncio.run(run())
+        self._rebuild_receipt = result
         self.last_results.append(result)
         return result
+
+
+def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
+    """Encode corpus attachments through the existing browser-capture route."""
+    from polylogue.core.enums import Provider
+
+    provider = Provider.from_string(artifact.source_name)
+    session_id = artifact.metadata.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        session_id = artifact.artifact_id
+    attachment_payload = [
+        {
+            "provider_attachment_id": attachment.attachment_id,
+            "name": attachment.name,
+            "mime_type": attachment.mime_type,
+            "size_bytes": len(attachment.payload),
+            "inline_base64": _b64(attachment.payload),
+            "provider_meta": {"corpus_artifact_id": artifact.artifact_id},
+        }
+        for attachment in artifact.attachments
+    ]
+    envelope: dict[str, object] = {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "capture_id": f"corpus:{artifact.artifact_id}",
+        "source": "browser-extension",
+        "provenance": {
+            "source_url": "https://corpus.invalid/session",
+            "captured_at": "2025-01-01T00:00:00+00:00",
+            "adapter_name": "polylogue-corpus-program",
+            "capture_mode": "snapshot",
+        },
+        "session": {
+            "provider": provider.value,
+            "provider_session_id": session_id,
+            "title": artifact.artifact_id,
+            "turns": [
+                {
+                    "provider_turn_id": f"{session_id}:corpus",
+                    "role": "user",
+                    "text": f"Corpus artifact {artifact.artifact_id}",
+                    "ordinal": 0,
+                    "attachments": attachment_payload,
+                }
+            ],
+        },
+        "provider_meta": {"original_payload_b64": _b64(artifact.payload)},
+    }
+    return _canonical_json(envelope).encode("utf-8")
+
+
+def _normalized_hook_envelope(hook: HookArtifact, provider: Any) -> dict[str, object]:
+    try:
+        inner_payload = json.loads(hook.payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CorpusProgramError("EmitHook refused: payload is not a JSON object") from exc
+    if not isinstance(inner_payload, dict):
+        raise CorpusProgramError("EmitHook refused: payload is not a JSON object")
+    timestamp = datetime.fromtimestamp(hook.observed_at_ms / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "event_id": hook.hook_event_id,
+        "event_type": hook.event_type,
+        "session_id": hook.session_native_id,
+        "timestamp": timestamp,
+        "provider": provider.value,
+        "payload": dict(inner_payload),
+        "observed_at_ms": hook.observed_at_ms,
+    }
 
 
 __all__ = [
@@ -909,5 +1105,6 @@ __all__ = [
     "Replace",
     "Restart",
     "corpus_program_strategy",
+    "corpus_program_schedule_strategy",
     "operation_strategy",
 ]
