@@ -260,11 +260,20 @@ PATHOLOGY_ZOO_MANIFEST: tuple[PathologyZooMember, ...] = (
         ),
         PathologyZooCanaryEligibility.SESSION_BACKED,
         _invariant(
-            "the sanitized measured-shape cohort retains both raw revisions",
+            "the sanitized measured-shape cohort converges to one equivalent canonical revision",
             "source",
-            "SELECT COUNT(*) FROM raw_sessions WHERE native_id = ?",
+            """
+            SELECT CASE WHEN COUNT(*) = 2
+                AND COUNT(DISTINCT normalized_content_hash) = 1
+                AND SUM(decision = 'applied') = 1
+                AND SUM(decision = 'superseded_equivalent') = 1
+                THEN 1 ELSE 0 END
+            FROM raw_sessions AS r
+            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+            WHERE r.native_id = ?
+            """,
             ("9ed2056f-b415-4f51-b18e-5265f21a67bf",),
-            (2,),
+            (1,),
         ),
         evidence_note=(
             "Live export bytes were not recoverable outside the protected live archive. "
