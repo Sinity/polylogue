@@ -128,20 +128,22 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
                 raise MigrationError(f"cannot create durable-tier publication staging file: {path.parent}") from exc
             publication_descriptor = descriptor
             named_publication_path = Path(temporary_name)
-            os.fchmod(publication_descriptor, 0o600)
+            os.fchmod(descriptor, 0o600)
 
+        assert publication_descriptor is not None
+        descriptor = publication_descriptor
         source_offset = 0
         while source_offset < len(initialized_image):
             written_offset = 0
             chunk = initialized_image[source_offset : source_offset + 1024 * 1024]
             while written_offset < len(chunk):
-                written = os.write(publication_descriptor, chunk[written_offset:])
+                written = os.write(descriptor, chunk[written_offset:])
                 if written <= 0:
                     raise MigrationError("durable-tier publication copy made no progress")
                 written_offset += written
             source_offset += len(chunk)
-        os.fsync(publication_descriptor)
-        publication_metadata = os.fstat(publication_descriptor)
+        os.fsync(descriptor)
+        publication_metadata = os.fstat(descriptor)
         if (
             not stat.S_ISREG(publication_metadata.st_mode)
             or (not anonymous_unsupported and publication_metadata.st_nlink != 0)
@@ -150,14 +152,13 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             raise MigrationError(f"durable-tier publication image is incomplete: {path}")
         publication_identity = (publication_metadata.st_dev, publication_metadata.st_ino)
         if named_publication_path is not None:
-            os.close(publication_descriptor)
+            os.close(descriptor)
             publication_descriptor = None
         try:
             if named_publication_path is None:
                 # O_TMPFILE plus link(2) publishes one descriptor-backed inode
                 # without resolving a replaceable named staging path again.
-                assert publication_descriptor is not None
-                os.link(f"/proc/self/fd/{publication_descriptor}", path, follow_symlinks=True)
+                os.link(f"/proc/self/fd/{descriptor}", path, follow_symlinks=True)
             else:
                 # mkstemp created this same-directory name with O_EXCL and
                 # mode 0600. Closing it before link makes the fallback portable
