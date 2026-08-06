@@ -183,22 +183,24 @@ async def test_cross_ingest_cycle_quarantines_the_closing_edge_without_losing_pr
     assert unrelated["malformed_quarantine_evidence_count"] == 1
     assert unrelated["budget_exhausted_quarantine_evidence_count"] == 0
 
-    budget_evidence = json.dumps(
+    fabricated_cycle_evidence = json.dumps(
         {
             "reason": "cycle_rejected",
-            "cycle_path": [a_id, b_id, "...budget-exceeded"],
+            "cycle_path": [a_id, b_id, a_id],
             "detected_at_ms": 1,
         }
     )
+    conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE session_id = ?", (b_id,))
     conn.execute(
         "UPDATE session_links SET evidence_json = ? WHERE src_session_id = ?",
-        (budget_evidence, a_id),
+        (fabricated_cycle_evidence, a_id),
     )
-    budget_exhausted = census_topology_links(conn, sample_unresolved=0)
-    assert budget_exhausted["cycle_evidence_count"] == 0
-    assert budget_exhausted["malformed_quarantine_evidence_count"] == 0
-    assert budget_exhausted["budget_exhausted_quarantine_evidence_count"] == 1
-    assert budget_exhausted["quarantined_without_cycle_evidence"] == 1
+    fabricated = census_topology_links(conn, sample_unresolved=0)
+    assert fabricated["cycle_evidence_count"] == 0
+    assert fabricated["malformed_quarantine_evidence_count"] == 1
+    assert fabricated["budget_exhausted_quarantine_evidence_count"] == 0
+    assert fabricated["quarantined_without_cycle_evidence"] == 1
+    conn.execute("UPDATE sessions SET parent_session_id = ? WHERE session_id = ?", (a_id, b_id))
 
     parent_message_id = conn.execute(
         "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1", (b_id,)
@@ -259,6 +261,82 @@ def test_self_referential_edge_quarantines_without_touching_projection(tmp_path:
     assert (
         conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] is None
     )
+
+
+def test_over_budget_acyclic_walk_is_not_recorded_as_a_cycle_and_keeps_prefix(tmp_path: Path) -> None:
+    """The live writer must distinguish an indeterminate deep walk from a cycle.
+
+    Production dependencies: pre-slice cycle classification, outbound link
+    quarantine, and the synchronous composed reader. Mutation: returning a
+    cycle path at the walk budget records `cycle_rejected`; treating exhaustion
+    as acyclic slices the copied parent prefix and serves only the tail.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="deep-0",
+        title="deep parent",
+        messages=[_msg("p0", Role.USER, "copied parent prefix", 0)],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child_v1 = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="deep-child",
+        title="deep child",
+        messages=[_msg("c0", Role.USER, "original child", 0)],
+    )
+    child_id = write_parsed_session_to_archive(conn, child_v1)
+
+    for position in range(1024, 0, -1):
+        native_id = f"deep-{position}"
+        parent_session_id = None if position == 1024 else f"codex-session:deep-{position + 1}"
+        conn.execute(
+            """
+            INSERT INTO sessions(native_id, origin, parent_session_id, content_hash)
+            VALUES (?, 'codex-session', ?, ?)
+            """,
+            (native_id, parent_session_id, bytes(32)),
+        )
+    conn.execute(
+        "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+        ("codex-session:deep-1", parent_id),
+    )
+
+    child_v2 = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="deep-child",
+        title="deep child",
+        parent_session_provider_id="deep-0",
+        messages=[
+            _msg("copy-p0", Role.USER, "copied parent prefix", 0),
+            _msg("c1", Role.ASSISTANT, "child tail", 1),
+        ],
+    )
+    write_parsed_session_to_archive(conn, child_v2, force_replace=True)
+
+    link = _link_row(conn, child_id)
+    evidence = json.loads(link["evidence_json"])
+    assert link["status"] == TopologyEdgeStatus.QUARANTINED.value
+    assert evidence["reason"] == "cycle_walk_budget_exhausted"
+    assert "cycle_path" not in evidence
+    assert evidence["walk_budget"] == 1024
+    assert len(evidence["walk_path"]) == 1026
+    own_message_ids = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+            (child_id,),
+        ).fetchall()
+    ]
+    assert len(own_message_ids) == 2
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert [message.message_id for message in envelope.messages] == own_message_ids
+    census = census_topology_links(conn, sample_unresolved=0)
+    assert census["cycle_evidence_count"] == 0
+    assert census["malformed_quarantine_evidence_count"] == 0
+    assert census["budget_exhausted_quarantine_evidence_count"] == 1
+    assert census["quarantined_without_cycle_evidence"] == 1
 
 
 def test_diamond_dag_is_not_mistaken_for_a_cycle(tmp_path: Path) -> None:

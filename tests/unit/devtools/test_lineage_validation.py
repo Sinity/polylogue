@@ -427,14 +427,16 @@ def test_lineage_validation_rejects_budget_exhaustion_as_cycle_proof(tmp_path: P
             (
                 json.dumps(
                     {
-                        "reason": "cycle_rejected",
-                        "cycle_path": ["child", "parent", "...budget-exceeded"],
+                        "reason": "cycle_walk_budget_exhausted",
+                        "walk_path": ["child", "parent", "fresh"],
+                        "walk_budget": 1,
                         "detected_at_ms": 1,
                     }
                 ),
             ),
         )
         conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE session_id = 'child'")
+        conn.execute("UPDATE sessions SET parent_session_id = 'fresh' WHERE session_id = 'parent'")
 
     report = lineage_validation.build_report(_args(archive_root))
 

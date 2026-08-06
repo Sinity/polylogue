@@ -168,6 +168,18 @@ def _table_columns(conn: Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
+def _cycle_path_matches_projection(conn: Connection, path: list[str]) -> bool:
+    """Verify every recorded hop after the proposed edge against projection."""
+    for child_id, parent_id in zip(path[1:-1], path[2:], strict=True):
+        row = conn.execute(
+            "SELECT parent_session_id FROM sessions WHERE session_id = ?",
+            (child_id,),
+        ).fetchone()
+        if row is None or row[0] != parent_id:
+            return False
+    return True
+
+
 def _quarantine_evidence_counts(conn: Connection) -> tuple[int, int, int]:
     """Count proven cycles, malformed evidence, and walk-budget exhaustion."""
     cycle_evidence_count = 0
@@ -195,28 +207,49 @@ def _quarantine_evidence_counts(conn: Connection) -> tuple[int, int, int]:
         except (TypeError, ValueError):
             malformed_count += 1
             continue
-        cycle_path = evidence.get("cycle_path") if isinstance(evidence, dict) else None
+        reason = evidence.get("reason") if isinstance(evidence, dict) else None
         detected_at_ms = evidence.get("detected_at_ms") if isinstance(evidence, dict) else None
-        base_shape_valid = (
-            isinstance(evidence, dict)
-            and evidence.get("reason") == "cycle_rejected"
+        timestamp_valid = (
+            isinstance(evidence, dict) and isinstance(detected_at_ms, int) and not isinstance(detected_at_ms, bool)
+        )
+        if reason == "cycle_walk_budget_exhausted":
+            walk_path = evidence.get("walk_path") if isinstance(evidence, dict) else None
+            walk_budget = evidence.get("walk_budget") if isinstance(evidence, dict) else None
+            if (
+                timestamp_valid
+                and isinstance(walk_path, list)
+                and len(walk_path) >= 2
+                and all(isinstance(session_id, str) and session_id.strip() for session_id in walk_path)
+                and isinstance(walk_budget, int)
+                and not isinstance(walk_budget, bool)
+                and walk_budget > 0
+                and walk_path[0] == src_session_id
+                and walk_path[1] == asserted_parent_session_id
+                and walk_path[-1] != src_session_id
+                and len(walk_path) - 2 == walk_budget
+                and _cycle_path_matches_projection(conn, cast(list[str], walk_path))
+            ):
+                budget_exhausted_count += 1
+            else:
+                malformed_count += 1
+            continue
+        cycle_path = evidence.get("cycle_path") if isinstance(evidence, dict) else None
+        if not (
+            timestamp_valid
+            and reason == "cycle_rejected"
             and isinstance(cycle_path, list)
             and len(cycle_path) >= 2
             and all(isinstance(session_id, str) and session_id.strip() for session_id in cycle_path)
-            and isinstance(detected_at_ms, int)
-            and not isinstance(detected_at_ms, bool)
-        )
-        if not base_shape_valid:
+        ):
             malformed_count += 1
             continue
         typed_cycle_path = cast(list[str], cycle_path)
-        if "...budget-exceeded" in typed_cycle_path:
-            budget_exhausted_count += 1
-        elif (
+        if (
             asserted_parent_session_id is not None
             and typed_cycle_path[0] == src_session_id
             and typed_cycle_path[-1] == src_session_id
             and typed_cycle_path[1] == asserted_parent_session_id
+            and _cycle_path_matches_projection(conn, typed_cycle_path)
         ):
             cycle_evidence_count += 1
         else:
