@@ -16,15 +16,55 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.maintenance.rebuild_index import (
+    RebuildIndexRequest,
+    RebuildSchemaCurrencyError,
+    rebuild_index_from_source_sync,
+)
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _init_empty_source(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+
+
+def test_rebuild_rejects_source_schema_behind_runtime_before_candidate_creation(tmp_path: Path) -> None:
+    """A real v28 source tier must not reach the v29 rebuild package.
+
+    The test builds ordinary file-backed archive tiers, removes exactly v29's
+    additive objects, and supplies a valid rebuild receipt. The production
+    rebuild route used to accept this archive and return ``empty-source``.
+    """
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("DROP INDEX idx_raw_failure_disposition_receipts_disposed_at")
+        conn.execute("DROP TABLE raw_failure_disposition_receipts")
+        conn.execute("PRAGMA user_version = 28")
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
+
+    with pytest.raises(RebuildSchemaCurrencyError) as exc_info:
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
+
+    diagnostic = exc_info.value.diagnostic
+    assert diagnostic["status"] == "blocked"
+    assert diagnostic["blocking_tiers"] == [
+        {
+            "tier": "source",
+            "path": str(root / "source.db"),
+            "actual_user_version": 28,
+            "expected_user_version": 29,
+            "status": "mismatch",
+        }
+    ]
+    assert not (root / ".index-generations").exists()
+    assert not (root / ".index-rebuild-transactions").exists()
 
 
 def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> None:
