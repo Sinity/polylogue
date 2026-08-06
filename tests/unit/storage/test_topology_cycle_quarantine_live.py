@@ -339,6 +339,62 @@ def test_over_budget_acyclic_walk_is_not_recorded_as_a_cycle_and_keeps_prefix(tm
     assert census["quarantined_without_cycle_evidence"] == 1
 
 
+def test_quarantined_alternate_parent_does_not_invalidate_resolved_projection(tmp_path: Path) -> None:
+    """A valid parent projection can coexist with a rejected alternate edge.
+
+    Production dependencies: repeated writer assertions, cycle quarantine,
+    projection refresh, and the topology census. Mutation: counting any parent
+    pointer on a child with a quarantined edge reports this valid projection as
+    stale even though the child's earlier resolved edge still supports it.
+    """
+    conn = _connect(tmp_path / "index.db")
+    session_a = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="multi-A",
+        title="A",
+        messages=[_msg("a0", Role.USER, "root A", 0)],
+    )
+    a_id = write_parsed_session_to_archive(conn, session_a)
+    session_b_v1 = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="multi-B",
+        title="B",
+        parent_session_provider_id="multi-A",
+        messages=[_msg("b0", Role.USER, "B follows A", 0)],
+    )
+    b_id = write_parsed_session_to_archive(conn, session_b_v1)
+    session_c = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="multi-C",
+        title="C",
+        parent_session_provider_id="multi-B",
+        messages=[_msg("c0", Role.USER, "C follows B", 0)],
+    )
+    write_parsed_session_to_archive(conn, session_c)
+
+    session_b_v2 = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="multi-B",
+        title="B",
+        parent_session_provider_id="multi-C",
+        messages=[_msg("b1", Role.USER, "B asserts unsafe alternate C", 0)],
+    )
+    write_parsed_session_to_archive(conn, session_b_v2, merge_append=True)
+
+    links = conn.execute(
+        "SELECT dst_native_id, status FROM session_links WHERE src_session_id = ? ORDER BY dst_native_id",
+        (b_id,),
+    ).fetchall()
+    assert [(row[0], row[1]) for row in links] == [
+        ("multi-A", None),
+        ("multi-C", TopologyEdgeStatus.QUARANTINED.value),
+    ]
+    assert conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (b_id,)).fetchone()[0] == a_id
+    census = census_topology_links(conn, sample_unresolved=0)
+    assert census["cycle_evidence_count"] == 1
+    assert census["quarantined_with_stale_projection_count"] == 0
+
+
 def test_diamond_dag_is_not_mistaken_for_a_cycle(tmp_path: Path) -> None:
     """B -> D and C -> D (both children of D) is a legitimate shared-parent
     shape, not a cycle -- the resolver must resolve both edges cleanly."""

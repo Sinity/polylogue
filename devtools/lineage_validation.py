@@ -496,8 +496,18 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
         SELECT COUNT(*)
         FROM session_links l
         JOIN sessions s ON s.session_id = l.src_session_id
+        JOIN sessions asserted_parent
+          ON asserted_parent.origin = l.dst_origin
+         AND asserted_parent.native_id = l.dst_native_id
         WHERE TRIM(l.status) = 'quarantined'
-          AND s.parent_session_id IS NOT NULL
+          AND s.parent_session_id = asserted_parent.session_id
+          AND NOT EXISTS (
+              SELECT 1
+              FROM session_links valid
+              WHERE valid.src_session_id = l.src_session_id
+                AND valid.resolved_dst_session_id = s.parent_session_id
+                AND COALESCE(TRIM(valid.status), '') != 'quarantined'
+          )
         """,
     )
     unresolved_read_sample = _topology_read_sample(conn, limit=sample_unresolved)
