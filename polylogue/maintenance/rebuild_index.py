@@ -10,15 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import os
 import sqlite3
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from http import HTTPStatus
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.config import Config
 from polylogue.core.errors import PolylogueError
@@ -58,6 +60,10 @@ _PLANNER_STATS_ANALYZE_STATEMENTS = (
 )
 
 logger = get_logger(__name__)
+
+_ACTIVE_EXTERNAL_INVENTORY_TOKEN: contextvars.ContextVar[dict[str, object] | None] = contextvars.ContextVar(
+    "rebuild_external_inventory_token", default=None
+)
 
 
 class RebuildProvenanceError(RuntimeError):
@@ -125,7 +131,7 @@ def require_rebuild_schema_currency(root: Path) -> dict[str, object]:
     return diagnostic
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class RebuildProvenanceContext:
     """Validated evidence shared by every mutation in one rebuild pass.
 
@@ -141,9 +147,22 @@ class RebuildProvenanceContext:
     receipt_path: Path | None
     source_snapshot: str
     consumed_evidence: dict[str, object]
+    external_inventory_token: dict[str, object] = field(default_factory=dict)
+    verified_blob_integrity_snapshot: dict[str, object] | None = None
 
-    def validate(self) -> None:
-        _validate_rebuild_provenance_receipt(self.root, self.receipt_path)
+    def validate(self, *, verify_blob_integrity: bool = False, refresh_blob_integrity: bool = False) -> None:
+        cached_snapshot = None if refresh_blob_integrity else self.verified_blob_integrity_snapshot
+        validated = _validate_rebuild_provenance_receipt(
+            self.root,
+            self.receipt_path,
+            inventory_token=self.external_inventory_token,
+            verify_blob_integrity=verify_blob_integrity,
+            verified_blob_integrity_snapshot=cached_snapshot,
+        )
+        if verify_blob_integrity:
+            refreshed_snapshot = validated.pop("_verified_blob_integrity_snapshot", None)
+            if isinstance(refreshed_snapshot, dict):
+                self.verified_blob_integrity_snapshot = refreshed_snapshot
         from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
 
         if rebuild_source_revision_snapshot(self.root) != self.source_snapshot:
@@ -157,23 +176,80 @@ class RebuildProvenanceContext:
             raise RuntimeError("rebuild cleanup has no validated provenance context")
 
 
-def _validate_rebuild_provenance_receipt(root: Path, receipt_path: Path | None) -> dict[str, object]:
+def _validate_rebuild_provenance_receipt(
+    root: Path,
+    receipt_path: Path | None,
+    *,
+    inventory_token: dict[str, object] | None = None,
+    verify_blob_integrity: bool = False,
+    verified_blob_integrity_snapshot: dict[str, object] | None = None,
+) -> dict[str, object]:
     """Validate rebuild provenance at the current ownership boundary."""
     from polylogue.maintenance.schema_inference_gate import (
         SchemaInferenceGateError,
         validate_schema_inference_receipt,
     )
 
+    if inventory_token is None:
+        inventory_token = _ACTIVE_EXTERNAL_INVENTORY_TOKEN.get()
     try:
-        return validate_schema_inference_receipt(root, receipt_path)
+        return validate_schema_inference_receipt(
+            root,
+            receipt_path,
+            inventory_token=inventory_token,
+            verify_blob_integrity=verify_blob_integrity,
+            verified_blob_integrity_snapshot=verified_blob_integrity_snapshot,
+        )
     except SchemaInferenceGateError as exc:
         raise RebuildProvenanceError(f"rebuild schema-inference preflight gate failed: {exc}") from exc
 
 
-def _validate_before_derived_state(provenance: RebuildProvenanceContext) -> None:
+def _mark_rebuild_transaction_stale_after_provenance_failure(
+    root: Path, operation_id: str | None, error: RebuildProvenanceError
+) -> None:
+    """Terminally classify a resumable pass whose next admission failed.
+
+    The normal checkpoint helper validates first, which is correct for every
+    ordinary state transition.  A failed source/receipt admission is the one
+    exception: re-running that validation would preserve a ``paused`` or
+    ``ready`` transaction indefinitely.  The stale marker is lifecycle
+    evidence, so it is written directly through ``IndexGenerationStore`` and
+    never authorizes another replay.
+    """
+    if operation_id is None:
+        return
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    try:
+        store = IndexGenerationStore.for_archive_root(root)
+        transaction = store.load_transaction(operation_id)
+    except Exception as load_error:
+        error.add_note(f"could not load rebuild transaction to mark it stale: {load_error}")
+        return
+    if transaction.status in {"promoted", "promoted-attestation-failed", "stale"}:
+        return
+    try:
+        store.checkpoint_transaction(
+            transaction,
+            status="stale",
+            error=f"stale because source evidence or receipt validation failed: {error}",
+        )
+    except Exception as checkpoint_error:
+        error.add_note(f"could not persist stale rebuild transaction: {checkpoint_error}")
+
+
+def _validate_before_derived_state(
+    provenance: RebuildProvenanceContext,
+    *,
+    verify_blob_integrity: bool = False,
+    refresh_blob_integrity: bool = False,
+) -> None:
     """Validate immediately before a derived-state mutation begins."""
     try:
-        provenance.validate()
+        provenance.validate(
+            verify_blob_integrity=verify_blob_integrity,
+            refresh_blob_integrity=refresh_blob_integrity,
+        )
     except Exception as exc:
         raise RebuildDerivedStateProvenanceError(str(exc)) from exc
 
@@ -276,11 +352,15 @@ def _create_rebuild_transaction_after_receipt_validation(
     generation_store: IndexGenerationStore,
     request: RebuildIndexRequest,
     root: Path,
+    *,
+    inventory_token: dict[str, object] | None = None,
 ) -> IndexRebuildTransaction:
     """Create the first candidate only after an ownership-bound validation."""
     from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
 
-    consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+    consumed_evidence = _validate_rebuild_provenance_receipt(
+        root, request.schema_inference_receipt_path, inventory_token=inventory_token
+    )
     source_snapshot = rebuild_source_evidence_snapshot(root)
     transaction = generation_store.create_transaction(
         source_snapshot=source_snapshot,
@@ -292,7 +372,9 @@ def _create_rebuild_transaction_after_receipt_validation(
         ),
     )
     try:
-        _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+        _validate_rebuild_provenance_receipt(
+            root, request.schema_inference_receipt_path, inventory_token=inventory_token
+        )
         if rebuild_source_evidence_snapshot(root) != source_snapshot:
             raise RebuildProvenanceError(
                 "rebuild schema-inference preflight gate failed: source evidence changed during transaction creation"
@@ -323,9 +405,17 @@ def _checkpoint_rebuild_transaction_after_receipt_validation(
     processed_blob_bytes: int | None = None,
     error: str | None = None,
     derived_stores_cleared: bool | None = None,
+    post_promotion_attestation: dict[str, object] | None = None,
+    inventory_token: dict[str, object] | None = None,
+    verify_blob_integrity: bool = False,
 ) -> IndexRebuildTransaction:
     """Validate immediately before every persisted rebuild state transition."""
-    _validate_rebuild_provenance_receipt(root, receipt_path)
+    _validate_rebuild_provenance_receipt(
+        root,
+        receipt_path,
+        inventory_token=inventory_token,
+        verify_blob_integrity=verify_blob_integrity,
+    )
     return generation_store.checkpoint_transaction(
         transaction,
         status=status,
@@ -335,6 +425,7 @@ def _checkpoint_rebuild_transaction_after_receipt_validation(
         processed_blob_bytes=processed_blob_bytes,
         error=error,
         derived_stores_cleared=derived_stores_cleared,
+        post_promotion_attestation=post_promotion_attestation,
     )
 
 
@@ -344,9 +435,10 @@ def _save_rebuild_pass_receipt_after_receipt_validation(
     pass_receipt: RebuildIndexReceipt,
     root: Path,
     receipt_path: Path | None,
+    inventory_token: dict[str, object] | None = None,
 ) -> None:
     """Validate before publishing a pass receipt tied to rebuild state."""
-    _validate_rebuild_provenance_receipt(root, receipt_path)
+    _validate_rebuild_provenance_receipt(root, receipt_path, inventory_token=inventory_token)
     generation_store.save_pass_receipt(operation_id, pass_receipt.to_dict())
 
 
@@ -842,50 +934,117 @@ def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tu
 
     source_db = archive_root / "source.db"
     if not source_db.exists():
-        return {"raw_ids": sorted(raw_ids), "logical_source_keys": [], "raw_session_memberships": []}
+        return {
+            "raw_ids": sorted(raw_ids),
+            "logical_source_keys": [],
+            "raw_session_evidence": [],
+            "raw_session_memberships": [],
+        }
 
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+    bind_chunk_size = 900
+
+    def chunks(values: Sequence[str]) -> Iterable[list[str]]:
+        for start in range(0, len(values), bind_chunk_size):
+            yield list(values[start : start + bind_chunk_size])
+
     with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as connection:
         expanded, logical_keys = ArchiveStore.expand_raw_membership_selection_sync(connection, list(raw_ids))
-        placeholders_raw = ",".join("?" for _ in expanded)
-        placeholders_key = ",".join("?" for _ in logical_keys)
-        clauses: list[str] = []
-        parameters: list[str] = []
-        if expanded:
-            clauses.append(f"raw_id IN ({placeholders_raw})")
-            parameters.extend(expanded)
-        if logical_keys:
-            clauses.append(f"logical_source_key IN ({placeholders_key})")
-            parameters.extend(logical_keys)
-        rows: list[dict[str, object]] = []
-        if clauses:
-            selected = connection.execute(
-                "SELECT raw_id, logical_source_key, provider_session_id, source_revision, "
-                "normalized_content_hash, message_count, predecessor_raw_id, acquisition_generation, "
-                "revision_authority, decision, decided_at_ms "
-                "FROM raw_session_memberships WHERE " + " OR ".join(clauses) + " ORDER BY logical_source_key, raw_id",
-                parameters,
-            )
-            for row in selected:
-                rows.append(
-                    {
-                        "raw_id": str(row[0]),
-                        "logical_source_key": str(row[1]),
-                        "provider_session_id": str(row[2]),
-                        "source_revision": str(row[3]),
-                        "normalized_content_hash": bytes(row[4]).hex(),
-                        "message_count": int(row[5]),
-                        "predecessor_raw_id": None if row[6] is None else str(row[6]),
-                        "acquisition_generation": int(row[7]),
-                        "revision_authority": str(row[8]),
-                        "decision": None if row[9] is None else str(row[9]),
-                        "decided_at_ms": None if row[10] is None else int(row[10]),
-                    }
+        membership_rows: dict[tuple[str, str], tuple[Any, ...]] = {}
+        membership_columns = (
+            "raw_id, logical_source_key, provider_session_id, source_revision, "
+            "normalized_content_hash, message_count, predecessor_raw_id, acquisition_generation, "
+            "revision_authority, decision, decided_at_ms"
+        )
+        for column, values in (("raw_id", expanded), ("logical_source_key", logical_keys)):
+            for batch in chunks(values):
+                placeholders = ",".join("?" for _ in batch)
+                selected = connection.execute(
+                    f"SELECT {membership_columns} FROM raw_session_memberships WHERE {column} IN ({placeholders})",
+                    batch,
                 )
+                for row in selected:
+                    membership_rows[(str(row[0]), str(row[1]))] = tuple(row)
+
+        rows: list[dict[str, object]] = []
+        for row in sorted(membership_rows.values(), key=lambda item: (str(item[1]), str(item[0]))):
+            rows.append(
+                {
+                    "raw_id": str(row[0]),
+                    "logical_source_key": str(row[1]),
+                    "provider_session_id": str(row[2]),
+                    "source_revision": str(row[3]),
+                    "normalized_content_hash": bytes(row[4]).hex(),
+                    "message_count": int(row[5]),
+                    "predecessor_raw_id": None if row[6] is None else str(row[6]),
+                    "acquisition_generation": int(row[7]),
+                    "revision_authority": str(row[8]),
+                    "decision": None if row[9] is None else str(row[9]),
+                    "decided_at_ms": None if row[10] is None else int(row[10]),
+                }
+            )
+
+        raw_rows: list[tuple[Any, ...]] = []
+        for batch in chunks(expanded):
+            placeholders = ",".join("?" for _ in batch)
+            raw_rows.extend(
+                tuple(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT raw_id, origin, capture_mode, native_id, source_path,
+                           source_index, blob_hash, blob_size, acquired_at_ms,
+                           logical_source_key, revision_kind, source_revision,
+                           predecessor_source_revision, predecessor_raw_id,
+                           baseline_raw_id, append_start_offset, append_end_offset,
+                           acquisition_generation, revision_authority,
+                           revision_authority_evidence
+                    FROM raw_sessions WHERE raw_id IN ({placeholders})
+                    """,
+                    batch,
+                ).fetchall()
+            )
+        raw_rows.sort(key=lambda row: str(row[0]))
+        from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+
+        lowering = lowering_fingerprint()
+        parser_fingerprints: dict[str, str] = {}
+        for row in raw_rows:
+            origin = str(row[1])
+            if origin not in parser_fingerprints:
+                parser_fingerprints[origin] = parser_fingerprint_for_origin(origin)
+
+        raw_evidence = [
+            {
+                "raw_id": str(row[0]),
+                "origin": str(row[1]),
+                "capture_mode": None if row[2] is None else str(row[2]),
+                "native_id": None if row[3] is None else str(row[3]),
+                "source_path": str(row[4]),
+                "source_index": int(row[5]),
+                "blob_hash": bytes(row[6]).hex(),
+                "blob_size": int(row[7]),
+                "acquired_at_ms": int(row[8]),
+                "logical_source_key": None if row[9] is None else str(row[9]),
+                "revision_kind": str(row[10]),
+                "source_revision": None if row[11] is None else str(row[11]),
+                "predecessor_source_revision": None if row[12] is None else str(row[12]),
+                "predecessor_raw_id": None if row[13] is None else str(row[13]),
+                "baseline_raw_id": None if row[14] is None else str(row[14]),
+                "append_start_offset": None if row[15] is None else int(row[15]),
+                "append_end_offset": None if row[16] is None else int(row[16]),
+                "acquisition_generation": None if row[17] is None else int(row[17]),
+                "revision_authority": str(row[18]),
+                "revision_authority_evidence": None if row[19] is None else str(row[19]),
+                "parser_fingerprint": parser_fingerprints[str(row[1])],
+                "lowering_fingerprint": lowering,
+            }
+            for row in raw_rows
+        ]
     return {
         "raw_ids": list(expanded),
         "logical_source_keys": list(logical_keys),
+        "raw_session_evidence": raw_evidence,
         "raw_session_memberships": rows,
     }
 
@@ -1106,8 +1265,23 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
     validate_rebuild_index_request(request)
     root = request.archive_root
+    # A prior owned pass may have left its token in this task's context. The
+    # new request must establish its own receipt-bound token at the first
+    # validation rather than accidentally reusing another archive/pass.
+    _ACTIVE_EXTERNAL_INVENTORY_TOKEN.set(None)
     require_rebuild_schema_currency(root)
-    consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+    initial_provenance_error: RebuildProvenanceError | None = None
+    try:
+        consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+    except RebuildProvenanceError as exc:
+        if request.operation_id is None:
+            raise
+        # A resumable operation may need to be retired because this admission
+        # failed, but that lifecycle mutation must wait until both ownership
+        # boundaries are held. Control-flow exceptions are intentionally not
+        # caught here and therefore never change resumability.
+        initial_provenance_error = exc
+        consumed_evidence = {}
     location = ArchiveLocation.resolve(root)
     # The joined raw-frontier projection is rooted at the co-located active
     # index. A split-root canary intentionally points that index elsewhere and
@@ -1145,12 +1319,34 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     try:
         assert_owns_archive_location(owned, location)
         require_rebuild_schema_currency(root)
-        consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+        if initial_provenance_error is None:
+            consumed_evidence = _validate_rebuild_provenance_receipt(
+                root,
+                request.schema_inference_receipt_path,
+                inventory_token=cast(
+                    dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})
+                ),
+            )
         # The lease is itself lifecycle state guarded by the provenance gate.
         # Revalidate again under the lease immediately before the owned body
         # can create or mutate a candidate/transaction.
         with RebuildLease(root):
-            consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+            if initial_provenance_error is not None:
+                _mark_rebuild_transaction_stale_after_provenance_failure(
+                    root, request.operation_id, initial_provenance_error
+                )
+                raise initial_provenance_error
+            try:
+                consumed_evidence = _validate_rebuild_provenance_receipt(
+                    root,
+                    request.schema_inference_receipt_path,
+                    inventory_token=cast(
+                        dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})
+                    ),
+                )
+            except RebuildProvenanceError as exc:
+                _mark_rebuild_transaction_stale_after_provenance_failure(root, request.operation_id, exc)
+                raise
             return await _rebuild_index_from_source_owned(
                 request, root=root, owned=owned, consumed_evidence=consumed_evidence
             )
@@ -1183,6 +1379,8 @@ async def _rebuild_index_from_source_owned(
     from polylogue.storage.repair import repair_session_insights
 
     generation_store = IndexGenerationStore(owned.location)
+    inventory_token = cast(dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {}))
+    _ACTIVE_EXTERNAL_INVENTORY_TOKEN.set(inventory_token)
     # ``rebuild_index_from_source`` already acquired this root's
     # ``RebuildLease`` before any operation mutation.  Retain this scope only
     # to preserve the body's indentation and make the outer ownership boundary
@@ -1217,9 +1415,10 @@ async def _rebuild_index_from_source_owned(
                     generation_store,
                     request,
                     root,
+                    inventory_token=inventory_token,
                 )
                 transaction_created_here = True
-            if transaction.status in {"promoted", "stale"}:
+            if transaction.status in {"promoted", "promoted-attestation-failed", "stale"}:
                 raise RuntimeError(
                     f"rebuild operation {transaction.operation_id} is {transaction.status}; start a new operation"
                 )
@@ -1309,6 +1508,7 @@ async def _rebuild_index_from_source_owned(
                 receipt_path=request.schema_inference_receipt_path,
                 source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
                 consumed_evidence=consumed_evidence,
+                external_inventory_token=inventory_token,
             )
             precreate_provenance.validate()
             generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
@@ -1337,6 +1537,7 @@ async def _rebuild_index_from_source_owned(
             receipt_path=request.schema_inference_receipt_path,
             source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
             consumed_evidence=consumed_evidence,
+            external_inventory_token=inventory_token,
         )
         sharded_replay = request.shard_count > 1 and len(selected_raw_ids) >= request.shard_count
         source_drifted = False
@@ -1728,6 +1929,11 @@ async def _rebuild_index_from_source_owned(
                     stage=f"bulk_build.{stage}",
                     elapsed_s=round(elapsed_s, 3),
                 )
+            # Blob bytes are checked after replay and bulk derivation, before
+            # candidate acceptance/readiness can observe a corrupted source.
+            # The receipt's source.db digest is only a binding; BlobStore is
+            # the byte-level authority for the current referenced universe.
+            _validate_before_derived_state(provenance, verify_blob_integrity=True)
             terminal_started_at = time.perf_counter()
             # polylogue-t0m73: the index-only reindex acceptance gate -- every
             # ground-truth check whose universe is satisfiable from a
@@ -1817,6 +2023,15 @@ async def _rebuild_index_from_source_owned(
                     else "blocked surfaces: " + ", ".join(blocked)
                 )
                 raise RuntimeError(f"inactive generation {generation.generation_id} is not exact-ready; {detail}")
+            # Candidate readiness is the last fallible validation boundary.
+            # Verify the bytes named by source.db through BlobStore here,
+            # before a pointer can be flipped, rather than treating a source
+            # tier hash or an earlier receipt as proof of current blob bytes.
+            _validate_before_derived_state(
+                provenance,
+                verify_blob_integrity=True,
+                refresh_blob_integrity=True,
+            )
             if transaction is not None:
                 transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                     generation_store,
@@ -1843,13 +2058,46 @@ async def _rebuild_index_from_source_owned(
                     elapsed_s=round(terminal_timings_s["terminal.promote"], 3),
                 )
                 if transaction is not None:
-                    transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
-                        generation_store,
-                        transaction,
-                        root,
-                        request.schema_inference_receipt_path,
-                        status="promoted",
-                    )
+                    # The pointer is active now. Persist only a non-failing
+                    # lifecycle transition after this point. In particular,
+                    # do not call the receipt validator after promotion: a
+                    # changed external root or blob must never turn an active
+                    # generation back into a resumable ``ready`` candidate.
+                    attestation: dict[str, object]
+                    try:
+                        attestation = {
+                            "status": "passed",
+                            "generation_id": generation.generation_id,
+                            "generation_state": generation.state,
+                            "active_pointer": str(generation_store.active_pointer),
+                        }
+                        transaction = generation_store.checkpoint_transaction(
+                            transaction,
+                            status="promoted",
+                            post_promotion_attestation=attestation,
+                        )
+                    except Exception as attestation_error:
+                        source_drifted = True
+                        try:
+                            transaction = generation_store.load_transaction(transaction.operation_id)
+                            transaction = generation_store.checkpoint_transaction(
+                                transaction,
+                                status="promoted-attestation-failed",
+                                error=str(attestation_error),
+                                post_promotion_attestation={
+                                    "status": "failed",
+                                    "generation_id": generation.generation_id,
+                                    "generation_state": "active",
+                                    "error": str(attestation_error),
+                                },
+                            )
+                        except Exception as recovery_error:
+                            attestation_error.add_note(
+                                "active generation post-promotion attestation checkpoint failed: "
+                                f"{type(recovery_error).__name__}: {recovery_error}"
+                            )
+                            raise
+                        raise
         except Exception as exc:
             fresh_provenance_failure = isinstance(exc, RebuildProvenanceError) and (
                 transaction_created_here or transaction is None or sharded_replay
@@ -1923,15 +2171,67 @@ async def _rebuild_index_from_source_owned(
             ),
             consumed_evidence=consumed_evidence,
         )
-        _persist_candidate_receipt(generation, final_receipt.to_dict())
+        try:
+            _persist_candidate_receipt(generation, final_receipt.to_dict())
+        except BaseException as attestation_error:
+            if transaction is not None and transaction.status in {"promoted", "promoted-attestation-failed"}:
+                source_drifted = True
+                try:
+                    transaction = generation_store.load_transaction(transaction.operation_id)
+                    transaction = generation_store.checkpoint_transaction(
+                        transaction,
+                        status="promoted-attestation-failed",
+                        error=str(attestation_error),
+                        post_promotion_attestation={
+                            "status": "failed",
+                            "generation_id": generation.generation_id,
+                            "generation_state": "active",
+                            "error": str(attestation_error),
+                        },
+                    )
+                except BaseException as recovery_error:
+                    attestation_error.add_note(
+                        "active generation candidate-receipt attestation checkpoint failed: "
+                        f"{type(recovery_error).__name__}: {recovery_error}"
+                    )
+            raise
         if transaction is not None:
-            _save_rebuild_pass_receipt_after_receipt_validation(
-                generation_store,
-                transaction.operation_id,
-                final_receipt,
-                root,
-                request.schema_inference_receipt_path,
-            )
+            if transaction.status in {"promoted", "promoted-attestation-failed"}:
+                # Promotion already crossed the pointer boundary. Receipt
+                # persistence here is an attestation record, not another
+                # admission gate that can demote or leave the active
+                # generation resumable.
+                try:
+                    generation_store.save_pass_receipt(transaction.operation_id, final_receipt.to_dict())
+                except BaseException as attestation_error:
+                    source_drifted = True
+                    try:
+                        transaction = generation_store.load_transaction(transaction.operation_id)
+                        transaction = generation_store.checkpoint_transaction(
+                            transaction,
+                            status="promoted-attestation-failed",
+                            error=str(attestation_error),
+                            post_promotion_attestation={
+                                "status": "failed",
+                                "generation_id": generation.generation_id,
+                                "generation_state": "active",
+                                "error": str(attestation_error),
+                            },
+                        )
+                    except BaseException as recovery_error:
+                        attestation_error.add_note(
+                            "active generation receipt-attestation checkpoint failed: "
+                            f"{type(recovery_error).__name__}: {recovery_error}"
+                        )
+                    raise
+            else:
+                _save_rebuild_pass_receipt_after_receipt_validation(
+                    generation_store,
+                    transaction.operation_id,
+                    final_receipt,
+                    root,
+                    request.schema_inference_receipt_path,
+                )
     except BaseException as exc:
         if transaction is None:
             _cleanup_nonresumable_generation_failure(

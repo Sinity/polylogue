@@ -186,6 +186,11 @@ class IndexRebuildTransaction:
     # transaction created before this field existed is treated as not yet
     # cleared and clears exactly once on its next resume.
     derived_stores_cleared: bool = False
+    # Promotion is a terminal lifecycle boundary.  This attestation is
+    # written after the pointer flip without re-running fallible admission
+    # checks, so a post-flip observation failure cannot leave a resumable
+    # transaction claiming that its candidate is merely ready.
+    post_promotion_attestation: dict[str, object] | None = None
 
     @property
     def cursor(self) -> str | None:
@@ -569,7 +574,7 @@ class IndexGenerationStore:
         path = self._transaction_path(transaction.operation_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(asdict(updated), indent=2, sort_keys=True), encoding="utf-8")
+        temporary.write_text(json.dumps(asdict(updated), indent=2, sort_keys=True, default=str), encoding="utf-8")
         os.replace(temporary, path)
         _fsync_directory(path.parent)
         return updated
@@ -585,6 +590,7 @@ class IndexGenerationStore:
         processed_blob_bytes: int | None = None,
         error: str | None = None,
         derived_stores_cleared: bool | None = None,
+        post_promotion_attestation: dict[str, object] | None = None,
     ) -> IndexRebuildTransaction:
         """Persist one state transition without changing candidate ownership."""
         return self.save_transaction(
@@ -606,6 +612,9 @@ class IndexGenerationStore:
                     "derived_stores_cleared": derived_stores_cleared
                     if derived_stores_cleared is not None
                     else transaction.derived_stores_cleared,
+                    "post_promotion_attestation": post_promotion_attestation
+                    if post_promotion_attestation is not None
+                    else transaction.post_promotion_attestation,
                 }
             )
         )
@@ -1150,12 +1159,15 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
     Parse, validation, and revision-governance state are rebuild outputs or
     post-acquisition interpretation. They can legitimately change while the
     rebuild runs, so they must never invalidate its before/after source proof.
-    The selected columns capture durable raw identity, membership, and bytes,
-    together with acquired raw-payload references and capture-mode observations,
-    in deterministic order.
+    The selected columns capture every durable raw and authority field already
+    consumed by revision backfill, together with the parser/lowering semantic
+    fingerprints that give those fields meaning. Equivalent receipt snapshots
+    use the same ordered evidence below, so a resumable pass cannot cross a
+    changed revision authority boundary.
     """
     import hashlib
 
+    from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
     from polylogue.storage.blob_store import BlobStore
 
     digest = hashlib.sha256()
@@ -1164,12 +1176,18 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
             """
             SELECT raw_id, origin, capture_mode, native_id, source_path,
                    source_index, blob_hash, blob_size, acquired_at_ms,
-                   file_mtime_ms
+                   file_mtime_ms, logical_source_key, revision_kind,
+                   source_revision, predecessor_source_revision,
+                   predecessor_raw_id, baseline_raw_id, append_start_offset,
+                   append_end_offset, acquisition_generation,
+                   revision_authority, revision_authority_evidence
             FROM raw_sessions
             ORDER BY raw_id
             """
         )
+        origins: set[str] = set()
         for row in rows:
+            origins.add(str(row[1]))
             for value in row:
                 if value is None:
                     encoded = b"n"
@@ -1179,6 +1197,18 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
                     encoded = b"s" + value.encode()
                 else:
                     encoded = b"i" + str(value).encode()
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+        sorted_origins = sorted(origins)
+        digest.update(b"parser-lowering-semantic-fingerprints\0")
+        digest.update(b"lowering\0")
+        lowering = lowering_fingerprint()
+        digest.update(len(lowering).to_bytes(8, "big"))
+        digest.update(lowering.encode())
+        for origin in sorted_origins:
+            parser = parser_fingerprint_for_origin(origin)
+            for value in (origin, parser):
+                encoded = value.encode()
                 digest.update(len(encoded).to_bytes(8, "big"))
                 digest.update(encoded)
         raw_blob_hashes = {

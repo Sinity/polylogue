@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -131,6 +132,25 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
     assert {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in ("source.db", "index.db")
     } == before
+
+
+def test_readiness_accepts_equivalent_blob_evidence_from_another_verifier(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / "receipt" / RECEIPT_FILENAME
+    run_schema_inference_gate(root, receipt_path=receipt_path, ground_truth_roots={"codex-session": (ground_truth,)})
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    recorded = dict(payload["full_blob_hash_verification"]["referenced_blob_integrity_snapshot"])
+    recorded["verifier"] = "polylogue.storage.blob_store.BlobStore.verify"
+
+    validated = gate.validate_schema_inference_receipt(
+        root,
+        receipt_path,
+        verify_blob_integrity=True,
+        verified_blob_integrity_snapshot=recorded,
+    )
+
+    assert validated["_verified_blob_integrity_snapshot"] == recorded
 
 
 def test_empty_archive_cannot_authorize_schema_inference(tmp_path: Path) -> None:
@@ -500,3 +520,92 @@ def test_gate_receipt_digest_is_canonical_and_content_bound() -> None:
     altered = dict(first)
     altered["verdict"] = "FAIL"
     assert schema_inference_gate_receipt_digest(first) != schema_inference_gate_receipt_digest(altered)
+
+
+def test_external_inventory_token_reuses_metadata_detector_and_rejects_changed_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real receipt validator hashes once, then detects corpus drift cheaply.
+
+    Anti-vacuity: removing the pass token binding makes the second validation
+    hash the full corpus again, so the call-count assertions fail.
+    """
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / "receipt" / RECEIPT_FILENAME
+    run_schema_inference_gate(root, receipt_path=receipt_path, ground_truth_roots={"codex-session": (ground_truth,)})
+
+    full_inventory_calls = 0
+    original_inventory = gate._external_inventory
+
+    def counted_inventory(roots: object) -> object:
+        nonlocal full_inventory_calls
+        full_inventory_calls += 1
+        return original_inventory(roots)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(gate, "_external_inventory", counted_inventory)
+    first = gate.validate_schema_inference_receipt(root, receipt_path)
+    token = cast(dict[str, object], first["external_ground_truth_inventory_token"])
+    assert full_inventory_calls == 1, "the first validation establishes the authoritative full inventory"
+    gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
+    assert full_inventory_calls == 1, "unchanged pass validation must reuse the bound detector token"
+
+    (ground_truth / "session.jsonl").write_bytes(b"changed external codex raw")
+    with pytest.raises(SchemaInferenceGateError, match="external ground-truth corpus changed"):
+        gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
+    assert full_inventory_calls == 2, "a changed detector must trigger one authoritative inventory recalculation"
+
+
+def test_inventory_change_detector_triggers_rehash_without_changing_content_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / "receipt" / RECEIPT_FILENAME
+    run_schema_inference_gate(root, receipt_path=receipt_path, ground_truth_roots={"codex-session": (ground_truth,)})
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    origins = payload["ground_truth_inputs"]["origins"]
+    baseline = gate._canonical_external_ground_truth_digest(origins)
+    altered = json.loads(json.dumps(origins))
+    altered["codex-session"]["inventory_change_detector"] = {"forced": "changed"}
+    assert gate._canonical_external_ground_truth_digest(altered) == baseline
+
+    validated = gate.validate_schema_inference_receipt(root, receipt_path)
+    token = cast(dict[str, object], validated["external_ground_truth_inventory_token"])
+    (ground_truth / "session.jsonl").touch()
+    inventory_calls = 0
+    original_inventory = gate._external_inventory
+
+    def counted_inventory(roots: tuple[Path, ...]) -> list[object]:
+        nonlocal inventory_calls
+        inventory_calls += 1
+        return original_inventory(roots)  # type: ignore[return-value]
+
+    monkeypatch.setattr(gate, "_external_inventory", counted_inventory)
+    refreshed = gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
+    assert inventory_calls == 1
+    refreshed_token = cast(dict[str, object], refreshed["external_ground_truth_inventory_token"])
+    original_origin_token = cast(dict[str, object], token["origins"])["codex-session"]
+    refreshed_origin_token = cast(dict[str, object], refreshed_token["origins"])["codex-session"]
+    assert (
+        cast(dict[str, object], refreshed_origin_token)["inventory_change_detector"]
+        != cast(dict[str, object], original_origin_token)["inventory_change_detector"]
+    )
+    gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=refreshed_token)
+    assert inventory_calls == 1, "a successful rehash must refresh the detector token"
+
+
+def test_inventory_token_rejects_foreign_nonce_and_empty_token_falls_back_to_receipt(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / "receipt" / RECEIPT_FILENAME
+    run_schema_inference_gate(root, receipt_path=receipt_path, ground_truth_roots={"codex-session": (ground_truth,)})
+    validated = gate.validate_schema_inference_receipt(root, receipt_path)
+    token = cast(dict[str, object], validated["external_ground_truth_inventory_token"])
+    foreign = json.loads(json.dumps(token))
+    foreign["receipt_nonce"] = "foreign-pass"
+    with pytest.raises(SchemaInferenceGateError, match="token is not bound"):
+        gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=foreign)
+    gate.validate_schema_inference_receipt(root, receipt_path, inventory_token={})
