@@ -369,6 +369,7 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         "typed_terminal": terminal_evidence is not None
         and terminal_evidence["artifact_kind"] == "terminal_corrupt_input"
         and terminal_evidence["support_status"] == "decode_failed"
+        and terminal_evidence["parse_error_present"] is True
         and typed_terminal["retry_state"]["excluded"] is False
         and typed_terminal["retry_state"]["retry_due"] is False,
     }
