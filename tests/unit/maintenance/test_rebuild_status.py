@@ -26,14 +26,16 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _DEFINITELY_DEAD_PID = 2**31 - 1
 
 
 def _init_empty_source(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+    for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
+        initialize_archive_database(root / f"{tier.value}.db", tier)
 
 
 def _codex_session(native_id: str) -> bytes:
@@ -192,7 +194,8 @@ def test_falls_back_to_the_daemon_well_known_operation_id_by_default(tmp_path: P
 
     root = tmp_path / "archive"
     _init_empty_source(root)
-    resolve_or_start_daemon_bulk_rebuild_transaction(root)
+    receipt = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt)
 
     status = rebuild_status(root)
 

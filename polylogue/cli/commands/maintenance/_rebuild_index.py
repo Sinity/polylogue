@@ -572,6 +572,9 @@ def rebuild_index_command(
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
     click.echo(f"Archive root: {root}")
+    if receipt.status == "empty-source":
+        click.echo("No source.db raw_sessions rows found.")
+        return
     click.echo(f"Classified:   {int(cast(Any, result['classified_full_count'])):,} full revision(s)")
     click.echo(f"Replayed:     {int(cast(Any, result['replayed_logical_source_count'])):,} logical source(s)")
     click.echo(f"Quarantined:  {int(cast(Any, result['quarantined_raw_count'])):,} raw row(s)")

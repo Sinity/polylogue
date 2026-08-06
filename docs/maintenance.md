@@ -68,14 +68,22 @@ polylogue ops maintenance migrate-tier audit --initialize-missing --output-forma
 
 The flag stages the canonical database in the private archive directory and
 publishes it with an atomic no-replace link. It refuses any existing path,
-including one created concurrently, and never replaces durable data. Run
-`migrate-tier source`, `migrate-tier user`, and `migrate-tier audit` for
-existing tiers when the target package requires numbered migrations, then
-deploy that exact package. Run the preflight again and require a ready result
-before invoking `polylogue ops maintenance rebuild-index`; use that blue-green
-command rather than `ops reset --index` for an active managed generation.
-Restart the daemon only after the rebuilt generation is promoted and the
-post-deploy status shows no durable-tier mismatch.
+including one created concurrently, and never replaces durable data. For each
+existing tier that the selected package reports behind, run its numbered
+migration with the verified full-evidence backup manifest:
+
+```bash
+polylogue ops maintenance migrate-tier source --backup-manifest /path/to/verified-full-backup/manifest.json --output-format json
+polylogue ops maintenance migrate-tier user --backup-manifest /path/to/verified-full-backup/manifest.json --output-format json
+polylogue ops maintenance migrate-tier audit --backup-manifest /path/to/verified-full-backup/manifest.json --output-format json
+```
+
+Deploy that exact package after every required durable migration. Run the
+preflight again and require a ready result before invoking `polylogue ops
+maintenance rebuild-index`; use that blue-green command rather than `ops reset
+--index` for an active managed generation. Restart the daemon only after the
+rebuilt generation is promoted and the post-deploy status shows no durable-tier
+mismatch.
 
 For the conceptual model behind derived insights and the FTS / blob
 substrate, see [architecture.md](architecture.md) and

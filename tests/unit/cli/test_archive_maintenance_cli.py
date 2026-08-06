@@ -2142,6 +2142,29 @@ def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
     assert not (root / ".index-generations").exists()
 
 
+def test_rebuild_index_empty_source_preserves_plain_receipt_output_after_guard(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real empty receipt must render without replay-only counter keys.
+
+    Mutation: removing the status branch reaches the production counter
+    formatter and raises KeyError before this exact plain output is emitted.
+    """
+    root = cli_workspace["archive_root"]
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == f"Archive root: {root}\nNo source.db raw_sessions rows found.\n"
+    assert not (root / ".index-generations").exists()
+
+
 def test_rebuild_index_rejects_daemon_schema_preflight_combination(
     cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:

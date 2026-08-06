@@ -196,6 +196,10 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
     owned = OwnedArchiveLocation.acquire(location)
     try:
         assert_owns_archive_location(owned, location)
+        # The early check is a cheap rejection before receipt work. Repeat it
+        # under archive ownership because a previous owner can migrate a
+        # durable tier while this caller waits for the lock.
+        require_rebuild_schema_currency(root)
         # The first validation is only a cheap early rejection. Revalidate
         # after ownership acquisition so receipt expiry, source revision, or
         # external-corpus drift cannot reach generation bookkeeping.

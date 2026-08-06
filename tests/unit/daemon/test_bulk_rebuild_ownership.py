@@ -28,6 +28,7 @@ from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _init_empty_source(root: Path) -> None:
@@ -49,6 +50,39 @@ def test_daemon_bulk_rebuild_rejects_schema_mismatch_before_transaction_bookkeep
 
     blocking_tiers = cast(list[dict[str, object]], exc_info.value.diagnostic["blocking_tiers"])
     assert blocking_tiers[0]["tier"] == "source"
+    assert not (root / ".index-generations").exists()
+    assert not (root / ".index-rebuild-transactions").exists()
+
+
+def test_daemon_bulk_rebuild_rechecks_schema_currency_after_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable migration while lock acquisition waits must block bookkeeping.
+
+    Production dependency: the second shared currency probe after ownership.
+    Mutation: removing that probe creates generation bookkeeping after the
+    injected audit migration and makes this test fail.
+    """
+    from polylogue.daemon import bulk_rebuild
+
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    receipt = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    real_assert = bulk_rebuild.assert_owns_archive_location
+
+    def mutate_audit_after_ownership(owned: OwnedArchiveLocation, location: ArchiveLocation) -> None:
+        real_assert(owned, location)
+        audit_probe = probe_archive_tier(ArchiveTier.AUDIT, root / "audit.db")
+        with sqlite3.connect(root / "audit.db") as conn:
+            conn.execute(f"PRAGMA user_version = {audit_probe.expected_user_version + 1}")
+
+    monkeypatch.setattr(bulk_rebuild, "assert_owns_archive_location", mutate_audit_after_ownership)
+
+    with pytest.raises(RebuildSchemaCurrencyError) as exc_info:
+        resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt)
+
+    blocking_tiers = cast(list[dict[str, object]], exc_info.value.diagnostic["blocking_tiers"])
+    assert blocking_tiers[0]["tier"] == "audit"
     assert not (root / ".index-generations").exists()
     assert not (root / ".index-rebuild-transactions").exists()
 
