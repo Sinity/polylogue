@@ -249,7 +249,7 @@ def _run_case(
     try:
         record = cursor.get_record(path)
         fingerprint_changed_before_catch_up = (
-            record is not None and record.excluded and record.parser_fingerprint != parser_fingerprint
+            record is not None and bool(record.excluded) and record.parser_fingerprint != parser_fingerprint
         )
         metrics_holder: list[object] = []
         original_ingest = watcher._ingest_files
