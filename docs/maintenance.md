@@ -60,17 +60,22 @@ transaction creation before any bookkeeping or candidate generation.
 For a safe deployment recovery, first choose the exact target package commit.
 With the daemon stopped, create a fresh verified full-evidence backup. If the
 preflight reports that a newly introduced durable tier is absent, initialize
-only that absent file through the archive ownership gate:
+only that absent file through the archive ownership gate. This recovery path is
+allowed only for a completely unadopted private archive directory. Any sibling
+durable tier, active-index pointer, or durable change-train marker proves that
+the archive already has an identity, so the command refuses to create the
+missing file and leaves it absent:
 
 ```bash
 polylogue ops maintenance migrate-tier audit --initialize-missing --output-format json
 ```
 
-The flag builds the canonical database in memory, writes it directly into an
-anonymous inode, and publishes that inode with an atomic no-replace link. It
-never exposes a writable staging name, refuses any existing target including
-one created concurrently, and never replaces durable data. For each existing
-tier that the selected package reports behind, run its numbered
+The flag builds the canonical database in memory, writes it into an anonymous
+inode when the filesystem supports `O_TMPFILE`, and otherwise uses a same-
+directory 0600 exclusive temporary file. Both paths fsync the image and
+publish it with a no-replace hard link, then fsync the directory. It refuses
+any existing target including one created concurrently, and never replaces
+durable data. For each existing tier that the selected package reports behind, run its numbered
 migration with the verified full-evidence backup manifest:
 
 ```bash

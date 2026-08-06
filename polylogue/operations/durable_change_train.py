@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import sqlite3
 import stat
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -56,32 +58,77 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     else:
         raise MigrationError(f"{tier.value} tier already exists; refusing missing-tier initialization: {path}")
 
-    # Build the canonical database in memory, copy its serialized image into
-    # an anonymous inode, then publish that exact inode with link(2). No named
-    # staging path exists for a concurrent same-UID process to replace or
-    # mutate, and link cannot replace a target that appears concurrently.
-    anonymous_flag = getattr(os, "O_TMPFILE", 0)
-    if not anonymous_flag:
-        raise MigrationError("missing-tier initialization requires anonymous-file publication support")
-    publication_descriptor: int | None = None
     try:
+        location = ArchiveLocation.resolve(path.parent)
+    except Exception as exc:
+        raise MigrationError(f"cannot inspect archive adoption markers: {path.parent}") from exc
+    durable_siblings = tuple(
+        path.parent / f"{sibling.value}.db"
+        for sibling in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
+        if sibling is not tier
+    )
+    existing_siblings: list[Path] = []
+    for sibling in durable_siblings:
         try:
-            publication_descriptor = os.open(
-                path.parent,
-                os.O_RDWR | anonymous_flag | getattr(os, "O_CLOEXEC", 0),
-                0o600,
-            )
-        except OSError as exc:
-            raise MigrationError(f"cannot create anonymous durable-tier publication inode: {path.parent}") from exc
+            sibling.lstat()
+        except FileNotFoundError:
+            continue
+        existing_siblings.append(sibling)
+    train_marker_root = path.parent / ".maintenance-state" / "durable-change-trains"
+    train_marker = train_marker_root.is_dir() and any(train_marker_root.iterdir())
+    if existing_siblings or location.active_pointer is not None or train_marker:
+        details = ", ".join(str(item) for item in existing_siblings)
+        if location.active_pointer is not None:
+            details = f"{details}, {location.active_pointer}" if details else str(location.active_pointer)
+        if train_marker:
+            details = f"{details}, {train_marker_root}" if details else str(train_marker_root)
+        raise MigrationError(
+            f"cannot initialize missing {tier.value} tier in an established archive; adoption marker(s): {details}"
+        )
 
-        memory_database = sqlite3.connect(":memory:")
-        try:
-            initialize_archive_tier(memory_database, tier)
-            initialized_image = memory_database.serialize()
-        finally:
-            memory_database.close()
-        if not initialized_image:
-            raise MigrationError(f"canonical {tier.value} tier initialization produced an empty database image")
+    # Build the canonical database in memory before choosing the publication
+    # substrate. Both publication paths link one exact serialized image and
+    # never replace a target that appears concurrently.
+    memory_database = sqlite3.connect(":memory:")
+    try:
+        initialize_archive_tier(memory_database, tier)
+        initialized_image = memory_database.serialize()
+    finally:
+        memory_database.close()
+    if not initialized_image:
+        raise MigrationError(f"canonical {tier.value} tier initialization produced an empty database image")
+
+    anonymous_flag = getattr(os, "O_TMPFILE", 0)
+    anonymous_unsupported = not anonymous_flag
+    publication_descriptor: int | None = None
+    named_publication_path: Path | None = None
+    try:
+        if not anonymous_unsupported:
+            try:
+                publication_descriptor = os.open(
+                    path.parent,
+                    os.O_RDWR | anonymous_flag | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                )
+            except OSError as exc:
+                if exc.errno in {errno.EISDIR, errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}:
+                    anonymous_unsupported = True
+                else:
+                    raise MigrationError(
+                        f"cannot create anonymous durable-tier publication inode: {path.parent}"
+                    ) from exc
+        if anonymous_unsupported:
+            try:
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=f".{path.name}.initialize-",
+                    suffix=".tmp",
+                    dir=path.parent,
+                )
+            except OSError as exc:
+                raise MigrationError(f"cannot create durable-tier publication staging file: {path.parent}") from exc
+            publication_descriptor = descriptor
+            named_publication_path = Path(temporary_name)
+            os.fchmod(publication_descriptor, 0o600)
 
         source_offset = 0
         while source_offset < len(initialized_image):
@@ -97,15 +144,26 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
         publication_metadata = os.fstat(publication_descriptor)
         if (
             not stat.S_ISREG(publication_metadata.st_mode)
-            or publication_metadata.st_nlink != 0
+            or (not anonymous_unsupported and publication_metadata.st_nlink != 0)
             or publication_metadata.st_size != len(initialized_image)
         ):
-            raise MigrationError(f"anonymous durable-tier publication image is incomplete: {path}")
+            raise MigrationError(f"durable-tier publication image is incomplete: {path}")
         publication_identity = (publication_metadata.st_dev, publication_metadata.st_ino)
+        if named_publication_path is not None:
+            os.close(publication_descriptor)
+            publication_descriptor = None
         try:
-            # O_TMPFILE plus link(2) publishes one descriptor-backed inode
-            # without resolving the replaceable named staging path again.
-            os.link(f"/proc/self/fd/{publication_descriptor}", path, follow_symlinks=True)
+            if named_publication_path is None:
+                # O_TMPFILE plus link(2) publishes one descriptor-backed inode
+                # without resolving a replaceable named staging path again.
+                assert publication_descriptor is not None
+                os.link(f"/proc/self/fd/{publication_descriptor}", path, follow_symlinks=True)
+            else:
+                # mkstemp created this same-directory name with O_EXCL and
+                # mode 0600. Closing it before link makes the fallback portable
+                # to filesystems without O_TMPFILE while retaining no-replace
+                # publication semantics.
+                os.link(named_publication_path, path, follow_symlinks=True)
         except FileExistsError as exc:
             raise MigrationError(
                 f"{tier.value} tier appeared during initialization; refusing to replace it: {path}"
@@ -116,6 +174,8 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             or (published_metadata.st_dev, published_metadata.st_ino) != publication_identity
         ):
             raise MigrationError(f"published durable tier identity does not match the staged database: {path}")
+        if named_publication_path is not None:
+            named_publication_path.unlink(missing_ok=True)
         directory_descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory_descriptor)
@@ -124,6 +184,8 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     finally:
         if publication_descriptor is not None:
             os.close(publication_descriptor)
+        if named_publication_path is not None:
+            named_publication_path.unlink(missing_ok=True)
 
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 

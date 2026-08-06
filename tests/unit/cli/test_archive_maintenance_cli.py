@@ -2163,8 +2163,8 @@ def test_rebuild_index_preflight_reports_durable_schema_currency(
 def test_migrate_tier_cli_initializes_only_an_absent_durable_tier(
     cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:
+    _stage_uninitialized_archive(cli_workspace)
     audit_db = cli_workspace["archive_root"] / "audit.db"
-    audit_db.unlink()
 
     result = cli_runner.invoke(
         cli,
@@ -2222,8 +2222,8 @@ def test_migrate_tier_cli_missing_initialization_refuses_an_existing_tier(
 def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_replacement(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _stage_uninitialized_archive(cli_workspace)
     audit_db = cli_workspace["archive_root"] / "audit.db"
-    audit_db.unlink()
     raced_bytes = b"concurrent durable owner\n"
     real_link = os.link
 
@@ -2267,12 +2267,13 @@ def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_repl
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 
-def test_migrate_tier_cli_exposes_no_named_staging_inode_before_publication(
+def test_migrate_tier_cli_uses_named_staging_inode_when_anonymous_publication_is_unsupported(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _stage_uninitialized_archive(cli_workspace)
     audit_db = cli_workspace["archive_root"] / "audit.db"
-    audit_db.unlink()
     real_link = os.link
+    monkeypatch.setattr(os, "O_TMPFILE", 0, raising=False)
 
     def assert_no_named_stage_before_publish(
         source: os.PathLike[str] | str,
@@ -2282,7 +2283,7 @@ def test_migrate_tier_cli_exposes_no_named_staging_inode_before_publication(
         dst_dir_fd: int | None = None,
         follow_symlinks: bool = True,
     ) -> None:
-        assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
+        assert list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
         real_link(
             source,
             destination,
@@ -2318,6 +2319,42 @@ def test_migrate_tier_cli_exposes_no_named_staging_inode_before_publication(
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 
+@pytest.mark.parametrize(
+    ("missing_name", "sibling_name"),
+    [("source.db", "user.db"), ("user.db", "source.db"), ("audit.db", "source.db")],
+)
+def test_migrate_tier_cli_refuses_to_initialize_a_tier_in_an_established_archive(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    missing_name: str,
+    sibling_name: str,
+) -> None:
+    root = cli_workspace["archive_root"]
+    missing = root / missing_name
+    missing.unlink()
+    before = missing.exists()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            missing.stem,
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "established archive" in json.loads(result.stdout)["error"]
+    assert missing.exists() is before
+    assert (root / sibling_name).exists()
+
+
 def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
     cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:
@@ -2337,8 +2374,8 @@ def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
     assert not (root / ".index-generations").exists()
 
 
-def test_rebuild_index_empty_source_preserves_plain_receipt_output_after_guard(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+def test_rebuild_index_empty_source_preserves_plain_receipt_output_without_schema_receipt(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:
     """The real empty receipt must render without replay-only counter keys.
 
@@ -2346,8 +2383,6 @@ def test_rebuild_index_empty_source_preserves_plain_receipt_output_after_guard(
     formatter and raises KeyError before this exact plain output is emitted.
     """
     root = cli_workspace["archive_root"]
-    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
-    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
     result = cli_runner.invoke(
         cli,
