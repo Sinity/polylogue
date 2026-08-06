@@ -1,0 +1,20 @@
+{
+  "uuid": "origin-matrix-claude-design",
+  "project": {
+    "uuid": "origin-matrix-project",
+    "name": "Polylogue"
+  },
+  "messages": [
+    {
+      "uuid": "message-1",
+      "role": "user",
+      "content": {
+        "role": "user",
+        "content": "Prove the parser claim.",
+        "authorAccountUuid": "origin-matrix-account",
+        "authorName": "Sinity",
+        "timestamp": "2026-08-01T10:00:01.000Z"
+      }
+    }
+  ]
+}
