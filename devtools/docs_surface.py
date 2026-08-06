@@ -236,6 +236,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "Topology Live-Proof Residue, 2026-08-06",
+        "evidence/polylogue-topology-live-proof-2026-08-06.md",
+        "Candidate topology census, production-route cycle evidence, and unexercised live-archive residue.",
+        "evidence",
+    ),
+    _entry(
         "Proof Artifacts",
         "proof-artifacts.md",
         "Claim-to-proof map for public-facing demo and evidence claims.",
