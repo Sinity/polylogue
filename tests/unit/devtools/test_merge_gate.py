@@ -198,6 +198,36 @@ def test_check_ok_when_receipt_fresh_and_matches_head_with_no_late_comments(
     assert exit_code == 0
 
 
+@pytest.mark.parametrize(
+    ("receipt_field", "mutated_value", "reason"),
+    [
+        ("pr_scope_beads_digest", "stale", "pr_scope_beads_digest"),
+        ("pr_scope_assigned_beads", ["polylogue-other"], "pr_scope_assigned_beads"),
+    ],
+)
+def test_check_blocks_when_receipt_scope_components_are_mutated(
+    receipt_field: str,
+    mutated_value: object,
+    reason: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view)
+    receipt_path = merge_gate._receipt_path(42)
+    receipt = json.loads(receipt_path.read_text())
+    receipt[receipt_field] = mutated_value
+    receipt_path.write_text(json.dumps(receipt))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
+
+    assert exit_code == 1
+    assert reason in capsys.readouterr().out
+
+
 def test_check_blocks_when_receipt_is_for_a_stale_sha(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     _record(monkeypatch, _base_pr_view(head_sha="abc123"))

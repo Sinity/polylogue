@@ -219,7 +219,7 @@ The repository should stay aligned with the workflow above:
 
 - protect `master` against direct pushes
 - require pull requests for normal changes
-- require the `CI`, `Nix`, and `PR State Guard` checks before merge
+- require the authoritative CI checks before merge
 - keep squash merge enabled and leave merge-commit and rebase-merge disabled
 - enable automatic deletion of head branches after merge
 - allow Update branch for stale PRs

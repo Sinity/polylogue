@@ -461,6 +461,16 @@ def cmd_check(
                 verdict.reasons.append(
                     "receipt pr_scope_digest does not match the current carrier -- re-record after scope changes"
                 )
+            if receipt.get("pr_scope_beads_digest") != scope.beads_digest:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "receipt pr_scope_beads_digest does not match the current canonical Bead records -- re-record"
+                )
+            if receipt.get("pr_scope_assigned_beads") != scope.assigned_beads:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "receipt pr_scope_assigned_beads does not match the current carrier -- re-record"
+                )
             age_s = time.time() - receipt.get("recorded_at", 0)
             if age_s > max_age_s:
                 verdict.ok = False

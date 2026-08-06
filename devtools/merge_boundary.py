@@ -197,7 +197,17 @@ def cmd_merge(
         return 0
 
     merge_result = subprocess.run(
-        ["gh", "pr", "merge", str(pr), "--squash", "--subject", clean_title],
+        [
+            "gh",
+            "pr",
+            "merge",
+            str(pr),
+            "--squash",
+            "--match-head-commit",
+            head_sha,
+            "--subject",
+            clean_title,
+        ],
         capture_output=True,
         text=True,
         timeout=120,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
+from urllib import request
 
 import pytest
 
@@ -49,7 +51,13 @@ def _input(disposition: str = "satisfied", successors: list[str] | None = None) 
 
 
 def _body(input_payload: dict[str, object], beads_path: Path, *, head_sha: str = HEAD_SHA) -> str:
-    carrier = pr_scope.build_carrier(input_payload, head_sha=head_sha, beads_path=beads_path)
+    carrier = dict(input_payload)
+    carrier["version"] = 1
+    carrier["head_sha"] = head_sha
+    assigned = carrier["assigned_beads"]
+    assert isinstance(assigned, list)
+    carrier["beads_digest"] = pr_scope.canonical_beads_digest(pr_scope.load_bead_records(beads_path), assigned)
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
     return f"## Summary\n\nStructured scope test.\n\n{pr_scope.render_carrier(carrier)}\n"
 
 
@@ -65,6 +73,20 @@ def _check(
     return f"{exit_code}\n{output}"
 
 
+class _FakeHttpResponse:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> _FakeHttpResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.payload
+
+
 def test_rendered_carrier_passes_the_production_check_command(
     beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -78,6 +100,126 @@ def test_rendered_carrier_passes_the_production_check_command(
     rendered = capsys.readouterr().out
 
     assert _check(rendered, beads_path, tmp_path, capsys).startswith("0\npr-scope OK")
+
+
+def test_pr_check_uses_public_github_rest_without_cli_auth(
+    monkeypatch: pytest.MonkeyPatch,
+    beads_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    body = _body(_input(), beads_path)
+    requests: list[request.Request] = []
+
+    def _urlopen(api_request: request.Request, *, timeout: int) -> _FakeHttpResponse:
+        assert timeout == 30
+        requests.append(api_request)
+        payload = {
+            "body": body,
+            "draft": False,
+            "head": {"sha": HEAD_SHA},
+            "base": {"sha": "b" * 40},
+        }
+        return _FakeHttpResponse(json.dumps(payload).encode())
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(request, "urlopen", _urlopen)
+
+    exit_code = pr_scope.main(["check", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.startswith("pr-scope OK")
+    assert len(requests) == 1
+    assert requests[0].full_url == "https://api.github.com/repos/Sinity/polylogue/pulls/42"
+    assert requests[0].get_header("Authorization") is None
+
+
+def test_ci_resolves_pr_from_exact_head_when_circle_pr_url_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[request.Request] = []
+
+    def _urlopen(api_request: request.Request, *, timeout: int) -> _FakeHttpResponse:
+        assert timeout == 30
+        requests.append(api_request)
+        payload = [
+            {
+                "number": 3845,
+                "state": "open",
+                "body": "carrier",
+                "draft": False,
+                "head": {"sha": HEAD_SHA},
+                "base": {"sha": "b" * 40},
+            },
+            {
+                "number": 3800,
+                "state": "closed",
+                "body": "old carrier",
+                "draft": False,
+                "head": {"sha": HEAD_SHA},
+                "base": {"sha": "c" * 40},
+            },
+        ]
+        return _FakeHttpResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(request, "urlopen", _urlopen)
+
+    pr_number, metadata = pr_scope.fetch_pr_for_head(repository="Sinity/polylogue", head_sha=HEAD_SHA)
+
+    assert pr_number == 3845
+    assert metadata.head_sha == HEAD_SHA
+    assert requests[0].full_url == f"https://api.github.com/repos/Sinity/polylogue/commits/{HEAD_SHA}/pulls"
+
+
+def test_ci_check_executes_base_revision_validator(
+    monkeypatch: pytest.MonkeyPatch,
+    beads_path: Path,
+) -> None:
+    metadata = pr_scope.PullRequestMetadata(
+        body="## Summary\n\nA PR-modified validator would accept this body.",
+        head_sha=HEAD_SHA,
+        base_sha="b" * 40,
+        is_draft=False,
+    )
+    base_source = Path(pr_scope.__file__).read_bytes()
+    current_validator = MagicMock(return_value=pr_scope.ScopeVerdict(ok=True))
+    monkeypatch.setattr(pr_scope, "fetch_base_validator_source", lambda **_kwargs: base_source)
+    monkeypatch.setattr(pr_scope, "validate_pr_body", current_validator)
+
+    exit_code = pr_scope.check_ci_metadata(
+        metadata,
+        repository="Sinity/polylogue",
+        beads_path=beads_path,
+        checkout_head_sha=HEAD_SHA,
+        expected_head_sha=HEAD_SHA,
+    )
+
+    assert exit_code == 1
+    current_validator.assert_not_called()
+
+
+def test_ci_check_bootstraps_once_when_base_has_no_validator(
+    monkeypatch: pytest.MonkeyPatch,
+    beads_path: Path,
+) -> None:
+    metadata = pr_scope.PullRequestMetadata(
+        body=_body(_input(), beads_path),
+        head_sha=HEAD_SHA,
+        base_sha="b" * 40,
+        is_draft=False,
+    )
+    monkeypatch.setattr(pr_scope, "fetch_base_validator_source", lambda **_kwargs: None)
+
+    assert (
+        pr_scope.check_ci_metadata(
+            metadata,
+            repository="Sinity/polylogue",
+            beads_path=beads_path,
+            checkout_head_sha=HEAD_SHA,
+            expected_head_sha=HEAD_SHA,
+        )
+        == 0
+    )
 
 
 def test_check_rejects_carrier_bound_to_a_different_head_sha(
@@ -134,6 +276,33 @@ def test_check_rejects_partial_disposition_without_successor(
 
     assert result.startswith("1\n")
     assert "partial disposition requires a named successor" in result
+
+
+def test_check_rejects_unknown_schema_fields(
+    beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    carrier = pr_scope.build_carrier(_input(), head_sha=HEAD_SHA, beads_path=beads_path)
+    carrier["acceptance_summary"] = "silently extending v1 would make the schema ambiguous"
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+
+    result = _check(pr_scope.render_carrier(carrier), beads_path, tmp_path, capsys)
+
+    assert result.startswith("1\n")
+    assert "unknown field(s): acceptance_summary" in result
+
+
+def test_render_refuses_invalid_partial_scope_input(
+    beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scope_input = tmp_path / "scope.json"
+    scope_input.write_text(json.dumps(_input("partial")))
+
+    exit_code = pr_scope.main(
+        ["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)]
+    )
+
+    assert exit_code == 2
+    assert "partial disposition requires a named successor" in capsys.readouterr().err
 
 
 def test_check_rejects_pr_body_without_carrier(

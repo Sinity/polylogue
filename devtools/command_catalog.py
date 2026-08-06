@@ -782,6 +782,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace pr-scope render --input .agent/pr-scope.json > /tmp/pr-scope.md",
             "devtools workspace pr-scope check --pr 3517",
+            "devtools workspace pr-scope check-ci --pr 3517 --repo Sinity/polylogue --expected-head-sha $(git rev-parse HEAD)",
             "devtools workspace pr-scope check --body-file pr-body.md --head-sha $(git rev-parse HEAD)",
         ),
     ),
