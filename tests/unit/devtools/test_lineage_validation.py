@@ -374,7 +374,78 @@ def test_lineage_validation_snapshot_is_stable_for_a_quiescent_wal_database(tmp_
         report = lineage_validation.build_report(_args(archive_root))
 
     assert report["snapshot_identity"]["stable"] is True
+    assert report["snapshot_identity"]["file_set_stable"] is True
+    assert report["snapshot_identity"]["no_concurrent_commits"] is True
     assert report["verdict"]["external_counts_citable"] is True
+
+
+def test_lineage_validation_rejects_commit_between_reader_snapshot_and_file_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    writer = sqlite3.connect(db)
+    assert writer.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
+    original_snapshot_identity = lineage_validation._snapshot_identity
+    snapshot_calls = 0
+
+    def commit_before_first_file_hash(index_db: Path) -> dict[str, object]:
+        nonlocal snapshot_calls
+        if snapshot_calls == 0:
+            writer.execute("UPDATE session_links SET method = 'concurrent' WHERE src_session_id = 'child'")
+            writer.commit()
+        snapshot_calls += 1
+        return original_snapshot_identity(index_db)
+
+    monkeypatch.setattr(lineage_validation, "_snapshot_identity", commit_before_first_file_hash)
+    try:
+        report = lineage_validation.build_report(_args(archive_root))
+    finally:
+        writer.close()
+
+    identity = report["snapshot_identity"]
+    assert identity["file_set_stable"] is True
+    assert identity["no_concurrent_commits"] is False
+    assert identity["observer_data_version_after"] > identity["observer_data_version_before"]
+    assert identity["stable"] is False
+    assert report["verdict"]["external_counts_citable"] is False
+    assert "index received a concurrent commit during the read-only census" in report["verdict"]["reasons"]
+
+
+def test_lineage_validation_rejects_budget_exhaustion_as_cycle_proof(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            UPDATE session_links
+            SET status = 'quarantined',
+                resolved_dst_session_id = NULL,
+                evidence_json = ?
+            WHERE src_session_id = 'child'
+            """,
+            (
+                json.dumps(
+                    {
+                        "reason": "cycle_rejected",
+                        "cycle_path": ["child", "parent", "...budget-exceeded"],
+                        "detected_at_ms": 1,
+                    }
+                ),
+            ),
+        )
+        conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE session_id = 'child'")
+
+    report = lineage_validation.build_report(_args(archive_root))
+
+    topology = report["lineage"]["topology"]
+    assert topology["cycle_evidence_count"] == 0
+    assert topology["budget_exhausted_quarantine_evidence_count"] == 1
+    assert topology["quarantined_without_cycle_evidence"] == 1
+    assert report["verdict"]["external_counts_citable"] is False
+    assert (
+        "1 quarantined topology links only have cycle-walk budget exhaustion evidence" in report["verdict"]["reasons"]
+    )
 
 
 def test_lineage_validation_unchecked_census_has_checked_schema(tmp_path: Path) -> None:

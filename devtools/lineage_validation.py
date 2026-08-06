@@ -130,6 +130,12 @@ def _user_version(conn: Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def _data_version(conn: Connection) -> int:
+    """Return this observer connection's external-commit generation."""
+    row = conn.execute("PRAGMA data_version").fetchone()
+    return int(row[0]) if row else 0
+
+
 def _count(conn: Connection, table: str) -> int:
     row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
     return int(row[0]) if row else 0
@@ -162,12 +168,28 @@ def _table_columns(conn: Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def _quarantine_evidence_counts(conn: Connection) -> tuple[int, int]:
-    """Count valid cycle evidence and malformed quarantine evidence separately."""
+def _quarantine_evidence_counts(conn: Connection) -> tuple[int, int, int]:
+    """Count proven cycles, malformed evidence, and walk-budget exhaustion."""
     cycle_evidence_count = 0
     malformed_count = 0
-    rows = conn.execute("SELECT evidence_json FROM session_links WHERE TRIM(status) = 'quarantined'").fetchall()
-    for (raw_evidence,) in rows:
+    budget_exhausted_count = 0
+    rows = conn.execute(
+        """
+        SELECT links.src_session_id,
+               links.evidence_json,
+               (
+                   SELECT destination.session_id
+                   FROM sessions destination
+                   WHERE destination.origin = links.dst_origin
+                     AND destination.native_id = links.dst_native_id
+                   ORDER BY destination.session_id
+                   LIMIT 1
+               ) AS asserted_parent_session_id
+        FROM session_links links
+        WHERE TRIM(links.status) = 'quarantined'
+        """
+    ).fetchall()
+    for src_session_id, raw_evidence, asserted_parent_session_id in rows:
         try:
             evidence = json.loads(raw_evidence)
         except (TypeError, ValueError):
@@ -175,7 +197,7 @@ def _quarantine_evidence_counts(conn: Connection) -> tuple[int, int]:
             continue
         cycle_path = evidence.get("cycle_path") if isinstance(evidence, dict) else None
         detected_at_ms = evidence.get("detected_at_ms") if isinstance(evidence, dict) else None
-        if (
+        base_shape_valid = (
             isinstance(evidence, dict)
             and evidence.get("reason") == "cycle_rejected"
             and isinstance(cycle_path, list)
@@ -183,11 +205,20 @@ def _quarantine_evidence_counts(conn: Connection) -> tuple[int, int]:
             and all(isinstance(session_id, str) and session_id.strip() for session_id in cycle_path)
             and isinstance(detected_at_ms, int)
             and not isinstance(detected_at_ms, bool)
+        )
+        if base_shape_valid and "...budget-exceeded" in cycle_path:
+            budget_exhausted_count += 1
+        elif (
+            base_shape_valid
+            and asserted_parent_session_id is not None
+            and cycle_path[0] == src_session_id
+            and cycle_path[-1] == src_session_id
+            and cycle_path[1] == asserted_parent_session_id
         ):
             cycle_evidence_count += 1
         else:
             malformed_count += 1
-    return cycle_evidence_count, malformed_count
+    return cycle_evidence_count, malformed_count, budget_exhausted_count
 
 
 def _logical_session_count(conn: Connection) -> int:
@@ -356,6 +387,7 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
             "unknown_effective_statuses": {},
             "cycle_evidence_count": 0,
             "malformed_quarantine_evidence_count": 0,
+            "budget_exhausted_quarantine_evidence_count": 0,
             "quarantined_without_cycle_evidence": 0,
             "quarantined_with_resolved_parent_count": 0,
             "quarantined_with_stale_projection_count": 0,
@@ -406,7 +438,11 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
     unknown_states = {
         state: count for state, count in effective_status_counts.items() if state not in TOPOLOGY_EFFECTIVE_STATES
     }
-    cycle_evidence_count, malformed_quarantine_evidence_count = _quarantine_evidence_counts(conn)
+    (
+        cycle_evidence_count,
+        malformed_quarantine_evidence_count,
+        budget_exhausted_quarantine_evidence_count,
+    ) = _quarantine_evidence_counts(conn)
     quarantined_count = effective_status_counts.get("quarantined", 0)
     quarantined_without_cycle_evidence = max(0, quarantined_count - cycle_evidence_count)
     quarantined_with_resolved_parent_count = _scalar_int(
@@ -442,6 +478,7 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
         "unknown_effective_statuses": unknown_states,
         "cycle_evidence_count": cycle_evidence_count,
         "malformed_quarantine_evidence_count": malformed_quarantine_evidence_count,
+        "budget_exhausted_quarantine_evidence_count": budget_exhausted_quarantine_evidence_count,
         "quarantined_without_cycle_evidence": quarantined_without_cycle_evidence,
         "quarantined_with_resolved_parent_count": quarantined_with_resolved_parent_count,
         "quarantined_with_stale_projection_count": quarantined_with_stale_projection_count,
@@ -715,7 +752,10 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
     index_db = (args.index_db or config.db_path).expanduser().resolve()
     conn = open_readonly_connection(index_db)
+    observer: Connection | None = None
     try:
+        observer = open_readonly_connection(index_db)
+        observer_data_version_before = _data_version(observer)
         conn.execute("BEGIN")
         # BEGIN is deferred. Force the first SQLite read before hashing WAL
         # sidecars so this census's own reader mark cannot make a quiescent
@@ -790,6 +830,11 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
                 reasons.append(
                     f"{topology['malformed_quarantine_evidence_count']} quarantined topology links have malformed evidence"
                 )
+            if topology["budget_exhausted_quarantine_evidence_count"]:
+                reasons.append(
+                    f"{topology['budget_exhausted_quarantine_evidence_count']} quarantined topology links only have "
+                    "cycle-walk budget exhaustion evidence"
+                )
             if topology["quarantined_with_resolved_parent_count"]:
                 reasons.append(
                     f"{topology['quarantined_with_resolved_parent_count']} quarantined topology links still resolve a parent"
@@ -806,12 +851,21 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
                 reasons.append("sampled unresolved-parent reads did not remain child-local")
 
         snapshot_after = _snapshot_identity(index_db)
-        snapshot_stable = snapshot_before["sha256"] == snapshot_after["sha256"]
-        if not snapshot_stable:
-            reasons.append("index snapshot changed during the read-only census")
+        observer_data_version_after = _data_version(observer)
+        file_set_stable = snapshot_before["sha256"] == snapshot_after["sha256"]
+        no_concurrent_commits = observer_data_version_before == observer_data_version_after
+        snapshot_stable = file_set_stable and no_concurrent_commits
+        if not file_set_stable:
+            reasons.append("index file set changed during the read-only census")
+        if not no_concurrent_commits:
+            reasons.append("index received a concurrent commit during the read-only census")
         snapshot_identity = {
             "before": snapshot_before,
             "after": snapshot_after,
+            "file_set_stable": file_set_stable,
+            "observer_data_version_before": observer_data_version_before,
+            "observer_data_version_after": observer_data_version_after,
+            "no_concurrent_commits": no_concurrent_commits,
             "stable": snapshot_stable,
         }
         report: dict[str, Any] = {
@@ -844,6 +898,8 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     finally:
         conn.rollback()
         conn.close()
+        if observer is not None:
+            observer.close()
 
     if args.out_dir is not None:
         _write_artifacts(args.out_dir, report)

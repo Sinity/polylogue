@@ -156,6 +156,7 @@ async def test_cross_ingest_cycle_quarantines_the_closing_edge_without_losing_pr
     assert census["effective_status_counts"] == {"quarantined": 1, "resolved": 1}
     assert census["cycle_evidence_count"] == 1
     assert census["malformed_quarantine_evidence_count"] == 0
+    assert census["budget_exhausted_quarantine_evidence_count"] == 0
     assert census["quarantined_with_resolved_parent_count"] == 0
     assert census["quarantined_with_stale_projection_count"] == 0
 
@@ -165,6 +166,39 @@ async def test_cross_ingest_cycle_quarantines_the_closing_edge_without_losing_pr
     assert malformed["cycle_evidence_count"] == 0
     assert malformed["malformed_quarantine_evidence_count"] == 1
     assert malformed["quarantined_without_cycle_evidence"] == 1
+
+    unrelated_evidence = json.dumps(
+        {
+            "reason": "cycle_rejected",
+            "cycle_path": ["unrelated-a", "unrelated-b"],
+            "detected_at_ms": 1,
+        }
+    )
+    conn.execute(
+        "UPDATE session_links SET evidence_json = ? WHERE src_session_id = ?",
+        (unrelated_evidence, a_id),
+    )
+    unrelated = census_topology_links(conn, sample_unresolved=0)
+    assert unrelated["cycle_evidence_count"] == 0
+    assert unrelated["malformed_quarantine_evidence_count"] == 1
+    assert unrelated["budget_exhausted_quarantine_evidence_count"] == 0
+
+    budget_evidence = json.dumps(
+        {
+            "reason": "cycle_rejected",
+            "cycle_path": [a_id, b_id, "...budget-exceeded"],
+            "detected_at_ms": 1,
+        }
+    )
+    conn.execute(
+        "UPDATE session_links SET evidence_json = ? WHERE src_session_id = ?",
+        (budget_evidence, a_id),
+    )
+    budget_exhausted = census_topology_links(conn, sample_unresolved=0)
+    assert budget_exhausted["cycle_evidence_count"] == 0
+    assert budget_exhausted["malformed_quarantine_evidence_count"] == 0
+    assert budget_exhausted["budget_exhausted_quarantine_evidence_count"] == 1
+    assert budget_exhausted["quarantined_without_cycle_evidence"] == 1
 
     parent_message_id = conn.execute(
         "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1", (b_id,)

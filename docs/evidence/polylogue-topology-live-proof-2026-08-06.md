@@ -6,7 +6,7 @@ This report records the proof surface implemented for `polylogue-topology-live-p
 
 ## Candidate proof
 
-The candidate fixture contains two resolved links and one unresolved native-parent link, all written through the production writer. The production writer supplies a non-empty method for all three rows. The census derives the ordinary `resolved` and `unresolved` states from `resolved_dst_session_id`, while preserving the nullable raw `status` column contract. The bounded unresolved-parent read sample exercises `read_archive_session_envelope` and proves the child remains child-local: no parent session is composed, and the served message count equals the child-owned count. Each receipt binds the report to the database and any SQLite sidecars by content digest, file identity, and a held read transaction. With a fixed capture time, an unchanged source reproduces the receipt, while a source mutation changes its binding.
+The candidate fixture contains two resolved links and one unresolved native-parent link, all written through the production writer. The production writer supplies a non-empty method for all three rows. The census derives the ordinary `resolved` and `unresolved` states from `resolved_dst_session_id`, while preserving the nullable raw `status` column contract. The bounded unresolved-parent read sample exercises `read_archive_session_envelope` and proves the child remains child-local: no parent session is composed, and the served message count equals the child-owned count. Each receipt binds the report to the database and any SQLite sidecars by content digest, file identity, a held read transaction, and a second SQLite observer that rejects any concurrent commit between the snapshot read and both file-set hashes. With a fixed capture time, an unchanged source reproduces the receipt, while a source mutation changes its binding.
 
 | Evidence | Result |
 | --- | ---: |
@@ -19,7 +19,7 @@ The candidate fixture contains two resolved links and one unresolved native-pare
 | cycle-quarantine evidence in candidate | `0` |
 | candidate snapshot stable during census | `true` |
 
-The production-route cycle fixture separately proves a `quarantined` closing edge with `cycle_rejected` evidence. Its census has `resolved=1`, `quarantined=1`, zero empty effective states, zero empty methods, one valid cycle-evidence row, and zero malformed quarantine-evidence rows. Mutations that blank a method, introduce malformed quarantine JSON, or give a quarantined row a resolved parent each make the census fail, and the reader leaves the contradictory quarantined row uncomposed.
+The production-route cycle fixture separately proves a `quarantined` closing edge with `cycle_rejected` evidence. Valid evidence must carry a closed cycle path anchored to the quarantined source and asserted parent. Walk-budget exhaustion is reported separately and is not accepted as a demonstrated cycle. Its census has `resolved=1`, `quarantined=1`, zero empty effective states, zero empty methods, one valid cycle-evidence row, and zero malformed quarantine-evidence rows. Mutations that blank a method, provide unrelated cycle-shaped JSON, exhaust the walk budget, or give a quarantined row a resolved parent each make the census fail, and the reader leaves the contradictory quarantined row uncomposed.
 
 ## Live residue
 
@@ -31,4 +31,4 @@ No live archive was opened or mutated in this lane. The live database path is ou
 devtools test tests/unit/devtools/test_lineage_validation.py tests/unit/storage/test_topology_cycle_quarantine_live.py
 ```
 
-The tests include mutations that blank a method, introduce an unknown status, make an unresolved child claim a parent in `sessions.parent_session_id`, introduce malformed quarantine JSON, and make a quarantined row resolve a parent; each mutation makes the relevant proof fail. The live receipt step was not run, so the live census remains explicitly not observed.
+The tests include mutations that blank a method, introduce an unknown status, make an unresolved child claim a parent in `sessions.parent_session_id`, provide malformed or unrelated cycle evidence, exhaust cycle-walk budget, make a quarantined row resolve a parent, and commit through a second WAL connection between the held reader snapshot and file hashing. Each mutation makes the relevant proof fail. The live receipt step was not run, so the live census remains explicitly not observed.
