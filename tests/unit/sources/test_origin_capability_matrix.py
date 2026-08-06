@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
+from polylogue.config import Source
 from polylogue.core.enums import Origin
 from polylogue.core.sources import origin_from_provider
+from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.dispatch import (
     detect_provider,
     detect_provider_evidence,
@@ -69,11 +72,38 @@ def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and
         assert accepted, entry.origin.value
 
 
-def test_malformed_witnesses_are_rejected_by_detector_and_content_gate() -> None:
+@pytest.mark.asyncio
+async def test_supported_witnesses_reach_the_production_archive_ingest_seam(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The matrix positives pass through configured-source archive ingestion."""
     manifest = load_manifest()
+    supported = [entry for entry in manifest.entries if entry.unsupported is None]
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
 
-    for case in manifest.malformed:
-        detect_provider(case.payload)
+    result = await parse_sources_archive(
+        workspace_env["archive_root"],
+        [
+            Source(name=entry.parser_claims[0].provider.value, path=Path(entry.fixture_path or ""))
+            for entry in supported
+        ],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] >= len(supported)
+    assert result.counts["messages"] >= len(supported)
+    assert len(result.processed_ids) >= len(supported)
+
+
+@pytest.mark.parametrize("family_name", ["empty", "partial", "malformed"])
+def test_negative_witness_families_are_rejected_by_dispatch_and_content_gate(family_name: str) -> None:
+    manifest = load_manifest()
+    cases = getattr(manifest, family_name)
+
+    for case in cases:
+        detected = detect_provider(case.payload)
         sessions = parse_payload(case.provider, case.payload, f"malformed-{case.name}")
         assert (
             require_positive_conversational_evidence(
@@ -83,6 +113,16 @@ def test_malformed_witnesses_are_rejected_by_detector_and_content_gate() -> None
             )
             == []
         ), case.name
+        if detected is not None and detected is not case.provider:
+            cross_origin_sessions = parse_payload(detected, case.payload, f"cross-origin-{case.name}")
+            assert (
+                require_positive_conversational_evidence(
+                    cross_origin_sessions,
+                    provider=detected,
+                    source_path=None,
+                )
+                == []
+            ), case.name
 
 
 def test_collision_witnesses_follow_real_detector_precedence_and_still_parse() -> None:
@@ -113,4 +153,14 @@ def test_unsupported_route_cannot_become_silent_green_support() -> None:
     unsupported["status"] = "supported"
 
     with pytest.raises(ValueError, match="exactly one parser claim"):
+        load_manifest_payload(payload)
+
+
+def test_parser_claim_cannot_cross_origin_spec_boundary() -> None:
+    payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    supported = next(item for item in payload["entries"] if item["status"] == "supported")
+    supported["provider"] = "chatgpt"
+    supported["parser_claims"] = [{"provider": "chatgpt"}]
+
+    with pytest.raises(ValueError, match="not declared by OriginSpec|different public origin"):
         load_manifest_payload(payload)

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal, TypeVar, cast
 
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.sources import origin_from_provider
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginSpec
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +59,8 @@ class CollisionCase:
 @dataclass(frozen=True, slots=True)
 class CapabilityManifest:
     entries: tuple[CapabilityEntry, ...]
+    empty: tuple[NegativeCase, ...]
+    partial: tuple[NegativeCase, ...]
     malformed: tuple[NegativeCase, ...]
     collisions: tuple[CollisionCase, ...]
 
@@ -83,13 +86,30 @@ def load_manifest_payload(payload: object) -> CapabilityManifest:
     if set(origins) != set(Origin) or declared_origins != set(Origin):
         raise ValueError("origin capability manifest must cover every OriginSpec and public Origin")
 
+    empty = tuple(_negative_case(item) for item in _list(root.get("empty"), "manifest.empty"))
+    partial = tuple(_negative_case(item) for item in _list(root.get("partial"), "manifest.partial"))
     malformed = tuple(_negative_case(item) for item in _list(root.get("malformed"), "manifest.malformed"))
     collisions = tuple(_collision_case(item) for item in _list(root.get("collisions"), "manifest.collisions"))
+    for family_name, cases in (("empty", empty), ("partial", partial), ("malformed", malformed)):
+        if not cases:
+            raise ValueError(f"origin capability manifest requires {family_name} negatives")
+        for case in cases:
+            if not _provider_has_executable_spec(case.provider):
+                raise ValueError(f"{family_name} case {case.name!r} names an undeclared parser provider")
     if not malformed:
         raise ValueError("origin capability manifest requires malformed negatives")
     if not collisions:
         raise ValueError("origin capability manifest requires collision negatives")
-    return CapabilityManifest(entries=entries, malformed=malformed, collisions=collisions)
+    for collision in collisions:
+        if not _provider_has_executable_spec(collision.expected_provider):
+            raise ValueError(f"collision case {collision.name!r} names an undeclared parser provider")
+    return CapabilityManifest(
+        entries=entries,
+        empty=empty,
+        partial=partial,
+        malformed=malformed,
+        collisions=collisions,
+    )
 
 
 def load_fixture(entry: CapabilityEntry) -> object:
@@ -122,6 +142,8 @@ def _entry(payload: object) -> CapabilityEntry:
             raise ValueError(f"{origin.value}: provider field disagrees with its parser claim")
         if claims[0].provider not in spec.provider_wires:
             raise ValueError(f"{origin.value}: parser claim is not declared by OriginSpec")
+        if origin_from_provider(claims[0].provider) is not origin:
+            raise ValueError(f"{origin.value}: parser claim maps to a different public origin")
         fixture_path = _string(raw.get("fixture"), f"{origin.value}.fixture")
         fixture_format = cast(
             Literal["json", "jsonl"],
@@ -180,6 +202,10 @@ def _spec_for(origin: Origin) -> OriginSpec:
         if spec.origin is origin:
             return spec
     raise ValueError(f"{origin.value}: missing OriginSpec")
+
+
+def _provider_has_executable_spec(provider: Provider) -> bool:
+    return any(spec.lifecycle == "executable" and provider in spec.provider_wires for spec in ORIGIN_SPECS)
 
 
 def _repo_path(value: str) -> Path:

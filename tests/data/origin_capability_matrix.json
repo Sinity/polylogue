@@ -14,6 +14,18 @@
     {"origin": "aistudio-drive", "status": "supported", "provider": "gemini", "fixture": "tests/data/gemini_chunked_prompt/text_only_session.json", "format": "json", "fallback_id": "origin-matrix-aistudio", "parser_claims": [{"provider": "gemini"}]},
     {"origin": "unknown-export", "status": "unsupported", "parser_claims": [], "unsupported": {"status": "unsupported", "reason": "compatibility-only", "detail": "OriginSpec is a compatibility fallback with no parser binding; retain evidence until a concrete source adapter is admitted."}}
   ],
+  "empty": [
+    {"name": "empty-claude-code", "provider": "claude-code", "payload": []},
+    {"name": "empty-codex", "provider": "codex", "payload": []},
+    {"name": "empty-chatgpt", "provider": "chatgpt", "payload": {}},
+    {"name": "empty-gemini-cli", "provider": "gemini-cli", "payload": {"messages": []}}
+  ],
+  "partial": [
+    {"name": "partial-claude-code", "provider": "claude-code", "payload": [{"sessionId": "partial-only-id"}]},
+    {"name": "partial-codex", "provider": "codex", "payload": [{"type": "session_meta", "payload": {"id": "partial-codex"}}]},
+    {"name": "partial-chatgpt", "provider": "chatgpt", "payload": {"id": "partial-chatgpt", "conversation_id": "partial-chatgpt", "create_time": 1700000000.0, "current_node": "node-1", "mapping": {"node-1": {"id": "node-1", "parent": null, "children": []}}}},
+    {"name": "partial-hermes", "provider": "hermes", "payload": [{"atof_version": "0.1", "kind": "scope", "category": "agent", "scope_category": "start", "uuid": "partial-hermes"}]}
+  ],
   "malformed": [
     {"name": "claude-code-missing-envelope", "provider": "claude-code", "payload": [{"sessionId": "only-an-id"}]},
     {"name": "codex-missing-record-shape", "provider": "codex", "payload": [{"type": "response_item", "payload": {"type": "message", "role": "user"}}]},
