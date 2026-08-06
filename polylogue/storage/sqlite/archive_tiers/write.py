@@ -2782,7 +2782,8 @@ def _union_with_existing_rows(
     # changes which messages exist).
     is_prefix_sharing_parent = (
         conn.execute(
-            "SELECT 1 FROM session_links WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing' LIMIT 1",
+            "SELECT 1 FROM session_links WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing' "
+            "AND COALESCE(TRIM(status), '') != 'quarantined' LIMIT 1",
             (session_id,),
         ).fetchone()
         is not None
@@ -4019,6 +4020,7 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
         SELECT resolved_dst_session_id, link_type
         FROM session_links
         WHERE src_session_id = ? AND resolved_dst_session_id IS NOT NULL
+          AND COALESCE(TRIM(status), '') != 'quarantined'
         ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
         LIMIT 1
         """,
@@ -5700,6 +5702,7 @@ def _composed_db_signatures(
               AND inheritance = 'prefix-sharing'
               AND resolved_dst_session_id IS NOT NULL
               AND branch_point_message_id IS NOT NULL
+              AND COALESCE(TRIM(status), '') != 'quarantined'
             LIMIT 1
             """,
             (cursor_session_id,),
@@ -6104,6 +6107,7 @@ def _repair_stale_prefix_branch_points_db(
         WHERE l.inheritance = 'prefix-sharing'
           AND l.resolved_dst_session_id IS NOT NULL
           AND l.branch_point_message_id IS NOT NULL
+          AND COALESCE(TRIM(l.status), '') != 'quarantined'
           {scope_clause}
           AND NOT EXISTS (
               SELECT 1 FROM messages m
@@ -6430,6 +6434,7 @@ def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tupl
           AND inheritance = 'prefix-sharing'
           AND resolved_dst_session_id IS NOT NULL
           AND branch_point_message_id IS NOT NULL
+          AND COALESCE(TRIM(status), '') != 'quarantined'
         LIMIT 1
         """,
         (session_id,),

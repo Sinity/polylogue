@@ -55,6 +55,7 @@ async def _prefix_sharing_edge(conn: aiosqlite.Connection, session_id: str) -> t
           AND inheritance = 'prefix-sharing'
           AND resolved_dst_session_id IS NOT NULL
           AND branch_point_message_id IS NOT NULL
+          AND COALESCE(TRIM(status), '') != 'quarantined'
         LIMIT 1
         """,
         (session_id,),
