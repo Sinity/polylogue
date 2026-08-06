@@ -9,7 +9,42 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from devtools import merge_boundary, merge_gate
+from devtools import merge_boundary, merge_gate, pr_scope
+
+_SCOPE_BEAD = {
+    "_type": "issue",
+    "id": "polylogue-test-scope",
+    "title": "test scope",
+    "description": "test record",
+    "acceptance_criteria": "Opaque acceptance prose.",
+    "status": "open",
+}
+
+
+@pytest.fixture(autouse=True)
+def _scope_bead_record(tmp_path: Path) -> None:
+    beads_dir = tmp_path / ".beads"
+    beads_dir.mkdir()
+    (beads_dir / "issues.jsonl").write_text(json.dumps(_SCOPE_BEAD) + "\n")
+
+
+def _scope_body(head_sha: str) -> str:
+    carrier = {
+        "version": 1,
+        "head_sha": head_sha,
+        "assigned_beads": ["polylogue-test-scope"],
+        "beads_digest": pr_scope.canonical_beads_digest({_SCOPE_BEAD["id"]: _SCOPE_BEAD}, ["polylogue-test-scope"]),
+        "dispositions": [
+            {
+                "bead_id": "polylogue-test-scope",
+                "disposition": "satisfied",
+                "evidence": [{"kind": "test", "ref": "tests/unit/devtools/test_merge_boundary.py"}],
+                "successors": [],
+            }
+        ],
+    }
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+    return pr_scope.render_carrier(carrier)
 
 
 def _base_pr_view(head_sha: str = "abc123", title: str = "fix: thing (#42)", state: str = "OPEN") -> dict[str, object]:
@@ -20,6 +55,8 @@ def _base_pr_view(head_sha: str = "abc123", title: str = "fix: thing (#42)", sta
         "state": state,
         "mergeStateStatus": "CLEAN",
         "commits": [{"oid": head_sha, "committedDate": "2026-08-01T12:00:00Z"}],
+        "body": _scope_body(head_sha),
+        "isDraft": False,
     }
 
 
@@ -147,6 +184,27 @@ def test_merge_refuses_when_pr_not_open(monkeypatch: pytest.MonkeyPatch, tmp_pat
     )
 
     assert exit_code == 1
+
+
+def test_merge_refuses_when_pr_scope_carrier_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    pr_view["body"] = "## Summary\n\nNo carrier."
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+
+    exit_code = merge_boundary.cmd_merge(
+        42,
+        command="devtools test x",
+        max_age_s=3600,
+        poll_rounds=1,
+        poll_interval_s=0,
+        dry_run=False,
+        with_verify=False,
+        verify_command="devtools verify --all",
+    )
+
+    assert exit_code == 2
+    assert merge_boundary._read_ledger()["merges"] == []
 
 
 def test_merge_refuses_when_late_unacked_review_comment_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

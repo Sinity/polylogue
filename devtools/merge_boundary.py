@@ -22,18 +22,20 @@ exact call:
 which:
 
   1. Refuses unless the PR is OPEN.
-  2. If no fresh ``merge-gate`` receipt exists for the PR's *current* head
+  2. Requires the versioned ``pr-scope`` carrier on the current non-draft PR,
+     including its current Bead-record digest and whole-Bead dispositions.
+  3. If no fresh ``merge-gate`` receipt exists for the PR's *current* head
      sha, records one automatically (running ``--command``, default
      ``devtools verify``) instead of just failing and telling the caller to
      go run a separate command first.
-  3. Runs ``merge-gate check`` (late-review-comment grace-window poll +
+  4. Runs ``merge-gate check`` (late-review-comment grace-window poll +
      receipt freshness/exit-code checks). Refuses to merge on any BLOCK.
-  4. Applies title hygiene: strips a doubled ``(#N) (#N)`` suffix (the
+  5. Applies title hygiene: strips a doubled ``(#N) (#N)`` suffix (the
      2026-07-12/13 incident where the squash-merge subject carried the PR
      number twice because a manual ``gh pr edit --title`` step was skipped)
      and ensures exactly one trailing ``(#N)``.
-  5. Runs the actual ``gh pr merge --squash``.
-  6. Appends a merge-train ledger entry (``.cache/verify/merge-gate/merge-train-ledger.json``)
+  6. Runs the actual ``gh pr merge --squash``.
+  7. Appends a merge-train ledger entry (``.cache/verify/merge-gate/merge-train-ledger.json``)
      and, unless ``--with-verify`` was given, prints a reminder that the
      ledger's terminal step -- one full-suite ``devtools verify --all`` (or
      narrower agreed selection) since the last one -- has not yet been
