@@ -17,15 +17,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import resource
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadPhaseObservation,
@@ -73,7 +74,7 @@ def _codex_payload(revision: int, *, terminal: bool) -> bytes:
                 "type": "message",
                 "id": f"{SESSION_NATIVE_ID}-user",
                 "role": "user",
-                "content": [{"type": "input_text", "text": "sanitized incident witness"}],
+                "content": [{"type": "input_text", "text": f"sanitized incident witness revision {revision}"}],
             },
         },
         {
@@ -82,7 +83,7 @@ def _codex_payload(revision: int, *, terminal: bool) -> bytes:
                 "type": "message",
                 "id": f"{SESSION_NATIVE_ID}-assistant",
                 "role": "assistant",
-                "content": [{"type": "output_text", "text": "sanitized terminal response"}],
+                "content": [{"type": "output_text", "text": f"sanitized terminal response revision {revision}"}],
             },
         },
         {
@@ -131,33 +132,45 @@ def _incident_program() -> CorpusProgram:
     )
 
 
-def _resource_sample(root: Path) -> tuple[int, int, int]:
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    peak_rss = int(usage.ru_maxrss) * 1024
-    cpu_ms = int((usage.ru_utime + usage.ru_stime) * 1000)
+def _current_rss_bytes() -> int | None:
+    try:
+        resident_pages = int(Path("/proc/self/statm").read_text(encoding="ascii").split()[1])
+        return resident_pages * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _resource_sample(root: Path) -> tuple[int | None, int, int]:
+    self_usage = resource.getrusage(resource.RUSAGE_SELF)
+    children_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu_ms = int((self_usage.ru_utime + self_usage.ru_stime + children_usage.ru_utime + children_usage.ru_stime) * 1000)
     storage_bytes = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
-    return peak_rss, cpu_ms, storage_bytes
+    return _current_rss_bytes(), cpu_ms, storage_bytes
 
 
 def _phase(
     name: str,
-    before: tuple[int, int, int],
-    after: tuple[int, int, int],
+    before: tuple[int | None, int, int],
+    after: tuple[int | None, int, int],
     started: float,
     *,
     completed: int | None = None,
     total: int | None = None,
 ) -> WorkloadPhaseObservation:
+    unavailable = ["peak_rss_bytes"]
+    if after[0] is None:
+        unavailable.append("current_rss_bytes")
     return WorkloadPhaseObservation(
         name=name,
         measurement_scope=MeasurementScope.PROCESS_TREE,
         wall_ms=(time.perf_counter() - started) * 1000,
         cpu_ms=float(after[1] - before[1]),
-        peak_rss_bytes=max(before[0], after[0]),
+        current_rss_bytes=after[0],
         storage_bytes=after[2],
         write_io_bytes=max(0, after[2] - before[2]),
         progress_completed=completed,
         progress_total=total,
+        unavailable=tuple(unavailable),
     )
 
 
@@ -172,7 +185,7 @@ def _git_head() -> str:
     return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
 
 
-def _source_facts(root: Path) -> tuple[int, int, int, tuple[str, ...]]:
+def _source_facts(root: Path) -> tuple[int, int, int, int, tuple[str, ...]]:
     with sqlite3.connect(root / "source.db") as conn:
         row = conn.execute(
             """
@@ -185,7 +198,7 @@ def _source_facts(root: Path) -> tuple[int, int, int, tuple[str, ...]]:
             str(item[0]) for item in conn.execute("SELECT DISTINCT revision_authority FROM raw_sessions ORDER BY 1")
         )
     assert row is not None
-    return int(row[0]), int(row[1]), int(row[2]), authorities
+    return int(row[0]), int(row[1]), int(row[2]), int(row[3]), authorities
 
 
 def _readiness_count(readiness: dict[str, object], key: str) -> int:
@@ -210,22 +223,22 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     initialize_active_archive_root(root)
     runtime = ProductionCorpusRuntime(root)
+
+    setup_before = _resource_sample(root)
+    setup_started = time.perf_counter()
     program = _incident_program()
     profile_id = _schema_profile_id()
     program_json = program.to_json()
-
-    generate_before = _resource_sample(root)
-    generate_started = time.perf_counter()
     # The JSON program is intentionally the canonical witness identity.  Its
     # 90 MiB terminal payload is a faithful wire-shape fixture, not a parser
     # replacement or a pre-populated database.
-    generate_after = _resource_sample(root)
+    setup_after = _resource_sample(root)
     phases: list[WorkloadPhaseObservation] = [
         _phase(
             "generate",
-            generate_before,
-            generate_after,
-            generate_started,
+            setup_before,
+            setup_after,
+            setup_started,
             completed=REVISION_COUNT,
             total=REVISION_COUNT,
         )
@@ -244,6 +257,11 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     assert run.state.crashed is False
     assert run.schedule[-2:] == ("crash-after-acquire", "restart-after-crash")
     assert len(program_json) > REVISION_COUNT
+    first_revision_payload = _codex_payload(0, terminal=False)
+    second_revision_payload = _codex_payload(1, terminal=False)
+    assert first_revision_payload != second_revision_payload
+    assert b"incident witness revision 0" in first_revision_payload
+    assert b"incident witness revision 1" in second_revision_payload
 
     runtime.crash()
     with pytest.raises(CorpusRuntimeCrashedError, match="runtime is crashed"):
@@ -258,10 +276,11 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
         _phase("census", parse_before, parse_after, parse_started, completed=REVISION_COUNT, total=REVISION_COUNT)
     )
 
-    raw_count, max_blob_size, source_path_count, authorities = _source_facts(root)
+    raw_count, max_blob_size, source_path_count, parse_error_count, authorities = _source_facts(root)
     assert raw_count == REVISION_COUNT
     assert max_blob_size == TERMINAL_WIRE_BYTES
     assert source_path_count == 1
+    assert parse_error_count == 0
     assert authorities
     assert set(authorities) <= {"asserted", "byte_proven", "quarantined"}
     schema_inference_receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
@@ -269,43 +288,100 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     active_before = store.active_pointer.resolve(strict=True)
     baseline = archive_snapshot(root)
 
+    crash_script = """
+import os
+import sys
+from pathlib import Path
+
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+
+root = Path(sys.argv[1])
+receipt = Path(sys.argv[2])
+marker = Path(sys.argv[3])
+result = rebuild_index_from_source_sync(
+    RebuildIndexRequest(
+        archive_root=root,
+        promote=False,
+        raw_batch_size=804,
+        pass_byte_budget_mb=1.0,
+        schema_inference_receipt_path=receipt,
+    )
+)
+if result.status not in {"paused", "deferred"} or result.materialized:
+    raise SystemExit(f"unexpected crash-boundary result: {result.status} {result.materialized}")
+assert result.transaction is not None
+marker.write_text(str(result.transaction["operation_id"]), encoding="ascii")
+with marker.open("a", encoding="ascii") as handle:
+    handle.flush()
+    os.fsync(handle.fileno())
+os._exit(137)
+"""
+    operation_marker = tmp_path / "codex-804-operation-id.txt"
     replay_before = _resource_sample(root)
     replay_started = time.perf_counter()
-    first_pass = rebuild_index_from_source_sync(
-        RebuildIndexRequest(
-            archive_root=root,
-            promote=False,
-            raw_batch_size=REVISION_COUNT,
-            pass_byte_budget_mb=0.01,
-            schema_inference_receipt_path=schema_inference_receipt_path,
+    crashed_process = subprocess.run(
+        [sys.executable, "-c", crash_script, str(root), str(schema_inference_receipt_path), str(operation_marker)],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert crashed_process.returncode == 137, crashed_process.stderr
+    operation_id = operation_marker.read_text(encoding="ascii")
+    assert operation_id
+    persisted = store.load_transaction(operation_id)
+    assert persisted.status in {"paused", "deferred"}
+    assert persisted.processed_raw_count > 0
+    assert tuple(store.transactions_root.joinpath(f"{operation_id}.receipts").glob("pass-*.json"))
+    assert store.active_pointer.resolve(strict=True) == active_before
+    phases.append(
+        _phase(
+            "replay",
+            replay_before,
+            _resource_sample(root),
+            replay_started,
+            completed=persisted.processed_raw_count,
+            total=REVISION_COUNT,
         )
     )
-    assert first_pass.status in {"paused", "deferred"}
-    assert first_pass.materialized is False
-    assert first_pass.transaction is not None
-    operation_id = first_pass.transaction["operation_id"]
-    assert isinstance(operation_id, str)
-    assert store.active_pointer.resolve(strict=True) == active_before
-    phases.append(_phase("replay", replay_before, _resource_sample(root), replay_started))
 
     resume_before = _resource_sample(root)
     resume_started = time.perf_counter()
-    receipt = first_pass
-    for _ in range(200):
-        receipt = rebuild_index_from_source_sync(
-            RebuildIndexRequest(
-                archive_root=root,
-                operation_id=operation_id,
-                promote=False,
-                schema_inference_receipt_path=schema_inference_receipt_path,
-            )
+    resume_script = """
+import sys
+from pathlib import Path
+
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+
+root = Path(sys.argv[1])
+operation_id = sys.argv[2]
+receipt = Path(sys.argv[3])
+for _ in range(200):
+    result = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            operation_id=operation_id,
+            promote=False,
+            schema_inference_receipt_path=receipt,
         )
-        if receipt.status == "replayed":
-            break
-    assert receipt.status == "replayed"
-    assert receipt.materialized is True
-    generation_id = receipt.generation["generation_id"]
-    assert isinstance(generation_id, str)
+    )
+    if result.status == "replayed" and result.materialized:
+        print(result.generation["generation_id"])
+        break
+else:
+    raise SystemExit("persisted rebuild did not reach replayed")
+"""
+    resumed_process = subprocess.run(
+        [sys.executable, "-c", resume_script, str(root), operation_id, str(schema_inference_receipt_path)],
+        cwd=Path.cwd(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    generation_id = resumed_process.stdout.strip().splitlines()[-1]
+    assert generation_id.startswith("gen-")
+    persisted_after_restart = store.load_transaction(operation_id)
+    assert persisted_after_restart.status == "ready"
     candidate = store.load(generation_id)
     assert candidate.state == "inactive"
     assert Path(candidate.index_path).is_file()
@@ -313,12 +389,16 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     phases.append(_phase("postflight", resume_before, _resource_sample(root), resume_started))
 
     store.promote(candidate)
-    final_snapshot = archive_snapshot(root, search_queries=("sanitized",))
+    final_snapshot = archive_snapshot(root, search_queries=("sanitized", "revision"))
     baseline_sessions = next(item for item in baseline.canonical_rows if item.relation == "sessions")
     assert not baseline_sessions.rows
     sessions_relation = next(item for item in final_snapshot.canonical_rows if item.relation == "sessions")
     assert sessions_relation.rows
-    assert final_snapshot.public_projections
+    public = dict(final_snapshot.public_projections)
+    indexed_session_id = f"codex-session:{SESSION_NATIVE_ID}"
+    assert public[f"summary:{indexed_session_id}"]
+    assert public[f"tree:{indexed_session_id}"]
+    assert public["search:revision"]
     readiness = raw_materialization_readiness_snapshot(root)
     assert readiness["available"] is True
     assert _readiness_count(readiness, "raw_artifact_count") == _readiness_count(
@@ -341,6 +421,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
             storage_bytes=quiescent[2],
             cleanup_complete=True,
             quiescent=True,
+            unavailable=("peak_rss_bytes",) if quiescent[0] is not None else ("current_rss_bytes", "peak_rss_bytes"),
         )
     )
     spec = raw_authority_fixed_point_spec(
@@ -361,12 +442,17 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
             f"schema-registry:{profile_id}",
             f"candidate-generation:{generation_id}",
             f"source-raw-count:{raw_count}",
+            f"source-parse-error-count:{parse_error_count}",
+            "restart-boundary:subprocess-persisted-transaction",
             "successor:polylogue-live-operation-receipts",
             "successor:polylogue-reindex-final-proof",
         ),
         cleanup_complete=True,
         notes=(
             "Sanitized structural witness only; no live /realm/db/polylogue access.",
+            "Fixture setup includes 804 payload construction, schema hashing, and canonical program serialization.",
+            "Current RSS is sampled per phase; phase-local peak RSS is unavailable and marked explicitly.",
+            "The crash boundary hard-exits after a persisted bounded pass; a fresh process resumes the transaction.",
             "Live confidence remains open until the named successor receipts bind the active archive.",
         ),
     )
@@ -384,6 +470,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
                 "receipt_id": workload_receipt.receipt_id,
                 "raw_count": raw_count,
                 "max_blob_size": max_blob_size,
+                "parse_error_count": parse_error_count,
                 "indexed_session": indexed[0][0],
                 "message_count": indexed[0][1],
                 "candidate_generation": generation_id,
