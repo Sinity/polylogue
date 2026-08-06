@@ -40,8 +40,10 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
+    ArchiveSourceBlobRef,
     deterministic_blob_hash,
     deterministic_raw_session_id,
+    write_source_raw_session,
 )
 
 pytestmark = pytest.mark.uses_real_clock(
@@ -163,39 +165,25 @@ def test_gc_retains_live_raw_attachment_and_hook_references_together(tmp_path: P
     )
 
     with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
-            ) VALUES ('raw-live', 'codex-session', 'raw-live', '/raw.jsonl', ?, 11, 1)
-            """,
-            (bytes.fromhex(raw_hash),),
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/raw.jsonl",
+            source_index=0,
+            native_id="raw-live",
+            payload=b"raw payload",
+            acquired_at_ms=1,
+            additional_blob_refs=(
+                ArchiveSourceBlobRef(
+                    blob_hash=bytes.fromhex(attachment_hash),
+                    ref_type="attachment",
+                    source_path="/raw.jsonl",
+                    size_bytes=18,
+                    acquired_at_ms=1,
+                ),
+            ),
         )
-        # Attachment refs use the parent raw session as their ref_id in the
-        # source tier. Its payload is deliberately a different, non-file hash
-        # so this assertion exercises the attachment ref join itself.
-        conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
-            ) VALUES ('attachment-parent', 'codex-session', 'attachment-parent', '/parent.jsonl', ?, 1, 1)
-            """,
-            (b"p" * 32,),
-        )
-        conn.execute(
-            """
-            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
-            VALUES (?, 'raw-live', 'raw_payload', '/raw.jsonl', 11, 1)
-            """,
-            (bytes.fromhex(raw_hash),),
-        )
-        conn.execute(
-            """
-            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
-            VALUES (?, 'attachment-parent', 'attachment', '/parent.jsonl', 18, 1)
-            """,
-            (bytes.fromhex(attachment_hash),),
-        )
+        assert conn.execute("SELECT ref_id FROM blob_refs WHERE ref_type = 'attachment'").fetchone() == (raw_id,)
 
     with sqlite3.connect(archive_root / "source.db") as conn:
         hook_hash = conn.execute("SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = 'hook-batch'").fetchone()[
@@ -209,12 +197,73 @@ def test_gc_retains_live_raw_attachment_and_hook_references_together(tmp_path: P
     assert all(blob_store.exists(blob_hash) for blob_hash in (raw_hash, attachment_hash, bytes(hook_hash).hex()))
 
     with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute("DELETE FROM blob_refs WHERE ref_id IN ('raw-live', 'attachment-parent')")
-        conn.execute("DELETE FROM raw_sessions WHERE raw_id IN ('raw-live', 'attachment-parent')")
+        conn.execute("DELETE FROM blob_refs WHERE ref_id = ?", (raw_id,))
+        conn.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (raw_id,))
     assert _delete_hook_event(archive_root, hook_event_id="hook-batch") is True
 
     assert run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10) == 3
     assert not any(blob_store.exists(blob_hash) for blob_hash in (raw_hash, attachment_hash, bytes(hook_hash).hex()))
+
+
+def test_gc_retains_unclassified_blob_refs_and_census_reports_disposition(tmp_path: Path) -> None:
+    """GC must not delete bytes when a legacy ref type has no proven join."""
+    source_db = tmp_path / "source.db"
+    blob_store = BlobStore(tmp_path / "blob")
+    blob_hash, _size = blob_store.write_from_bytes(b"unclassified reference")
+
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                ref_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                acquired_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (blob_hash, ref_type, ref_id)
+            ) STRICT;
+            CREATE TABLE gc_generations (
+                generation_id TEXT PRIMARY KEY,
+                started_at_ms INTEGER NOT NULL,
+                completed_at_ms INTEGER,
+                reclaimed_count INTEGER NOT NULL,
+                reclaimed_bytes INTEGER NOT NULL
+            ) STRICT;
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, ?, NULL, 23, 1)
+            """,
+            [
+                (bytes.fromhex(blob_hash), "future-ref", "future_type"),
+                (bytes.fromhex(blob_hash), "sidecar-ref", "sidecar"),
+            ],
+        )
+
+    _backdate(blob_store, blob_hash)
+    assert run_blob_gc(source_db, blob_store.root, max_batch=10) == 0
+    assert blob_store.exists(blob_hash)
+
+    with sqlite3.connect(source_db) as conn:
+        census = census_orphaned_blob_refs(conn)
+
+    assert census.total == 0
+    assert census.by_ref_type == {}
+    assert census.ref_type_counts == {"future_type": 1, "sidecar": 1}
+    assert census.unknown_ref_types == {"future_type": 1}
+    assert census.unavailable_ref_types == {"sidecar": 1}
+    assert census.to_dict() == {
+        "scanned_count": 2,
+        "ref_type_counts": {"future_type": 1, "sidecar": 1},
+        "total": 0,
+        "by_ref_type": {},
+        "unknown_ref_types": {"future_type": 1},
+        "unavailable_ref_types": {"sidecar": 1},
+    }
 
 
 def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
@@ -329,6 +378,10 @@ def test_census_orphaned_blob_refs_counts_by_ref_type(tmp_path: Path) -> None:
         census = census_orphaned_blob_refs(conn)
         assert census.total == 0
         assert census.by_ref_type == {}
+        assert census.scanned_count == 1
+        assert census.ref_type_counts == {"hook_payload": 1}
+        assert census.unknown_ref_types == {}
+        assert census.unavailable_ref_types == {}
 
         # Two orphaned refs: one raw_payload (no raw_sessions row), one
         # hook_payload (no raw_hook_events row).
@@ -351,4 +404,15 @@ def test_census_orphaned_blob_refs_counts_by_ref_type(tmp_path: Path) -> None:
         census = census_orphaned_blob_refs(conn)
         assert census.total == 2
         assert census.by_ref_type == {"raw_payload": 1, "hook_payload": 1}
-        assert census.to_dict() == {"total": 2, "by_ref_type": {"raw_payload": 1, "hook_payload": 1}}
+        assert census.scanned_count == 3
+        assert census.ref_type_counts == {"hook_payload": 2, "raw_payload": 1}
+        assert census.unknown_ref_types == {}
+        assert census.unavailable_ref_types == {}
+        assert census.to_dict() == {
+            "scanned_count": 3,
+            "ref_type_counts": {"hook_payload": 2, "raw_payload": 1},
+            "total": 2,
+            "by_ref_type": {"raw_payload": 1, "hook_payload": 1},
+            "unknown_ref_types": {},
+            "unavailable_ref_types": {},
+        }

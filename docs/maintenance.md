@@ -209,8 +209,11 @@ conflicting state. It never attempts a repair move.
 Read-only by default. It classifies source-tier `blob_refs` rows with the
 actual referent join for each `ref_type`; source-tier `attachment` refs join
 `raw_sessions.raw_id` because they are keyed by the parent raw acquisition,
-not by index-tier `attachment_refs`. Unknown or unavailable ref types block an
-apply. The command never deletes blob files.
+not by index-tier `attachment_refs` or `raw_artifacts.artifact_id`.
+`hook_payload` refs join `raw_hook_events.hook_event_id`. Unknown or unavailable
+ref types are counted as explicit census dispositions and block an apply; blob
+GC also retains their bytes until a typed disposition is available. The
+command never deletes blob files.
 
 ```bash
 polylogue ops maintenance blob-reference-liveness --output-format json

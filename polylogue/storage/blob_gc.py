@@ -215,22 +215,48 @@ def _blob_refs_still_live(conn: sqlite3.Connection, blob_bytes: bytes) -> bool:
     (see ``_BLOB_REF_LIVENESS_JOIN``) still has the row identified by
     ``ref_id``. A hook-event blob ref whose ``raw_hook_events`` row was
     deleted, or a stale ref left behind by a since-reverted write, no longer
-    joins to anything and is correctly treated as dead here.
+    joins to anything and is correctly treated as dead here. Unknown ref
+    types and known types whose referent table or key column is unavailable
+    are retained because GC cannot prove them dead.
     """
-    if not _table_exists(conn, "blob_refs") or not _blob_refs_has_ref_type_column(conn):
+    if not _table_exists(conn, "blob_refs"):
         return False
+    if not _blob_refs_has_ref_type_column(conn):
+        # A legacy or malformed reference table cannot prove that its rows are
+        # dead. Keep the blob until an offline integrity tool records a typed
+        # disposition; GC must never turn an unknown schema into evidence loss.
+        return True
+    ref_types = {
+        str(row[0])
+        for row in conn.execute("SELECT DISTINCT ref_type FROM blob_refs WHERE blob_hash = ?", (blob_bytes,))
+    }
+    if not ref_types:
+        return False
+    known_ref_types = {ref_type for ref_type, _table, _column in _BLOB_REF_LIVENESS_JOIN}
+    if ref_types - known_ref_types:
+        # Reconciliation reports unknown ref types as a blocker. GC follows
+        # the same fail-closed rule instead of deleting unclassified evidence.
+        return True
     clauses = [
         f"(ref_type = ? AND EXISTS (SELECT 1 FROM {referent_table} WHERE {referent_table}.{referent_column} = blob_refs.ref_id))"
         for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN
-        if _table_exists(conn, referent_table)
+        if ref_type in ref_types
     ]
+    params: list[str] = []
+    for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN:
+        if ref_type not in ref_types:
+            continue
+        if not _table_exists(conn, referent_table):
+            # The type is known, but this archive cannot evaluate its join.
+            # Keep the blob until the missing referent surface is restored or
+            # an integrity tool records a disposition.
+            return True
+        referent_columns = {row[1] for row in conn.execute(f"PRAGMA table_info({referent_table})")}
+        if referent_column not in referent_columns:
+            return True
+        params.append(ref_type)
     if not clauses:
         return False
-    params = [
-        ref_type
-        for ref_type, referent_table, _referent_column in _BLOB_REF_LIVENESS_JOIN
-        if _table_exists(conn, referent_table)
-    ]
     query = f"SELECT 1 FROM blob_refs WHERE blob_hash = ? AND ({' OR '.join(clauses)}) LIMIT 1"
     row = conn.execute(query, (blob_bytes, *params)).fetchone()
     return row is not None
@@ -657,25 +683,51 @@ class OrphanedBlobRefCensus:
 
     total: int
     by_ref_type: dict[str, int]
+    scanned_count: int = 0
+    ref_type_counts: dict[str, int] | None = None
+    unknown_ref_types: dict[str, int] | None = None
+    unavailable_ref_types: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"total": self.total, "by_ref_type": dict(self.by_ref_type)}
+        return {
+            "scanned_count": self.scanned_count,
+            "ref_type_counts": dict(self.ref_type_counts or {}),
+            "total": self.total,
+            "by_ref_type": dict(self.by_ref_type),
+            "unknown_ref_types": dict(self.unknown_ref_types or {}),
+            "unavailable_ref_types": dict(self.unavailable_ref_types or {}),
+        }
 
 
 def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus:
     """Count ``blob_refs`` rows whose ``ref_id`` has no live referent, per ref_type.
 
     Read-only; safe to call against a live connection or a read-only handle.
-    A ``ref_type`` whose referent table does not exist (an old archive
-    predating that table) is skipped rather than counted as fully orphaned --
-    its rows are simply not evaluable, the same conservative stance
-    ``_blob_refs_still_live`` takes.
+    A ``ref_type`` whose referent table or key column does not exist (an old
+    archive predating that table) is reported as unavailable rather than
+    counted as fully orphaned. Unknown ref types are reported separately.
+    Neither disposition is included in ``total`` because neither is proven
+    dead, matching the fail-closed stance ``_blob_refs_still_live`` takes.
     """
-    if not _table_exists(conn, "blob_refs"):
+    if not _table_exists(conn, "blob_refs") or not _blob_refs_has_ref_type_column(conn):
         return OrphanedBlobRefCensus(total=0, by_ref_type={})
+    ref_type_counts = {
+        str(row[0]): int(row[1])
+        for row in conn.execute("SELECT ref_type, COUNT(*) FROM blob_refs GROUP BY ref_type ORDER BY ref_type")
+    }
     by_ref_type: dict[str, int] = {}
+    unknown_ref_types: dict[str, int] = {}
+    unavailable_ref_types: dict[str, int] = {}
     for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN:
+        count = ref_type_counts.get(ref_type, 0)
+        if not count:
+            continue
         if not _table_exists(conn, referent_table):
+            unavailable_ref_types[ref_type] = count
+            continue
+        referent_columns = {row[1] for row in conn.execute(f"PRAGMA table_info({referent_table})")}
+        if referent_column not in referent_columns:
+            unavailable_ref_types[ref_type] = count
             continue
         row = conn.execute(
             f"""
@@ -691,7 +743,18 @@ def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus
         count = int(row[0]) if row is not None else 0
         if count:
             by_ref_type[ref_type] = count
-    return OrphanedBlobRefCensus(total=sum(by_ref_type.values()), by_ref_type=by_ref_type)
+    known_ref_types = {ref_type for ref_type, _table, _column in _BLOB_REF_LIVENESS_JOIN}
+    unknown_ref_types = {
+        ref_type: count for ref_type, count in ref_type_counts.items() if ref_type not in known_ref_types
+    }
+    return OrphanedBlobRefCensus(
+        total=sum(by_ref_type.values()),
+        by_ref_type=by_ref_type,
+        scanned_count=sum(ref_type_counts.values()),
+        ref_type_counts=ref_type_counts,
+        unknown_ref_types=unknown_ref_types,
+        unavailable_ref_types=unavailable_ref_types,
+    )
 
 
 __all__ = [
