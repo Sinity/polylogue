@@ -18,6 +18,22 @@ _What was done. Key modules, contracts, and boundaries touched._
 
 _Exact commands run and any manual validation performed._
 
+## Bead disposition matrix
+
+| Assigned Bead | Whole-Bead disposition | Evidence refs | Named successor for residual work |
+| --- | --- | --- | --- |
+| `polylogue-...` | satisfied / partial / deferred / superseded | `test:...`, `command:...` | `polylogue-...` or n/a |
+
+<!-- polylogue-pr-scope:v1
+Replace this comment with the output of:
+devtools workspace pr-scope render --input .agent/pr-scope.json > /tmp/pr-scope.md
+
+The input declares assigned_beads and one disposition with typed evidence for
+each. Partial, deferred, and superseded dispositions require an existing open
+successor Bead. Copy the rendered comment here after the final push, then run:
+devtools workspace pr-scope check --pr <PR-number>
+-->
+
 ## Changelog
 
 _If user-visible (new flags, renamed/removed commands, output changes, breaking migrations, security fixes), add a one-line entry to the `Unreleased` section of `CHANGELOG.md`. Skip for refactors, internal renames, and test-only PRs._

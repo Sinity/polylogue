@@ -22,7 +22,6 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab policy schema-versioning",
     "lab policy timestamp-doctrine",
     "lab provider completeness",
-    "lab probe bead-pr-reconciliation",
     "lab probe capture-regression",
     "lab probe cost-reconciliation",
     "lab probe pipeline",
@@ -770,6 +769,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace pr-scope",
+        "workspace",
+        "Render and validate the versioned PR Bead-scope carrier.",
+        "devtools.pr_scope",
+        use_when=(
+            "Before publishing a non-draft PR, render the machine-readable carrier from the assigned "
+            "Bead dispositions, then validate the exact body against its head SHA and committed Bead records. "
+            "CircleCI quick-gate and `workspace merge` run the same validator; the command never interprets "
+            "acceptance prose."
+        ),
+        examples=(
+            "devtools workspace pr-scope render --input .agent/pr-scope.json > /tmp/pr-scope.md",
+            "devtools workspace pr-scope check --pr 3517",
+            "devtools workspace pr-scope check --body-file pr-body.md --head-sha $(git rev-parse HEAD)",
+        ),
+    ),
+    CommandSpec(
         "workspace merge-gate",
         "workspace",
         "Structural pre-merge safety check: fresh local-verification receipt + no late review comments.",
@@ -779,13 +795,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "(grace-period comment polling, remembering to run the broader local test suite CI skips "
             'per-PR) with a check that fails closed. `record <PR> --command "..."` requires the current '
             "checkout to already be the PR's exact head commit with a clean tree (it refuses otherwise), "
-            "runs a local verification "
+            "first validates the same versioned PR-scope carrier CircleCI checks, then runs a local verification "
             "command, and persists a receipt flagging commands that look like they skip tests (e.g. "
             "`verify --quick`). `check <PR>` polls review comments across a real grace window (default "
             "3x20s, covering CodeRabbit's 30-60s late-arrival window) and BLOCKs unless a receipt exists "
             "for the CURRENT head sha within a freshness window with exit_code 0, and no review comment's "
             "created_at is newer than the head commit's timestamp unless explicitly `ack`'d for that exact "
-            "head sha. Motivated by two 2026-08-01 incidents: PR #3502 merged before CodeRabbit's findings "
+            "head sha. The receipt binds the carrier digest, so a changed scope requires re-recording. Motivated by two 2026-08-01 incidents: PR #3502 merged before CodeRabbit's findings "
             "posted, and PR #3517 nearly merged with a 43-test regression no CI check or review comment "
             "ever flagged -- plus review findings on this tool itself (recording from an unrelated "
             "checkout, a --quick example that would have missed its own motivating regression, a single "
@@ -814,7 +830,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "(polylogue-ct3r2 / polylogue-t6iga: duplicate filings of the same finding -- "
             "`merge-gate record/check` and the one-full-verify-per-train rule both existed but "
             "fired only if a coordinator remembered to invoke them). `merge <PR>` auto-records a "
-            "merge-gate receipt if none is fresh for the current head sha (running `--command`, "
+            "validates the non-draft PR's structured scope carrier and auto-records a merge-gate receipt if none is fresh for the current head sha (running `--command`, "
             'default "devtools verify"), runs `merge-gate check` and refuses to merge on any '
             "BLOCK, strips a doubled `(#N) (#N)` squash-subject suffix (the 2026-07-12/13 "
             "incident), then runs the actual `gh pr merge --squash`. `--dry-run` runs every check "
@@ -2011,25 +2027,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "and smoke installed runtime console scripts."
         ),
         examples=("devtools release verify-distribution",),
-    ),
-    CommandSpec(
-        "lab probe bead-pr-reconciliation",
-        "verification lab",
-        "Surface beads whose referenced PR merged but the bead is still open.",
-        "devtools.verify_bead_pr_reconciliation",
-        use_when=(
-            "After a merge-heavy stretch (a Workflow campaign, a merge train, or just several PRs "
-            "landed close together), check for beads left open by a PR that referenced them -- catches "
-            "the reconciliation gap where workers/agents are barred from closing beads themselves and no "
-            "follow-up pass ever ran (2026-07-14: a 55-bead campaign left every bead open despite ~20 "
-            "PRs merging clean). Advisory only -- reports candidates for a human/agent AC check, never "
-            "auto-closes and never fails a gate."
-        ),
-        examples=(
-            "devtools lab probe bead-pr-reconciliation",
-            "devtools lab probe bead-pr-reconciliation --since 2026-07-01 --json",
-            "devtools lab probe bead-pr-reconciliation --limit 50",
-        ),
     ),
     CommandSpec(
         "lab probe cost-reconciliation",

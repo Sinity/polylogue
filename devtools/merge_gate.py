@@ -78,6 +78,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from devtools import pr_scope
+
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
 _DEFAULT_POLL_ROUNDS = 3
@@ -198,6 +200,7 @@ class GateVerdict:
     receipt: dict[str, Any] | None = None
     late_comments: list[dict[str, Any]] = field(default_factory=list)
     status_post: dict[str, Any] | None = None
+    pr_scope: dict[str, Any] | None = None
 
 
 def _receipt_path(pr: int) -> Path:
@@ -216,8 +219,19 @@ def _command_skips_tests(command: str) -> bool:
 
 
 def cmd_record(pr: int, command: str) -> int:
-    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName"])
+    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft"])
     head_sha = info["headRefOid"]
+
+    scope = pr_scope.validate_pr_body(
+        info.get("body") or "",
+        head_sha=head_sha,
+        is_draft=bool(info.get("isDraft")),
+    )
+    if not scope.ok:
+        print(f"REFUSING to record: PR #{pr} has an invalid structured pr-scope carrier:", file=sys.stderr)
+        for reason in scope.reasons:
+            print(f"  - {reason}", file=sys.stderr)
+        return 2
 
     local_head = _git_head_sha()
     if local_head != head_sha:
@@ -252,6 +266,9 @@ def cmd_record(pr: int, command: str) -> int:
     receipt = {
         "pr": pr,
         "head_sha": head_sha,
+        "pr_scope_digest": scope.scope_digest,
+        "pr_scope_beads_digest": scope.beads_digest,
+        "pr_scope_assigned_beads": scope.assigned_beads,
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
@@ -380,7 +397,7 @@ def cmd_check(
                 "view",
                 str(pr),
                 "--json",
-                "headRefOid,mergeStateStatus,state,commits",
+                "headRefOid,mergeStateStatus,state,commits,body,isDraft",
             ]
         )
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
@@ -392,6 +409,16 @@ def cmd_check(
 
     head_sha = info["headRefOid"]
     verdict.head_sha = head_sha
+
+    scope = pr_scope.validate_pr_body(
+        info.get("body") or "",
+        head_sha=head_sha,
+        is_draft=bool(info.get("isDraft")),
+    )
+    verdict.pr_scope = asdict(scope)
+    if not scope.ok:
+        verdict.ok = False
+        verdict.reasons.extend(f"pr-scope: {reason}" for reason in scope.reasons)
 
     if info.get("state") != "OPEN":
         verdict.ok = False
@@ -429,6 +456,11 @@ def cmd_check(
                 "-- a new commit landed since the receipt was recorded; re-record before merging"
             )
         else:
+            if receipt.get("pr_scope_digest") != scope.scope_digest:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "receipt pr_scope_digest does not match the current carrier -- re-record after scope changes"
+                )
             age_s = time.time() - receipt.get("recorded_at", 0)
             if age_s > max_age_s:
                 verdict.ok = False

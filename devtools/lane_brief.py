@@ -89,6 +89,14 @@ _VERIFICATION_TIER = (
     "verify locally."
 )
 
+_PR_SCOPE_CARRIER = (
+    "Before opening a non-draft PR, render the structured carrier from assigned Bead IDs, "
+    "whole-Bead dispositions, typed evidence refs, and open successors for residual work: "
+    "`devtools workspace pr-scope render --input .agent/pr-scope.json`. Embed the rendered comment "
+    "in the PR body and validate the published PR with `devtools workspace pr-scope check --pr <N>`. "
+    "Do not infer acceptance from Bead prose or invent missing Bead IDs."
+)
+
 
 @dataclass
 class BeadRecord:
@@ -421,6 +429,10 @@ def _render_markdown(
     lines.append("## Verification tier")
     lines.append("")
     lines.append(_VERIFICATION_TIER)
+    lines.append("")
+    lines.append("## PR scope carrier")
+    lines.append("")
+    lines.append(_PR_SCOPE_CARRIER)
     lines.append("")
 
     return "\n".join(lines)

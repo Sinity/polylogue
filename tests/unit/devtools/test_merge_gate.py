@@ -8,8 +8,43 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from devtools import merge_gate
+from devtools import merge_gate, pr_scope
 from tests.infra.frozen_clock import FrozenClock
+
+_SCOPE_BEAD = {
+    "_type": "issue",
+    "id": "polylogue-test-scope",
+    "title": "test scope",
+    "description": "test record",
+    "acceptance_criteria": "Opaque acceptance prose.",
+    "status": "open",
+}
+
+
+@pytest.fixture(autouse=True)
+def _scope_bead_record(tmp_path: Path) -> None:
+    beads_dir = tmp_path / ".beads"
+    beads_dir.mkdir()
+    (beads_dir / "issues.jsonl").write_text(json.dumps(_SCOPE_BEAD) + "\n")
+
+
+def _scope_body(head_sha: str) -> str:
+    carrier = {
+        "version": 1,
+        "head_sha": head_sha,
+        "assigned_beads": ["polylogue-test-scope"],
+        "beads_digest": pr_scope.canonical_beads_digest({_SCOPE_BEAD["id"]: _SCOPE_BEAD}, ["polylogue-test-scope"]),
+        "dispositions": [
+            {
+                "bead_id": "polylogue-test-scope",
+                "disposition": "satisfied",
+                "evidence": [{"kind": "test", "ref": "tests/unit/devtools/test_merge_gate.py"}],
+                "successors": [],
+            }
+        ],
+    }
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+    return pr_scope.render_carrier(carrier)
 
 
 def _fake_run(
@@ -26,6 +61,8 @@ def _fake_run(
     empty here -- covered separately in the normalization tests below."""
     comment_rounds: list[list[dict[str, object]]] = poll_rounds if poll_rounds is not None else [comments]
     call_count = {"round": 0}
+    pr_view.setdefault("body", _scope_body(str(pr_view["headRefOid"])))
+    pr_view.setdefault("isDraft", False)
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         joined = " ".join(cmd)
@@ -61,6 +98,7 @@ def test_record_persists_receipt_keyed_to_current_head_sha(monkeypatch: pytest.M
     assert exit_code == 0
     receipt = json.loads(merge_gate._receipt_path(42).read_text())
     assert receipt["head_sha"] == "abc123"
+    assert receipt["pr_scope_digest"]
     assert receipt["exit_code"] == 0
     assert receipt["skips_tests"] is False
 
