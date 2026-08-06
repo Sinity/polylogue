@@ -921,6 +921,9 @@ def test_daemon_reconciles_active_generation_after_both_attestation_checkpoints_
     assert offline_terminal.status == "promoted-attestation-failed"
     assert store.load(offline_terminal.generation_id).state == "active"
 
+    # Recreate the interrupted pre-attestation state so this assertion reaches
+    # the daemon resolver's recovery branch rather than its terminal fast path.
+    ready_transaction = store.checkpoint_transaction(offline_terminal, status="ready")
     reconciled = bulk_rebuild_module.resolve_or_start_daemon_bulk_rebuild_transaction(
         root,
         schema_inference_receipt_path=receipt_path,
@@ -929,7 +932,7 @@ def test_daemon_reconciles_active_generation_after_both_attestation_checkpoints_
     assert reconciled.status == "promoted-attestation-failed"
     assert reconciled.post_promotion_attestation == {
         "status": "reconciled-after-restart",
-        "generation_id": transaction.generation_id,
+        "generation_id": ready_transaction.generation_id,
         "generation_state": "active",
     }
 

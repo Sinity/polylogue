@@ -162,6 +162,8 @@ class RebuildProvenanceContext:
         refreshed_inventory_token = validated.get("external_ground_truth_inventory_token")
         if isinstance(refreshed_inventory_token, dict):
             self.external_inventory_token = refreshed_inventory_token
+            self.consumed_evidence["external_ground_truth_inventory_token"] = refreshed_inventory_token
+            _ACTIVE_EXTERNAL_INVENTORY_TOKEN.set(refreshed_inventory_token)
         if verify_blob_integrity:
             refreshed_snapshot = validated.pop("_verified_blob_integrity_snapshot", None)
             if isinstance(refreshed_snapshot, dict):
@@ -1299,7 +1301,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     the *location* it resolved, catching e.g. a concurrent devtools campaign
     or a foreign/rotated root before this rebuild can act on stale identity).
     """
-    from polylogue.storage.index_generation import RebuildLease
+    from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
     from polylogue.storage.sqlite.connection_profile import (
         check_mapped_bytes_budget_against_cgroup_limit,
         log_mapped_bytes_budget_check,
@@ -1379,6 +1381,12 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         # can create or mutate a candidate/transaction.
         with RebuildLease(root):
             if initial_provenance_error is not None:
+                if request.operation_id is not None:
+                    recovery_store = IndexGenerationStore(owned.location)
+                    existing = recovery_store.load_transaction(request.operation_id)
+                    existing = _reconcile_active_generation_transaction(recovery_store, existing)
+                    if existing.status in _REBUILD_TERMINAL_NOT_RESUMABLE:
+                        raise initial_provenance_error
                 _mark_rebuild_transaction_stale_after_provenance_failure(
                     root, request.operation_id, initial_provenance_error
                 )
