@@ -244,6 +244,7 @@ def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_c
 
 
 def test_rebuild_source_preflight_rejects_unexplained_raw_failure(tmp_path: Path) -> None:
+    """Reach raw-failure classification after satisfying earlier readiness gates."""
     root = tmp_path / "archive"
     _init_empty_source(root)
     initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
