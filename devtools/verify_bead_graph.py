@@ -58,7 +58,17 @@ def _run_bd_list_all() -> list[dict[str, Any]]:
     payload = json.loads(result.stdout)
     if not isinstance(payload, list):
         raise RuntimeError(f"bd list returned {type(payload).__name__}, expected list")
-    return [issue for issue in payload if isinstance(issue, dict)]
+    issues: list[dict[str, Any]] = []
+    for index, issue in enumerate(payload):
+        if not isinstance(issue, dict):
+            raise RuntimeError(
+                f"bd list record {index} is {type(issue).__name__}, expected object with non-empty string id"
+            )
+        bead_id = issue.get("id")
+        if not isinstance(bead_id, str) or not bead_id:
+            raise RuntimeError(f"bd list record {index} has no non-empty string id")
+        issues.append(issue)
+    return issues
 
 
 def _metadata(issue: dict[str, Any]) -> dict[str, Any]:
@@ -280,10 +290,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit the complete machine-readable graph report")
     args = parser.parse_args(argv)
 
-    cycles_ok, cycles_output = _run_bd_dep_cycles()
     try:
+        cycles_ok, cycles_output = _run_bd_dep_cycles()
         issues = _run_bd_list_all()
-    except (subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
+    except (OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
         if args.json:
             print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
         else:

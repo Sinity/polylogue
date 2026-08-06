@@ -70,7 +70,7 @@ def test_bead_graph_and_frontier_catalogs_expose_complete_json_reports() -> None
     graph = COMMANDS["lab policy bead-graph"]
     frontier = COMMANDS["workspace frontier"]
 
-    assert "--json" in graph.examples[-1]
+    assert any("--json" in example for example in graph.examples)
     assert graph.use_when is not None
     assert "missing acceptance criteria" in graph.use_when
     assert any("--json" in example for example in frontier.examples)

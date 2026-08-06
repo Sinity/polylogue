@@ -45,7 +45,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_bd(repo: Path, args: list[str]) -> list[dict[str, Any]]:
+def _run_bd(repo: Path, args: list[str]) -> list[Any]:
     command = ["bd", "--readonly", *args, "--json"]
     try:
         completed = subprocess.run(command, cwd=repo, text=True, capture_output=True, timeout=20, check=False)
@@ -59,8 +59,21 @@ def _run_bd(repo: Path, args: list[str]) -> list[dict[str, Any]]:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{' '.join(command)} returned non-JSON output") from exc
     if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
+        return payload
     raise RuntimeError(f"{' '.join(command)} returned {type(payload).__name__}, expected list")
+
+
+def _normalize_issues(records: list[Any], *, source: str) -> list[dict[str, Any]]:
+    """Validate the live Beads records once before report derivation."""
+    normalized: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise RuntimeError(f"{source} record {index} is {type(record).__name__}, expected object with string id")
+        bead_id = record.get("id")
+        if not isinstance(bead_id, str) or not bead_id:
+            raise RuntimeError(f"{source} record {index} has no non-empty string id")
+        normalized.append(record)
+    return normalized
 
 
 def _labels(issue: dict[str, Any]) -> set[str]:
@@ -84,11 +97,10 @@ def _is_open(issue: dict[str, Any]) -> bool:
     return issue.get("status") in {"open", "in_progress"}
 
 
-def _resource_class(issue: dict[str, Any]) -> str:
-    footprint = bead_cluster._extract_footprint(issue)
-    if footprint.migration_slots or "area:schema" in _labels(issue):
-        return "schema-lane"
+def _resource_class(issue: dict[str, Any], footprint: bead_cluster.Footprint) -> str:
     labels = _labels(issue)
+    if footprint.migration_slots or "area:schema" in labels:
+        return "schema-lane"
     if "resource:live-state" in labels or "risk:live-state" in labels:
         return "live-state"
     return "ordinary"
@@ -105,7 +117,7 @@ def _active_set(issues: list[dict[str, Any]]) -> list[str]:
 def _critical_path_leverage(issues: list[dict[str, Any]]) -> dict[str, int]:
     """Count every open downstream Bead a candidate can unblock via blocks edges."""
     blocked_by: dict[str, set[str]] = defaultdict(set)
-    known = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
+    known = {issue["id"]: issue for issue in issues}
     for issue in known.values():
         if not _is_open(issue):
             continue
@@ -115,7 +127,7 @@ def _critical_path_leverage(issues: list[dict[str, Any]]) -> dict[str, int]:
                 continue
             target = dependency.get("depends_on_id")
             if isinstance(target, str) and target in known and _is_open(known[target]):
-                blocked_by[target].add(str(issue["id"]))
+                blocked_by[target].add(issue["id"])
     leverage: dict[str, int] = {}
     for blocker in blocked_by:
         reachable: set[str] = set()
@@ -130,31 +142,31 @@ def _critical_path_leverage(issues: list[dict[str, Any]]) -> dict[str, int]:
     return leverage
 
 
-def _footprint_conflicts(issue: dict[str, Any], occupied: list[dict[str, Any]]) -> list[str]:
-    footprint = bead_cluster._extract_footprint(issue)
-    keys = footprint.overlap_keys() | footprint.contention_keys()
-    conflicts: list[str] = []
-    for other in occupied:
-        other_footprint = bead_cluster._extract_footprint(other)
-        other_keys = other_footprint.overlap_keys() | other_footprint.contention_keys()
-        if keys & other_keys:
-            conflicts.append(str(other["id"]))
-    return sorted(conflicts)
+def _footprint_conflicts(issue_id: str, occupied_ids: list[str], footprint_keys: dict[str, set[str]]) -> list[str]:
+    keys = footprint_keys[issue_id]
+    return sorted(other_id for other_id in occupied_ids if keys & footprint_keys[other_id])
 
 
 def _candidate_row(
-    issue: dict[str, Any], *, leverage: int, occupied: list[dict[str, Any]], ready_ids: set[str]
+    issue: dict[str, Any],
+    *,
+    footprint: bead_cluster.Footprint,
+    footprint_keys: dict[str, set[str]],
+    leverage: int,
+    occupied_ids: list[str],
+    ready_ids: set[str],
 ) -> dict[str, Any]:
-    resource_class = _resource_class(issue)
+    issue_id = issue["id"]
+    resource_class = _resource_class(issue, footprint)
     return {
-        "id": str(issue["id"]),
+        "id": issue_id,
         "title": str(issue.get("title", "")),
         "status": str(issue.get("status", "unknown")),
         "priority": _priority(issue),
-        "dependency_ready": str(issue["id"]) in ready_ids,
+        "dependency_ready": issue_id in ready_ids,
         "critical_path_leverage": leverage,
         "resource_class": resource_class,
-        "conflicts_with_claims": _footprint_conflicts(issue, occupied),
+        "conflicts_with_claims": _footprint_conflicts(issue_id, occupied_ids, footprint_keys),
         "frontier_program_ref": _metadata(issue).get("frontier_program_ref"),
     }
 
@@ -167,30 +179,42 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
     derivation rather than a hidden admission or count-pruning mechanism.
     """
     open_issues = [issue for issue in issues if _is_open(issue)]
+    footprints = {issue["id"]: bead_cluster.extract_footprint(issue) for issue in open_issues}
+    footprint_keys = {
+        issue_id: footprint.overlap_keys() | footprint.contention_keys() for issue_id, footprint in footprints.items()
+    }
     claims = sorted(
-        (issue for issue in open_issues if issue.get("status") == "in_progress"), key=lambda item: str(item["id"])
+        (issue for issue in open_issues if issue.get("status") == "in_progress"), key=lambda item: item["id"]
     )
+    claim_ids = [issue["id"] for issue in claims]
     leverage = _critical_path_leverage(issues)
     candidates = [
-        _candidate_row(issue, leverage=leverage.get(str(issue["id"]), 0), occupied=claims, ready_ids=ready_ids)
+        _candidate_row(
+            issue,
+            footprint=footprints[issue["id"]],
+            footprint_keys=footprint_keys,
+            leverage=leverage.get(issue["id"], 0),
+            occupied_ids=claim_ids,
+            ready_ids=ready_ids,
+        )
         for issue in open_issues
-        if issue.get("status") == "open" and str(issue["id"]) in ready_ids and issue.get("issue_type") != "epic"
+        if issue.get("status") == "open" and issue["id"] in ready_ids and issue.get("issue_type") != "epic"
     ]
     candidates.sort(key=lambda row: (row["priority"], -row["critical_path_leverage"], row["id"]))
 
     occupied_by_resource: dict[str, list[str]] = defaultdict(list)
     for claim in claims:
-        occupied_by_resource[_resource_class(claim)].append(str(claim["id"]))
+        occupied_by_resource[_resource_class(claim, footprints[claim["id"]])].append(claim["id"])
     selected: list[dict[str, Any]] = []
     deferred: list[dict[str, Any]] = []
-    selected_issues: list[dict[str, Any]] = []
-    by_id = {str(issue["id"]): issue for issue in open_issues}
+    selected_by_resource: dict[str, list[str]] = defaultdict(list)
     for candidate in candidates:
         resource_class = str(candidate["resource_class"])
         policy = RESOURCE_POLICY[resource_class]
         occupied_ids = sorted(occupied_by_resource[resource_class])
         conflicts = list(candidate["conflicts_with_claims"])
-        selected_conflicts = _footprint_conflicts(by_id[candidate["id"]], selected_issues)
+        selected_conflicts = _footprint_conflicts(candidate["id"], selected_by_resource["all"], footprint_keys)
+        resource_occupancy = [*occupied_ids, *selected_by_resource[resource_class]]
         if conflicts:
             candidate["focus_state"] = "deferred"
             candidate["reason"] = f"footprint conflict with active claim(s): {', '.join(conflicts)}"
@@ -199,30 +223,34 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
             candidate["focus_state"] = "deferred"
             candidate["reason"] = f"footprint conflict with selected focus: {', '.join(selected_conflicts)}"
             deferred.append(candidate)
-        elif policy["max_parallel"] is not None and occupied_ids:
+        elif policy["max_parallel"] is not None and len(resource_occupancy) >= policy["max_parallel"]:
             candidate["focus_state"] = "deferred"
-            candidate["reason"] = f"{resource_class} occupied by claim(s): {', '.join(occupied_ids)}"
-            deferred.append(candidate)
-        elif policy["max_parallel"] is not None and any(item["resource_class"] == resource_class for item in selected):
-            candidate["focus_state"] = "deferred"
-            candidate["reason"] = f"{resource_class} already selected under declared max_parallel policy"
+            if occupied_ids:
+                candidate["reason"] = f"{resource_class} occupied by claim(s): {', '.join(occupied_ids)}"
+            else:
+                candidate["reason"] = (
+                    f"{resource_class} occupied by selected focus: {', '.join(selected_by_resource[resource_class])}"
+                )
             deferred.append(candidate)
         else:
             candidate["focus_state"] = "focus"
             candidate["reason"] = "ready, unclaimed, and permitted by declared resource policy"
             selected.append(candidate)
-            selected_issues.append(by_id[candidate["id"]])
+            selected_by_resource[resource_class].append(candidate["id"])
+            selected_by_resource["all"].append(candidate["id"])
     return {
         "resource_policy": RESOURCE_POLICY,
-        "occupied_claims": [str(issue["id"]) for issue in claims],
+        "occupied_claims": claim_ids,
         "candidates": candidates,
         "focus": selected,
         "deferred": deferred,
     }
 
 
-def build_report(issues: list[dict[str, Any]], ready: list[dict[str, Any]], *, repo: Path) -> dict[str, Any]:
-    ready_ids = {str(issue["id"]) for issue in ready if isinstance(issue.get("id"), str)}
+def build_report(issues: list[Any], ready: list[Any], *, repo: Path) -> dict[str, Any]:
+    issues = _normalize_issues(issues, source="bd list")
+    ready = _normalize_issues(ready, source="bd ready")
+    ready_ids = {issue["id"] for issue in ready}
     execution_focus = derive_execution_focus(issues, ready_ids)
     open_issues = [issue for issue in issues if _is_open(issue)]
     claims = [issue for issue in open_issues if issue.get("status") == "in_progress"]

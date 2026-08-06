@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -188,13 +189,39 @@ def test_parent_child_validation_rejects_multiple_missing_and_cyclic_parents() -
             ],
         ),
         _issue("polylogue-d", dependencies=[{"type": "parent-child", "depends_on_id": "polylogue-absent"}]),
+        _issue("polylogue-cycle-a", dependencies=[{"type": "parent-child", "depends_on_id": "polylogue-cycle-b"}]),
+        _issue("polylogue-cycle-b", dependencies=[{"type": "parent-child", "depends_on_id": "polylogue-cycle-a"}]),
     ]
 
     findings = verify_bead_graph.collect_findings(issues)
     assert {(finding.kind, finding.bead_id) for finding in findings} >= {
         ("multiple-parents", "polylogue-b"),
         ("missing-parent", "polylogue-d"),
+        ("parent-cycle", "polylogue-cycle-a"),
     }
+
+
+@pytest.mark.parametrize("payload", [["not-an-issue"], [{"id": ""}], [{"id": 42}]])
+def test_bd_list_rejects_each_malformed_issue_record(monkeypatch: pytest.MonkeyPatch, payload: list[object]) -> None:
+    class Completed:
+        stdout = json.dumps(payload)
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: Completed())
+
+    with pytest.raises(RuntimeError, match="expected object with non-empty string id|has no non-empty string id"):
+        verify_bead_graph._run_bd_list_all()
+
+
+def test_main_reports_bd_cycle_launch_failure_as_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail_cycles() -> tuple[bool, str]:
+        raise OSError("bd unavailable")
+
+    monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", fail_cycles)
+
+    assert verify_bead_graph.main(["--json"]) == 1
+    assert json.loads(capsys.readouterr().out) == {"error": "bd unavailable", "report_version": 1}
 
 
 def test_parent_relationship_survives_json_import_export_and_merge_shape() -> None:

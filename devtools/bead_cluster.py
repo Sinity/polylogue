@@ -112,7 +112,7 @@ BeadDict = dict[str, Any]
 
 # Regex: file paths mentioning known project trees
 _FILE_PAT = re.compile(
-    r"(?:polylogue|tests|\.agent|docs|storage|pipeline|daemon|cli|mcp"
+    r"(?:polylogue|tests|\.agent|docs|devtools|storage|pipeline|daemon|cli|mcp"
     r"|browser[_-]extension|browser_capture|coordination|archive|insights"
     r"|context|core|hooks|maintenance|artifacts)"
     r"/[\w./\-]+\.(?:py|ts|js|yaml|yml|md|json|sql|html)",
@@ -272,6 +272,11 @@ def _extract_footprint(item: BeadDict) -> Footprint:
         migration_slots=list(dict.fromkeys(migration_slots)),
         generated_surfaces=gen_surfaces,
     )
+
+
+def extract_footprint(item: BeadDict) -> Footprint:
+    """Return the Bead's reusable footprint for cross-tool scheduling policy."""
+    return _extract_footprint(item)
 
 
 # ---------------------------------------------------------------------------

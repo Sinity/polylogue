@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -73,15 +74,76 @@ def test_execution_focus_reports_active_set_without_mutating_admission() -> None
     assert report["execution_focus"]["focus"][0]["id"] == "active"
 
 
+def test_execution_focus_defers_selected_footprints_and_respects_integer_resource_occupancy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(frontier_report.RESOURCE_POLICY["schema-lane"], "max_parallel", 2)
+    issues = [
+        _issue("devtools-first", priority=0, design="devtools/frontier_report.py"),
+        _issue("devtools-second", priority=1, design="devtools/frontier_report.py"),
+        _issue("schema-first", priority=2, design="migration 010_first.sql"),
+        _issue("schema-second", priority=3, design="migration 011_second.sql"),
+        _issue("schema-third", priority=4, design="migration 012_third.sql"),
+    ]
+
+    report = frontier_report.build_report(issues, issues, repo=Path("/repo"))
+
+    focus = report["execution_focus"]
+    assert [item["id"] for item in focus["focus"]] == ["devtools-first", "schema-first", "schema-second"]
+    deferred = {item["id"]: item for item in focus["deferred"]}
+    assert deferred["devtools-second"]["reason"] == "footprint conflict with selected focus: devtools-first"
+    assert deferred["schema-third"]["reason"] == "schema-lane occupied by selected focus: schema-first, schema-second"
+
+
+def test_build_report_rejects_malformed_live_records() -> None:
+    with pytest.raises(RuntimeError, match="bd list record 0 has no non-empty string id"):
+        frontier_report.build_report([{"id": ""}], [], repo=Path("/repo"))
+
+
+def test_render_markdown_includes_counts_focus_and_deferrals() -> None:
+    rendered = frontier_report._render_markdown(
+        {
+            "repo": "/repo",
+            "counts": {
+                "ambition": 3,
+                "active_set": 1,
+                "claims": 1,
+                "dependency_ready": 2,
+                "execution_focus": 1,
+                "deferred": 1,
+            },
+            "execution_focus": {
+                "focus": [{"id": "focus", "priority": 1, "critical_path_leverage": 2, "title": "Focus title"}],
+                "deferred": [{"id": "wait", "priority": 2, "reason": "schema-lane occupied by claim(s): claim"}],
+            },
+        }
+    )
+
+    assert rendered == (
+        "# Execution Focus\n\n"
+        "repo: `/repo`\n"
+        "counts: ambition=3 active_set=1 claims=1 dependency_ready=2 execution_focus=1 deferred=1\n\n"
+        "## Focus\n\n"
+        "- `focus` P1 leverage=2 Focus title\n\n"
+        "## Deferred\n\n"
+        "- `wait` P2 schema-lane occupied by claim(s): claim"
+    )
+
+
 def test_main_uses_unbounded_live_surfaces_and_emits_complete_json(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     calls: list[list[str]] = []
-    issues = [_issue("a"), _issue("b")]
+    issues: list[Any] = [_issue("a"), _issue("b")]
+    ready: list[Any] = [_issue("a")]
 
-    def fake_run(_repo: Path, args: list[str]) -> list[dict[str, object]]:
+    def fake_run(_repo: Path, args: list[str]) -> list[object]:
         calls.append(args)
-        return issues
+        if args[0] == "list":
+            return issues
+        if args[0] == "ready":
+            return ready
+        raise AssertionError(f"unexpected bd arguments: {args}")
 
     monkeypatch.setattr(frontier_report, "_run_bd", fake_run)
 
@@ -89,5 +151,6 @@ def test_main_uses_unbounded_live_surfaces_and_emits_complete_json(
     payload = json.loads(capsys.readouterr().out)
 
     assert calls == [["list", "--all", "--limit", "0"], ["ready", "--limit", "0"]]
-    assert [item["id"] for item in payload["execution_focus"]["candidates"]] == ["a", "b"]
+    assert [item["id"] for item in payload["execution_focus"]["candidates"]] == ["a"]
+    assert payload["counts"]["dependency_ready"] == 1
     assert payload["execution_focus"]["resource_policy"] == frontier_report.RESOURCE_POLICY
