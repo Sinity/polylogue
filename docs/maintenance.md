@@ -213,10 +213,13 @@ not by index-tier `attachment_refs` or `raw_artifacts.artifact_id`.
 `hook_payload` refs join `raw_hook_events.hook_event_id`. Unknown or unavailable
 ref types are counted as explicit census dispositions and block an apply; blob
 GC also retains their bytes until a typed disposition is available. The
-command never deletes blob files.
+command never deletes blob files. Use `--census-only` for the privacy-safe
+production census. It returns counts and dispositions only, without reference
+identifiers, source paths, or hashes.
 
 ```bash
 polylogue ops maintenance blob-reference-liveness --output-format json
+polylogue ops maintenance blob-reference-liveness --census-only --output-format json
 polylogue ops maintenance blob-reference-liveness --apply \
   --backup-manifest /path/to/verified-source-backup-manifest.json \
   --receipt-file /path/to/new/blob-ref-liveness.jsonl \

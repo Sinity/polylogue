@@ -263,6 +263,7 @@ def test_gc_retains_unclassified_blob_refs_and_census_reports_disposition(tmp_pa
         "by_ref_type": {},
         "unknown_ref_types": {"future_type": 1},
         "unavailable_ref_types": {"sidecar": 1},
+        "schema_unavailable_count": 0,
     }
 
 
@@ -290,6 +291,7 @@ def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
         blob_hash = conn.execute(
             "SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = ?", (hook_event_id,)
         ).fetchone()[0]
+        conn.execute("UPDATE raw_hook_events SET blob_hash = NULL WHERE hook_event_id = ?", (hook_event_id,))
         legacy_ref_id = deterministic_raw_session_id("codex-session", source_path, 0, blob_hash, native_id)
         conn.execute("DELETE FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?", (hook_event_id,))
         conn.execute(
@@ -335,6 +337,49 @@ def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
     deleted = run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10)
     assert deleted == 0
     assert blob_store.exists(blob_hash_hex)
+
+
+def test_gc_census_reports_untyped_blob_ref_schema_without_deleting_bytes(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    blob_store = BlobStore(tmp_path / "blob")
+    blob_hash, _size = blob_store.write_from_bytes(b"untyped reference")
+
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                owner_id TEXT NOT NULL,
+                PRIMARY KEY (blob_hash, owner_id)
+            ) STRICT;
+            CREATE TABLE gc_generations (
+                generation_id TEXT PRIMARY KEY,
+                started_at_ms INTEGER NOT NULL,
+                completed_at_ms INTEGER,
+                reclaimed_count INTEGER NOT NULL,
+                reclaimed_bytes INTEGER NOT NULL
+            ) STRICT;
+            """
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, owner_id) VALUES (?, 'legacy-owner')", (bytes.fromhex(blob_hash),)
+        )
+
+    _backdate(blob_store, blob_hash)
+    assert run_blob_gc(source_db, blob_store.root, max_batch=10) == 0
+    with sqlite3.connect(source_db) as conn:
+        census = census_orphaned_blob_refs(conn)
+
+    assert census.schema_unavailable_count == 1
+    assert census.to_dict() == {
+        "scanned_count": 0,
+        "ref_type_counts": {},
+        "total": 0,
+        "by_ref_type": {},
+        "unknown_ref_types": {},
+        "unavailable_ref_types": {},
+        "schema_unavailable_count": 1,
+    }
 
 
 def test_attachment_ref_type_joins_against_raw_sessions_not_raw_artifacts(tmp_path: Path) -> None:
@@ -415,4 +460,5 @@ def test_census_orphaned_blob_refs_counts_by_ref_type(tmp_path: Path) -> None:
             "by_ref_type": {"raw_payload": 1, "hook_payload": 1},
             "unknown_ref_types": {},
             "unavailable_ref_types": {},
+            "schema_unavailable_count": 0,
         }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,11 @@ if TYPE_CHECKING:
 )
 @click.option("--sample-limit", type=int, default=30, show_default=True)
 @click.option(
+    "--census-only",
+    is_flag=True,
+    help="Return counts-only liveness dispositions without identifiers, paths, or hashes.",
+)
+@click.option(
     "--output-format",
     "output_format",
     type=click.Choice(["plain", "json"]),
@@ -47,9 +53,33 @@ def blob_reference_liveness_command(
     backup_manifest: Path | None,
     receipt_file: Path | None,
     sample_limit: int,
+    census_only: bool,
     output_format: str,
 ) -> None:
     """Classify source-tier orphan refs; apply only with backup and receipt."""
+    if census_only:
+        if apply_changes or backup_manifest is not None or receipt_file is not None:
+            raise click.UsageError(
+                "--census-only cannot be combined with --apply, --backup-manifest, or --receipt-file"
+            )
+        from polylogue.storage.blob_gc import census_orphaned_blob_refs
+
+        source_db = archive_root() / "source.db"
+        with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+            census = census_orphaned_blob_refs(conn)
+        payload = {"mode": "blob_reference_census", "mutates": False, **census.to_dict()}
+        if output_format == "json":
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            click.echo("Blob reference liveness census")
+            click.echo(f"Scanned:      {census.scanned_count:,} blob_refs row(s)")
+            click.echo(f"Orphans:      {census.total:,} row(s)")
+            click.echo(f"Schema held:  {census.schema_unavailable_count:,} row(s)")
+            click.echo(f"By ref type:  {json.dumps(census.by_ref_type, sort_keys=True)}")
+            click.echo(f"Unknown:      {json.dumps(census.unknown_ref_types or {}, sort_keys=True)}")
+            click.echo(f"Unavailable:  {json.dumps(census.unavailable_ref_types or {}, sort_keys=True)}")
+        return
+
     from polylogue.maintenance.blob_ref_liveness_reconciliation import reconcile_blob_ref_liveness
 
     report = reconcile_blob_ref_liveness(
