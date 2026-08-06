@@ -80,11 +80,11 @@ jobs:
             if [ -n "${CIRCLE_PULL_REQUEST:-}" ]; then
               ~/.local/bin/uv run devtools workspace pr-scope check-ci \
                 --pr "${CIRCLE_PULL_REQUEST##*/}" \
-                --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
+                --repo "Sinity/polylogue" \
                 --expected-head-sha "${CIRCLE_SHA1}"
             else
               ~/.local/bin/uv run devtools workspace pr-scope check-ci \
-                --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
+                --repo "Sinity/polylogue" \
                 --expected-head-sha "${CIRCLE_SHA1}"
             fi
       - run:
