@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection
-from typing import Any
+from typing import Any, cast
 
 from polylogue.config import Config, get_config
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
@@ -206,14 +206,17 @@ def _quarantine_evidence_counts(conn: Connection) -> tuple[int, int, int]:
             and isinstance(detected_at_ms, int)
             and not isinstance(detected_at_ms, bool)
         )
-        if base_shape_valid and "...budget-exceeded" in cycle_path:
+        if not base_shape_valid:
+            malformed_count += 1
+            continue
+        typed_cycle_path = cast(list[str], cycle_path)
+        if "...budget-exceeded" in typed_cycle_path:
             budget_exhausted_count += 1
         elif (
-            base_shape_valid
-            and asserted_parent_session_id is not None
-            and cycle_path[0] == src_session_id
-            and cycle_path[-1] == src_session_id
-            and cycle_path[1] == asserted_parent_session_id
+            asserted_parent_session_id is not None
+            and typed_cycle_path[0] == src_session_id
+            and typed_cycle_path[-1] == src_session_id
+            and typed_cycle_path[1] == asserted_parent_session_id
         ):
             cycle_evidence_count += 1
         else:
