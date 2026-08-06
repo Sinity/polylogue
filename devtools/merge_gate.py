@@ -222,17 +222,6 @@ def cmd_record(pr: int, command: str) -> int:
     info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft"])
     head_sha = info["headRefOid"]
 
-    scope = pr_scope.validate_pr_body(
-        info.get("body") or "",
-        head_sha=head_sha,
-        is_draft=bool(info.get("isDraft")),
-    )
-    if not scope.ok:
-        print(f"REFUSING to record: PR #{pr} has an invalid structured pr-scope carrier:", file=sys.stderr)
-        for reason in scope.reasons:
-            print(f"  - {reason}", file=sys.stderr)
-        return 2
-
     local_head = _git_head_sha()
     if local_head != head_sha:
         print(
@@ -249,6 +238,17 @@ def cmd_record(pr: int, command: str) -> int:
             "exactly the PR's committed content, not a locally-modified tree.",
             file=sys.stderr,
         )
+        return 2
+
+    scope = pr_scope.validate_pr_body(
+        info.get("body") or "",
+        head_sha=head_sha,
+        is_draft=bool(info.get("isDraft")),
+    )
+    if not scope.ok:
+        print(f"REFUSING to record: PR #{pr} has an invalid structured pr-scope carrier:", file=sys.stderr)
+        for reason in scope.reasons:
+            print(f"  - {reason}", file=sys.stderr)
         return 2
 
     argv = shlex.split(command)

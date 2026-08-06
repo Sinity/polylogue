@@ -27,10 +27,10 @@ write to Beads, do not merge or push, do not touch /realm/db/polylogue.
 Commit coherent checkpoints. Return exact changed files, commands run and
 their output, an acceptance-criteria match table, and residual uncertainty.
 
-For a lane that publishes a PR, emit the versioned PR-scope carrier before the
-non-draft PR is opened: render it from assigned Bead IDs, typed whole-Bead
-dispositions, evidence refs, and open successors for residual scope using
-`devtools workspace pr-scope render`. Embed the result in the PR body and run
-`devtools workspace pr-scope check --pr <N>`. Never derive a disposition by
-parsing acceptance prose or fabricate a successor Bead ID.
+Provide the coordinator with a JSON scope input containing assigned Bead IDs,
+typed whole-Bead dispositions, evidence refs, and open successors for residual
+scope. The coordinator owns rendering the versioned carrier, embedding it in
+the PR body, validating the published non-draft PR, and opening or updating the
+PR. Never derive a disposition by parsing acceptance prose or fabricate a
+successor Bead ID.
 """

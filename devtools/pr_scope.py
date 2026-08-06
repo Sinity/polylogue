@@ -75,6 +75,10 @@ class PullRequestMetadata:
     is_draft: bool
 
 
+class NoOpenPullRequestError(ValueError):
+    """CI checked a commit that has no open pull request to validate."""
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -431,12 +435,21 @@ def fetch_pr_for_head(*, repository: str, head_sha: str) -> tuple[int, PullReque
         metadata = _pr_metadata_from_payload(item)
         if metadata.head_sha == head_sha:
             candidates.append((item["number"], metadata))
+    if not candidates:
+        raise NoOpenPullRequestError(f"no open PR found for head {head_sha[:8]}")
     if len(candidates) != 1:
         raise ValueError(f"expected one open PR for head {head_sha[:8]}, found {len(candidates)}")
     return candidates[0]
 
 
 def fetch_base_validator_source(*, repository: str, base_sha: str) -> bytes | None:
+    local = subprocess.run(
+        ["git", "show", f"{base_sha}:devtools/pr_scope.py"],
+        capture_output=True,
+        check=False,
+    )
+    if local.returncode == 0 and local.stdout:
+        return local.stdout
     path = f"repos/{repository}/contents/devtools/pr_scope.py?ref={parse.quote(base_sha, safe='')}"
     return _github_request_bytes(path, accept="application/vnd.github.raw+json", missing_ok=True)
 
@@ -584,6 +597,9 @@ def main(argv: list[str] | None = None) -> int:
                 checkout_head_sha=checkout_head_sha,
                 expected_head_sha=args.expected_head_sha,
             )
+        except NoOpenPullRequestError as exc:
+            print(f"pr-scope CI skip: {exc}", file=sys.stderr)
+            return 0
         except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
             print(f"REFUSING CI pr-scope check: {exc}", file=sys.stderr)
             return 2

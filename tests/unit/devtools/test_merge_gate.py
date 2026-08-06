@@ -201,6 +201,7 @@ def test_check_ok_when_receipt_fresh_and_matches_head_with_no_late_comments(
 @pytest.mark.parametrize(
     ("receipt_field", "mutated_value", "reason"),
     [
+        ("pr_scope_digest", "changed-body-digest", "pr_scope_digest"),
         ("pr_scope_beads_digest", "stale", "pr_scope_beads_digest"),
         ("pr_scope_assigned_beads", ["polylogue-other"], "pr_scope_assigned_beads"),
     ],

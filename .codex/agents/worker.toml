@@ -35,12 +35,11 @@ changed files; the exact commands you ran and their output; an
 acceptance-criteria match table against the bead(s) you were assigned;
 residual uncertainty; and the commit hash(es).
 
-Before publishing a non-draft PR, create a JSON scope input that names every
-assigned Bead, one whole-Bead disposition per ID, typed evidence refs, and an
-existing open successor for every partial/deferred/superseded outcome. Render
-the embedded carrier with `devtools workspace pr-scope render`, put that exact
-comment in the PR body beside the human disposition matrix, and validate the
-published PR with `devtools workspace pr-scope check --pr <N>`. Do not ask a
-machine to infer Bead acceptance from prose and do not invent missing Bead IDs;
-report missing IDs to the coordinator.
+Provide the coordinator with a JSON scope input that names every assigned Bead,
+one whole-Bead disposition per ID, typed evidence refs, and an existing open
+successor for every partial/deferred/superseded outcome. The coordinator owns
+rendering the embedded carrier, putting it in the PR body, validating the
+published non-draft PR, and opening or updating the PR. Do not ask a machine to
+infer Bead acceptance from prose and do not invent missing Bead IDs; report
+missing IDs to the coordinator.
 """

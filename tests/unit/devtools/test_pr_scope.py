@@ -171,6 +171,63 @@ def test_ci_resolves_pr_from_exact_head_when_circle_pr_url_is_absent(
     assert requests[0].full_url == f"https://api.github.com/repos/Sinity/polylogue/commits/{HEAD_SHA}/pulls"
 
 
+def test_fetch_pr_for_head_reports_when_no_open_pr_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(request, "urlopen", lambda *_args, **_kwargs: _FakeHttpResponse(b"[]"))
+
+    with pytest.raises(pr_scope.NoOpenPullRequestError, match="no open PR"):
+        pr_scope.fetch_pr_for_head(repository="Sinity/polylogue", head_sha=HEAD_SHA)
+
+
+def test_ci_skips_when_commit_has_no_open_pr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(pr_scope, "resolve_repository", lambda _repo: "Sinity/polylogue")
+    monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: HEAD_SHA)
+
+    def _no_pr(**_kwargs: object) -> tuple[int, pr_scope.PullRequestMetadata]:
+        raise pr_scope.NoOpenPullRequestError("no open PR found for head aaaaaaaa")
+
+    monkeypatch.setattr(pr_scope, "fetch_pr_for_head", _no_pr)
+
+    assert pr_scope.main(["check-ci", "--repo", "Sinity/polylogue", "--expected-head-sha", HEAD_SHA]) == 0
+    assert "pr-scope CI skip" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("checkout_head_sha", "expected_head_sha"),
+    [("c" * 40, HEAD_SHA), (HEAD_SHA, "d" * 40)],
+)
+def test_ci_check_refuses_head_mismatch_before_fetching_base(
+    checkout_head_sha: str,
+    expected_head_sha: str,
+    monkeypatch: pytest.MonkeyPatch,
+    beads_path: Path,
+) -> None:
+    metadata = pr_scope.PullRequestMetadata(
+        body=_body(_input(), beads_path),
+        head_sha=HEAD_SHA,
+        base_sha="b" * 40,
+        is_draft=False,
+    )
+    fetch_base = MagicMock()
+    monkeypatch.setattr(pr_scope, "fetch_base_validator_source", fetch_base)
+
+    assert (
+        pr_scope.check_ci_metadata(
+            metadata,
+            repository="Sinity/polylogue",
+            beads_path=beads_path,
+            checkout_head_sha=checkout_head_sha,
+            expected_head_sha=expected_head_sha,
+        )
+        == 2
+    )
+    fetch_base.assert_not_called()
+
+
 def test_ci_check_executes_base_revision_validator(
     monkeypatch: pytest.MonkeyPatch,
     beads_path: Path,

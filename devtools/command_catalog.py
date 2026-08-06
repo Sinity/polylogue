@@ -830,8 +830,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Replace a bare `gh pr merge --squash` with this at the actual merge boundary "
             "(polylogue-ct3r2 / polylogue-t6iga: duplicate filings of the same finding -- "
             "`merge-gate record/check` and the one-full-verify-per-train rule both existed but "
-            "fired only if a coordinator remembered to invoke them). `merge <PR>` auto-records a "
-            "validates the non-draft PR's structured scope carrier and auto-records a merge-gate receipt if none is fresh for the current head sha (running `--command`, "
+            "fired only if a coordinator remembered to invoke them). `merge <PR>` validates the non-draft PR's structured scope carrier and auto-records a merge-gate receipt if none is fresh for the current head sha (running `--command`, "
             'default "devtools verify"), runs `merge-gate check` and refuses to merge on any '
             "BLOCK, strips a doubled `(#N) (#N)` squash-subject suffix (the 2026-07-12/13 "
             "incident), then runs the actual `gh pr merge --squash`. `--dry-run` runs every check "
