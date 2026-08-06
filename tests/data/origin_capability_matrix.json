@@ -1,18 +1,30 @@
 {
   "schema_version": 1,
   "entries": [
-    {"origin": "claude-code-session", "status": "supported", "provider": "claude-code", "fixture": "tests/fixtures/claude-code/claude-normalization-main.jsonl", "format": "jsonl", "fallback_id": "origin-matrix-claude-code", "parser_claims": [{"provider": "claude-code"}]},
-    {"origin": "codex-session", "status": "supported", "provider": "codex", "fixture": "tests/data/codex_event_stream/text_only_stream.jsonl", "format": "jsonl", "fallback_id": "origin-matrix-codex", "parser_claims": [{"provider": "codex"}]},
-    {"origin": "gemini-cli-session", "status": "supported", "provider": "gemini-cli", "fixture": "tests/fixtures/origin-capability/gemini-cli-session.json", "format": "json", "fallback_id": "origin-matrix-gemini-cli", "parser_claims": [{"provider": "gemini-cli"}]},
-    {"origin": "hermes-session", "status": "supported", "provider": "hermes", "fixture": "tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json", "format": "json", "fallback_id": "origin-matrix-hermes", "parser_claims": [{"provider": "hermes"}]},
-    {"origin": "antigravity-session", "status": "supported", "provider": "antigravity", "fixture": "tests/fixtures/origin-capability/antigravity-session.json", "format": "json", "fallback_id": "origin-matrix-antigravity", "parser_claims": [{"provider": "antigravity"}]},
-    {"origin": "beads-issue", "status": "supported", "provider": "beads", "fixture": "tests/fixtures/beads/issue-interactions.jsonl", "format": "jsonl", "fallback_id": "origin-matrix-beads", "parser_claims": [{"provider": "beads"}]},
-    {"origin": "grok-export", "status": "supported", "provider": "grok", "fixture": "tests/fixtures/origin-capability/grok-export.json", "format": "json", "fallback_id": "origin-matrix-grok", "parser_claims": [{"provider": "grok"}]},
-    {"origin": "chatgpt-export", "status": "supported", "provider": "chatgpt", "fixture": "tests/fixtures/chatgpt/native-conversation-v1.json", "format": "json", "fallback_id": "origin-matrix-chatgpt", "parser_claims": [{"provider": "chatgpt"}]},
-    {"origin": "claude-ai-export", "status": "supported", "provider": "claude-ai", "fixture": "tests/fixtures/origin-capability/claude-ai-export.json", "format": "json", "fallback_id": "origin-matrix-claude-ai", "parser_claims": [{"provider": "claude-ai"}]},
-    {"origin": "claude-design-session", "status": "supported", "provider": "claude-design", "fixture": "tests/fixtures/origin-capability/claude-design-session.json", "format": "json", "fallback_id": "origin-matrix-claude-design", "parser_claims": [{"provider": "claude-design"}]},
-    {"origin": "aistudio-drive", "status": "supported", "provider": "gemini", "fixture": "tests/data/gemini_chunked_prompt/text_only_session.json", "format": "json", "fallback_id": "origin-matrix-aistudio", "parser_claims": [{"provider": "gemini"}]},
-    {"origin": "unknown-export", "status": "unsupported", "parser_claims": [], "unsupported": {"status": "unsupported", "reason": "compatibility-only", "detail": "OriginSpec is a compatibility fallback with no parser binding; retain evidence until a concrete source adapter is admitted."}}
+    {"origin": "claude-code-session", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/claude-code-session.jsonl", "format": "jsonl", "fallback_id": "origin-matrix-claude-code", "parser_claims": [{"provider": "claude-code"}]}]},
+    {"origin": "codex-session", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/codex-session.jsonl", "format": "jsonl", "fallback_id": "origin-matrix-codex", "parser_claims": [{"provider": "codex"}]}]},
+    {"origin": "gemini-cli-session", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/gemini-cli-session.json", "format": "json", "fallback_id": "origin-matrix-gemini-cli", "parser_claims": [{"provider": "gemini-cli"}]}]},
+    {"origin": "hermes-session", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/hermes-session.jsonl", "format": "jsonl", "fallback_id": "origin-matrix-hermes", "parser_claims": [{"provider": "hermes"}]}]},
+    {"origin": "antigravity-session", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/antigravity-session.json", "format": "json", "fallback_id": "origin-matrix-antigravity", "parser_claims": [{"provider": "antigravity"}]}]},
+    {"origin": "beads-issue", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/beads-issue.jsonl", "format": "jsonl", "fallback_id": "origin-matrix-beads", "parser_claims": [{"provider": "beads"}]}]},
+    {"origin": "grok-export", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/grok-export.json", "format": "json", "fallback_id": "origin-matrix-grok", "parser_claims": [{"provider": "grok"}]}]},
+    {"origin": "chatgpt-export", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/chatgpt-export.json", "format": "json", "fallback_id": "origin-matrix-chatgpt", "parser_claims": [{"provider": "chatgpt"}]}]},
+    {"origin": "claude-ai-export", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/claude-ai-export.json", "format": "json", "fallback_id": "origin-matrix-claude-ai", "parser_claims": [{"provider": "claude-ai"}]}]},
+    {"origin": "claude-design-session", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/claude-design-session.json", "format": "json", "fallback_id": "origin-matrix-claude-design", "parser_claims": [{"provider": "claude-design"}]}]},
+    {"origin": "aistudio-drive", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/aistudio-drive.json", "format": "json", "fallback_id": "origin-matrix-aistudio-gemini", "parser_claims": [{"provider": "gemini"}]}, {"fixture": "tests/fixtures/origin-capability/aistudio-drive-hinted.json", "format": "json", "fallback_id": "origin-matrix-aistudio-drive", "route": "source-hint", "parser_claims": [{"provider": "drive"}]}]},
+    {"origin": "unknown-export", "status": "unsupported", "witnesses": [], "unsupported": {"status": "unsupported", "reason": "compatibility-only", "detail": "OriginSpec is a compatibility fallback with no parser binding; retain evidence until a concrete source adapter is admitted."}}
+  ],
+  "empty": [
+    {"name": "empty-claude-code", "provider": "claude-code", "payload": []},
+    {"name": "empty-codex", "provider": "codex", "payload": []},
+    {"name": "empty-chatgpt", "provider": "chatgpt", "payload": {}},
+    {"name": "empty-gemini-cli", "provider": "gemini-cli", "payload": {"messages": []}}
+  ],
+  "partial": [
+    {"name": "partial-claude-code", "provider": "claude-code", "payload": [{"sessionId": "partial-only-id"}]},
+    {"name": "partial-codex", "provider": "codex", "payload": [{"type": "session_meta", "payload": {"id": "partial-codex"}}]},
+    {"name": "partial-chatgpt", "provider": "chatgpt", "payload": {"id": "partial-chatgpt", "conversation_id": "partial-chatgpt", "create_time": 1700000000.0, "current_node": "node-1", "mapping": {"node-1": {"id": "node-1", "parent": null, "children": []}}}},
+    {"name": "partial-hermes", "provider": "hermes", "payload": [{"atof_version": "0.1", "kind": "scope", "category": "agent", "scope_category": "start", "uuid": "partial-hermes"}]}
   ],
   "malformed": [
     {"name": "claude-code-missing-envelope", "provider": "claude-code", "payload": [{"sessionId": "only-an-id"}]},
