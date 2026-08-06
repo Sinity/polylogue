@@ -159,6 +159,9 @@ class RebuildProvenanceContext:
             verify_blob_integrity=verify_blob_integrity,
             verified_blob_integrity_snapshot=cached_snapshot,
         )
+        refreshed_inventory_token = validated.get("external_ground_truth_inventory_token")
+        if isinstance(refreshed_inventory_token, dict):
+            self.external_inventory_token = refreshed_inventory_token
         if verify_blob_integrity:
             refreshed_snapshot = validated.pop("_verified_blob_integrity_snapshot", None)
             if isinstance(refreshed_snapshot, dict):
@@ -202,6 +205,44 @@ def _validate_rebuild_provenance_receipt(
         )
     except SchemaInferenceGateError as exc:
         raise RebuildProvenanceError(f"rebuild schema-inference preflight gate failed: {exc}") from exc
+
+
+_REBUILD_TERMINAL_NOT_RESUMABLE = frozenset({"promoted", "promoted-attestation-failed", "stale", "failed"})
+
+
+def _reconcile_active_generation_transaction(
+    store: IndexGenerationStore, transaction: IndexRebuildTransaction
+) -> IndexRebuildTransaction:
+    """Turn a post-pointer-write transaction into terminal state on restart.
+
+    Promotion changes the active pointer before the transaction attestation is
+    durable. If both the normal and recovery checkpoints fail, the persisted
+    transaction can still look resumable even though its generation is active.
+    The next resolver pass must record that observed fact before returning it
+    to the rebuild loop, otherwise the caller retries an already-active
+    generation forever.
+    """
+
+    if transaction.status in _REBUILD_TERMINAL_NOT_RESUMABLE:
+        return transaction
+    try:
+        generation = store.load(transaction.generation_id)
+        active_path = store.active_pointer.resolve(strict=True)
+        generation_path = Path(generation.index_path).resolve(strict=True)
+    except (FileNotFoundError, OSError, ValueError):
+        return transaction
+    if generation.state != "active" or active_path != generation_path:
+        return transaction
+    return store.checkpoint_transaction(
+        transaction,
+        status="promoted-attestation-failed",
+        error="reconciled active generation after interrupted promotion attestation",
+        post_promotion_attestation={
+            "status": "reconciled-after-restart",
+            "generation_id": generation.generation_id,
+            "generation_state": generation.state,
+        },
+    )
 
 
 def _mark_rebuild_transaction_stale_after_provenance_failure(
@@ -1410,6 +1451,7 @@ async def _rebuild_index_from_source_owned(
         if resumable_full_source:
             if request.operation_id is not None:
                 transaction = generation_store.load_transaction(request.operation_id)
+                transaction = _reconcile_active_generation_transaction(generation_store, transaction)
             else:
                 transaction = _create_rebuild_transaction_after_receipt_validation(
                     generation_store,

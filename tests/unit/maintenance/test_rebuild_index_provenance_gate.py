@@ -201,6 +201,60 @@ def test_valid_receipt_allows_real_candidate_acceptance_and_promotion(tmp_path: 
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().exists()
 
 
+def test_rebuild_context_reuses_refreshed_inventory_token_after_detector_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful metadata-only rehash updates the pass token for later checkpoints.
+
+    Anti-vacuity: this runs the real offline rebuild entry point and validator.
+    Touching the external corpus after the first context validation forces one
+    successful full inventory refresh. Every later context validation must use
+    the refreshed token instead of scanning that corpus again.
+    """
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    origin = receipt["ground_truth_inputs"]["origins"]["codex-session"]
+    external_path = Path(origin["declared_roots"][0]) / origin["external_inventory"][0]["relative_path"]
+
+    full_inventory_calls = 0
+    original_inventory = schema_gate_module._external_inventory
+
+    def counted_inventory(roots: object) -> object:
+        nonlocal full_inventory_calls
+        full_inventory_calls += 1
+        return original_inventory(roots)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(schema_gate_module, "_external_inventory", counted_inventory)
+    result = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path, promote=False)
+    )
+
+    assert result.status == "replayed"
+    consumed_evidence = result.consumed_evidence
+    inventory_token = cast(dict[str, object], consumed_evidence["external_ground_truth_inventory_token"])
+    provenance = rebuild_index_module.RebuildProvenanceContext(
+        root=root,
+        receipt_path=receipt_path,
+        source_snapshot=str(consumed_evidence["source_snapshot"]),
+        consumed_evidence=consumed_evidence,
+        external_inventory_token=inventory_token,
+    )
+    stat = external_path.stat()
+    os.utime(external_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    inventory_calls_before_refresh = full_inventory_calls
+
+    rebuild_index_module._validate_before_derived_state(provenance)
+    inventory_calls_after_refresh = full_inventory_calls
+    rebuild_index_module._validate_before_derived_state(provenance)
+
+    assert inventory_calls_after_refresh == inventory_calls_before_refresh + 1
+    assert full_inventory_calls == inventory_calls_after_refresh, (
+        "the refreshed pass token must prevent a second full inventory scan"
+    )
+
+
 def test_resume_revalidates_external_mapping_before_more_replay(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     _seed(root, count=2)
@@ -853,6 +907,20 @@ def test_daemon_reconciles_active_generation_after_both_attestation_checkpoints_
     assert store.load(transaction.generation_id).state == "active"
 
     monkeypatch.undo()
+    with pytest.raises(RuntimeError, match="promoted-attestation-failed; start a new operation"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID,
+                promote=True,
+            )
+        )
+
+    offline_terminal = store.load_transaction(bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID)
+    assert offline_terminal.status == "promoted-attestation-failed"
+    assert store.load(offline_terminal.generation_id).state == "active"
+
     reconciled = bulk_rebuild_module.resolve_or_start_daemon_bulk_rebuild_transaction(
         root,
         schema_inference_receipt_path=receipt_path,
