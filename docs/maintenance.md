@@ -41,18 +41,20 @@ command's migration result alone.
 ### Rebuild deployment-currency preflight
 
 Before a managed `rebuild-index`, confirm that the package selected for the
-operation owns the live durable schemas. The read-only preflight deliberately
-checks `source.db` and `user.db` only: `index.db` may be behind because the
-rebuild is the supported way to replace that derived tier.
+operation owns the live durable schemas. The read-only preflight checks every
+canonical durable migration tier: `source.db`, `user.db`, and `audit.db`.
+`index.db` may be behind because the rebuild is the supported way to replace
+that derived tier.
 
 ```bash
 polylogue ops maintenance rebuild-index --preflight --output-format json
 ```
 
 It emits `rebuild-schema-currency` JSON with each durable tier's observed and
-package-expected `user_version`, and exits nonzero when either differs. The
-execution route repeats this check before it consumes the schema-inference
-receipt, acquires archive ownership, or creates a candidate generation.
+package-expected `user_version`, and exits nonzero when a durable tier differs.
+The execution route checks it before consuming the schema-inference receipt,
+repeats it after archive ownership acquisition, and rejects daemon bulk
+transaction creation before any bookkeeping or candidate generation.
 
 For a safe deployment recovery, first choose the exact target package commit.
 With the daemon stopped, create a fresh verified full-evidence backup, run

@@ -40,6 +40,7 @@ from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
@@ -191,6 +192,48 @@ def _archive_state_hash(archive_root: Path) -> str:
             h.update(str(path.relative_to(archive_root)).encode())
             h.update(f"{stat.st_size}".encode())
     return h.hexdigest()
+
+
+def test_rebuild_index_schema_currency_conflict_preserves_preflight_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actual maintenance route returns the shared diagnostic, not a 500."""
+    from polylogue.storage.archive_readiness import probe_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
+        initialize_archive_database(root / f"{tier.value}.db", tier)
+    source_probe = probe_archive_tier(ArchiveTier.SOURCE, root / "source.db")
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute(f"PRAGMA user_version = {source_probe.expected_user_version + 1}")
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: root)
+
+    handler = _make_handler("POST", "/api/maintenance/rebuild-index", body=b"{}")
+    handler.server.write_bridge = SimpleNamespace(  # type: ignore[assignment]
+        run_sync_with_timeout=lambda _actor, _timeout, operation, request: operation(request)
+    )
+    send_error, send_json = _capture_responses(handler)
+
+    handler._handle_rebuild_index()
+
+    send_error.assert_not_called()
+    status, payload = send_json.call_args.args
+    assert status == HTTPStatus.CONFLICT
+    assert payload["kind"] == "rebuild-schema-currency"
+    assert payload["status"] == "blocked"
+    assert payload["blocking_tiers"] == [
+        {
+            "tier": "source",
+            "path": str(root / "source.db"),
+            "actual_user_version": source_probe.expected_user_version + 1,
+            "expected_user_version": source_probe.expected_user_version,
+            "status": "mismatch",
+        }
+    ]
 
 
 def test_cli_query_post_forwards_root_request_to_daemon_compiler() -> None:

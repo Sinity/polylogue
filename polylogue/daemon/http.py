@@ -1085,6 +1085,10 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                 if 100 <= exc.http_status_code <= 599
                 else HTTPStatus.INTERNAL_SERVER_ERROR
             )
+            diagnostic = getattr(exc, "diagnostic", None)
+            if isinstance(diagnostic, dict):
+                self._send_json(status, diagnostic)
+                return
             field = getattr(exc, "field", None)
             self._send_json(
                 status,

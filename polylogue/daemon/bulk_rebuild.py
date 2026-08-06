@@ -182,6 +182,9 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
     generation directory, so both must fail closed against a foreign/rotated
     archive location before touching disk, not just the eventual write pass.
     """
+    from polylogue.maintenance.rebuild_index import require_rebuild_schema_currency
+
+    require_rebuild_schema_currency(root)
     _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
     # This must precede transaction resolution, because retiring a terminal
     # transaction and creating its replacement also creates generation state.

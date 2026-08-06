@@ -16,10 +16,12 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from polylogue.config import Config
+from polylogue.core.errors import PolylogueError
 from polylogue.logging import get_logger
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
@@ -66,8 +68,10 @@ class RebuildDerivedStateProvenanceError(RebuildProvenanceError):
     """A derived-state stage was blocked by a failed provenance recheck."""
 
 
-class RebuildSchemaCurrencyError(RuntimeError):
+class RebuildSchemaCurrencyError(PolylogueError):
     """The durable tiers do not match the package that would rebuild them."""
+
+    http_status_code = HTTPStatus.CONFLICT
 
     def __init__(self, diagnostic: dict[str, object]) -> None:
         self.diagnostic = diagnostic
@@ -85,14 +89,14 @@ def rebuild_schema_currency_preflight(root: Path) -> dict[str, object]:
     """Report whether durable source evidence matches this runtime package.
 
     ``index.db`` is intentionally absent: rebuilding it is the operation's
-    purpose, while a source/user mismatch means this package can interpret or
+    purpose, while a durable-tier mismatch means this package can interpret or
     write durable evidence using a schema it does not own.
     """
     from polylogue.storage.archive_readiness import probe_archive_tier
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 
     checks: list[dict[str, object]] = []
-    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER):
+    for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
         probe = probe_archive_tier(tier, root / f"{tier.value}.db")
         checks.append(
             {
@@ -1140,6 +1144,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     owned = OwnedArchiveLocation.acquire(location)
     try:
         assert_owns_archive_location(owned, location)
+        require_rebuild_schema_currency(root)
         consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
         # The lease is itself lifecycle state guarded by the provenance gate.
         # Revalidate again under the lease immediately before the owned body
