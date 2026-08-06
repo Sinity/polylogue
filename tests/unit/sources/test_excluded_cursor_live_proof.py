@@ -32,6 +32,8 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
         "still_excluded": True,
         "typed_terminal": True,
     }
+    typed_terminal = next(case for case in receipt["cases"] if case["case_id"] == "typed-terminal")
+    assert typed_terminal["terminal_evidence"]["parse_error_present"] is True
     assert receipt["execution"] == {
         "mode": "candidate_fixture",
         "live_census": "not_run",
