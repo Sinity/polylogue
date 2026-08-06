@@ -10,7 +10,7 @@ from devtools import lineage_validation
 from devtools.command_catalog import COMMANDS
 
 
-def _make_index_db(root: Path, *, with_gap: bool = False) -> Path:
+def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool = False) -> Path:
     root.mkdir()
     db = root / "index.db"
     conn = sqlite3.connect(db)
@@ -51,6 +51,8 @@ def _make_index_db(root: Path, *, with_gap: bool = False) -> Path:
                 link_type TEXT,
                 status TEXT,
                 resolved_dst_session_id TEXT,
+                method TEXT,
+                evidence_json TEXT,
                 branch_point_message_id TEXT,
                 inheritance TEXT
             );
@@ -131,10 +133,27 @@ def _make_index_db(root: Path, *, with_gap: bool = False) -> Path:
                 ('bc3', 'c3', 'text', 'child tail', 0),
                 ('bf1', 'f1', 'text', 'fresh', 0);
             INSERT INTO session_links VALUES
-                ('child', 'codex-session', 'parent-native', 'continuation', 'resolved', 'parent', 'p2', 'prefix-sharing'),
-                ('fresh', 'claude-code-session', 'parent-native', 'subagent', 'resolved', 'parent', NULL, 'spawned-fresh');
+                ('child', 'codex-session', 'parent-native', 'continuation', NULL, 'parent', 'parser-parent', '{}', 'p2', 'prefix-sharing'),
+                ('fresh', 'claude-code-session', 'parent-native', 'subagent', NULL, 'parent', 'parent-tool-use-id', '{}', NULL, 'spawned-fresh');
             """
         )
+        if with_unresolved:
+            conn.executescript(
+                """
+                INSERT INTO sessions(session_id, native_id, origin, title, root_session_id, branch_type, message_count)
+                VALUES ('orphan', 'orphan-native', 'codex-session', 'Orphan', 'orphan', 'continuation', 1);
+                INSERT INTO session_profiles VALUES ('orphan', 'orphan');
+                INSERT INTO messages(message_id, session_id, native_id, role, position)
+                VALUES ('o1', 'orphan', 'o1', 'user', 0);
+                INSERT INTO blocks(block_id, message_id, block_type, text, position)
+                VALUES ('bo1', 'o1', 'text', 'orphan', 0);
+                INSERT INTO session_links
+                    (src_session_id, dst_origin, dst_native_id, link_type, status,
+                     resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
+                VALUES ('orphan', 'codex-session', 'missing-parent', 'continuation', NULL,
+                        NULL, 'parser-parent', '{}', NULL, 'spawned-fresh');
+                """
+            )
         if with_gap:
             conn.executescript(
                 """
@@ -177,6 +196,60 @@ def test_lineage_validation_clean_archive_is_citable(tmp_path: Path) -> None:
     assert sample["stored_messages"] == 1
     assert sample["composed_messages"] == 3
     assert sample["rows"][0]["served_exceeds_stored"] is True
+    topology = report["lineage"]["topology"]
+    assert topology["empty_effective_status_count"] == 0
+    assert topology["empty_method_count"] == 0
+    assert topology["effective_status_counts"] == {"resolved": 2}
+    assert topology["raw_status_empty_count"] == 2
+    assert lineage_validation._receipt_sha256(report) == report["receipt_sha256"]
+
+
+def test_lineage_validation_proves_unresolved_reads_stay_child_local(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    _make_index_db(archive_root, with_unresolved=True)
+
+    report = lineage_validation.build_report(_args(archive_root))
+
+    topology = report["lineage"]["topology"]
+    assert topology["effective_status_counts"] == {"resolved": 2, "unresolved": 1}
+    sample = topology["unresolved_read_sample"]
+    assert sample["safe"] is True
+    assert sample["sampled"] == 1
+    assert sample["rows"][0]["read_status"] == "safe"
+    assert report["verdict"]["external_counts_citable"] is True
+
+
+def test_lineage_validation_catches_empty_method_mutation(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE session_links SET method = '' WHERE src_session_id = 'child'")
+        conn.commit()
+
+    report = lineage_validation.build_report(_args(archive_root))
+
+    topology = report["lineage"]["topology"]
+    assert topology["empty_method_count"] == 1
+    assert report["verdict"]["external_counts_citable"] is False
+    assert "1 topology links have an empty method" in report["verdict"]["reasons"]
+
+
+def test_lineage_validation_catches_unknown_status_and_unsafe_reader_mutation(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root, with_unresolved=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE session_links SET status = 'made-up' WHERE src_session_id = 'child'")
+        conn.execute("UPDATE sessions SET parent_session_id = 'parent' WHERE session_id = 'orphan'")
+        conn.commit()
+
+    report = lineage_validation.build_report(_args(archive_root))
+
+    topology = report["lineage"]["topology"]
+    assert topology["unknown_effective_status_count"] == 1
+    assert topology["unresolved_read_sample"]["safe"] is False
+    assert report["verdict"]["external_counts_citable"] is False
+    assert any("unknown effective states" in reason for reason in report["verdict"]["reasons"])
+    assert "sampled unresolved-parent reads did not remain child-local" in report["verdict"]["reasons"]
 
 
 def test_lineage_validation_reports_integrity_gaps(tmp_path: Path) -> None:
@@ -206,6 +279,8 @@ def test_lineage_validation_writes_demo_artifacts(tmp_path: Path) -> None:
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     readme = (out_dir / "README.md").read_text(encoding="utf-8")
     assert written["counts"] == report["counts"]
+    assert written["receipt_sha256"] == report["receipt_sha256"]
+    assert lineage_validation._receipt_sha256(written) == written["receipt_sha256"]
     assert summary["artifact"] == "lineage-validation"
     assert summary["proof_report"]["external_counts_citable"] is True
     assert "external counts citable: `true`" in readme
