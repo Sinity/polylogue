@@ -7,3 +7,8 @@
 path = "devtools/coverage_gate.py"
 value = 600
 rationale = "The single-process coverage gate needs a bounded diagnostic budget for the full non-benchmark suite."
+
+[[exception]]
+path = "tests/unit/scenarios/test_codex_804_live_proof.py"
+value = 300
+rationale = "The sanitized 804-revision production replay includes an approximately 90 MiB terminal wire artifact and needs a bounded incident-scale replay budget."
