@@ -23,7 +23,12 @@ import pytest
 
 from polylogue.daemon.bulk_rebuild import resolve_or_start_daemon_bulk_rebuild_transaction
 from polylogue.maintenance.rebuild_index import RebuildSchemaCurrencyError
-from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
+from polylogue.storage.archive_identity import (
+    ArchiveLocation,
+    ArchiveOwnershipError,
+    OwnedArchiveLocation,
+    assert_owns_archive_location,
+)
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -68,7 +73,7 @@ def test_daemon_bulk_rebuild_rechecks_schema_currency_after_ownership(
     root = tmp_path / "archive"
     _init_empty_source(root)
     receipt = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
-    real_assert = bulk_rebuild.assert_owns_archive_location
+    real_assert = assert_owns_archive_location
 
     def mutate_audit_after_ownership(owned: OwnedArchiveLocation, location: ArchiveLocation) -> None:
         real_assert(owned, location)
