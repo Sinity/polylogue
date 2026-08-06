@@ -104,6 +104,11 @@ def test_build_report_rejects_malformed_live_records() -> None:
         frontier_report.build_report([{"id": ""}], [], repo=Path("/repo"))
 
 
+def test_build_report_rejects_duplicate_live_ids() -> None:
+    with pytest.raises(RuntimeError, match="bd list record 1 duplicates id 'same'"):
+        frontier_report.build_report([{"id": "same"}, {"id": "same"}], [], repo=Path("/repo"))
+
+
 def test_render_markdown_includes_counts_focus_and_deferrals() -> None:
     rendered = frontier_report._render_markdown(
         {

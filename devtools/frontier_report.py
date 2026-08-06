@@ -89,12 +89,16 @@ def _run_bd(repo: Path, args: list[str]) -> list[Any]:
 def _normalize_issues(records: list[Any], *, source: str) -> list[dict[str, Any]]:
     """Validate the live Beads records once before report derivation."""
     normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     for index, record in enumerate(records):
         if not isinstance(record, dict):
             raise RuntimeError(f"{source} record {index} is {type(record).__name__}, expected object with string id")
         bead_id = record.get("id")
         if not isinstance(bead_id, str) or not bead_id:
             raise RuntimeError(f"{source} record {index} has no non-empty string id")
+        if bead_id in seen_ids:
+            raise RuntimeError(f"{source} record {index} duplicates id {bead_id!r}")
+        seen_ids.add(bead_id)
         normalized.append(record)
     return normalized
 
