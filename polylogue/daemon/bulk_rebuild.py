@@ -164,6 +164,41 @@ def _preflight_raw_failure_lifecycle(root: Path) -> None:
     raise RuntimeError(f"daemon bulk-rebuild raw failure lifecycle preflight failed: {reason}")
 
 
+def _reconcile_active_generation_transaction(
+    store: IndexGenerationStore, transaction: IndexRebuildTransaction
+) -> IndexRebuildTransaction:
+    """Turn a post-pointer-write transaction into terminal state on restart.
+
+    Promotion changes the active pointer before the transaction attestation is
+    durable. If both the normal and recovery checkpoints fail, the persisted
+    transaction can still look resumable even though its generation is active.
+    The next resolver pass must record that observed fact before returning it
+    to the rebuild loop, otherwise the daemon retries an already-active
+    generation forever.
+    """
+
+    if transaction.status in _TERMINAL_NOT_RESUMABLE:
+        return transaction
+    try:
+        generation = store.load(transaction.generation_id)
+        active_path = store.active_pointer.resolve(strict=True)
+        generation_path = Path(generation.index_path).resolve(strict=True)
+    except (FileNotFoundError, OSError, ValueError):
+        return transaction
+    if generation.state != "active" or active_path != generation_path:
+        return transaction
+    return store.checkpoint_transaction(
+        transaction,
+        status="promoted-attestation-failed",
+        error="reconciled active generation after interrupted promotion attestation",
+        post_promotion_attestation={
+            "status": "reconciled-after-restart",
+            "generation_id": generation.generation_id,
+            "generation_state": generation.state,
+        },
+    )
+
+
 def resolve_or_start_daemon_bulk_rebuild_transaction(
     root: Path, *, schema_inference_receipt_path: Path | None = None
 ) -> IndexRebuildTransaction:
@@ -221,8 +256,10 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
             transaction = None
 
         if transaction is not None and transaction.status not in _TERMINAL_NOT_RESUMABLE:
-            _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
-            return transaction
+            transaction = _reconcile_active_generation_transaction(store, transaction)
+            if transaction.status not in _TERMINAL_NOT_RESUMABLE:
+                _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+                return transaction
 
         if transaction is not None:
             if transaction.status == "promoted-attestation-failed":

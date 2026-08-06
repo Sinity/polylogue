@@ -818,6 +818,54 @@ def test_pointer_flip_records_post_promotion_attestation_failure(
     )
 
 
+def test_daemon_reconciles_active_generation_after_both_attestation_checkpoints_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    store = IndexGenerationStore.for_archive_root(root)
+    seeded_transaction = store.create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root),
+        operation_id=bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID,
+    )
+    original_checkpoint = IndexGenerationStore.checkpoint_transaction
+
+    def fail_attestation_checkpoint(self: IndexGenerationStore, transaction: object, **kwargs: object) -> object:
+        if kwargs.get("status") in {"promoted", "promoted-attestation-failed"}:
+            raise OSError("simulated double attestation checkpoint failure")
+        return original_checkpoint(self, transaction, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(IndexGenerationStore, "checkpoint_transaction", fail_attestation_checkpoint)
+    with pytest.raises(OSError, match="simulated double attestation checkpoint failure"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID,
+                promote=True,
+            )
+        )
+
+    transaction = store.load_transaction(bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID)
+    assert transaction.status == "ready"
+    assert transaction.generation_id == seeded_transaction.generation_id
+    assert store.load(transaction.generation_id).state == "active"
+
+    monkeypatch.undo()
+    reconciled = bulk_rebuild_module.resolve_or_start_daemon_bulk_rebuild_transaction(
+        root,
+        schema_inference_receipt_path=receipt_path,
+    )
+
+    assert reconciled.status == "promoted-attestation-failed"
+    assert reconciled.post_promotion_attestation == {
+        "status": "reconciled-after-restart",
+        "generation_id": transaction.generation_id,
+        "generation_state": "active",
+    }
+
+
 def test_daemon_does_not_route_promoted_attestation_failure_back_to_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -873,6 +873,12 @@ def _referenced_blob_integrity_snapshot(
     }
 
 
+def _semantic_referenced_blob_integrity_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
+    """Remove verifier provenance before comparing equivalent blob evidence."""
+
+    return {key: value for key, value in snapshot.items() if key != "verifier"}
+
+
 def _iter_ground_truth_files(root: Path) -> Iterable[Path]:
     if root.is_file():
         yield root
@@ -1890,7 +1896,9 @@ def validate_schema_inference_receipt(
                 )
                 if not verified_snapshot.get("passed"):
                     errors.append("referenced source blob integrity verification failed before candidate readiness")
-                if recorded_blob_snapshot and recorded_blob_snapshot != verified_snapshot:
+                if recorded_blob_snapshot and _semantic_referenced_blob_integrity_snapshot(
+                    recorded_blob_snapshot
+                ) != _semantic_referenced_blob_integrity_snapshot(verified_snapshot):
                     errors.append("receipt referenced source blob integrity snapshot changed")
             except (OSError, SchemaInferenceGateError, sqlite3.Error, ValueError) as exc:
                 errors.append(f"could not verify referenced source blob integrity: {exc}")

@@ -134,6 +134,25 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
     } == before
 
 
+def test_readiness_accepts_equivalent_blob_evidence_from_another_verifier(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / "receipt" / RECEIPT_FILENAME
+    run_schema_inference_gate(root, receipt_path=receipt_path, ground_truth_roots={"codex-session": (ground_truth,)})
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    recorded = dict(payload["full_blob_hash_verification"]["referenced_blob_integrity_snapshot"])
+    recorded["verifier"] = "polylogue.storage.blob_store.BlobStore.verify"
+
+    validated = gate.validate_schema_inference_receipt(
+        root,
+        receipt_path,
+        verify_blob_integrity=True,
+        verified_blob_integrity_snapshot=recorded,
+    )
+
+    assert validated["_verified_blob_integrity_snapshot"] == recorded
+
+
 def test_empty_archive_cannot_authorize_schema_inference(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
@@ -537,7 +556,9 @@ def test_external_inventory_token_reuses_metadata_detector_and_rejects_changed_b
     assert full_inventory_calls == 2, "a changed detector must trigger one authoritative inventory recalculation"
 
 
-def test_inventory_change_detector_triggers_rehash_without_changing_content_identity(tmp_path: Path) -> None:
+def test_inventory_change_detector_triggers_rehash_without_changing_content_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "archive"
     ground_truth = _seed_archive(root)
     receipt_path = tmp_path / "receipt" / RECEIPT_FILENAME
@@ -552,7 +573,17 @@ def test_inventory_change_detector_triggers_rehash_without_changing_content_iden
     validated = gate.validate_schema_inference_receipt(root, receipt_path)
     token = cast(dict[str, object], validated["external_ground_truth_inventory_token"])
     (ground_truth / "session.jsonl").touch()
+    inventory_calls = 0
+    original_inventory = gate._external_inventory
+
+    def counted_inventory(roots: tuple[Path, ...]) -> list[object]:
+        nonlocal inventory_calls
+        inventory_calls += 1
+        return original_inventory(roots)  # type: ignore[return-value]
+
+    monkeypatch.setattr(gate, "_external_inventory", counted_inventory)
     gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
+    assert inventory_calls == 1
 
 
 def test_inventory_token_rejects_foreign_nonce_and_empty_token_falls_back_to_receipt(
