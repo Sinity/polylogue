@@ -33,6 +33,16 @@ RESOURCE_POLICY: dict[str, dict[str, Any]] = {
     "ordinary": {"max_parallel": None, "reason": "no shared resource limit declared"},
 }
 
+_MAX_FRONTIER_RECORDS = 100_000
+_SCHEMA_TEXT_MARKERS = (
+    "index_schema_version",
+    "source_schema_version",
+    "user_schema_version",
+    "canonical ddl",
+    "schema migration",
+    "schema change",
+)
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -46,7 +56,16 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_bd(repo: Path, args: list[str]) -> list[Any]:
-    command = ["bd", "--readonly", *args, "--json"]
+    command = [
+        "bd",
+        "--readonly",
+        *args,
+        "--limit",
+        str(_MAX_FRONTIER_RECORDS + 1),
+        "--max-rows",
+        str(_MAX_FRONTIER_RECORDS + 1),
+        "--json",
+    ]
     try:
         completed = subprocess.run(command, cwd=repo, text=True, capture_output=True, timeout=20, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -59,6 +78,10 @@ def _run_bd(repo: Path, args: list[str]) -> list[Any]:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{' '.join(command)} returned non-JSON output") from exc
     if isinstance(payload, list):
+        if len(payload) > _MAX_FRONTIER_RECORDS:
+            raise RuntimeError(
+                f"{' '.join(command)} exceeded the {_MAX_FRONTIER_RECORDS:,}-record complete-report bound"
+            )
         return payload
     raise RuntimeError(f"{' '.join(command)} returned {type(payload).__name__}, expected list")
 
@@ -99,7 +122,15 @@ def _is_open(issue: dict[str, Any]) -> bool:
 
 def _resource_class(issue: dict[str, Any], footprint: bead_cluster.Footprint) -> str:
     labels = _labels(issue)
-    if footprint.migration_slots or "area:schema" in labels:
+    text = " ".join(
+        str(issue.get(field, "")) for field in ("design", "notes", "acceptance_criteria", "description")
+    ).lower()
+    if (
+        footprint.migration_slots
+        or "area:schema" in labels
+        or any(marker in text for marker in _SCHEMA_TEXT_MARKERS)
+        or any("schema" in path.lower() and "storage" in path.lower() for path in footprint.files)
+    ):
         return "schema-lane"
     if "resource:live-state" in labels or "risk:live-state" in labels:
         return "live-state"
@@ -298,8 +329,8 @@ def _render_markdown(report: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        issues = _run_bd(args.repo, ["list", "--all", "--limit", "0"])
-        ready = _run_bd(args.repo, ["ready", "--limit", "0"])
+        issues = _run_bd(args.repo, ["list", "--all"])
+        ready = _run_bd(args.repo, ["ready"])
         report = build_report(issues, ready, repo=args.repo)
     except RuntimeError as exc:
         print(f"frontier report failed: {exc}", file=sys.stderr)

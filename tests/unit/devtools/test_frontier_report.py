@@ -84,6 +84,7 @@ def test_execution_focus_defers_selected_footprints_and_respects_integer_resourc
         _issue("schema-first", priority=2, design="migration 010_first.sql"),
         _issue("schema-second", priority=3, design="migration 011_second.sql"),
         _issue("schema-third", priority=4, design="migration 012_third.sql"),
+        _issue("schema-unnumbered", priority=5, design="edit canonical index DDL and bump INDEX_SCHEMA_VERSION"),
     ]
 
     report = frontier_report.build_report(issues, issues, repo=Path("/repo"))
@@ -93,6 +94,9 @@ def test_execution_focus_defers_selected_footprints_and_respects_integer_resourc
     deferred = {item["id"]: item for item in focus["deferred"]}
     assert deferred["devtools-second"]["reason"] == "footprint conflict with selected focus: devtools-first"
     assert deferred["schema-third"]["reason"] == "schema-lane occupied by selected focus: schema-first, schema-second"
+    assert (
+        deferred["schema-unnumbered"]["reason"] == "schema-lane occupied by selected focus: schema-first, schema-second"
+    )
 
 
 def test_build_report_rejects_malformed_live_records() -> None:
@@ -150,7 +154,7 @@ def test_main_uses_unbounded_live_surfaces_and_emits_complete_json(
     assert frontier_report.main(["--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
 
-    assert calls == [["list", "--all", "--limit", "0"], ["ready", "--limit", "0"]]
+    assert calls == [["list", "--all"], ["ready"]]
     assert [item["id"] for item in payload["execution_focus"]["candidates"]] == ["a"]
     assert payload["counts"]["dependency_ready"] == 1
     assert payload["execution_focus"]["resource_policy"] == frontier_report.RESOURCE_POLICY
