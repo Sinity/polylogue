@@ -122,6 +122,7 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
     clean_root = tmp_path / "clean"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     _seed(root, monkeypatch=monkeypatch)
+    resumed_receipt_path = write_valid_rebuild_receipt(root, tmp_path / "resumed-receipt.json")
 
     original_checkpoint = IndexGenerationStore.checkpoint_transaction
     interrupted = False
@@ -137,7 +138,13 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
     with monkeypatch.context() as scoped:
         scoped.setattr(IndexGenerationStore, "checkpoint_transaction", interrupt_after_committed_page)
         with pytest.raises(InjectedInterruptError, match="after committed page"):
-            rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, raw_batch_size=1))
+            rebuild_index_from_source_sync(
+                RebuildIndexRequest(
+                    archive_root=root,
+                    raw_batch_size=1,
+                    schema_inference_receipt_path=resumed_receipt_path,
+                )
+            )
 
     store = IndexGenerationStore.for_archive_root(root)
     operation_id = next(path.stem for path in store.transactions_root.glob("*.json"))
@@ -162,7 +169,12 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
     monkeypatch.setattr(replay_module, "rebuild_index_from_source", recording_replay)
     while True:
         receipt = rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=root, operation_id=operation_id, raw_batch_size=1)
+            RebuildIndexRequest(
+                archive_root=root,
+                operation_id=operation_id,
+                raw_batch_size=1,
+                schema_inference_receipt_path=resumed_receipt_path,
+            )
         )
         if receipt.status == "replayed":
             break
@@ -170,20 +182,38 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
 
     assert [len(page) for page in replayed_raw_pages] == [1, 1]
     assert len({raw_id for page in replayed_raw_pages for raw_id in page}) == 2
+    with sqlite3.connect(root / "source.db") as conn:
+        first_committed_raw_id = str(
+            conn.execute("SELECT raw_id FROM raw_sessions ORDER BY blob_hash, raw_id LIMIT 1").fetchone()[0]
+        )
+        all_raw_ids = {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")}
+    resumed_raw_ids = {raw_id for page in replayed_raw_pages for raw_id in page}
+    # Mutation that resets the persisted cursor would replay the committed raw
+    # again and fail this exact suffix conservation check.
+    assert first_committed_raw_id not in resumed_raw_ids
+    assert resumed_raw_ids == all_raw_ids - {first_committed_raw_id}
     assert receipt.operation["cursor"] is not None
     assert receipt.operation["heartbeat"]["at_ms"] is not None  # type: ignore[index]
     assert receipt.operation["recovery_state"] == "promoted"
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clean_root))
     _seed(clean_root, monkeypatch=monkeypatch)
-    clean = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=clean_root, raw_batch_size=1))
+    clean_receipt_path = write_valid_rebuild_receipt(clean_root, tmp_path / "clean-receipt.json")
+    clean = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=clean_root, raw_batch_size=1, schema_inference_receipt_path=clean_receipt_path)
+    )
     assert clean.status == "paused"
     assert clean.transaction is not None
     clean_operation = clean.transaction["operation_id"]
     assert isinstance(clean_operation, str)
     while clean.status != "replayed":
         clean = rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=clean_root, operation_id=clean_operation, raw_batch_size=1)
+            RebuildIndexRequest(
+                archive_root=clean_root,
+                operation_id=clean_operation,
+                raw_batch_size=1,
+                schema_inference_receipt_path=clean_receipt_path,
+            )
         )
 
     resumed_snapshot = _semantic_snapshot(root)
