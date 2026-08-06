@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.dispatch import (
@@ -20,9 +20,9 @@ from polylogue.sources.dispatch import (
 )
 from tests.infra.origin_capability_matrix import (
     MANIFEST_PATH,
-    load_fixture,
     load_manifest,
     load_manifest_payload,
+    load_witness_fixture,
 )
 
 
@@ -39,6 +39,7 @@ def test_manifest_covers_every_origin_with_typed_support_state() -> None:
     assert unsupported[0].unsupported.status == "unsupported"
     assert unsupported[0].unsupported.reason == "compatibility-only"
     assert unsupported[0].unsupported.detail
+    assert sum(len(entry.witnesses) for entry in supported) == 12
 
 
 def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and_parser() -> None:
@@ -46,30 +47,36 @@ def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and
 
     for entry in manifest.entries:
         if entry.unsupported is not None:
-            assert entry.parser_claims == ()
+            assert entry.witnesses == ()
             continue
 
-        assert len(entry.parser_claims) == 1
-        claim = entry.parser_claims[0]
-        payload = load_fixture(entry)
-        detected, evidence = detect_provider_evidence(payload, entry.fixture_path)
+        for witness in entry.witnesses:
+            assert len(witness.parser_claims) == 1
+            claim = witness.parser_claims[0]
+            payload = load_witness_fixture(witness)
+            detected, evidence = detect_provider_evidence(payload, witness.fixture_path)
 
-        assert detected is claim.provider, entry.origin.value
-        assert origin_from_provider(detected) is entry.origin
-        assert evidence.strip(), entry.origin.value
+            if witness.route == "detected":
+                assert detected is claim.provider, entry.origin.value
+                assert evidence.strip(), entry.origin.value
+            else:
+                assert claim.provider is Provider.DRIVE
+                assert detected is Provider.GEMINI, entry.origin.value
+                assert evidence.startswith("drive.looks_like"), entry.origin.value
+            assert origin_from_provider(claim.provider) is entry.origin
 
-        sessions = parse_payload(
-            claim.provider,
-            payload,
-            entry.fallback_id or "origin-capability",
-            source_path=entry.fixture_path,
-        )
-        accepted = require_positive_conversational_evidence(
-            sessions,
-            provider=claim.provider,
-            source_path=entry.fixture_path,
-        )
-        assert accepted, entry.origin.value
+            sessions = parse_payload(
+                claim.provider,
+                payload,
+                witness.fallback_id,
+                source_path=witness.fixture_path,
+            )
+            accepted = require_positive_conversational_evidence(
+                sessions,
+                provider=claim.provider,
+                source_path=witness.fixture_path,
+            )
+            assert accepted, entry.origin.value
 
 
 @pytest.mark.asyncio
@@ -81,20 +88,22 @@ async def test_supported_witnesses_reach_the_production_archive_ingest_seam(
     manifest = load_manifest()
     supported = [entry for entry in manifest.entries if entry.unsupported is None]
     monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+    sources = [
+        Source(name=witness.parser_claims[0].provider.value, path=Path(witness.fixture_path))
+        for entry in supported
+        for witness in entry.witnesses
+    ]
 
     result = await parse_sources_archive(
         workspace_env["archive_root"],
-        [
-            Source(name=entry.parser_claims[0].provider.value, path=Path(entry.fixture_path or ""))
-            for entry in supported
-        ],
+        sources,
         parse_workers=1,
     )
 
     assert result.parse_failures == 0
-    assert result.counts["sessions"] >= len(supported)
-    assert result.counts["messages"] >= len(supported)
-    assert len(result.processed_ids) >= len(supported)
+    assert result.counts["sessions"] >= len(sources)
+    assert result.counts["messages"] >= len(sources)
+    assert len(result.processed_ids) >= len(sources)
 
 
 @pytest.mark.parametrize("family_name", ["empty", "partial", "malformed"])
@@ -140,8 +149,8 @@ def test_collision_witnesses_follow_real_detector_precedence_and_still_parse() -
 def test_zero_or_multiple_parser_claims_fail_manifest_validation(claim_count: int) -> None:
     payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     supported = next(item for item in payload["entries"] if item["status"] == "supported")
-    claim = supported["parser_claims"][0]
-    supported["parser_claims"] = [] if claim_count == 0 else [claim, copy.deepcopy(claim)]
+    claim = supported["witnesses"][0]["parser_claims"][0]
+    supported["witnesses"][0]["parser_claims"] = [] if claim_count == 0 else [claim, copy.deepcopy(claim)]
 
     with pytest.raises(ValueError, match="exactly one parser claim"):
         load_manifest_payload(payload)
@@ -152,15 +161,14 @@ def test_unsupported_route_cannot_become_silent_green_support() -> None:
     unsupported = next(item for item in payload["entries"] if item["status"] == "unsupported")
     unsupported["status"] = "supported"
 
-    with pytest.raises(ValueError, match="exactly one parser claim"):
+    with pytest.raises(ValueError, match="at least one witness"):
         load_manifest_payload(payload)
 
 
 def test_parser_claim_cannot_cross_origin_spec_boundary() -> None:
     payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     supported = next(item for item in payload["entries"] if item["status"] == "supported")
-    supported["provider"] = "chatgpt"
-    supported["parser_claims"] = [{"provider": "chatgpt"}]
+    supported["witnesses"][0]["parser_claims"] = [{"provider": "chatgpt"}]
 
     with pytest.raises(ValueError, match="not declared by OriginSpec|different public origin"):
         load_manifest_payload(payload)

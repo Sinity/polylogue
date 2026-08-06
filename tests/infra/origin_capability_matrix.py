@@ -16,12 +16,23 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPO_ROOT / "tests" / "data" / "origin_capability_matrix.json"
 
 UnsupportedReason = Literal["compatibility-only", "no-parser"]
+WitnessRoute = Literal["detected", "source-hint"]
 _LiteralValue = TypeVar("_LiteralValue", bound=str)
 
 
 @dataclass(frozen=True, slots=True)
 class ParserClaim:
     provider: Provider
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityWitness:
+    origin: Origin
+    parser_claims: tuple[ParserClaim, ...]
+    fixture_path: str
+    fixture_format: Literal["json", "jsonl"]
+    fallback_id: str
+    route: WitnessRoute
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,10 +45,7 @@ class UnsupportedReceipt:
 @dataclass(frozen=True, slots=True)
 class CapabilityEntry:
     origin: Origin
-    parser_claims: tuple[ParserClaim, ...]
-    fixture_path: str | None
-    fixture_format: Literal["json", "jsonl"] | None
-    fallback_id: str | None
+    witnesses: tuple[CapabilityWitness, ...]
     unsupported: UnsupportedReceipt | None
 
 
@@ -86,6 +94,22 @@ def load_manifest_payload(payload: object) -> CapabilityManifest:
     if set(origins) != set(Origin) or declared_origins != set(Origin):
         raise ValueError("origin capability manifest must cover every OriginSpec and public Origin")
 
+    claimed_wires = tuple(
+        witness.parser_claims[0].provider
+        for entry in entries
+        if entry.unsupported is None
+        for witness in entry.witnesses
+    )
+    executable_wires = executable_provider_wires()
+    if len(claimed_wires) != len(set(claimed_wires)):
+        raise ValueError("origin capability manifest contains duplicate executable provider claims")
+    if set(claimed_wires) != set(executable_wires):
+        raise ValueError(
+            "origin capability manifest provider claims must cover executable OriginSpec.provider_wires: "
+            f"claimed={sorted(provider.value for provider in claimed_wires)!r}, "
+            f"declared={sorted(provider.value for provider in executable_wires)!r}"
+        )
+
     empty = tuple(_negative_case(item) for item in _list(root.get("empty"), "manifest.empty"))
     partial = tuple(_negative_case(item) for item in _list(root.get("partial"), "manifest.partial"))
     malformed = tuple(_negative_case(item) for item in _list(root.get("malformed"), "manifest.malformed"))
@@ -112,12 +136,10 @@ def load_manifest_payload(payload: object) -> CapabilityManifest:
     )
 
 
-def load_fixture(entry: CapabilityEntry) -> object:
+def load_witness_fixture(witness: CapabilityWitness) -> object:
     """Read one committed witness fixture without invoking a parser helper."""
-    if entry.fixture_path is None or entry.fixture_format is None:
-        raise ValueError(f"{entry.origin.value}: unsupported entry has no fixture")
-    path = _repo_path(entry.fixture_path)
-    if entry.fixture_format == "json":
+    path = _repo_path(witness.fixture_path)
+    if witness.fixture_format == "json":
         return json.loads(path.read_text(encoding="utf-8"))
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -126,46 +148,58 @@ def _entry(payload: object) -> CapabilityEntry:
     raw = _mapping(payload, "manifest entry")
     origin = _origin(raw.get("origin"))
     status = raw.get("status")
-    raw_claims = _list(raw.get("parser_claims"), f"{origin.value}.parser_claims")
-    claims = tuple(
-        ParserClaim(provider=_provider(_mapping(item, "parser claim").get("provider"))) for item in raw_claims
-    )
+    raw_witnesses = _list(raw.get("witnesses"), f"{origin.value}.witnesses")
+    witnesses = tuple(_witness(item, origin) for item in raw_witnesses)
 
     if status == "supported":
-        if len(claims) != 1:
-            raise ValueError(f"{origin.value}: supported entry requires exactly one parser claim")
+        if not witnesses:
+            raise ValueError(f"{origin.value}: supported entry requires at least one witness")
         spec = _spec_for(origin)
         if spec.lifecycle != "executable":
             raise ValueError(f"{origin.value}: supported entry is not executable in OriginSpec")
-        declared_provider = _provider(raw["provider"]) if raw.get("provider") is not None else claims[0].provider
-        if declared_provider is not claims[0].provider:
-            raise ValueError(f"{origin.value}: provider field disagrees with its parser claim")
-        if claims[0].provider not in spec.provider_wires:
-            raise ValueError(f"{origin.value}: parser claim is not declared by OriginSpec")
-        if origin_from_provider(claims[0].provider) is not origin:
-            raise ValueError(f"{origin.value}: parser claim maps to a different public origin")
-        fixture_path = _string(raw.get("fixture"), f"{origin.value}.fixture")
-        fixture_format = cast(
-            Literal["json", "jsonl"],
-            _literal(raw.get("format"), ("json", "jsonl"), f"{origin.value}.format"),
-        )
-        _repo_path(fixture_path)
-        fallback_id = _string(raw.get("fallback_id"), f"{origin.value}.fallback_id")
+        for witness in witnesses:
+            if len(witness.parser_claims) != 1:
+                raise ValueError(f"{origin.value}: each supported fixture requires exactly one parser claim")
+            claim = witness.parser_claims[0]
+            if claim.provider not in spec.provider_wires:
+                raise ValueError(f"{origin.value}: parser claim is not declared by OriginSpec")
+            if origin_from_provider(claim.provider) is not origin:
+                raise ValueError(f"{origin.value}: parser claim maps to a different public origin")
         if raw.get("unsupported") is not None:
             raise ValueError(f"{origin.value}: supported entry cannot carry an unsupported receipt")
-        return CapabilityEntry(origin, claims, fixture_path, fixture_format, fallback_id, None)
+        return CapabilityEntry(origin, witnesses, None)
 
     if status != "unsupported":
         raise ValueError(f"{origin.value}: status must be supported or unsupported")
-    if claims:
-        raise ValueError(f"{origin.value}: unsupported entry cannot declare parser claims")
+    if witnesses:
+        raise ValueError(f"{origin.value}: unsupported entry cannot declare witnesses")
     spec = _spec_for(origin)
     if spec.lifecycle == "executable":
         raise ValueError(f"{origin.value}: executable OriginSpec cannot be silently unsupported")
     receipt = _unsupported_receipt(raw.get("unsupported"), origin)
-    if raw.get("fixture") is not None or raw.get("format") is not None or raw.get("fallback_id") is not None:
-        raise ValueError(f"{origin.value}: unsupported entry cannot carry a fixture")
-    return CapabilityEntry(origin, (), None, None, None, receipt)
+    return CapabilityEntry(origin, (), receipt)
+
+
+def _witness(payload: object, origin: Origin) -> CapabilityWitness:
+    raw = _mapping(payload, f"{origin.value}.witness")
+    raw_claims = _list(raw.get("parser_claims"), f"{origin.value}.witness.parser_claims")
+    claims = tuple(
+        ParserClaim(provider=_provider(_mapping(item, "parser claim").get("provider"))) for item in raw_claims
+    )
+    return CapabilityWitness(
+        origin=origin,
+        parser_claims=claims,
+        fixture_path=_string(raw.get("fixture"), f"{origin.value}.witness.fixture"),
+        fixture_format=cast(
+            Literal["json", "jsonl"],
+            _literal(raw.get("format"), ("json", "jsonl"), f"{origin.value}.witness.format"),
+        ),
+        fallback_id=_string(raw.get("fallback_id"), f"{origin.value}.witness.fallback_id"),
+        route=cast(
+            WitnessRoute,
+            _literal(raw.get("route", "detected"), ("detected", "source-hint"), f"{origin.value}.witness.route"),
+        ),
+    )
 
 
 def _unsupported_receipt(payload: object, origin: Origin) -> UnsupportedReceipt:
@@ -206,6 +240,13 @@ def _spec_for(origin: Origin) -> OriginSpec:
 
 def _provider_has_executable_spec(provider: Provider) -> bool:
     return any(spec.lifecycle == "executable" and provider in spec.provider_wires for spec in ORIGIN_SPECS)
+
+
+def executable_provider_wires() -> tuple[Provider, ...]:
+    """Return every provider wire declared by an executable OriginSpec."""
+    return tuple(
+        provider for spec in ORIGIN_SPECS if spec.lifecycle == "executable" for provider in spec.provider_wires
+    )
 
 
 def _repo_path(value: str) -> Path:
@@ -264,12 +305,15 @@ def _literal(value: object, choices: tuple[_LiteralValue, ...], label: str) -> _
 __all__ = [
     "CapabilityEntry",
     "CapabilityManifest",
+    "CapabilityWitness",
     "CollisionCase",
     "MANIFEST_PATH",
     "NegativeCase",
     "ParserClaim",
     "UnsupportedReceipt",
-    "load_fixture",
+    "WitnessRoute",
     "load_manifest",
     "load_manifest_payload",
+    "load_witness_fixture",
+    "executable_provider_wires",
 ]
