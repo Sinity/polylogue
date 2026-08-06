@@ -1726,6 +1726,22 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
         assert removed not in result.output
 
 
+def test_cursor_authority_reconcile_cli_exposes_only_scoped_inputs(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "cursor-authority-reconcile", "--help"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "--source-path-file" in result.output
+    assert "--output-plan" in result.output
+    assert "--backup-manifest" in result.output
+    assert "--apply" in result.output
+    assert "--force" not in result.output
+    assert "--bypass" not in result.output
+
+
 def test_raw_authority_frontier_cli_replaces_incident_specific_commands(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,

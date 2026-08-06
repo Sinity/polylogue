@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import sqlite3
 import time
 import zipfile
-from collections.abc import Awaitable, Callable, Iterable
-from contextlib import closing
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -161,6 +162,58 @@ logger = get_logger(__name__)
 
 class CursorAuthorityBlockedError(RuntimeError):
     """The canonical raw frontier proof did not authorize live source selection."""
+
+
+@dataclass(slots=True)
+class CursorAuthorityAuthorization:
+    """Single-use, exact-use exception to the live cursor authority gate.
+
+    This token is deliberately process-local and context-local.  It is not a
+    switch, environment variable, or archive setting.  The reconciliation
+    command creates one only after re-proving the selected path and frontier;
+    the first gate check consumes it.
+    """
+
+    source_path_digest: str
+    cursor_byte_offset: int
+    accepted_frontier: int
+    plan_digest: str
+    consumed: bool = False
+
+
+_CURSOR_AUTHORIZATION: contextvars.ContextVar[CursorAuthorityAuthorization | None] = contextvars.ContextVar(
+    "polylogue_cursor_authority_authorization",
+    default=None,
+)
+
+
+def cursor_authority_path_digest(path: Path) -> str:
+    """Digest one resolved source path without retaining its private text."""
+
+    return sha256(str(path.resolve()).encode("utf-8")).hexdigest()
+
+
+@contextmanager
+def scoped_cursor_authority_authorization(
+    *,
+    source_path_digest: str,
+    cursor_byte_offset: int,
+    accepted_frontier: int,
+    plan_digest: str,
+) -> Iterator[None]:
+    """Install one exact-use authorization for the normal ingest route."""
+
+    authorization = CursorAuthorityAuthorization(
+        source_path_digest=source_path_digest,
+        cursor_byte_offset=cursor_byte_offset,
+        accepted_frontier=accepted_frontier,
+        plan_digest=plan_digest,
+    )
+    marker = _CURSOR_AUTHORIZATION.set(authorization)
+    try:
+        yield
+    finally:
+        _CURSOR_AUTHORIZATION.reset(marker)
 
 
 # polylogue-0jf4: known ~/.codex live SQLite state filenames, matched by name
@@ -513,10 +566,60 @@ class LiveBatchProcessor:
 
         return raw_frontier_source_selection_block_reason(archive_root)
 
-    def require_cursor_authority(self) -> None:
+    def _consume_scoped_cursor_authority(self, paths: Iterable[Path]) -> bool:
+        authorization = _CURSOR_AUTHORIZATION.get()
+        if authorization is None:
+            return False
+        if authorization.consumed:
+            raise CursorAuthorityBlockedError("scoped cursor authority authorization was already consumed")
+        selected_paths = tuple(path.resolve() for path in paths)
+        if (
+            len(selected_paths) != 1
+            or cursor_authority_path_digest(selected_paths[0]) != authorization.source_path_digest
+        ):
+            raise CursorAuthorityBlockedError("scoped cursor authority authorization does not match the selected path")
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        from polylogue.readiness.capability import raw_frontier_integrity_projection
+        from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
+
+        projection = raw_frontier_integrity_projection(
+            archive_root,
+            raw_materialization_readiness_snapshot(archive_root),
+            sample_limit=100,
+        )
+        if (
+            projection.overall_status != "violated"
+            or projection.broken_head_count
+            or projection.missing_source_raw_count
+            or projection.cursor_authority_gap_count
+            or projection.cursor_ahead_count != 1
+            or len(projection.cursor_ahead_samples) != 1
+        ):
+            raise CursorAuthorityBlockedError("scoped cursor authority no longer matches the global violation set")
+        sample = projection.cursor_ahead_samples[0]
+        if (
+            cursor_authority_path_digest(Path(sample.source_path)) != authorization.source_path_digest
+            or sample.cursor_byte_offset != authorization.cursor_byte_offset
+            or sample.accepted_frontier != authorization.accepted_frontier
+        ):
+            raise CursorAuthorityBlockedError("scoped cursor authority frontier binding changed")
+        authorization.consumed = True
+        return True
+
+    def require_cursor_authority(self, paths: Iterable[Path] | None = None) -> None:
         """Fail closed before a live batch can create attempts or write data."""
-        if reason := self.cursor_authority_block_reason():
-            raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
+        reason = self.cursor_authority_block_reason()
+        authorization = _CURSOR_AUTHORIZATION.get()
+        if reason is None:
+            if authorization is not None:
+                raise CursorAuthorityBlockedError("scoped cursor authority authorization has no planned violation")
+            return
+        if authorization is not None:
+            if paths is None:
+                raise CursorAuthorityBlockedError("scoped cursor authority requires an exact selected path")
+            if self._consume_scoped_cursor_authority(paths):
+                return
+        raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
 
     async def ingest_files(
         self,
@@ -528,7 +631,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics."""
-        self.require_cursor_authority()
+        self.require_cursor_authority(paths)
         if is_fully_degraded():
             # The daemon has been marked structurally unable to ingest (e.g.
             # schema mismatch detected at preflight or on the first batch).

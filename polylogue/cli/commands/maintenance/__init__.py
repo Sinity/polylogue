@@ -189,6 +189,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "verify_archive_command",
         "Prove the archive is coherent after a rebuild, restore, or promotion. Read-only.",
     ),
+    (
+        "cursor-authority-reconcile",
+        "_cursor_authority",
+        "cursor_authority_reconcile_command",
+        "Plan or apply one backup-gated cursor-authority reconciliation.",
+    ),
 )
 
 
