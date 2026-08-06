@@ -258,7 +258,10 @@ def test_private_projection_redacts_paths_and_preserves_missing_sample_branches(
     _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
     projection = reconcile._projection_for(tmp_path)
     private = reconcile._private_projection(projection)
-    sample = private["cursor_ahead_samples"][0]
+    samples = private["cursor_ahead_samples"]
+    assert isinstance(samples, list)
+    sample = samples[0]
+    assert isinstance(sample, dict)
     original = projection.cursor_ahead_samples[0]
     assert sample["source_path"] == reconcile.cursor_authority_path_digest(source_path)
     assert sample["logical_source_key"] == reconcile.cursor_authority_path_digest(Path(original.logical_source_key))
@@ -387,8 +390,12 @@ def test_typed_deferred_apply_receipt_is_metric_backed_and_does_not_claim_cursor
     )
 
     assert result["verdict"] == "typed_deferred"
-    assert result["metrics"]["failed_paths"] == [str(source_path)]
-    assert result["changed_rows"]["cursor"] is None
+    metrics = result["metrics"]
+    assert isinstance(metrics, dict)
+    assert metrics["failed_paths"] == [str(source_path)]
+    changed_rows = result["changed_rows"]
+    assert isinstance(changed_rows, dict)
+    assert changed_rows["cursor"] is None
     assert result["ingest_attempt_observation"] == "performed"
     watcher.stop()
 
@@ -429,7 +436,9 @@ def test_observed_recovery_receipt_does_not_claim_local_cursor_mutation(
 
     assert result["verdict"] == "reconciled"
     assert result["ingest_attempt_observation"] == "observed"
-    assert result["changed_rows"]["cursor"] is None
+    changed_rows = result["changed_rows"]
+    assert isinstance(changed_rows, dict)
+    assert changed_rows["cursor"] is None
     assert result["metrics"] is None
     watcher.stop()
 

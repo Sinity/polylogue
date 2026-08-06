@@ -572,7 +572,16 @@ def _receipt_payload(
     attempt_id: str | None,
     attempt_observation: str,
     evidence: Mapping[str, object],
+    tolerate_state_errors: bool = False,
 ) -> dict[str, object]:
+    try:
+        tier_fingerprints: object = _tier_snapshots(root)
+        quick_check: object = _quick_checks(root)
+    except Exception:
+        if not tolerate_state_errors:
+            raise
+        tier_fingerprints = None
+        quick_check = None
     return {
         "format": RECEIPT_FORMAT,
         "verdict": verdict,
@@ -585,10 +594,11 @@ def _receipt_payload(
         "changed_rows": _changed_rows(),
         "ingest_attempt_id": attempt_id,
         "ingest_attempt_observation": attempt_observation,
+        "operation": attempt_observation,
         "code_sha": plan.get("code_sha"),
         "deployed_package_sha": plan.get("deployed_package_sha"),
-        "tier_fingerprints": _tier_snapshots(root),
-        "quick_check": _quick_checks(root),
+        "tier_fingerprints": tier_fingerprints,
+        "quick_check": quick_check,
         "evidence": dict(evidence),
     }
 
@@ -609,12 +619,12 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
     except CursorAuthorityReconciliationError:
         current_plan = None
     if current_plan is None or not _same_plan_bindings(current_plan, plan):
-        after_projection = _projection_for(root)
+        recovery_projection = _projection_for(root)
         recovery_attempt = _find_recovery_attempt(root, current_path, _plan_int(plan, "observed_at_ms"))
-        if recovery_attempt is None or after_projection.cursor_ahead_count != 0:
+        if recovery_attempt is None or recovery_projection.cursor_ahead_count != 0:
             raise CursorAuthorityReconciliationError("plan bindings changed before archive ownership")
         before_gap_count = before_projection.get("cursor_authority_gap_count")
-        if not isinstance(before_gap_count, int) or after_projection.cursor_authority_gap_count != before_gap_count:
+        if not isinstance(before_gap_count, int) or recovery_projection.cursor_authority_gap_count != before_gap_count:
             raise CursorAuthorityReconciliationError(
                 "recovered ingest changed the pre-existing incomparable cursor population"
             )
@@ -622,9 +632,9 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
             plan=plan,
             backup=backup_evidence,
             root=root,
-            verdict="reconciled" if after_projection.overall_status == "healthy" else "typed_deferred",
+            verdict="reconciled" if recovery_projection.overall_status == "healthy" else "typed_deferred",
             before_projection=before_projection,
-            after_projection=after_projection,
+            after_projection=recovery_projection,
             metrics=None,
             attempt_id=recovery_attempt,
             attempt_observation="observed",
@@ -686,6 +696,7 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
                 attempt_id=attempt_id,
                 attempt_observation="performed",
                 evidence=evidence,
+                tolerate_state_errors=True,
             )
         except Exception as exc:
             if after_projection is None:
