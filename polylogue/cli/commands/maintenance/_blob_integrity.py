@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -62,11 +61,9 @@ def blob_reference_liveness_command(
             raise click.UsageError(
                 "--census-only cannot be combined with --apply, --backup-manifest, or --receipt-file"
             )
-        from polylogue.storage.blob_gc import census_orphaned_blob_refs
+        from polylogue.maintenance.blob_ref_liveness_reconciliation import census_blob_ref_liveness
 
-        source_db = archive_root() / "source.db"
-        with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
-            census = census_orphaned_blob_refs(conn)
+        census = census_blob_ref_liveness(archive_root())
         payload = {"mode": "blob_reference_census", "mutates": False, **census.to_dict()}
         if output_format == "json":
             click.echo(json.dumps(payload, indent=2, sort_keys=True))

@@ -910,6 +910,15 @@ def reconcile_blob_ref_liveness(
     )
 
 
+def census_blob_ref_liveness(archive_root: Path):
+    """Return the privacy-safe source-tier blob-ref census without mutation."""
+    from polylogue.storage.blob_gc import census_orphaned_blob_refs
+
+    source_db = archive_root / "source.db"
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+        return census_orphaned_blob_refs(conn)
+
+
 __all__ = [
     "BlobRefLivenessReconciliationError",
     "BlobRefLivenessReconciliationReport",
