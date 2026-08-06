@@ -41,6 +41,34 @@ def test_interleave_by_source_round_robins_families() -> None:
     assert claude_paths == sorted(claude_paths)
 
 
+def test_interleave_by_source_prevents_large_family_starvation() -> None:
+    """A long Codex backlog cannot hide a smaller family from round one."""
+    candidates = [_candidate("codex", f"/home/u/.codex/sessions/x/{index:02d}.jsonl") for index in range(20)] + [
+        _candidate("codex", "/home/u/.codex/sessions/x/excluded-after-fingerprint-change.jsonl"),
+        _candidate("hermes", "/home/u/.hermes/sessions/retry.jsonl"),
+    ]
+
+    ordered = live_watcher._interleave_by_source(candidates)
+
+    assert {candidate.source_name for candidate in ordered[:2]} == {"codex", "hermes"}
+    assert [candidate.source_name for candidate in ordered[:2]] == ["codex", "hermes"]
+
+
+def test_interleave_by_source_prioritizes_browser_capture_before_round_robin() -> None:
+    candidates = [
+        _candidate("codex", "/home/u/.codex/sessions/x/codex.jsonl"),
+        _candidate("hermes", "/home/u/.hermes/sessions/retry.json"),
+        _candidate("browser-capture", "/home/u/.browser/capture-b.json"),
+        _candidate("browser-capture", "/home/u/.browser/capture-a.json"),
+    ]
+
+    ordered = live_watcher._interleave_by_source(candidates)
+
+    assert [candidate.source_name for candidate in ordered[:2]] == ["browser-capture", "browser-capture"]
+    assert [candidate.path.name for candidate in ordered[:2]] == ["capture-a.json", "capture-b.json"]
+    assert {candidate.source_name for candidate in ordered[2:4]} == {"codex", "hermes"}
+
+
 def test_interleave_by_source_empty_input_returns_empty() -> None:
     assert live_watcher._interleave_by_source([]) == []
 
