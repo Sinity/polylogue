@@ -30,6 +30,7 @@ from polylogue.sources.live.batch import (
 )
 from polylogue.sources.live.batch_support import sha256_range_from_path
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
 
@@ -291,7 +292,7 @@ def _build_plan(root: Path, source_path: Path, *, require_candidate: bool = True
         raise CursorAuthorityReconciliationError("cursor authority is incomparable or has no selected violation")
     if projection.cursor_ahead_count != 1:
         raise CursorAuthorityReconciliationError("refusing to guess among multiple cursor-ahead rows")
-    if projection.broken_head_count or projection.missing_source_raw_count or projection.cursor_authority_gap_count:
+    if projection.broken_head_count or projection.missing_source_raw_count:
         raise CursorAuthorityReconciliationError(
             "global raw-frontier violation set is not exactly one cursor-ahead row"
         )
@@ -383,7 +384,7 @@ def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[st
 
 def _quick_checks(root: Path) -> dict[str, list[str]]:
     checks: dict[str, list[str]] = {}
-    for tier in ("source", "index", "ops"):
+    for tier in ("source", "index", "ops", "audit"):
         with closing(sqlite3.connect(f"file:{(root / f'{tier}.db').resolve()}?mode=ro", uri=True)) as conn:
             checks[tier] = [str(row[0]) for row in conn.execute("PRAGMA quick_check")]
         if checks[tier] != ["ok"]:
@@ -424,7 +425,7 @@ def build_reconciliation_plan(*, source_path_file: Path, output_plan: Path) -> d
         raise CursorAuthorityReconciliationError("daemon must be stopped for cursor-authority reconciliation")
     source_path = _read_private_source_path(source_path_file)
     plan = _build_plan(root, source_path)
-    _write_atomic_json(output_plan, plan, refuse_existing=False)
+    _write_atomic_json(output_plan, plan, refuse_existing=True)
     return plan
 
 
@@ -452,7 +453,7 @@ def _find_recovery_attempt(root: Path, source_path: Path) -> str | None:
     return None
 
 
-async def _normal_ingest(root: Path, source_path: Path, plan: Mapping[str, object]) -> tuple[object, str]:
+async def _normal_ingest(root: Path, source_path: Path, plan: Mapping[str, object]) -> tuple[LiveBatchMetrics, str]:
     async with Polylogue(archive_root=root, db_path=root / "index.db") as polylogue:
         cursor = CursorStore(root / "ops.db", initialize=False, ops_db_path=root / "ops.db")
         processor = LiveBatchProcessor(
@@ -499,6 +500,14 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
         recovery_attempt = _find_recovery_attempt(root, current_path)
         if recovery_attempt is None or after_projection.cursor_ahead_count != 0:
             raise CursorAuthorityReconciliationError("plan bindings changed before archive ownership")
+        before_projection = plan.get("before_projection")
+        before_gap_count = (
+            before_projection.get("cursor_authority_gap_count") if isinstance(before_projection, dict) else None
+        )
+        if not isinstance(before_gap_count, int) or after_projection.cursor_authority_gap_count != before_gap_count:
+            raise CursorAuthorityReconciliationError(
+                "recovered ingest changed the pre-existing incomparable cursor population"
+            )
         recovered_receipt_payload: dict[str, object] = {
             "format": RECEIPT_FORMAT,
             "verdict": "reconciled" if after_projection.overall_status == "healthy" else "typed_deferred",
@@ -525,13 +534,29 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
         if current_plan != plan:
             raise CursorAuthorityReconciliationError("plan bindings changed after archive ownership")
         metrics, attempt_id = asyncio.run(_normal_ingest(root, current_path, plan))
-        del metrics
         after_projection = _projection_for(root)
         if after_projection.broken_head_count or after_projection.missing_source_raw_count:
             raise CursorAuthorityReconciliationError("reconciliation introduced unrelated raw-frontier worsening")
         if after_projection.cursor_ahead_count:
-            raise CursorAuthorityReconciliationError("reconciliation did not remove the planned cursor-ahead row")
-        verdict = "reconciled" if after_projection.overall_status == "healthy" else "typed_deferred"
+            if (
+                metrics.succeeded_file_count != 0
+                or str(current_path) not in metrics.failed_paths
+                or metrics.time_budget_exceeded
+            ):
+                raise CursorAuthorityReconciliationError(
+                    "cursor-ahead postcondition is neither reconciled nor explicitly deferred"
+                )
+            verdict = "typed_deferred"
+        else:
+            verdict = "reconciled" if after_projection.overall_status == "healthy" else "typed_deferred"
+        before_projection = plan.get("before_projection")
+        if not isinstance(before_projection, dict):
+            raise CursorAuthorityReconciliationError("plan lacks the before-projection authority census")
+        before_gap_count = before_projection.get("cursor_authority_gap_count")
+        if not isinstance(before_gap_count, int) or after_projection.cursor_authority_gap_count != before_gap_count:
+            raise CursorAuthorityReconciliationError(
+                "reconciliation changed the pre-existing incomparable cursor population"
+            )
         if verdict not in {"reconciled", "typed_deferred"}:
             raise CursorAuthorityReconciliationError("post-reconciliation projection has no accepted typed verdict")
         checks = _quick_checks(root)

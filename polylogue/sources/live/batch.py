@@ -591,7 +591,6 @@ class LiveBatchProcessor:
             projection.overall_status != "violated"
             or projection.broken_head_count
             or projection.missing_source_raw_count
-            or projection.cursor_authority_gap_count
             or projection.cursor_ahead_count != 1
             or len(projection.cursor_ahead_samples) != 1
         ):
