@@ -41,6 +41,7 @@ from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -169,6 +170,39 @@ def test_phase_rollups_are_bound_to_production_stage_timing_mutation(
 
     assert receipt.timings_s["terminal.bulk_build.mutation_probe"] == pytest.approx(0.125, abs=0.001)
     assert receipt.timings_s["terminal_s"] >= receipt.timings_s["terminal.bulk_build.mutation_probe"]
+
+
+def test_archive_wide_derived_refresh_runs_once_at_terminal_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A multi-component full rebuild refreshes derived state once at readiness.
+
+    The real offline rebuild orchestrator replays four independent synthetic
+    components before reaching its terminal boundary. Counting the production
+    helper call catches a regression that moves the archive-wide refresh back
+    inside the component loop while leaving final parity green.
+    """
+    root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    _seed_distinct_codex_sessions(root, 4)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+
+    calls = 0
+    original = rebuild_index._repopulate_bulk_build_derived_state
+
+    def counted_repopulate(index_path: Path) -> dict[str, float]:
+        nonlocal calls
+        calls += 1
+        return original(index_path)
+
+    monkeypatch.setattr(rebuild_index, "_repopulate_bulk_build_derived_state", counted_repopulate)
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=receipt_path)
+    )
+
+    assert receipt.status == "replayed"
+    assert receipt.replay["replayed_logical_source_count"] == 4
+    assert calls == 1, f"terminal archive-wide derived refresh ran {calls} times"
 
 
 def test_partial_rebuild_cannot_complete_when_candidate_omits_source_document(
