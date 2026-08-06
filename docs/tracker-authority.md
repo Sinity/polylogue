@@ -76,6 +76,7 @@ Do not hand-edit `.beads/issues.jsonl` from a stale branch to perform this recon
 - A new Bead with a GitHub projection should receive exactly one tracker-relation label.
 - Closing a mirrored GitHub issue requires inspecting the corresponding Bead.
 - Closing a public-parent issue requires aggregate acceptance proof, not merely closed children.
+- A non-draft PR carries a versioned `pr-scope` record naming every assigned Bead, its whole-Bead disposition, typed evidence refs, and any open successor for residual work. CI and the merge boundary validate that record against the current head and canonical Bead records; they do not parse acceptance prose.
 - A merged PR is evidence for a Bead, not automatic proof that its acceptance criteria are satisfied.
 - When a Bead supersedes GitHub solution wording, update GitHub before treating the issue body as an implementation plan.
 - Incident Beads should normally remain internal and link upward to a public trust/performance outcome rather than spawning a public issue per incident.

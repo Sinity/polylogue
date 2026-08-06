@@ -378,6 +378,12 @@ workflow, not optional conveniences — use them at the point named, every time:
   one branch instead of colliding across parallel lanes.
 - **When dispatching a worktree-isolated lane**: `devtools workspace lane-brief
   <ids> --out <path>` for its dispatch prompt (footprint, prior art, hazards).
+- **Before opening a non-draft PR for a Bead lane**: render the versioned
+  carrier with `devtools workspace pr-scope render --input <scope.json>`, put
+  it in the PR body beside the human whole-Bead disposition matrix, then run
+  `devtools workspace pr-scope check --pr <PR>`. The carrier binds the exact
+  head SHA, canonical Bead records, typed dispositions, evidence refs, and
+  open successors for residual work; it never parses acceptance prose.
 - **Immediately after spawning a worktree-isolated lane, not after it reports
   back**: `devtools workspace verify-worktree <path> --expect-branch
   <branch>` — confirms the worktree is real and isolated before the lane has
@@ -388,10 +394,11 @@ workflow, not optional conveniences — use them at the point named, every time:
 - **To squash-merge any PR**: use `devtools workspace merge <PR>` instead of
   a bare `gh pr merge --squash` — it wraps `merge-gate record`/`check` at the
   actual merge boundary instead of leaving them a step a coordinator must
-  remember. It auto-records a receipt if none is fresh for the current head
+  remember. It validates the current non-draft PR's structured scope carrier,
+  then auto-records a receipt if none is fresh for the current head
   sha (running `--command`, default `devtools verify`), BLOCKs the merge on
   any `merge-gate check` failure (no fresh receipt, stale receipt, nonzero
-  exit, or an unacked review comment newer than the head commit), strips a
+  exit, a changed carrier digest, or an unacked review comment newer than the head commit), strips a
   doubled `(#N) (#N)` squash-subject suffix, then runs the actual
   `gh pr merge --squash`. `--dry-run` runs every check without merging;
   `--with-verify` immediately runs and records the merge-train's terminal
@@ -457,7 +464,8 @@ All product code lands via **feature branches + squash-merged PRs** to `master`
   ≤72 chars, imperative, describes what changed. Ends up as permanent history.
 - PR body sections (all required): **Summary**, **Problem** (evidence, not "user
   asked"), **Solution** (modules touched, non-obvious decisions), **Verification**
-  (exact commands + the output line that matters, not "tests pass").
+  (exact commands + the output line that matters, not "tests pass"), and a
+  human whole-Bead disposition matrix plus the rendered `pr-scope` carrier.
 - Routine PRs do **not** edit `pyproject.toml` `version` or `CHANGELOG.md` —
   release-please owns those from conventional subjects on `master`.
 - **Claim verification:** before writing that something is "unified"/"aligned"/
