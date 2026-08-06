@@ -231,7 +231,11 @@ def _reconcile_active_generation_transaction(
         generation_path = Path(generation.index_path).resolve(strict=True)
     except (FileNotFoundError, OSError, ValueError):
         return transaction
-    if generation.state != "active" or active_path != generation_path:
+    if (
+        generation.owner_id != transaction.generation_owner_id
+        or generation.state != "active"
+        or active_path != generation_path
+    ):
         return transaction
     return store.checkpoint_transaction(
         transaction,

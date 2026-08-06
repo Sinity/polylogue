@@ -934,6 +934,42 @@ def test_daemon_reconciles_active_generation_after_both_attestation_checkpoints_
     }
 
 
+def test_active_generation_reconciliation_requires_transaction_owner_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale transaction cannot checkpoint a generation owned by another pass."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    store = IndexGenerationStore.for_archive_root(root)
+    generation = IndexGeneration(
+        generation_id="gen-active",
+        owner_id="current-owner",
+        archive_root=str(root),
+        index_path=str(root / "index.db"),
+        state="active",
+        created_at_ms=1,
+    )
+    transaction = IndexRebuildTransaction(
+        operation_id="rebuild-stale-owner",
+        generation_id=generation.generation_id,
+        generation_owner_id="stale-owner",
+        source_snapshot="source-snapshot",
+        status="ready",
+        created_at_ms=1,
+        updated_at_ms=1,
+    )
+    monkeypatch.setattr(store, "load", lambda _generation_id: generation)
+
+    def fail_checkpoint(*args: object, **kwargs: object) -> object:
+        raise AssertionError("owner-mismatched transaction must not checkpoint")
+
+    monkeypatch.setattr(store, "checkpoint_transaction", fail_checkpoint)
+
+    reconciled = rebuild_index_module._reconcile_active_generation_transaction(store, transaction)
+
+    assert reconciled == transaction
+
+
 def test_daemon_does_not_route_promoted_attestation_failure_back_to_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
