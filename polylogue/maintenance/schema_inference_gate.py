@@ -1714,13 +1714,15 @@ def _current_external_ground_truth_digest(
     ground_truth: Mapping[str, object],
     *,
     inventory_token: Mapping[str, object] | None = None,
-) -> str:
+) -> tuple[str, dict[str, dict[str, object]]]:
     origins = _as_dict(ground_truth.get("origins"))
     current: dict[str, object] = {}
+    current_token_origins: dict[str, dict[str, object]] = {}
     with open_readonly_connection(archive_root / "source.db") as source:
         for origin, raw_evidence in origins.items():
             evidence = _as_dict(raw_evidence)
             if bool(evidence.get("exempt")):
+                current_token_origins[origin] = {"exempt": True}
                 current[origin] = {
                     "exempt": True,
                     "reason": evidence.get("reason"),
@@ -1737,6 +1739,11 @@ def _current_external_ground_truth_digest(
                     f"ground truth roots for {origin} are unavailable: {', '.join(unavailable)}"
                 )
             detector = _external_inventory_change_detector(resolved_roots)
+            current_token_origins[origin] = {
+                "exempt": False,
+                "declared_roots": [str(root) for root in resolved_roots],
+                "inventory_change_detector": detector,
+            }
             token_origin = _as_dict(_as_dict(inventory_token).get("origins")).get(origin)
             token_origin = _as_dict(token_origin)
             if (
@@ -1758,7 +1765,7 @@ def _current_external_ground_truth_digest(
                 "raw_external_mapping": _raw_external_mapping(source, origin=origin, inventory=inventory, exempt=False),
                 "inventory_change_detector": detector,
             }
-    return _canonical_external_ground_truth_digest(current)
+    return _canonical_external_ground_truth_digest(current), current_token_origins
 
 
 def validate_schema_inference_receipt(
@@ -1875,11 +1882,24 @@ def validate_schema_inference_receipt(
                 }
                 if any(inventory_token.get(key) != value for key, value in expected_token_fields.items()):
                     errors.append("receipt external ground-truth inventory token is not bound to this pass")
-            current_digest = _current_external_ground_truth_digest(root, ground_truth, inventory_token=active_token)
+            current_digest, current_token_origins = _current_external_ground_truth_digest(
+                root, ground_truth, inventory_token=active_token
+            )
             if recorded_digest != current_digest:
                 errors.append("external ground-truth corpus changed since the receipt was produced")
             if not inventory_token and receipt_token:
                 active_token = receipt_token
+            if active_token:
+                refreshed_token = dict(active_token)
+                refreshed_token["origins"] = {
+                    origin: {
+                        **_as_dict(_as_dict(active_token.get("origins")).get(origin)),
+                        **current_origin,
+                    }
+                    for origin, current_origin in current_token_origins.items()
+                }
+                refreshed_token["external_ground_truth_digest"] = current_digest
+                active_token = refreshed_token
         except (OSError, SchemaInferenceGateError, sqlite3.Error) as exc:
             errors.append(str(exc))
         if verify_blob_integrity:

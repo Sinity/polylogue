@@ -582,8 +582,11 @@ def test_inventory_change_detector_triggers_rehash_without_changing_content_iden
         return original_inventory(roots)  # type: ignore[return-value]
 
     monkeypatch.setattr(gate, "_external_inventory", counted_inventory)
-    gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
+    refreshed = gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
     assert inventory_calls == 1
+    refreshed_token = cast(dict[str, object], refreshed["external_ground_truth_inventory_token"])
+    gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=refreshed_token)
+    assert inventory_calls == 1, "a successful rehash must refresh the detector token"
 
 
 def test_inventory_token_rejects_foreign_nonce_and_empty_token_falls_back_to_receipt(
