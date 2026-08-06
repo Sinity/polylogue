@@ -1024,6 +1024,9 @@ def test_referenced_blob_snapshot_ignores_volatile_filesystem_metadata(
     stat = blob_path.stat()
     os.utime(blob_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
     after = schema_gate_module._referenced_blob_integrity_snapshot(root, referenced_hashes=referenced_hashes)
+    assert all(
+        "inode" not in entry and "mtime_ns" not in entry for entry in cast(list[dict[str, object]], before["entries"])
+    )
     assert after == before
 
 
