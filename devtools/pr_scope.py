@@ -56,6 +56,7 @@ _RESIDUAL_DISPOSITIONS = frozenset(
     {ScopeDisposition.PARTIAL.value, ScopeDisposition.DEFERRED.value, ScopeDisposition.SUPERSEDED.value}
 )
 _EVIDENCE_KINDS = frozenset(item.value for item in EvidenceKind)
+_SUCCESSOR_LINK_TYPES = frozenset({"blocks", "discovered-from", "relates-to", "supersedes"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +115,21 @@ def canonical_beads_digest(records: dict[str, dict[str, Any]], bead_ids: list[st
     if missing:
         raise ValueError(f"assigned Bead record(s) missing: {', '.join(missing)}")
     return _digest({"version": _VERSION, "records": [records[bead_id] for bead_id in sorted(bead_ids)]})
+
+
+def _successor_is_linked(source_id: str, successor_id: str, records: dict[str, dict[str, Any]]) -> bool:
+    """Require a durable Beads relationship between a source and its successor."""
+    for record_id, target_id in ((source_id, successor_id), (successor_id, source_id)):
+        record = records.get(record_id)
+        dependencies = record.get("dependencies") if record is not None else None
+        if not isinstance(dependencies, list):
+            continue
+        for dependency in dependencies:
+            if not isinstance(dependency, dict):
+                continue
+            if dependency.get("depends_on_id") == target_id and dependency.get("type") in _SUCCESSOR_LINK_TYPES:
+                return True
+    return False
 
 
 def carrier_digest(carrier: dict[str, Any]) -> str:
@@ -276,6 +292,8 @@ def validate_carrier(
                     reasons.append(f"{bead_id}: successor {successor} is unknown")
                 elif record.get("status") == "closed":
                     reasons.append(f"{bead_id}: successor {successor} is closed")
+                elif not _successor_is_linked(bead_id, successor, records):
+                    reasons.append(f"{bead_id}: successor {successor} has no durable Beads relationship")
                 if successor == bead_id:
                     reasons.append(f"{bead_id}: cannot name itself as a successor")
 
@@ -520,6 +538,9 @@ def check_ci_metadata(
             f"PR head {metadata.head_sha[:8]}",
             file=sys.stderr,
         )
+        return 2
+    if metadata.is_draft:
+        print("REFUSING CI pr-scope check: PR is draft; publish it before validation", file=sys.stderr)
         return 2
 
     base_source = fetch_base_validator_source(repository=repository, base_sha=metadata.base_sha)

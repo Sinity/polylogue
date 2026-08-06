@@ -228,6 +228,32 @@ def test_ci_check_refuses_head_mismatch_before_fetching_base(
     fetch_base.assert_not_called()
 
 
+def test_ci_check_refuses_draft_before_fetching_base(
+    monkeypatch: pytest.MonkeyPatch,
+    beads_path: Path,
+) -> None:
+    metadata = pr_scope.PullRequestMetadata(
+        body=_body(_input(), beads_path),
+        head_sha=HEAD_SHA,
+        base_sha="b" * 40,
+        is_draft=True,
+    )
+    fetch_base = MagicMock()
+    monkeypatch.setattr(pr_scope, "fetch_base_validator_source", fetch_base)
+
+    assert (
+        pr_scope.check_ci_metadata(
+            metadata,
+            repository="Sinity/polylogue",
+            beads_path=beads_path,
+            checkout_head_sha=HEAD_SHA,
+            expected_head_sha=HEAD_SHA,
+        )
+        == 2
+    )
+    fetch_base.assert_not_called()
+
+
 def test_ci_check_executes_base_revision_validator(
     monkeypatch: pytest.MonkeyPatch,
     beads_path: Path,
@@ -310,6 +336,33 @@ def test_check_rejects_closed_or_unknown_residual_successor(
 
     assert result.startswith("1\n")
     assert reason in result
+
+
+def test_check_rejects_unlinked_residual_successor(
+    beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    records = [_record(ASSIGNED), _record(OPEN_SUCCESSOR)]
+    records[1]["dependencies"] = [
+        {"issue_id": OPEN_SUCCESSOR, "depends_on_id": "polylogue-unrelated", "type": "relates-to"}
+    ]
+    beads_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+
+    result = _check(_body(_input("partial", [OPEN_SUCCESSOR]), beads_path), beads_path, tmp_path, capsys)
+
+    assert result.startswith("1\n")
+    assert "has no durable Beads relationship" in result
+
+
+def test_check_accepts_linked_residual_successor(
+    beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    records = [_record(ASSIGNED), _record(OPEN_SUCCESSOR)]
+    records[1]["dependencies"] = [{"issue_id": OPEN_SUCCESSOR, "depends_on_id": ASSIGNED, "type": "discovered-from"}]
+    beads_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+
+    result = _check(_body(_input("partial", [OPEN_SUCCESSOR]), beads_path), beads_path, tmp_path, capsys)
+
+    assert result.startswith("0\n")
 
 
 def test_check_rejects_stale_canonical_beads_digest(
