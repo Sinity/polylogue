@@ -1007,6 +1007,26 @@ def test_full_blob_verification_supplies_referenced_snapshot_without_rehash(
     assert snapshot["passed"] is True
 
 
+def test_referenced_blob_snapshot_ignores_volatile_filesystem_metadata(
+    tmp_path: Path,
+) -> None:
+    """Identical content remains valid when a blob's mtime changes.
+
+    Anti-vacuity: restoring the old inode/mtime fields to the content snapshot
+    would make this metadata-only touch change the recorded evidence.
+    """
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    with sqlite3.connect(root / "source.db") as source:
+        referenced_hashes = {bytes(row[0]).hex() for row in source.execute("SELECT blob_hash FROM raw_sessions")}
+    before = schema_gate_module._referenced_blob_integrity_snapshot(root, referenced_hashes=referenced_hashes)
+    blob_path = BlobStore(root / "blob").blob_path(next(iter(referenced_hashes)))
+    stat = blob_path.stat()
+    os.utime(blob_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
+    after = schema_gate_module._referenced_blob_integrity_snapshot(root, referenced_hashes=referenced_hashes)
+    assert after == before
+
+
 def test_source_evidence_snapshot_streams_raw_session_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "archive"
     _seed(root, count=2)
