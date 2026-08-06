@@ -1,0 +1,9 @@
+{
+  "source": "antigravity_language_server",
+  "cascadeId": "origin-matrix-antigravity",
+  "title": "Origin capability matrix",
+  "workspaceName": "polylogue",
+  "snippet": "Prove the parser claim.",
+  "lastModifiedTime": "2026-08-01T10:00:02Z",
+  "markdown": "### User Input\n\nProve the parser claim.\n\n### Planner Response\n\nThe production route parsed this witness.\n"
+}

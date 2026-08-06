@@ -1,0 +1,22 @@
+{
+  "conversations": [
+    {
+      "conversation": {
+        "title": "Origin capability matrix",
+        "create_time": "2026-08-01T10:00:00Z"
+      },
+      "responses": [
+        {
+          "sender": "human",
+          "message": "Prove the parser claim.",
+          "create_time": "2026-08-01T10:00:01Z"
+        },
+        {
+          "sender": "assistant",
+          "message": "The production route parsed this witness.",
+          "create_time": "2026-08-01T10:00:02Z"
+        }
+      ]
+    }
+  ]
+}
