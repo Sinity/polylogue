@@ -86,7 +86,7 @@ class RebuildSchemaCurrencyError(PolylogueError):
 
 
 def rebuild_schema_currency_preflight(root: Path) -> dict[str, object]:
-    """Report whether durable source evidence matches this runtime package.
+    """Report whether every durable tier matches this runtime package.
 
     ``index.db`` is intentionally absent: rebuilding it is the operation's
     purpose, while a durable-tier mismatch means this package can interpret or

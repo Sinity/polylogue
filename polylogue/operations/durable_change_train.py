@@ -16,13 +16,35 @@ from polylogue.storage.sqlite.durable_change_train import (
 from polylogue.storage.sqlite.durable_change_train import (
     reconcile_durable_change_train_startup as _reconcile_durable_change_train_startup,
 )
-from polylogue.storage.sqlite.migration_runner import DurableRuntimeConsumerResult
+from polylogue.storage.sqlite.migration_runner import DurableRuntimeConsumerResult, MigrationError
 
 
 def acquire_durable_archive_ownership(root: Path, *, owner_id: str) -> OwnedArchiveLocation:
     """Acquire the stable archive lease shared by daemon and maintenance."""
     location = ArchiveLocation.resolve(root)
     return OwnedArchiveLocation.acquire(location, owner_id=owner_id)
+
+
+def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
+    """Initialize one absent durable tier while the caller owns the archive.
+
+    This is deliberately separate from migration. A missing tier has no
+    historical schema version to advance, while an existing path must never be
+    replaced or interpreted as empty by this recovery route.
+    """
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise MigrationError(f"{tier.value} tier already exists; refusing missing-tier initialization: {path}")
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    initialize_archive_database(path, tier)
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    return ARCHIVE_VERSION_BY_TIER[tier]
 
 
 def execute_durable_change_train(
@@ -56,5 +78,6 @@ __all__ = [
     "acquire_durable_archive_ownership",
     "ArchiveOwnershipError",
     "execute_durable_change_train",
+    "initialize_missing_durable_tier",
     "reconcile_durable_change_trains_on_startup",
 ]

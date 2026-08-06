@@ -9,8 +9,9 @@ common operational incidents.
 ## Applying a durable schema change train
 
 Durable schema changes are an offline release operation. Before applying a
-`source.db` or `user.db` migration above its adoption floor, confirm that the
-release contains the matching `migrations/{source,user}/NNN.train.json`
+`source.db`, `user.db`, or `audit.db` migration above its adoption floor,
+confirm that the release contains the matching
+`migrations/{source,user,audit}/NNN.train.json`
 sidecar. The sidecar reserves the exact slot and SQL hash and records the
 runtime and restart evidence needed for the change.
 
@@ -57,13 +58,22 @@ repeats it after archive ownership acquisition, and rejects daemon bulk
 transaction creation before any bookkeeping or candidate generation.
 
 For a safe deployment recovery, first choose the exact target package commit.
-With the daemon stopped, create a fresh verified full-evidence backup, run
-`migrate-tier source` and `migrate-tier user` when the target package requires
-them, then deploy that exact package. Run the preflight above and require a
-ready result before invoking `polylogue ops maintenance rebuild-index`; use
-that blue-green command rather than `ops reset --index` for an active managed
-generation. Restart the daemon only after the rebuilt generation is promoted
-and the post-deploy status shows no durable-tier mismatch.
+With the daemon stopped, create a fresh verified full-evidence backup. If the
+preflight reports that a newly introduced durable tier is absent, initialize
+only that absent file through the archive ownership gate:
+
+```bash
+polylogue ops maintenance migrate-tier audit --initialize-missing --output-format json
+```
+
+The flag refuses any existing path and never replaces durable data. Run
+`migrate-tier source`, `migrate-tier user`, and `migrate-tier audit` for
+existing tiers when the target package requires numbered migrations, then
+deploy that exact package. Run the preflight again and require a ready result
+before invoking `polylogue ops maintenance rebuild-index`; use that blue-green
+command rather than `ops reset --index` for an active managed generation.
+Restart the daemon only after the rebuilt generation is promoted and the
+post-deploy status shows no durable-tier mismatch.
 
 For the conceptual model behind derived insights and the FTS / blob
 substrate, see [architecture.md](architecture.md) and
@@ -818,8 +828,9 @@ escalate.
 `SchemaVersionError: database is version N, code expects version M`.
 Polylogue uses durability-keyed schema versioning (see
 [internals.md § Schema Versioning Model](internals.md#schema-versioning-model)):
-derived tiers rebuild, while durable `source.db` and `user.db` may advance only
-through explicit additive numbered migrations. There is no auto-downgrade.
+derived tiers rebuild, while durable `source.db`, `user.db`, and `audit.db` may
+advance only through explicit additive numbered migrations. There is no
+auto-downgrade.
 
 **Root cause.** A new release advanced one tier's schema version and the
 database is on the previous version. There is no reverse in-place migration.
@@ -841,7 +852,7 @@ systemctl --user stop polylogued.service
 #     install the previous polylogue version, leave the database
 #     alone, restart the daemon.
 
-# 3b. Derived-tier forward rebuild: keep the source/user/embedding tiers safe,
+# 3b. Derived-tier forward rebuild: keep source/user/audit/embedding tiers safe,
 #     move the mismatched index database aside, and re-ingest/rederive
 #     the rebuildable index with the new polylogue binary.
 cp ~/.local/share/polylogue/index.db /tmp/index-before-rebuild.db

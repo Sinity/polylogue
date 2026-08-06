@@ -391,7 +391,7 @@ def _rebuild_index_selection_plan(
 @click.option(
     "--preflight",
     is_flag=True,
-    help="Read-only: report whether durable source/user tiers match this package before rebuilding index.db.",
+    help="Read-only: report whether every durable tier matches this package before rebuilding index.db.",
 )
 def rebuild_index_command(
     only_missing: bool,

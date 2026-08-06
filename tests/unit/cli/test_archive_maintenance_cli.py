@@ -2009,10 +2009,70 @@ def test_rebuild_index_preflight_reports_durable_schema_currency(
     payload = json.loads(result.stdout)
     assert payload["kind"] == "rebuild-schema-currency"
     assert payload["status"] == "blocked"
+    assert [tier["tier"] for tier in payload["tiers"]] == ["audit", "source", "user"]
     assert payload["blocking_tiers"][0]["tier"] == "source"
     assert payload["blocking_tiers"][0]["actual_user_version"] == 28
     assert payload["blocking_tiers"][0]["expected_user_version"] == 29
     assert "migrate or deploy before rebuilding" in result.stderr
+
+
+def test_migrate_tier_cli_initializes_only_an_absent_durable_tier(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+    audit_db.unlink()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["tier"] == "audit"
+    assert payload["initialized"] is True
+    assert payload["from_version"] == 0
+    assert payload["to_version"] == 1
+    with sqlite3.connect(audit_db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_an_existing_tier(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+    before = audit_db.read_bytes()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "already exists; refusing missing-tier initialization" in json.loads(result.stdout)["error"]
+    assert audit_db.read_bytes() == before
 
 
 def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(

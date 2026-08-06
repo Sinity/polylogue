@@ -26,6 +26,7 @@ from polylogue.operations.durable_change_train import (
     ArchiveOwnershipError,
     acquire_durable_archive_ownership,
     execute_durable_change_train,
+    initialize_missing_durable_tier,
 )
 from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -58,8 +59,18 @@ def _require_stopped_daemon(root: Path) -> str:
     type=click.Path(path_type=Path, exists=True),
     help="Verified backup manifest. Required only when a selected migration changes existing durable data.",
 )
+@click.option(
+    "--initialize-missing",
+    is_flag=True,
+    help="Initialize this durable tier only when its database file is absent; never replaces an existing file.",
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
-def migrate_tier_command(tier: str, backup_manifest: Path | None, output_format: str) -> None:
+def migrate_tier_command(
+    tier: str,
+    backup_manifest: Path | None,
+    initialize_missing: bool,
+    output_format: str,
+) -> None:
     """Apply additive migrations for one durable archive tier.
 
     Derived tiers are intentionally excluded from this command; rebuild or
@@ -71,17 +82,24 @@ def migrate_tier_command(tier: str, backup_manifest: Path | None, output_format:
     spec = ARCHIVE_TIER_SPECS[archive_tier]
     path = archive_root() / spec.filename
     stopped_daemon_evidence_ref: str | None = None
+    initialized = False
+    initialized_version: int | None = None
     try:
         with acquire_durable_archive_ownership(path.parent, owner_id=f"migrate-tier:{os.getpid()}") as archive_owner:
             stopped_daemon_evidence_ref = _require_stopped_daemon(path.parent)
-            execution = execute_durable_change_train(
-                path.parent,
-                archive_tier,
-                backup_manifest=backup_manifest,
-                daemon_stopped_evidence_ref=stopped_daemon_evidence_ref,
-                single_writer_evidence_ref="proof:archive-ownership-lock",
-                release_archive_ownership=archive_owner.release,
-            )
+            if initialize_missing:
+                initialized_version = initialize_missing_durable_tier(path, archive_tier)
+                initialized = True
+                execution = None
+            else:
+                execution = execute_durable_change_train(
+                    path.parent,
+                    archive_tier,
+                    backup_manifest=backup_manifest,
+                    daemon_stopped_evidence_ref=stopped_daemon_evidence_ref,
+                    single_writer_evidence_ref="proof:archive-ownership-lock",
+                    release_archive_ownership=archive_owner.release,
+                )
     except (sqlite3.Error, MigrationError, ArchiveOwnershipError) as exc:
         if output_format == "json":
             click.echo(
@@ -102,26 +120,32 @@ def migrate_tier_command(tier: str, backup_manifest: Path | None, output_format:
             click.echo(f"Migration blocked for {tier}: {exc}", err=True)
         raise SystemExit(1) from exc
 
-    result = execution.migration_result
+    result = execution.migration_result if execution is not None else None
     payload = {
         "ok": True,
         "tier": tier,
         "path": str(path),
+        "initialized": initialized,
         "backup_manifest": str(backup_manifest) if backup_manifest is not None else None,
         "stopped_daemon_evidence_ref": stopped_daemon_evidence_ref,
-        "train_manifest": str(execution.manifest_path) if execution.manifest_path is not None else None,
-        "train_state": execution.train.state.value if execution.train is not None else None,
+        "train_manifest": (
+            str(execution.manifest_path) if execution is not None and execution.manifest_path is not None else None
+        ),
+        "train_state": execution.train.state.value if execution is not None and execution.train is not None else None,
         "backup_receipt": str(result.backup_receipt)
         if result is not None and result.backup_receipt is not None
         else None,
-        "from_version": result.from_version if result is not None else None,
-        "to_version": result.to_version if result is not None else None,
+        "from_version": result.from_version if result is not None else 0 if initialized else None,
+        "to_version": result.to_version if result is not None else initialized_version,
         "applied_versions": list(result.applied_versions) if result is not None else [],
     }
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
+    if initialized:
+        click.echo(f"Initialized missing {tier} tier at schema version {initialized_version}.")
+        return
     if result is None:
         click.echo(f"No pending durable migration for {tier}.")
         return
