@@ -36,6 +36,34 @@ class LineageValidationArgs:
     index_db: Path | None = None
 
 
+def _snapshot_identity(index_db: Path) -> dict[str, Any]:
+    """Describe the database files that make up one read-only index snapshot."""
+    paths = [index_db, Path(f"{index_db}-wal"), Path(f"{index_db}-shm"), Path(f"{index_db}-journal")]
+    files: list[dict[str, Any]] = []
+    for path in paths:
+        if not path.is_file():
+            files.append({"path": str(path), "present": False})
+            continue
+        stat = path.stat()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        files.append(
+            {
+                "path": str(path),
+                "present": True,
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "inode": stat.st_ino,
+                "sha256": digest,
+            }
+        )
+    encoded = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "index_db": str(index_db),
+        "files": files,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="devtools workspace lineage-validation",
@@ -187,6 +215,15 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
     """
     if limit < 0:
         raise ValueError("--sample-unresolved must be non-negative")
+    unresolved_count = _scalar_int(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM session_links
+        WHERE resolved_dst_session_id IS NULL
+          AND COALESCE(NULLIF(TRIM(status), ''), 'unresolved') = 'unresolved'
+        """,
+    )
     rows = _rows(
         conn,
         """
@@ -230,10 +267,24 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
             }
         )
     unsafe = sum(1 for row in samples if row.get("read_status") != "safe")
+    if unresolved_count == 0:
+        status = "not_applicable"
+        safe = True
+    elif not samples:
+        status = "not_observed"
+        safe = False
+    elif unsafe or errors:
+        status = "unsafe"
+        safe = False
+    else:
+        status = "safe"
+        safe = True
     return {
         "requested": limit,
+        "unresolved_count": unresolved_count,
         "sampled": len(samples),
-        "safe": unsafe == 0 and not errors,
+        "status": status,
+        "safe": safe,
         "unsafe": unsafe,
         "errors": errors,
         "rows": samples,
@@ -268,7 +319,9 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
             "quarantined_without_cycle_evidence": 0,
             "unresolved_read_sample": {
                 "requested": sample_unresolved,
+                "unresolved_count": 0,
                 "sampled": 0,
+                "status": "not_observed",
                 "safe": False,
                 "unsafe": 0,
                 "errors": [],
@@ -335,6 +388,7 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
         "unknown_effective_statuses": unknown_states,
         "cycle_evidence_count": cycle_evidence_count,
         "quarantined_without_cycle_evidence": quarantined_without_cycle_evidence,
+        "unresolved_count": unresolved_read_sample["unresolved_count"],
         "unresolved_read_sample": unresolved_read_sample,
     }
 
@@ -601,8 +655,10 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
 def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
     index_db = (args.index_db or config.db_path).expanduser().resolve()
+    snapshot_before = _snapshot_identity(index_db)
     conn = open_readonly_connection(index_db)
     try:
+        conn.execute("BEGIN")
         index_schema_version = _user_version(conn)
         link_columns = _table_columns(conn, "session_links")
         missing_link_columns = sorted(REQUIRED_SESSION_LINK_COLUMNS - link_columns)
@@ -668,9 +724,22 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
                 reasons.append(
                     f"{topology['quarantined_without_cycle_evidence']} quarantined topology links lack cycle evidence"
                 )
-            if not topology["unresolved_read_sample"]["safe"]:
+            if topology["unresolved_read_sample"]["status"] == "not_observed":
+                reasons.append(
+                    f"{topology['unresolved_count']} unresolved-parent links were not exercised through the reader"
+                )
+            elif topology["unresolved_read_sample"]["status"] == "unsafe":
                 reasons.append("sampled unresolved-parent reads did not remain child-local")
 
+        snapshot_after = _snapshot_identity(index_db)
+        snapshot_stable = snapshot_before["sha256"] == snapshot_after["sha256"]
+        if not snapshot_stable:
+            reasons.append("index snapshot changed during the read-only census")
+        snapshot_identity = {
+            "before": snapshot_before,
+            "after": snapshot_after,
+            "stable": snapshot_stable,
+        }
         report: dict[str, Any] = {
             "report_version": 2,
             "captured_at": datetime.now(UTC).isoformat(),
@@ -678,6 +747,7 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
             "archive_root": str(config.archive_root),
             "index_db": str(index_db),
             "index_schema_version": index_schema_version,
+            "snapshot_identity": snapshot_identity,
             "counts": counts,
             "schema": {
                 "required_session_link_columns": sorted(REQUIRED_SESSION_LINK_COLUMNS),
@@ -698,6 +768,7 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
         }
         report["receipt_sha256"] = _receipt_sha256(report)
     finally:
+        conn.rollback()
         conn.close()
 
     if args.out_dir is not None:

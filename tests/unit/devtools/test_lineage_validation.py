@@ -8,6 +8,13 @@ import pytest
 
 from devtools import lineage_validation
 from devtools.command_catalog import COMMANDS
+from polylogue.archive.message.roles import Role
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import BlockType, Provider
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 
 def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool = False) -> Path:
@@ -169,14 +176,84 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
     return db
 
 
-def _args(archive_root: Path, out_dir: Path | None = None) -> lineage_validation.LineageValidationArgs:
+def _args(
+    archive_root: Path,
+    out_dir: Path | None = None,
+    *,
+    index_db: Path | None = None,
+) -> lineage_validation.LineageValidationArgs:
     return lineage_validation.LineageValidationArgs(
         archive_root=archive_root,
         out_dir=out_dir,
         sample_prefix_sharing=10,
         max_sample_stored_messages=500,
         json=True,
+        index_db=index_db,
     )
+
+
+def _writer_message(provider_id: str, text: str, position: int, role: Role = Role.USER) -> ParsedMessage:
+    return ParsedMessage(
+        provider_message_id=provider_id,
+        role=role,
+        text=text,
+        position=position,
+        variant_index=0,
+        is_active_path=True,
+        is_active_leaf=False,
+        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+    )
+
+
+def _make_writer_candidate(root: Path) -> Path:
+    root.mkdir()
+    db = root / "index.db"
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    try:
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="parent",
+                title="parent",
+                messages=[
+                    _writer_message("p0", "hello", 0),
+                    _writer_message("p1", "world", 1, Role.ASSISTANT),
+                ],
+            ),
+        )
+        for provider_id, tail_text in (("child", "child tail"), ("sibling", "sibling tail")):
+            write_parsed_session_to_archive(
+                conn,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=provider_id,
+                    title=provider_id,
+                    parent_session_provider_id="parent",
+                    branch_type=BranchType.FORK,
+                    messages=[
+                        _writer_message(f"{provider_id}-p0", "hello", 0),
+                        _writer_message(f"{provider_id}-p1", "world", 1, Role.ASSISTANT),
+                        _writer_message(f"{provider_id}-tail", tail_text, 2),
+                    ],
+                ),
+            )
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="orphan",
+                title="orphan",
+                parent_session_provider_id="missing-parent",
+                messages=[_writer_message("orphan-0", "orphan", 0)],
+            ),
+        )
+    finally:
+        conn.close()
+    return db
 
 
 def test_lineage_validation_clean_archive_is_citable(tmp_path: Path) -> None:
@@ -217,6 +294,65 @@ def test_lineage_validation_proves_unresolved_reads_stay_child_local(tmp_path: P
     assert sample["sampled"] == 1
     assert sample["rows"][0]["read_status"] == "safe"
     assert report["verdict"]["external_counts_citable"] is True
+
+
+def test_lineage_validation_proves_writer_candidate_and_snapshot_identity(tmp_path: Path) -> None:
+    archive_root = tmp_path / "candidate"
+    db = _make_writer_candidate(archive_root)
+
+    report = lineage_validation.build_report(_args(archive_root, index_db=db))
+
+    topology = report["lineage"]["topology"]
+    assert topology["effective_status_counts"] == {"resolved": 2, "unresolved": 1}
+    assert topology["empty_effective_status_count"] == 0
+    assert topology["empty_method_count"] == 0
+    assert topology["method_counts"] == {"parser-parent": 3}
+    assert topology["unresolved_read_sample"]["status"] == "safe"
+    assert topology["unresolved_read_sample"]["sampled"] == 1
+    assert report["index_db"] == str(db.resolve())
+    assert report["snapshot_identity"]["stable"] is True
+    assert report["snapshot_identity"]["before"]["sha256"] == report["snapshot_identity"]["after"]["sha256"]
+
+
+def test_lineage_validation_rejects_unobserved_unresolved_reader_sample(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    _make_index_db(archive_root, with_unresolved=True)
+    args = lineage_validation.LineageValidationArgs(
+        archive_root=archive_root,
+        out_dir=None,
+        sample_prefix_sharing=10,
+        max_sample_stored_messages=500,
+        json=True,
+        sample_unresolved=0,
+    )
+
+    report = lineage_validation.build_report(args)
+
+    sample = report["lineage"]["topology"]["unresolved_read_sample"]
+    assert sample["status"] == "not_observed"
+    assert sample["safe"] is False
+    assert report["verdict"]["external_counts_citable"] is False
+    assert "1 unresolved-parent links were not exercised through the reader" in report["verdict"]["reasons"]
+
+
+def test_lineage_validation_binds_explicit_candidate_and_mutation(tmp_path: Path) -> None:
+    configured_root = tmp_path / "configured"
+    candidate_root = tmp_path / "candidate"
+    _make_index_db(configured_root)
+    candidate_db = _make_index_db(candidate_root)
+
+    first = lineage_validation.build_report(_args(configured_root, index_db=candidate_db))
+    assert first["index_db"] == str(candidate_db.resolve())
+    first_snapshot = first["snapshot_identity"]["before"]["sha256"]
+
+    with sqlite3.connect(candidate_db) as conn:
+        conn.execute("UPDATE session_links SET method = 'changed' WHERE src_session_id = 'child'")
+        conn.commit()
+    second = lineage_validation.build_report(_args(configured_root, index_db=candidate_db))
+
+    assert second["index_db"] == str(candidate_db.resolve())
+    assert second["snapshot_identity"]["before"]["sha256"] != first_snapshot
+    assert second["receipt_sha256"] != first["receipt_sha256"]
 
 
 def test_lineage_validation_catches_empty_method_mutation(tmp_path: Path) -> None:
