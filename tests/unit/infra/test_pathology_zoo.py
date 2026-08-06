@@ -34,6 +34,7 @@ def test_pathology_zoo_manifest_covers_every_v0_dimension(pathology_zoo: Patholo
         "claude-design-session-origin",
         "export-vintage-reorder",
         "content-blocks-vintage",
+        "claude-vintage-live-proof",
         "lifecycle-anchor-drift",
         "non-stream-safe-origin",
         "attachment-with-acquired-bytes",

@@ -224,6 +224,71 @@ def _chatgpt_node(
     return node
 
 
+CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
+CLAUDE_VINTAGE_LIVE_PROOF_MESSAGE_IDS = (
+    "64878c9e-2642-437b-a384-0961184f84ea",
+    "4c341ad3-dbd9-4224-9ab4-dcb4f833b3f9",
+    "49cad03c-d06e-48a8-8f0a-81e40ef234cd",
+)
+
+
+def _claude_vintage_live_proof_payload(*, nested_target: bool) -> dict[str, object]:
+    """Return the sanitized old/new wire pair from the parent measurement.
+
+    The parent measurement identified a Claude.ai export-vintage difference:
+    one version carries a message's text at the top level, while another
+    carries the same text in one ``content`` text segment. The IDs and prose
+    here are synthetic because the cited live bytes were not recoverable.
+    """
+    target: dict[str, object] = {
+        "uuid": CLAUDE_VINTAGE_LIVE_PROOF_MESSAGE_IDS[2],
+        "sender": "human",
+    }
+    if nested_target:
+        target["content"] = [{"type": "text", "text": "sanitized measured target turn"}]
+    else:
+        target["text"] = "sanitized measured target turn"
+    return {
+        "uuid": CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
+        "title": "sanitized measured Claude vintage cohort",
+        "created_at": "2026-07-31T00:00:00Z",
+        "updated_at": "2026-07-31T00:03:00Z",
+        "chat_messages": [
+            {
+                "uuid": CLAUDE_VINTAGE_LIVE_PROOF_MESSAGE_IDS[0],
+                "sender": "human",
+                "text": "sanitized first turn",
+                "created_at": "2026-07-31T00:00:00Z",
+            },
+            {
+                "uuid": CLAUDE_VINTAGE_LIVE_PROOF_MESSAGE_IDS[1],
+                "sender": "assistant",
+                "text": "sanitized assistant turn",
+                "created_at": "2026-07-31T00:01:00Z",
+            },
+            {
+                **target,
+                "created_at": "2026-07-31T00:02:00Z",
+            },
+        ],
+    }
+
+
+def write_claude_vintage_live_proof_pair(root: Path) -> tuple[Path, Path]:
+    """Write the sanitized measured-shape pair into a pathology wire root."""
+    manual = root / "manual"
+    return (
+        _write_json(
+            manual / "claude-vintage-live-proof-old.json",
+            _claude_vintage_live_proof_payload(nested_target=False),
+        ),
+        _write_json(
+            manual / "claude-vintage-live-proof-new.json",
+            _claude_vintage_live_proof_payload(nested_target=True),
+        ),
+    )
+
+
 def _write_manual_members(root: Path) -> tuple[Path, ...]:
     manual = root / "manual"
     grouped_records = (
@@ -285,6 +350,7 @@ def _write_manual_members(root: Path) -> tuple[Path, ...]:
                 ],
             },
         ),
+        *write_claude_vintage_live_proof_pair(root),
         _write_json(
             manual / "attachment-metadata.json",
             {

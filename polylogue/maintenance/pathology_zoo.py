@@ -60,6 +60,7 @@ class PathologyZooMember:
     canary_eligibility: PathologyZooCanaryEligibility
     invariant: PathologyZooInvariant
     durable_paths: tuple[str, ...] = ()
+    evidence_note: str | None = None
 
     def __post_init__(self) -> None:
         if self.canary_eligibility is PathologyZooCanaryEligibility.SESSION_BACKED and not self.session_ids:
@@ -261,6 +262,30 @@ PATHOLOGY_ZOO_MANIFEST: tuple[PathologyZooMember, ...] = (
             "SELECT COUNT(*) FROM blocks WHERE session_id = ?",
             (f"{_CLAUDE_AI}:zoo-content-blocks-vintage",),
             (1,),
+        ),
+    ),
+    PathologyZooMember(
+        "claude-vintage-live-proof",
+        "claude-vintage-live-proof",
+        ("polylogue-claude-vintage-live-proof", "polylogue-0qfy"),
+        (f"{_CLAUDE_AI}:9ed2056f-b415-4f51-b18e-5265f21a67bf",),
+        (
+            "manual/claude-vintage-live-proof-old.json",
+            "manual/claude-vintage-live-proof-new.json",
+        ),
+        PathologyZooCanaryEligibility.SESSION_BACKED,
+        _invariant(
+            "the sanitized measured-shape cohort retains both raw revisions",
+            "source",
+            "SELECT COUNT(*) FROM raw_sessions WHERE native_id = ?",
+            ("9ed2056f-b415-4f51-b18e-5265f21a67bf",),
+            (2,),
+        ),
+        evidence_note=(
+            "Live export bytes were not recoverable outside the protected live archive. "
+            "This pair reconstructs the parent bead's measured old-flat/new-nested Claude "
+            "shape with synthetic identifiers and sanitized text. The real-route receipt "
+            "must retain live_evidence_recovered=false until captured wire bytes are supplied."
         ),
     ),
     PathologyZooMember(
