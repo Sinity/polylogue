@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -22,14 +23,17 @@ from polylogue.maintenance.rebuild_index import (
     rebuild_index_from_source_sync,
 )
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
+from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _init_empty_source(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+    for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
+        initialize_archive_database(root / f"{tier.value}.db", tier)
 
 
 def test_rebuild_rejects_source_schema_behind_runtime_before_candidate_creation(tmp_path: Path) -> None:
@@ -65,6 +69,89 @@ def test_rebuild_rejects_source_schema_behind_runtime_before_candidate_creation(
     ]
     assert not (root / ".index-generations").exists()
     assert not (root / ".index-rebuild-transactions").exists()
+
+
+def test_rebuild_rejects_source_schema_ahead_of_runtime_before_candidate_creation(tmp_path: Path) -> None:
+    """A newer source tier is as unsafe to rebuild as an older one."""
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    source_probe = probe_archive_tier(ArchiveTier.SOURCE, root / "source.db")
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute(f"PRAGMA user_version = {source_probe.expected_user_version + 1}")
+
+    with pytest.raises(RebuildSchemaCurrencyError) as exc_info:
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+
+    assert exc_info.value.diagnostic["blocking_tiers"] == [
+        {
+            "tier": "source",
+            "path": str(root / "source.db"),
+            "actual_user_version": source_probe.expected_user_version + 1,
+            "expected_user_version": source_probe.expected_user_version,
+            "status": "mismatch",
+        }
+    ]
+    assert not (root / ".index-generations").exists()
+
+
+@pytest.mark.parametrize("mode", ["missing", "mismatched"])
+def test_rebuild_rejects_missing_or_mismatched_audit_tier_before_candidate_creation(tmp_path: Path, mode: str) -> None:
+    """Every canonical durable tier, including audit, must be package-current."""
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    audit_path = root / "audit.db"
+    expected = probe_archive_tier(ArchiveTier.AUDIT, audit_path).expected_user_version
+    if mode == "missing":
+        audit_path.unlink()
+        actual: int | None = None
+        status = "missing"
+    else:
+        with sqlite3.connect(audit_path) as conn:
+            conn.execute(f"PRAGMA user_version = {expected + 1}")
+        actual = expected + 1
+        status = "mismatch"
+
+    with pytest.raises(RebuildSchemaCurrencyError) as exc_info:
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+
+    assert exc_info.value.diagnostic["blocking_tiers"] == [
+        {
+            "tier": "audit",
+            "path": str(audit_path),
+            "actual_user_version": actual,
+            "expected_user_version": expected,
+            "status": status,
+        }
+    ]
+    assert not (root / ".index-generations").exists()
+
+
+def test_rebuild_rechecks_schema_currency_after_acquiring_archive_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schema drift after the early guard cannot reach the candidate path."""
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
+    source_probe = probe_archive_tier(ArchiveTier.SOURCE, root / "source.db")
+    original_acquire = OwnedArchiveLocation.acquire
+
+    def acquire_then_advance_schema(location: ArchiveLocation) -> OwnedArchiveLocation:
+        owned = original_acquire(location)
+        with sqlite3.connect(root / "source.db") as conn:
+            conn.execute(f"PRAGMA user_version = {source_probe.expected_user_version + 1}")
+        return owned
+
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.OwnedArchiveLocation.acquire", acquire_then_advance_schema)
+
+    with pytest.raises(RebuildSchemaCurrencyError, match="schema currency") as exc_info:
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
+
+    blocking_tiers = cast(list[dict[str, object]], exc_info.value.diagnostic["blocking_tiers"])
+    assert blocking_tiers[0]["tier"] == "source"
+    assert not (root / ".index-generations").exists()
 
 
 def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> None:

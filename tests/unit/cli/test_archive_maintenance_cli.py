@@ -2015,6 +2015,38 @@ def test_rebuild_index_preflight_reports_durable_schema_currency(
     assert "migrate or deploy before rebuilding" in result.stderr
 
 
+def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    root = cli_workspace["archive_root"]
+    with sqlite3.connect(root / "audit.db") as conn:
+        expected = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        conn.execute(f"PRAGMA user_version = {expected + 1}")
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "audit.db" in result.stderr
+    assert not (root / ".index-generations").exists()
+
+
+def test_rebuild_index_rejects_daemon_schema_preflight_combination(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--preflight", "--daemon"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "--preflight cannot be combined with --daemon" in result.output
+
+
 def test_rebuild_index_daemon_path_posts_the_real_selection_request(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

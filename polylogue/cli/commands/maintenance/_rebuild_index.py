@@ -429,6 +429,8 @@ def rebuild_index_command(
         raise click.BadParameter("plan limit must be positive", param_hint="--plan-limit")
     if use_daemon and plan_only:
         raise click.UsageError("--daemon executes a rebuild; --plan is always a local read-only preview")
+    if use_daemon and preflight:
+        raise click.UsageError("--preflight cannot be combined with --daemon")
     if shard_count <= 0:
         raise click.BadParameter("shard count must be positive", param_hint="--shard-count")
     if use_daemon and shard_count > 1:
@@ -484,23 +486,8 @@ def rebuild_index_command(
         click.echo(f"Replayed:     {int(cast(Any, payload['replayed_logical_source_count'])):,} logical source(s)")
         click.echo(f"Quarantined:  {int(cast(Any, payload['quarantined_raw_count'])):,} raw row(s)")
         return
-    raw_count = _count_source_raw_sessions(root)
-    if raw_count == 0:
-        payload = {
-            "archive_root": str(root),
-            "raw_session_count": 0,
-            "selected_raw_count": 0,
-            "skipped_by_blob_limit_count": 0,
-            "status": "empty-source",
-            "materialized": False,
-        }
-        if output_format == "json":
-            click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        else:
-            click.echo(f"Archive root: {root}")
-            click.echo("No source.db raw_sessions rows found.")
-        return
     if plan_only:
+        raw_count = _count_source_raw_sessions(root)
         selected_raw_ids = (
             list(dict.fromkeys(raw_ids))
             if raw_ids
@@ -555,7 +542,11 @@ def rebuild_index_command(
                         f"blob={int(group['blob_bytes']):,} source={group['source_path']}"
                     )
         return
-    from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+    from polylogue.maintenance.rebuild_index import (
+        RebuildIndexRequest,
+        RebuildSchemaCurrencyError,
+        rebuild_index_from_source_sync,
+    )
 
     try:
         receipt = rebuild_index_from_source_sync(
@@ -573,7 +564,7 @@ def rebuild_index_command(
                 shard_count=shard_count,
             )
         )
-    except (RuntimeError, ValueError) as exc:
+    except (RebuildSchemaCurrencyError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     payload = receipt.to_dict()
     result = payload
