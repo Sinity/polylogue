@@ -18,7 +18,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
-from polylogue.core.enums import Provider
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
@@ -186,7 +185,6 @@ def _run_case(
     ingest: bool,
     attempts_before: int,
     bypass_frontier_gate: bool = False,
-    force_codex_detection: bool = False,
 ) -> dict[str, Any]:
     polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
     watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=source_root),), cursor=cursor)
@@ -198,15 +196,7 @@ def _run_case(
                 if bypass_frontier_gate
                 else nullcontext()
             )
-            detection_patch = (
-                patch(
-                    "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
-                    lambda _path, _fallback: (Provider.CODEX, True),
-                )
-                if force_codex_detection
-                else nullcontext()
-            )
-            with frontier_patch, detection_patch:
+            with frontier_patch:
                 metrics = asyncio.run(watcher._ingest_files([path])) if ingest and needs_work else None
     finally:
         watcher.stop()
@@ -278,12 +268,12 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
     terminal_root = case_roots["typed-terminal"]
     terminal_source_root = terminal_root / "wire" / "excluded-cursor-proof"
     terminal_path = terminal_source_root / "typed-terminal.jsonl"
-    terminal_path.parent.mkdir(parents=True, exist_ok=True)
-    terminal_path.write_text(
-        '{"type":"session_meta","payload":{"id":"excluded-proof-terminal"}}\n'
-        '{"type":"response_item","payload":{"type":"message","id":"m0","role":"user","content":[',
-        encoding="utf-8",
+    _write_jsonl(
+        terminal_path,
+        _codex_records("excluded-proof-terminal", ("valid prefix", "terminal corruption")),
     )
+    with terminal_path.open("ab") as handle:
+        handle.write(b'{"type":"response_item","payload":{"type":"message","content":[')
     initialize_active_archive_root(terminal_root)
     terminal_cursor = CursorStore(terminal_root / "ops.db")
     terminal_attempts_before = len(_attempts_for_path(terminal_root, terminal_path))
@@ -298,7 +288,6 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         ingest=True,
         attempts_before=terminal_attempts_before,
         bypass_frontier_gate=True,
-        force_codex_detection=True,
     )
 
     cases = [indexed, still_excluded, typed_terminal]
@@ -338,7 +327,10 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         "cases": cases,
         "fairness": {
             "planner": "_interleave_by_source",
-            "property": "one candidate from each present source family reaches the first round",
+            "property": (
+                "browser-capture drains first; among non-browser-capture families, one candidate from each "
+                "present family reaches the first round"
+            ),
         },
         "anti_vacuity": {
             "indexed_session_count": indexed["indexed"]["indexed_sessions"],
