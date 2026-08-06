@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -756,70 +757,71 @@ def test_superseded_raw_snapshot_cleanup_keeps_newest_per_source(tmp_path: Path)
     source.write_text('{"type":"message"}\n', encoding="utf-8")
     blob_store = BlobStore(tmp_path / "blob")
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    _ensure_archive_source_schema(conn)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        _ensure_archive_source_schema(conn)
+        full_old, full_old_size = _write_blob(blob_store, b"full-old")
+        full_new, full_new_size = _write_blob(blob_store, b"full-new")
+        append_old, append_old_size = _write_blob(blob_store, b"append-old")
+        append_current, append_current_size = _write_blob(blob_store, b"append-current")
+        leased_old, leased_old_size = _write_blob(blob_store, b"leased-old")
+        missing_old, missing_old_size = _write_blob(blob_store, b"missing-old")
+        missing_new, missing_new_size = _write_blob(blob_store, b"missing-new")
 
-    full_old, full_old_size = _write_blob(blob_store, b"full-old")
-    full_new, full_new_size = _write_blob(blob_store, b"full-new")
-    append_old, append_old_size = _write_blob(blob_store, b"append-old")
-    append_current, append_current_size = _write_blob(blob_store, b"append-current")
-    leased_old, leased_old_size = _write_blob(blob_store, b"leased-old")
-    missing_old, missing_old_size = _write_blob(blob_store, b"missing-old")
-    missing_new, missing_new_size = _write_blob(blob_store, b"missing-new")
+        # Archive file-set retention ranks snapshots by recency, but callers must
+        # protect raw rows still referenced by index.db sessions before deleting.
+        def _seed(raw_id: str, source_path: Path, source_index: int, blob_size: int, acquired_at_ms: int) -> None:
+            _insert_archive_raw_session(
+                conn,
+                raw_id=raw_id,
+                source_path=source_path,
+                source_index=source_index,
+                blob_hash=raw_id,
+                blob_size=blob_size,
+                acquired_at_ms=acquired_at_ms,
+            )
 
-    # Archive file-set retention ranks snapshots by recency, but callers must
-    # protect raw rows still referenced by index.db sessions before deleting.
-    def _seed(raw_id: str, source_path: Path, source_index: int, blob_size: int, acquired_at_ms: int) -> None:
-        _insert_archive_raw_session(
-            conn,
-            raw_id=raw_id,
-            source_path=source_path,
-            source_index=source_index,
-            blob_hash=raw_id,
-            blob_size=blob_size,
-            acquired_at_ms=acquired_at_ms,
-        )
+        _seed(full_old, source, 0, full_old_size, 1_000)
+        _seed(full_new, source, 0, full_new_size, 2_000)
+        _seed(append_old, source, -1, append_old_size, 3_000)
+        _seed(append_current, source, -1, append_current_size, 4_000)
+        _seed(leased_old, source, -1, leased_old_size, 2_500)
+        _seed(missing_old, missing_source, 0, missing_old_size, 1_000)
+        _seed(missing_new, missing_source, 0, missing_new_size, 2_000)
+        conn.commit()
 
-    _seed(full_old, source, 0, full_old_size, 1_000)
-    _seed(full_new, source, 0, full_new_size, 2_000)
-    _seed(append_old, source, -1, append_old_size, 3_000)
-    _seed(append_current, source, -1, append_current_size, 4_000)
-    _seed(leased_old, source, -1, leased_old_size, 2_500)
-    _seed(missing_old, missing_source, 0, missing_old_size, 1_000)
-    _seed(missing_new, missing_source, 0, missing_new_size, 2_000)
-    conn.commit()
+        # full_old (superseded by full_new) and append_old + leased_old (superseded
+        # by append_current). missing_old is superseded too, but its source file is
+        # gone, so it is excluded from candidates.
+        candidates = superseded_raw_snapshot_candidates(conn, limit=100)
+        assert {candidate.raw_id for candidate in candidates} == {full_old, append_old, leased_old}
 
-    # full_old (superseded by full_new) and append_old + leased_old (superseded
-    # by append_current). missing_old is superseded too, but its source file is
-    # gone, so it is excluded from candidates.
-    candidates = superseded_raw_snapshot_candidates(conn, limit=100)
-    assert {candidate.raw_id for candidate in candidates} == {full_old, append_old, leased_old}
+        dry_run = cleanup_superseded_raw_snapshots(conn, dry_run=True, blob_store=blob_store)
+        assert dry_run.candidate_count == 3
+        assert blob_store.exists(full_old)
+        assert blob_store.exists(append_old)
+        assert blob_store.exists(leased_old)
 
-    dry_run = cleanup_superseded_raw_snapshots(conn, dry_run=True, blob_store=blob_store)
-    assert dry_run.candidate_count == 3
-    assert blob_store.exists(full_old)
-    assert blob_store.exists(append_old)
-    assert blob_store.exists(leased_old)
+        result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
+        assert result.deleted_raw_count == 3
+        assert result.deleted_blob_count == 3
+        assert not blob_store.exists(full_old)
+        assert not blob_store.exists(append_old)
+        assert not blob_store.exists(leased_old)
+        assert blob_store.exists(full_new)
+        assert blob_store.exists(append_current)
+        assert blob_store.exists(missing_old)
+        assert blob_store.exists(missing_new)
 
-    result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
-    assert result.deleted_raw_count == 3
-    assert result.deleted_blob_count == 3
-    assert not blob_store.exists(full_old)
-    assert not blob_store.exists(append_old)
-    assert not blob_store.exists(leased_old)
-    assert blob_store.exists(full_new)
-    assert blob_store.exists(append_current)
-    assert blob_store.exists(missing_old)
-    assert blob_store.exists(missing_new)
-
-    remaining_raw_ids = {
-        str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id").fetchall()
-    }
-    assert remaining_raw_ids == {full_new, append_current, missing_old, missing_new}
-    remaining_ref_ids = {str(row[0]) for row in conn.execute("SELECT ref_id FROM blob_refs ORDER BY ref_id").fetchall()}
-    assert remaining_ref_ids == {full_new, append_current, missing_old, missing_new}
+        remaining_raw_ids = {
+            str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id").fetchall()
+        }
+        assert remaining_raw_ids == {full_new, append_current, missing_old, missing_new}
+        remaining_ref_ids = {
+            str(row[0]) for row in conn.execute("SELECT ref_id FROM blob_refs ORDER BY ref_id").fetchall()
+        }
+        assert remaining_ref_ids == {full_new, append_current, missing_old, missing_new}
 
 
 def test_superseded_raw_snapshot_cleanup_preserves_index_referenced_raws(tmp_path: Path) -> None:

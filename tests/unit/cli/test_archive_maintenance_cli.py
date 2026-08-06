@@ -1726,6 +1726,86 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
         assert removed not in result.output
 
 
+def test_cursor_authority_reconcile_cli_exposes_only_scoped_inputs(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "cursor-authority-reconcile", "--help"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "--source-path-file" in result.output
+    assert "--output-plan" in result.output
+    assert "--plan" in result.output
+    assert "--backup-manifest" in result.output
+    assert "--receipt" in result.output
+    assert "--apply" in result.output
+    assert "--force" not in result.output
+    assert "--bypass" not in result.output
+
+
+def test_cursor_authority_reconcile_cli_accepts_verified_backup_directory(
+    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.maintenance import cursor_authority_reconcile
+
+    backup = tmp_path / "verified-backup"
+    backup.mkdir()
+    (backup / "manifest.json").write_text("{}", encoding="utf-8")
+    observed: dict[str, Path] = {}
+
+    def fake_apply(*, plan_path: Path, backup_manifest: Path, receipt: Path) -> dict[str, object]:
+        observed["backup"] = backup_manifest
+        return {"verdict": "failed"}
+
+    monkeypatch.setattr(cursor_authority_reconcile, "apply_reconciliation", fake_apply)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "cursor-authority-reconcile",
+            "--apply",
+            "--plan",
+            str(tmp_path / "plan.json"),
+            "--backup-manifest",
+            str(backup),
+            "--receipt",
+            str(tmp_path / "receipt.json"),
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert observed["backup"] == backup
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--apply", "--backup-manifest", "backup", "--receipt", "receipt"],
+        ["--apply", "--plan", "plan", "--receipt", "receipt"],
+        ["--apply", "--plan", "plan", "--backup-manifest", "backup"],
+        ["--source-path-file", "source", "--output-plan", "plan", "--plan", "existing"],
+        ["--source-path-file", "source", "--output-plan", "plan", "--receipt", "receipt"],
+        ["--plan", "plan", "--backup-manifest", "backup", "--receipt", "receipt"],
+    ],
+)
+def test_cursor_authority_reconcile_cli_rejects_mixed_or_missing_mode_options(
+    cli_runner: CliRunner,
+    args: list[str],
+) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "cursor-authority-reconcile", *args],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "requires" in result.output or "accepts only" in result.output
+
+
 def test_raw_authority_frontier_cli_replaces_incident_specific_commands(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
