@@ -237,8 +237,19 @@ class CorpusState:
             artifacts=tuple(artifact if item.artifact_id == artifact.artifact_id else item for item in self.artifacts),
         )
 
-    def mark(self, operation_id: str, **changes: object) -> CorpusState:
-        return replace(self, applied_operation_ids=(*self.applied_operation_ids, operation_id), **changes)
+    def mark(
+        self,
+        operation_id: str,
+        *,
+        crashed: bool | None = None,
+        hooks: tuple[HookArtifact, ...] | None = None,
+    ) -> CorpusState:
+        return replace(
+            self,
+            crashed=self.crashed if crashed is None else crashed,
+            hooks=self.hooks if hooks is None else hooks,
+            applied_operation_ids=(*self.applied_operation_ids, operation_id),
+        )
 
 
 class OperationKind(StrEnum):
@@ -624,7 +635,7 @@ def _operation_from_dict(payload: Mapping[str, object]) -> CorpusOperation:
         OperationKind.REBUILD: Rebuild,
         OperationKind.PROMOTE: Promote,
     }
-    return constructors[kind](operation_id)
+    return cast(CorpusOperation, constructors[kind](operation_id))
 
 
 def _required_string(payload: Mapping[str, object], key: str) -> str:
