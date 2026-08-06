@@ -53,7 +53,7 @@ commands:
 jobs:
   quick-gate:
     docker:
-      - image: cimg/python:3.13
+      - image: cimg/python:3.14
     resource_class: medium
     environment: &polylogue_ci_env
       POLYLOGUE_ARCHIVE_ROOT: /tmp/polylogue-archive
@@ -106,7 +106,7 @@ jobs:
 
   lab-policies:
     docker:
-      - image: cimg/python:3.13
+      - image: cimg/python:3.14
     resource_class: medium
     environment: *polylogue_ci_env
     steps:
@@ -149,7 +149,7 @@ jobs:
 
   full-suite:
     docker:
-      - image: cimg/python:3.13
+      - image: cimg/python:3.14
     resource_class: large
     environment:
       <<: *polylogue_ci_env
@@ -169,7 +169,7 @@ jobs:
 
   release-verify:
     docker:
-      - image: cimg/python:3.13
+      - image: cimg/python:3.14
     resource_class: medium
     steps:
       - bootstrap
