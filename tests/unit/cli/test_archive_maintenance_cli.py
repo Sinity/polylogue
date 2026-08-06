@@ -1990,6 +1990,31 @@ def test_rebuild_index_force_write_option_is_retired(cli_runner: CliRunner) -> N
     assert "--force-write" in result.output
 
 
+def test_rebuild_index_preflight_reports_durable_schema_currency(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    root = cli_workspace["archive_root"]
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("DROP INDEX idx_raw_failure_disposition_receipts_disposed_at")
+        conn.execute("DROP TABLE raw_failure_disposition_receipts")
+        conn.execute("PRAGMA user_version = 28")
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "rebuild-index", "--preflight", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "rebuild-schema-currency"
+    assert payload["status"] == "blocked"
+    assert payload["blocking_tiers"][0]["tier"] == "source"
+    assert payload["blocking_tiers"][0]["actual_user_version"] == 28
+    assert payload["blocking_tiers"][0]["expected_user_version"] == 29
+    assert "migrate or deploy before rebuilding" in result.stderr
+
+
 def test_rebuild_index_daemon_path_posts_the_real_selection_request(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

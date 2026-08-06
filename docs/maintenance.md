@@ -38,6 +38,31 @@ Restart health and runtime-consumer convergence are the final lifecycle proof
 and are recorded by the durable train lifecycle API, not inferred from this
 command's migration result alone.
 
+### Rebuild deployment-currency preflight
+
+Before a managed `rebuild-index`, confirm that the package selected for the
+operation owns the live durable schemas. The read-only preflight deliberately
+checks `source.db` and `user.db` only: `index.db` may be behind because the
+rebuild is the supported way to replace that derived tier.
+
+```bash
+polylogue ops maintenance rebuild-index --preflight --output-format json
+```
+
+It emits `rebuild-schema-currency` JSON with each durable tier's observed and
+package-expected `user_version`, and exits nonzero when either differs. The
+execution route repeats this check before it consumes the schema-inference
+receipt, acquires archive ownership, or creates a candidate generation.
+
+For a safe deployment recovery, first choose the exact target package commit.
+With the daemon stopped, create a fresh verified full-evidence backup, run
+`migrate-tier source` and `migrate-tier user` when the target package requires
+them, then deploy that exact package. Run the preflight above and require a
+ready result before invoking `polylogue ops maintenance rebuild-index`; use
+that blue-green command rather than `ops reset --index` for an active managed
+generation. Restart the daemon only after the rebuilt generation is promoted
+and the post-deploy status shows no durable-tier mismatch.
+
 For the conceptual model behind derived insights and the FTS / blob
 substrate, see [architecture.md](architecture.md) and
 [internals.md](internals.md). For daemon ownership of the inline

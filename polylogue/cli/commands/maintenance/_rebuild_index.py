@@ -388,6 +388,11 @@ def _rebuild_index_selection_plan(
         "single-writer path; unsupported with --daemon."
     ),
 )
+@click.option(
+    "--preflight",
+    is_flag=True,
+    help="Read-only: report whether durable source/user tiers match this package before rebuilding index.db.",
+)
 def rebuild_index_command(
     only_missing: bool,
     raw_ids: tuple[str, ...],
@@ -404,6 +409,7 @@ def rebuild_index_command(
     use_daemon: bool,
     daemon_url: str,
     shard_count: int,
+    preflight: bool,
 ) -> None:
     """Inspect or execute an authority-safe source-to-index rebuild.
 
@@ -441,6 +447,22 @@ def rebuild_index_command(
         raise click.UsageError("resumed rebuild budgets are durable; omit pass budget options with --operation-id")
 
     root = archive_root()
+    if preflight:
+        from polylogue.maintenance.rebuild_index import rebuild_schema_currency_preflight
+
+        payload = rebuild_schema_currency_preflight(root)
+        if output_format == "json":
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            click.echo(f"Archive root: {root}")
+            for tier in cast(list[dict[str, object]], payload["tiers"]):
+                click.echo(
+                    f"{tier['tier']}.db: {tier['actual_user_version']} (package expects "
+                    f"{tier['expected_user_version']}; {tier['status']})"
+                )
+        if payload["status"] != "ready":
+            raise click.ClickException("rebuild schema currency preflight failed; migrate or deploy before rebuilding")
+        return
     if use_daemon:
         payload = _run_daemon_rebuild(
             daemon_url,

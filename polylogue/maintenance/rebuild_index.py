@@ -66,6 +66,61 @@ class RebuildDerivedStateProvenanceError(RebuildProvenanceError):
     """A derived-state stage was blocked by a failed provenance recheck."""
 
 
+class RebuildSchemaCurrencyError(RuntimeError):
+    """The durable tiers do not match the package that would rebuild them."""
+
+    def __init__(self, diagnostic: dict[str, object]) -> None:
+        self.diagnostic = diagnostic
+        blocked = diagnostic["blocking_tiers"]
+        assert isinstance(blocked, list)
+        detail = ", ".join(
+            f"{item['tier']}.db:{item['actual_user_version']}!={item['expected_user_version']}"
+            for item in blocked
+            if isinstance(item, dict)
+        )
+        super().__init__(f"rebuild schema currency preflight failed: {detail}")
+
+
+def rebuild_schema_currency_preflight(root: Path) -> dict[str, object]:
+    """Report whether durable source evidence matches this runtime package.
+
+    ``index.db`` is intentionally absent: rebuilding it is the operation's
+    purpose, while a source/user mismatch means this package can interpret or
+    write durable evidence using a schema it does not own.
+    """
+    from polylogue.storage.archive_readiness import probe_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    checks: list[dict[str, object]] = []
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER):
+        probe = probe_archive_tier(tier, root / f"{tier.value}.db")
+        checks.append(
+            {
+                "tier": tier.value,
+                "path": probe.path,
+                "actual_user_version": probe.user_version,
+                "expected_user_version": probe.expected_user_version,
+                "status": probe.version_status,
+            }
+        )
+    blocking = [check for check in checks if check["status"] != "ok"]
+    return {
+        "kind": "rebuild-schema-currency",
+        "archive_root": str(root),
+        "status": "ready" if not blocking else "blocked",
+        "tiers": checks,
+        "blocking_tiers": blocking,
+    }
+
+
+def require_rebuild_schema_currency(root: Path) -> dict[str, object]:
+    """Reject a rebuild before it consumes evidence or creates a generation."""
+    diagnostic = rebuild_schema_currency_preflight(root)
+    if diagnostic["status"] != "ready":
+        raise RebuildSchemaCurrencyError(diagnostic)
+    return diagnostic
+
+
 @dataclass(frozen=True, slots=True)
 class RebuildProvenanceContext:
     """Validated evidence shared by every mutation in one rebuild pass.
@@ -1047,6 +1102,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
     validate_rebuild_index_request(request)
     root = request.archive_root
+    require_rebuild_schema_currency(root)
     consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
     location = ArchiveLocation.resolve(root)
     # The joined raw-frontier projection is rooted at the co-located active
