@@ -11,6 +11,7 @@ import pytest
 from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, PathologyZooCanaryEligibility
 from polylogue.maintenance.reindex_canary import CanarySelectionError, select_canary_sessions
 from tests.infra.pathology_zoo import (
+    CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
     PathologyZoo,
     build_pathology_zoo,
 )
@@ -33,7 +34,7 @@ def test_pathology_zoo_manifest_covers_every_v0_dimension(pathology_zoo: Patholo
         "hook-event-raw",
         "claude-design-session-origin",
         "export-vintage-reorder",
-        "content-blocks-vintage",
+        "claude-vintage-live-proof",
         "lifecycle-anchor-drift",
         "non-stream-safe-origin",
         "attachment-with-acquired-bytes",
@@ -50,8 +51,8 @@ def test_pathology_zoo_members_are_queryable_after_real_ingest(pathology_zoo: Pa
     with sqlite3.connect(pathology_zoo.archive_root / "index.db") as conn:
         session_ids = {str(row[0]) for row in conn.execute("SELECT session_id FROM sessions")}
     assert {session_id for member in pathology_zoo.manifest for session_id in member.session_ids} <= session_ids
-    assert pathology_zoo.members_for("content-blocks-vintage")[0].motivating_beads == (
-        "polylogue-yazae",
+    assert pathology_zoo.members_for("claude-vintage-live-proof")[0].motivating_beads == (
+        "polylogue-claude-vintage-live-proof",
         "polylogue-0qfy",
     )
 
@@ -85,10 +86,11 @@ def test_pathology_zoo_canary_eligibility_is_explicit(pathology_zoo: PathologyZo
 
 
 def test_zoo_preserves_the_named_vintage_and_lifecycle_red_cases(pathology_zoo: PathologyZoo) -> None:
-    """The three K-class entries remain production-ingested, not parser-only samples."""
+    """The named K-class entries remain production-ingested, not parser-only samples."""
     with sqlite3.connect(pathology_zoo.archive_root / "index.db") as conn:
         content_blocks = conn.execute(
-            "SELECT COUNT(*) FROM blocks WHERE session_id = ?", ("claude-ai-export:zoo-content-blocks-vintage",)
+            "SELECT COUNT(*) FROM blocks WHERE session_id = ?",
+            (f"claude-ai-export:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",),
         ).fetchone()
         lifecycle = conn.execute(
             "SELECT source_message_provider_id FROM session_events WHERE session_id = ? AND event_type = 'generation_lifecycle'",
@@ -96,7 +98,8 @@ def test_zoo_preserves_the_named_vintage_and_lifecycle_red_cases(pathology_zoo: 
         ).fetchall()
     with sqlite3.connect(pathology_zoo.archive_root / "source.db") as conn:
         vintage_raws = conn.execute(
-            "SELECT COUNT(*) FROM raw_sessions WHERE source_path LIKE ?", ("%vintage-%.json",)
+            "SELECT COUNT(*) FROM raw_sessions WHERE origin = ? AND native_id = ?",
+            ("chatgpt-export", "zoo-vintage-reorder"),
         ).fetchone()
     assert content_blocks == (1,)
     assert lifecycle == [("lifecycle-b",)]

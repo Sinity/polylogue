@@ -60,6 +60,7 @@ class PathologyZooMember:
     canary_eligibility: PathologyZooCanaryEligibility
     invariant: PathologyZooInvariant
     durable_paths: tuple[str, ...] = ()
+    evidence_note: str | None = None
 
     def __post_init__(self) -> None:
         if self.canary_eligibility is PathologyZooCanaryEligibility.SESSION_BACKED and not self.session_ids:
@@ -249,18 +250,36 @@ PATHOLOGY_ZOO_MANIFEST: tuple[PathologyZooMember, ...] = (
         ),
     ),
     PathologyZooMember(
-        "content-blocks-vintage",
-        "content-blocks-vintage",
-        ("polylogue-yazae", "polylogue-0qfy"),
-        (f"{_CLAUDE_AI}:zoo-content-blocks-vintage",),
-        ("manual/content-blocks-old.json", "manual/content-blocks-new.json"),
+        "claude-vintage-live-proof",
+        "claude-vintage-live-proof",
+        ("polylogue-claude-vintage-live-proof", "polylogue-0qfy"),
+        (f"{_CLAUDE_AI}:9ed2056f-b415-4f51-b18e-5265f21a67bf",),
+        (
+            "manual/claude-live-proof-old.json",
+            "manual/claude-live-proof-new.json",
+        ),
         PathologyZooCanaryEligibility.SESSION_BACKED,
         _invariant(
-            "the content-block vintage keeps its parsed text block",
-            "index",
-            "SELECT COUNT(*) FROM blocks WHERE session_id = ?",
-            (f"{_CLAUDE_AI}:zoo-content-blocks-vintage",),
+            "the sanitized measured-shape cohort converges to one equivalent canonical revision",
+            "source",
+            """
+            SELECT CASE WHEN COUNT(*) = 2
+                AND COUNT(DISTINCT normalized_content_hash) = 1
+                AND SUM(decision = 'applied') = 1
+                AND SUM(decision = 'superseded_equivalent') = 1
+                THEN 1 ELSE 0 END
+            FROM raw_sessions AS r
+            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+            WHERE r.native_id = ?
+            """,
+            ("9ed2056f-b415-4f51-b18e-5265f21a67bf",),
             (1,),
+        ),
+        evidence_note=(
+            "Live export bytes were not recoverable outside the protected live archive. "
+            "This pair reconstructs the parent bead's measured old-flat/new-nested Claude "
+            "shape with synthetic identifiers and sanitized text. The real-route receipt "
+            "must retain live_evidence_recovered=false until captured wire bytes are supplied."
         ),
     ),
     PathologyZooMember(
