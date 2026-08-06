@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -49,6 +48,15 @@ from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_canonical_snapshot import (
+    CanonicalArchiveSnapshot as ArchiveSnapshot,
+)
+from tests.infra.archive_canonical_snapshot import (
+    archive_snapshot,
+)
+from tests.infra.archive_canonical_snapshot import (
+    assert_archives_equivalent as _assert_canonical_archives_equivalent,
+)
 from tests.infra.pathology_composer import (
     ComposedPathology,
     compose_append_revision_chain,
@@ -103,24 +111,6 @@ class SessionMaterializationFacts:
     threads: tuple[FactRow, ...]
     thread_sessions: tuple[FactRow, ...]
     table_counts: tuple[tuple[str, int], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveSnapshot:
-    """Semantic archive state, deliberately excluding run-local stamps and ids."""
-
-    sessions: tuple[FactRow, ...]
-    messages: tuple[FactRow, ...]
-    blocks: tuple[FactRow, ...]
-    session_links: tuple[FactRow, ...]
-    profiles: tuple[FactRow, ...]
-    work_events: tuple[FactRow, ...]
-    phases: tuple[FactRow, ...]
-    threads: tuple[FactRow, ...]
-    thread_sessions: tuple[FactRow, ...]
-    semantic_tables: tuple[tuple[str, tuple[FactRow, ...]], ...]
-    fts_matches: tuple[tuple[str, object], ...]
-    raw_authority: tuple[FactRow, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,75 +279,10 @@ def assert_archive_verification_green(root: Path) -> ArchiveVerificationReport:
     return report
 
 
-def archive_snapshot(root: Path) -> ArchiveSnapshot:
-    """Return the one canonical archive comparator shared by all properties."""
-    with sqlite3.connect(root / "index.db") as conn:
-        sessions = conn.execute(
-            """
-            SELECT session_id, origin, native_id, title, parent_session_id,
-                   root_session_id, branch_type, active_leaf_message_id, message_count
-            FROM sessions ORDER BY session_id
-            """
-        ).fetchall()
-        messages = conn.execute(
-            """
-            SELECT session_id, native_id, position, variant_index, role,
-                   material_origin, message_type, parent_message_id, model_name,
-                   model_effort, input_tokens, output_tokens, cache_read_tokens,
-                   cache_write_tokens, duration_ms, stop_reason, content_hash
-            FROM messages ORDER BY session_id, position, variant_index
-            """
-        ).fetchall()
-        blocks = conn.execute(
-            """
-            SELECT session_id, message_id, position, block_type, text, tool_id,
-                   tool_name, tool_input, semantic_type, media_type,
-                   tool_result_is_error, tool_result_exit_code, content_hash
-            FROM blocks ORDER BY session_id, message_id, position
-            """
-        ).fetchall()
-        session_links = conn.execute(
-            """
-            SELECT src_session_id, dst_origin, dst_native_id, link_type,
-                   resolved_dst_session_id, branch_point_message_id, inheritance,
-                   status, parent_tool_use_block_id, method, confidence,
-                   evidence_json
-            FROM session_links
-            ORDER BY src_session_id, dst_origin, dst_native_id, link_type
-            """
-        ).fetchall()
-        profiles = _table_rows(conn, "session_profiles", order_by="session_id")
-        work_events = _table_rows(conn, "session_work_events", order_by="session_id, position")
-        phases = _table_rows(conn, "session_phases", order_by="session_id, position")
-        threads = _table_rows(conn, "threads", order_by="thread_id")
-        thread_sessions = _table_rows(conn, "thread_sessions", order_by="thread_id, session_id, position")
-        semantic_tables = tuple(
-            (table, _table_rows(conn, table, order_by=order_by)) for table, order_by in _SEMANTIC_TABLES
-        )
-        fts_matches = _fts_match_snapshot(conn)
-    raw_authority = raw_authority_facts(root / "source.db", archive_root=root)
-    return ArchiveSnapshot(
-        sessions=_fact_rows(sessions),
-        messages=_fact_rows(messages),
-        blocks=_fact_rows(blocks),
-        session_links=_fact_rows(session_links),
-        profiles=profiles,
-        work_events=work_events,
-        phases=phases,
-        threads=threads,
-        thread_sessions=thread_sessions,
-        semantic_tables=semantic_tables,
-        fts_matches=fts_matches,
-        raw_authority=raw_authority,
-    )
-
-
 def assert_archives_equivalent(left: ConvergenceArchive, right: ConvergenceArchive) -> None:
-    """Compare archives through ``archive_snapshot`` rather than database bytes."""
-    left_snapshot = archive_snapshot(left.root)
-    right_snapshot = archive_snapshot(right.root)
-    if left_snapshot != right_snapshot:
-        raise AssertionError(f"canonical archive snapshots differ:\nleft={left_snapshot!r}\nright={right_snapshot!r}")
+    """Compare property archives through the shared canonical comparator."""
+
+    _assert_canonical_archives_equivalent(left, right)
 
 
 def derived_readiness_snapshot(root: Path) -> DerivedReadinessSnapshot:
@@ -576,112 +501,6 @@ def _parsed_session(session: object, *, corpus_index: int) -> ParsedSession:
             )
         ],
     )
-
-
-_SEMANTIC_TABLES: tuple[tuple[str, str], ...] = (
-    ("session_events", "session_id, position"),
-    ("session_agent_policies", "session_id, position"),
-    ("session_working_dirs", "session_id, position, path"),
-    ("session_refs", "session_id, position"),
-    ("attachments", "attachment_id"),
-    ("attachment_refs", "session_id, message_id, position"),
-    ("attachment_native_ids", "ref_id, id_kind, native_id"),
-    ("repos", "repo_id"),
-    ("repo_checkouts", "repo_id, root_path"),
-    ("session_repos", "session_id, repo_id"),
-    ("session_commits", "session_id, commit_sha"),
-    ("session_provider_usage_events", "session_id, position"),
-    ("session_model_usage", "session_id, model_name"),
-    ("session_tags", "session_id, tag, tag_source"),
-    ("action_pairs", "session_id, message_id, use_rank"),
-    ("delegation_facts", "delegation_id"),
-    ("insight_materialization", "session_id, insight_type"),
-)
-
-
-_SNAPSHOT_VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
-    "insight_materialization": frozenset({"materialized_at_ms"}),
-    "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
-    "session_profiles": frozenset({"materialized_at", "priced_at_ms"}),
-    # Thread source_updated_at is derived from provider-backed member
-    # timestamps, unlike materialized_at.
-    "threads": frozenset({"materialized_at"}),
-}
-
-
-def _table_rows(conn: sqlite3.Connection, table: str, *, order_by: str) -> tuple[FactRow, ...]:
-    columns = tuple(row[1] for row in conn.execute(f"PRAGMA table_info({table})"))
-    selected_columns = tuple(
-        column for column in columns if column not in _SNAPSHOT_VOLATILE_COLUMNS.get(table, frozenset())
-    )
-    if not selected_columns:
-        raise AssertionError(f"snapshot has no stable columns for {table}")
-    quoted_columns = ", ".join(f'"{column}"' for column in selected_columns)
-    rows = conn.execute(f"SELECT {quoted_columns} FROM {table} ORDER BY {order_by}").fetchall()
-    return _fact_rows(rows)
-
-
-def _fts_match_snapshot(conn: sqlite3.Connection) -> tuple[tuple[str, object], ...]:
-    """Capture semantic FTS postings for fixture tokens, never physical rowids."""
-    text_rows = conn.execute("SELECT text FROM blocks WHERE text IS NOT NULL ORDER BY block_id").fetchall()
-    tokens = sorted({token.lower() for row in text_rows for token in re.findall(r"[A-Za-z0-9_]{3,}", str(row[0]))})
-    matches: list[tuple[str, object]] = []
-    for token in tokens:
-        block_ids = conn.execute(
-            """
-            SELECT i.block_id
-            FROM messages_fts AS f
-            JOIN messages_fts_identity AS i ON i.rowid = f.rowid
-            WHERE messages_fts MATCH ?
-            ORDER BY i.block_id
-            """,
-            (f'"{token}"',),
-        ).fetchall()
-        matches.append((f"messages_fts:{token}", tuple(str(row[0]) for row in block_ids)))
-    fts_identity_table = "messages_fts_" + "identity"
-    identity_rows = conn.execute(
-        f"SELECT block_id, hex(source_hash), recipe_id FROM {fts_identity_table} ORDER BY block_id"
-    ).fetchall()
-    matches.append(("messages_fts:identity", _fact_rows(identity_rows)))
-
-    command_rows = conn.execute(
-        "SELECT tool_detail_text FROM blocks WHERE tool_detail_text IS NOT NULL ORDER BY block_id"
-    ).fetchall()
-    command_tokens = sorted(
-        {token.lower() for row in command_rows for token in re.findall(r"[A-Za-z0-9_]{3,}", str(row[0]))}
-    )
-    for token in command_tokens:
-        block_ids = conn.execute(
-            """
-            SELECT b.block_id
-            FROM blocks_command_trigram AS f
-            JOIN blocks AS b ON b.rowid = f.rowid
-            WHERE blocks_command_trigram MATCH ?
-            ORDER BY b.block_id
-            """,
-            (f'"{token}"',),
-        ).fetchall()
-        matches.append((f"blocks_command_trigram:{token}", tuple(str(row[0]) for row in block_ids)))
-
-    event_rows = conn.execute(
-        "SELECT search_text FROM session_work_events WHERE search_text IS NOT NULL ORDER BY event_id"
-    ).fetchall()
-    event_tokens = sorted(
-        {token.lower() for row in event_rows for token in re.findall(r"[A-Za-z0-9_]{3,}", str(row[0]))}
-    )
-    for token in event_tokens:
-        event_ids = conn.execute(
-            """
-            SELECT e.event_id
-            FROM session_work_events_fts AS f
-            JOIN session_work_events AS e ON e.event_id = f.event_id
-            WHERE session_work_events_fts MATCH ?
-            ORDER BY e.event_id
-            """,
-            (f'"{token}"',),
-        ).fetchall()
-        matches.append((f"session_work_events_fts:{token}", tuple(str(row[0]) for row in event_ids)))
-    return tuple(matches)
 
 
 def _raw_payload(session: ParsedSession) -> bytes:
