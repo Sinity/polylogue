@@ -18,15 +18,20 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
-from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.core.enums import Provider
+from polylogue.pipeline.ids import session_content_hash, session_id
+from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.reindex_campaign import _codex_records, _write_jsonl
 
 RECEIPT_SCHEMA = "polylogue.excluded-cursor-live-proof.v1"
 FIXTURE_VERSION = "candidate-codex-live-compatible-2026-08-06"
 OLD_PARSER_FINGERPRINT = "live-batched-v1"
+NEW_PARSER_FINGERPRINT = "live-batched-v2"
 
 
 def _canonical_json(payload: object) -> bytes:
@@ -59,15 +64,69 @@ def _seed_excluded(cursor: CursorStore, path: Path, *, parser_fingerprint: str) 
     )
 
 
+def _seed_byte_authority(root: Path, path: Path, *, native_id: str) -> None:
+    """Seed source evidence plus a byte head without materializing a session."""
+    payload = path.read_bytes()
+    logical_source_key = f"codex:{native_id}"
+    [parsed] = parse_payload(
+        Provider.CODEX,
+        [json.loads(line) for line in payload.splitlines()],
+        native_id,
+        source_path=str(path),
+    )
+    source_revision = "excluded-cursor-proof-authority-0"
+    accepted_content_hash = bytes.fromhex(session_content_hash(parsed))
+    accepted_session_id = str(session_id(parsed.source_name, parsed.provider_session_id))
+    revision = RawRevisionEnvelope(
+        logical_source_key,
+        RawRevisionKind.FULL,
+        source_revision,
+        0,
+        authority=RawRevisionAuthority.BYTE_PROVEN,
+    )
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=str(path),
+            acquired_at_ms=1,
+            native_id=native_id,
+            revision=revision,
+        )
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_revision_heads (
+                logical_source_key, session_id, accepted_raw_id,
+                accepted_source_revision, accepted_content_hash,
+                accepted_frontier_kind, accepted_frontier,
+                acquisition_generation, append_end_offset, decided_at_ms
+            ) VALUES (?, ?, ?, ?, ?, 'byte', ?, 0, NULL, 1)
+            """,
+            (
+                logical_source_key,
+                accepted_session_id,
+                raw_id,
+                source_revision,
+                accepted_content_hash,
+                len(payload),
+            ),
+        )
+        conn.commit()
+
+
 def _attempts_for_path(root: Path, path: Path) -> list[dict[str, object]]:
-    with sqlite3.connect(root / "ops.db") as conn:
+    conn = sqlite3.connect(root / "ops.db")
+    try:
         rows = conn.execute(
             """
             SELECT outcome_code, retryable, evidence_ref, status, source_paths_json
             FROM ingest_attempts
-            ORDER BY started_at_ms DESC
+            ORDER BY started_at_ms DESC, attempt_id DESC
             """
         ).fetchall()
+    finally:
+        conn.close()
     attempts: list[dict[str, object]] = []
     for outcome_code, retryable, evidence_ref, status, source_paths_json in rows:
         try:
@@ -147,7 +206,7 @@ def _case_summary(
     case_id: str,
     path: Path,
     cursor: CursorStore,
-    needs_work: bool,
+    fingerprint_changed_before_catch_up: bool,
     metrics: object | None,
     root: Path,
     attempts_before: int,
@@ -159,7 +218,7 @@ def _case_summary(
     return {
         "case_id": case_id,
         "source_content_sha256": _sha256_file(path),
-        "needs_work_after_fingerprint_change": needs_work,
+        "fingerprint_changed_before_catch_up": fingerprint_changed_before_catch_up,
         "metrics": {
             "succeeded_file_count": int(getattr(metrics, "succeeded_file_count", 0)) if metrics else 0,
             "failed_file_count": int(getattr(metrics, "failed_file_count", 0)) if metrics else 0,
@@ -182,30 +241,42 @@ def _run_case(
     case_id: str,
     path: Path,
     parser_fingerprint: str,
-    ingest: bool,
     attempts_before: int,
     bypass_frontier_gate: bool = False,
 ) -> dict[str, Any]:
     polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
     watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=source_root),), cursor=cursor)
     try:
+        record = cursor.get_record(path)
+        fingerprint_changed_before_catch_up = (
+            record is not None
+            and record.excluded
+            and record.parser_fingerprint != parser_fingerprint
+        )
+        metrics_holder: list[object] = []
+        original_ingest = watcher._ingest_files
+
+        async def capture_ingest(*args: Any, **kwargs: Any) -> object:
+            metrics = await original_ingest(*args, **kwargs)
+            metrics_holder.append(metrics)
+            return metrics
+
         with patch("polylogue.sources.live.watcher._PARSER_FINGERPRINT", parser_fingerprint):
-            needs_work = watcher._needs_work(path)
             frontier_patch = (
                 patch("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
                 if bypass_frontier_gate
                 else nullcontext()
             )
-            with frontier_patch:
-                metrics = asyncio.run(watcher._ingest_files([path])) if ingest and needs_work else None
+            with frontier_patch, patch.object(watcher, "_ingest_files", capture_ingest):
+                asyncio.run(watcher._catch_up([source_root]))
     finally:
         watcher.stop()
     return _case_summary(
         case_id=case_id,
         path=path,
         cursor=cursor,
-        needs_work=needs_work,
-        metrics=metrics,
+        fingerprint_changed_before_catch_up=fingerprint_changed_before_catch_up,
+        metrics=metrics_holder[-1] if metrics_holder else None,
         root=root,
         attempts_before=attempts_before,
     )
@@ -221,22 +292,16 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         path = _write_jsonl(source_root / f"{case_id}.jsonl", _codex_records(native_id, texts))
         initialize_active_archive_root(case_root)
         cursor = CursorStore(case_root / "ops.db")
-        polylogue = SimpleNamespace(archive_root=case_root, backend=SimpleNamespace(db_path=case_root / "index.db"))
-        processor = LiveBatchProcessor(
-            cast(Any, polylogue),
-            (WatchSource(name="codex", root=source_root),),
-            cursor=cursor,
-            parser_fingerprint="live-batched-v2",
-        )
-        baseline = asyncio.run(processor.ingest_files([path]))
-        if baseline.succeeded_file_count != 1 or baseline.failed_file_count != 0:
-            raise AssertionError(f"candidate baseline ingest failed for {case_id}: {baseline}")
         return case_root, source_root, cursor, len(_attempts_for_path(case_root, path))
 
     indexed_root, indexed_source_root, indexed_cursor, indexed_attempts_before = prepare_case(
         "indexed", "excluded-proof-indexed", ("revived", "indexed")
     )
     indexed_path = indexed_source_root / "indexed.jsonl"
+    _seed_byte_authority(indexed_root, indexed_path, native_id="excluded-proof-indexed")
+    indexed_before = _indexed_counts(indexed_root, indexed_path)
+    if indexed_before["indexed_sessions"] != 0:
+        raise AssertionError(f"indexed case was not empty before catch-up: {indexed_before}")
     _seed_excluded(indexed_cursor, indexed_path, parser_fingerprint=OLD_PARSER_FINGERPRINT)
     indexed = _run_case(
         root=indexed_root,
@@ -244,24 +309,23 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         cursor=indexed_cursor,
         case_id="indexed",
         path=indexed_path,
-        parser_fingerprint="live-batched-v2",
-        ingest=True,
+        parser_fingerprint=NEW_PARSER_FINGERPRINT,
         attempts_before=indexed_attempts_before,
     )
+    indexed["indexed_before"] = indexed_before
 
     unchanged_root, unchanged_source_root, unchanged_cursor, unchanged_attempts_before = prepare_case(
         "still-excluded", "excluded-proof-still-excluded", ("unchanged", "poison")
     )
     unchanged_path = unchanged_source_root / "still-excluded.jsonl"
-    _seed_excluded(unchanged_cursor, unchanged_path, parser_fingerprint="live-batched-v2")
+    _seed_excluded(unchanged_cursor, unchanged_path, parser_fingerprint=NEW_PARSER_FINGERPRINT)
     still_excluded = _run_case(
         root=unchanged_root,
         source_root=unchanged_source_root,
         cursor=unchanged_cursor,
         case_id="still-excluded",
         path=unchanged_path,
-        parser_fingerprint="live-batched-v2",
-        ingest=True,
+        parser_fingerprint=NEW_PARSER_FINGERPRINT,
         attempts_before=unchanged_attempts_before,
     )
 
@@ -284,22 +348,26 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         cursor=terminal_cursor,
         case_id="typed-terminal",
         path=terminal_path,
-        parser_fingerprint="live-batched-v2",
-        ingest=True,
+        parser_fingerprint=NEW_PARSER_FINGERPRINT,
         attempts_before=terminal_attempts_before,
         bypass_frontier_gate=True,
     )
 
     cases = [indexed, still_excluded, typed_terminal]
+    indexed_attempt = indexed["attempt"]
+    terminal_evidence = typed_terminal["terminal_evidence"]
     outcomes = {
-        "indexed": indexed["indexed"]["indexed_sessions"] == 1
+        "indexed": indexed["indexed_before"]["indexed_sessions"] == 0
+        and indexed["indexed"]["indexed_sessions"] == 1
         and indexed["retry_state"]["excluded"] is False
-        and indexed["attempt"]["outcome_code"] == "success",
+        and indexed_attempt is not None
+        and indexed_attempt["outcome_code"] == "success",
         "still_excluded": still_excluded["retry_state"]["excluded"] is True
         and still_excluded["attempt_present"] is False
         and still_excluded["retry_state"]["retry_due"] is False,
-        "typed_terminal": typed_terminal["terminal_evidence"]["artifact_kind"] == "terminal_corrupt_input"
-        and typed_terminal["terminal_evidence"]["support_status"] == "decode_failed"
+        "typed_terminal": terminal_evidence is not None
+        and terminal_evidence["artifact_kind"] == "terminal_corrupt_input"
+        and terminal_evidence["support_status"] == "decode_failed"
         and typed_terminal["retry_state"]["excluded"] is False
         and typed_terminal["retry_state"]["retry_due"] is False,
     }
@@ -319,6 +387,10 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         "production_route": {
             "cursor_gate": "LiveWatcher._needs_work",
             "transition": "CursorStore.revive_replaced_exclusion",
+            "catch_up": (
+                "LiveWatcher._catch_up -> _scan_catch_up_candidates -> _catch_up_candidates -> "
+                "_plan_catch_up -> coordinated chunk ingest"
+            ),
             "ingest": "LiveWatcher._ingest_files -> LiveBatchProcessor.ingest_files",
             "terminal_evidence": "source.raw_artifacts",
             "retry_state": "ops.ingest_cursor and ops.ingest_attempts",
@@ -333,8 +405,10 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
             ),
         },
         "anti_vacuity": {
+            "indexed_authority": "byte_proven_source_raw_and_revision_head",
+            "indexed_session_count_before": indexed["indexed_before"]["indexed_sessions"],
             "indexed_session_count": indexed["indexed"]["indexed_sessions"],
-            "typed_terminal_artifact": typed_terminal["terminal_evidence"]["artifact_kind"],
+            "typed_terminal_artifact": terminal_evidence["artifact_kind"] if terminal_evidence else None,
             "unchanged_excluded_attempt_present": still_excluded["attempt_present"],
         },
     }

@@ -51,7 +51,7 @@ def test_interleave_by_source_prevents_large_family_starvation() -> None:
     ordered = live_watcher._interleave_by_source(candidates)
 
     assert {candidate.source_name for candidate in ordered[:2]} == {"codex", "hermes"}
-    assert ordered[0].path.name != "retry.jsonl" or ordered[1].path.name == "retry.jsonl"
+    assert [candidate.source_name for candidate in ordered[:2]] == ["codex", "hermes"]
 
 
 def test_interleave_by_source_prioritizes_browser_capture_before_round_robin() -> None:
@@ -65,6 +65,7 @@ def test_interleave_by_source_prioritizes_browser_capture_before_round_robin() -
     ordered = live_watcher._interleave_by_source(candidates)
 
     assert [candidate.source_name for candidate in ordered[:2]] == ["browser-capture", "browser-capture"]
+    assert [candidate.path.name for candidate in ordered[:2]] == ["capture-a.json", "capture-b.json"]
     assert {candidate.source_name for candidate in ordered[2:4]} == {"codex", "hermes"}
 
 

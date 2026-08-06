@@ -15,6 +15,8 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from tests.infra.excluded_cursor_live_proof import run_excluded_cursor_live_proof, verify_receipt
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path: Path) -> None:
     archive_root = tmp_path / "candidate-archive"
@@ -37,7 +39,13 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
         "terminal_frontier_residual": "The typed-terminal candidate has no accepted byte head, so its readiness gate was injected for this case only.",
         "residual_successor": "polylogue-excluded-cursor-live-proof",
     }
+    assert receipt["production_route"]["catch_up"] == (
+        "LiveWatcher._catch_up -> _scan_catch_up_candidates -> _catch_up_candidates -> "
+        "_plan_catch_up -> coordinated chunk ingest"
+    )
     assert receipt["anti_vacuity"] == {
+        "indexed_authority": "byte_proven_source_raw_and_revision_head",
+        "indexed_session_count_before": 0,
         "indexed_session_count": 1,
         "typed_terminal_artifact": "terminal_corrupt_input",
         "unchanged_excluded_attempt_present": False,
@@ -87,7 +95,11 @@ def test_parser_fingerprint_revival_calls_real_actuator_and_excludes_unchanged_r
     finally:
         watcher.stop()
 
-    unchanged_cursor = CursorStore(tmp_path / "unchanged-ops.db")
+    unchanged_root = tmp_path / "unchanged"
+    unchanged_root.mkdir()
+    unchanged_cursor = CursorStore(unchanged_root / "ops.db")
+    assert unchanged_cursor._db_path != cursor._db_path
+    assert unchanged_cursor._ops_db_path != cursor._ops_db_path
     unchanged_cursor.set(
         path,
         stat.st_size,
@@ -115,7 +127,7 @@ def test_parser_fingerprint_revival_calls_real_actuator_and_excludes_unchanged_r
         unchanged_watcher.stop()
 
 
-def test_receipt_round_trip_preserves_machine_readable_fields(tmp_path: Path) -> None:
+def test_receipt_with_wrong_self_hash_is_rejected(tmp_path: Path) -> None:
     receipt_path = tmp_path / "receipt.json"
     body = {"schema": "test", "receipt_sha256": "placeholder"}
     receipt_path.write_text(json.dumps(body), encoding="utf-8")
@@ -124,7 +136,7 @@ def test_receipt_round_trip_preserves_machine_readable_fields(tmp_path: Path) ->
 
 
 def test_committed_candidate_receipt_is_self_hashed() -> None:
-    receipt = verify_receipt(Path("docs/evidence/polylogue-excluded-cursor-live-proof-2026-08-06.json"))
+    receipt = verify_receipt(REPO_ROOT / "docs/evidence/polylogue-excluded-cursor-live-proof-2026-08-06.json")
 
     assert receipt["schema"] == "polylogue.excluded-cursor-live-proof.v1"
     assert receipt["execution"]["live_census"] == "not_run"
