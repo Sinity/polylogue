@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import stat
-import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -35,7 +35,7 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     historical schema version to advance, while an existing path must never be
     replaced or interpreted as empty by this recovery route.
     """
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
     try:
         parent_metadata = path.parent.lstat()
@@ -56,33 +56,15 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     else:
         raise MigrationError(f"{tier.value} tier already exists; refusing missing-tier initialization: {path}")
 
-    # Build the database under an unguessable private sibling name, then
-    # publish it with link(2). Unlike a check followed by SQLite's ordinary
-    # create-open, link cannot replace a file or symlink that appears at the
-    # target between the absence probe above and publication.
-    staged = path.with_name(f".{path.name}.initialize-{uuid.uuid4().hex}.tmp")
-    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor: int | None = None
+    # Build the canonical database in memory, copy its serialized image into
+    # an anonymous inode, then publish that exact inode with link(2). No named
+    # staging path exists for a concurrent same-UID process to replace or
+    # mutate, and link cannot replace a target that appears concurrently.
+    anonymous_flag = getattr(os, "O_TMPFILE", 0)
+    if not anonymous_flag:
+        raise MigrationError("missing-tier initialization requires anonymous-file publication support")
     publication_descriptor: int | None = None
-    staged_identity: tuple[int, int] | None = None
     try:
-        descriptor = os.open(staged, flags, 0o600)
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise MigrationError(f"staged durable tier is not a real single-linked file: {staged}")
-        staged_identity = (metadata.st_dev, metadata.st_ino)
-        initialize_archive_database(staged, tier, allow_create=False)
-        os.fsync(descriptor)
-        initialized_metadata = staged.lstat()
-        if (
-            not stat.S_ISREG(initialized_metadata.st_mode)
-            or initialized_metadata.st_nlink != 1
-            or (initialized_metadata.st_dev, initialized_metadata.st_ino) != staged_identity
-        ):
-            raise MigrationError(f"staged durable tier identity changed during initialization: {staged}")
-        anonymous_flag = getattr(os, "O_TMPFILE", 0)
-        if not anonymous_flag:
-            raise MigrationError("missing-tier initialization requires anonymous-file publication support")
         try:
             publication_descriptor = os.open(
                 path.parent,
@@ -91,22 +73,34 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             )
         except OSError as exc:
             raise MigrationError(f"cannot create anonymous durable-tier publication inode: {path.parent}") from exc
-        offset = 0
-        while chunk := os.pread(descriptor, 1024 * 1024, offset):
+
+        memory_database = sqlite3.connect(":memory:")
+        try:
+            initialize_archive_tier(memory_database, tier)
+            initialized_image = memory_database.serialize()
+        finally:
+            memory_database.close()
+        if not initialized_image:
+            raise MigrationError(f"canonical {tier.value} tier initialization produced an empty database image")
+
+        source_offset = 0
+        while source_offset < len(initialized_image):
             written_offset = 0
+            chunk = initialized_image[source_offset : source_offset + 1024 * 1024]
             while written_offset < len(chunk):
                 written = os.write(publication_descriptor, chunk[written_offset:])
                 if written <= 0:
                     raise MigrationError("durable-tier publication copy made no progress")
                 written_offset += written
-            offset += len(chunk)
+            source_offset += len(chunk)
         os.fsync(publication_descriptor)
         publication_metadata = os.fstat(publication_descriptor)
         if (
             not stat.S_ISREG(publication_metadata.st_mode)
-            or publication_metadata.st_size != initialized_metadata.st_size
+            or publication_metadata.st_nlink != 0
+            or publication_metadata.st_size != len(initialized_image)
         ):
-            raise MigrationError(f"anonymous durable-tier publication copy is incomplete: {path}")
+            raise MigrationError(f"anonymous durable-tier publication image is incomplete: {path}")
         publication_identity = (publication_metadata.st_dev, publication_metadata.st_ino)
         try:
             # O_TMPFILE plus link(2) publishes one descriptor-backed inode
@@ -130,16 +124,6 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     finally:
         if publication_descriptor is not None:
             os.close(publication_descriptor)
-        if descriptor is not None:
-            os.close(descriptor)
-        if staged_identity is not None:
-            try:
-                current = staged.lstat()
-            except FileNotFoundError:
-                pass
-            else:
-                if (current.st_dev, current.st_ino) == staged_identity:
-                    staged.unlink()
 
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 

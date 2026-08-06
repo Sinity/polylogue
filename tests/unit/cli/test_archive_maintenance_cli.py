@@ -2123,15 +2123,14 @@ def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_repl
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 
-def test_migrate_tier_cli_publishes_opened_inode_when_staged_name_is_replaced(
+def test_migrate_tier_cli_exposes_no_named_staging_inode_before_publication(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     audit_db = cli_workspace["archive_root"] / "audit.db"
     audit_db.unlink()
-    replacement_bytes = b"same-uid staged-path replacement\n"
     real_link = os.link
 
-    def replace_staged_name_before_publish(
+    def assert_no_named_stage_before_publish(
         source: os.PathLike[str] | str,
         destination: os.PathLike[str] | str,
         *,
@@ -2139,9 +2138,7 @@ def test_migrate_tier_cli_publishes_opened_inode_when_staged_name_is_replaced(
         dst_dir_fd: int | None = None,
         follow_symlinks: bool = True,
     ) -> None:
-        staged = next(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
-        staged.unlink()
-        staged.write_bytes(replacement_bytes)
+        assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
         real_link(
             source,
             destination,
@@ -2150,7 +2147,10 @@ def test_migrate_tier_cli_publishes_opened_inode_when_staged_name_is_replaced(
             follow_symlinks=follow_symlinks,
         )
 
-    monkeypatch.setattr("polylogue.operations.durable_change_train.os.link", replace_staged_name_before_publish)
+    monkeypatch.setattr(
+        "polylogue.operations.durable_change_train.os.link",
+        assert_no_named_stage_before_publish,
+    )
 
     result = cli_runner.invoke(
         cli,
@@ -2171,9 +2171,7 @@ def test_migrate_tier_cli_publishes_opened_inode_when_staged_name_is_replaced(
     with sqlite3.connect(audit_db) as conn:
         assert conn.execute("PRAGMA user_version").fetchone() == (1,)
         assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-    replacements = list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
-    assert len(replacements) == 1
-    assert replacements[0].read_bytes() == replacement_bytes
+    assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 
 def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
