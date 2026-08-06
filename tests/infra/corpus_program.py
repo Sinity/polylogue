@@ -18,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from polylogue.core.json import JSONDocument, JSONValue, is_json_document, require_json_document
+from polylogue.core.json import JSONDocument, JSONValue, is_json_document
 
 if TYPE_CHECKING:
     from polylogue.maintenance.rebuild_index import RebuildIndexReceipt
@@ -708,6 +708,18 @@ def operation_strategy(*, artifact_ids: Sequence[str] = ("a", "b")) -> Any:
                 payload=st.binary(max_size=32),
             ),
         ),
+        st.builds(
+            EmitHook,
+            operation_id=st.text("op", min_size=2, max_size=8),
+            hook=st.builds(
+                HookArtifact,
+                hook_event_id=st.text("hook", min_size=4, max_size=10),
+                provider=st.just("codex"),
+                event_type=st.just("session.created"),
+                session_native_id=st.text("session", min_size=4, max_size=12),
+                payload=st.binary(max_size=64),
+            ),
+        ),
         st.builds(Crash, operation_id=st.text("op", min_size=2, max_size=8)),
         st.builds(Restart, operation_id=st.text("op", min_size=2, max_size=8)),
         st.builds(Converge, operation_id=st.text("op", min_size=2, max_size=8)),
@@ -773,13 +785,10 @@ class ProductionCorpusRuntime:
 
     def emit_hook(self, hook: HookArtifact) -> object:
         self._ensure_running()
-        from polylogue.archive.artifact_taxonomy import classify_artifact_path
-        from polylogue.config import Source
         from polylogue.core.enums import Provider
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 
-        del classify_artifact_path, Source
         provider = Provider.from_string(hook.provider)
         payload = hook.payload
         with ArchiveStore.open_existing(self.archive_root, read_only=False) as archive:
@@ -874,11 +883,6 @@ class ProductionCorpusRuntime:
         return result
 
 
-def _unused_json_document(value: object) -> JSONDocument:
-    """Keep the public JSON contract available to callers without Any leakage."""
-    return require_json_document(value)
-
-
 __all__ = [
     "Acquire",
     "Append",
@@ -889,6 +893,7 @@ __all__ = [
     "CorpusProgramError",
     "CorpusRun",
     "CorpusRuntimeCrashed",
+    "CorpusRuntimeCrashedError",
     "CorpusState",
     "Crash",
     "Converge",
