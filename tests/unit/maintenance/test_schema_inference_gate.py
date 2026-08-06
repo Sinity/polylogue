@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -534,3 +535,32 @@ def test_external_inventory_token_reuses_metadata_detector_and_rejects_changed_b
     with pytest.raises(SchemaInferenceGateError, match="external ground-truth corpus changed"):
         gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
     assert full_inventory_calls == 2, "a changed detector must trigger one authoritative inventory recalculation"
+
+
+def test_inventory_change_detector_is_part_of_external_ground_truth_digest(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / "receipt" / RECEIPT_FILENAME
+    run_schema_inference_gate(root, receipt_path=receipt_path, ground_truth_roots={"codex-session": (ground_truth,)})
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    origins = payload["ground_truth_inputs"]["origins"]
+    baseline = gate._canonical_external_ground_truth_digest(origins)
+    altered = json.loads(json.dumps(origins))
+    altered["codex-session"]["inventory_change_detector"] = {"forced": "changed"}
+    assert gate._canonical_external_ground_truth_digest(altered) != baseline
+
+
+def test_inventory_token_rejects_foreign_nonce_and_empty_token_falls_back_to_receipt(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / "receipt" / RECEIPT_FILENAME
+    run_schema_inference_gate(root, receipt_path=receipt_path, ground_truth_roots={"codex-session": (ground_truth,)})
+    validated = gate.validate_schema_inference_receipt(root, receipt_path)
+    token = cast(dict[str, object], validated["external_ground_truth_inventory_token"])
+    foreign = json.loads(json.dumps(token))
+    foreign["receipt_nonce"] = "foreign-pass"
+    with pytest.raises(SchemaInferenceGateError, match="token is not bound"):
+        gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=foreign)
+    gate.validate_schema_inference_receipt(root, receipt_path, inventory_token={})

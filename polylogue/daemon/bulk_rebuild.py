@@ -225,6 +225,11 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
             return transaction
 
         if transaction is not None:
+            if transaction.status == "promoted-attestation-failed":
+                # The generation is already active. Preserve the terminal
+                # attestation failure so the caller can stop without starting
+                # another rebuild under the same operation id.
+                return transaction
             # Terminal: retire the old candidate/transaction record before
             # reusing the well-known operation id. A promoted generation,
             # including one with a failed post-promotion attestation, is

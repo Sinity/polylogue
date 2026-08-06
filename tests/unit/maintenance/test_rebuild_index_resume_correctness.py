@@ -11,7 +11,6 @@ test-only cursor counter.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from pathlib import Path
 from typing import cast
@@ -59,7 +58,7 @@ def _payload(native_id: str, text: str, *, parent_native_id: str | None = None) 
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
-def _seed(root: Path) -> None:
+def _seed(root: Path, *, monkeypatch: pytest.MonkeyPatch) -> None:
     initialize_active_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index, native_id, parent_native_id in (
@@ -91,7 +90,7 @@ def _seed(root: Path) -> None:
         )
         source.commit()
     receipt_path = write_valid_rebuild_receipt(root, root.parent / f"{root.name}-schema-receipt.json")
-    os.environ["POLYLOGUE_SCHEMA_INFERENCE_RECEIPT"] = str(receipt_path)
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
 
 def _semantic_snapshot(root: Path) -> tuple[object, ...]:
@@ -122,7 +121,7 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
     root = tmp_path / "resumed"
     clean_root = tmp_path / "clean"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    _seed(root)
+    _seed(root, monkeypatch=monkeypatch)
 
     original_checkpoint = IndexGenerationStore.checkpoint_transaction
     interrupted = False
@@ -176,7 +175,7 @@ def test_committed_page_interrupt_resumes_only_suffix_and_matches_clean_rebuild(
     assert receipt.operation["recovery_state"] == "promoted"
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clean_root))
-    _seed(clean_root)
+    _seed(clean_root, monkeypatch=monkeypatch)
     clean = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=clean_root, raw_batch_size=1))
     assert clean.status == "paused"
     assert clean.transaction is not None

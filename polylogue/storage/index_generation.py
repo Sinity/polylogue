@@ -574,7 +574,7 @@ class IndexGenerationStore:
         path = self._transaction_path(transaction.operation_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(asdict(updated), indent=2, sort_keys=True), encoding="utf-8")
+        temporary.write_text(json.dumps(asdict(updated), indent=2, sort_keys=True, default=str), encoding="utf-8")
         os.replace(temporary, path)
         _fsync_directory(path.parent)
         return updated

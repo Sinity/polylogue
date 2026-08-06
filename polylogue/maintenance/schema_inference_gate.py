@@ -746,6 +746,7 @@ def _canonical_external_ground_truth_digest(origins: Mapping[str, object]) -> st
             {
                 "origin": origin,
                 "roots": sorted(str(Path(root).expanduser().resolve()) for root in roots),
+                "inventory_change_detector": evidence.get("inventory_change_detector"),
                 "files": sorted(
                     files,
                     key=lambda item: (int(cast(int, item["root_index"])), str(item["relative_path"])),
@@ -1742,6 +1743,7 @@ def _current_external_ground_truth_digest(
                     "declared_roots": [str(root) for root in resolved_roots],
                     "external_inventory": evidence.get("external_inventory"),
                     "raw_external_mapping": evidence.get("raw_external_mapping"),
+                    "inventory_change_detector": detector,
                 }
                 continue
             inventory = _external_inventory(resolved_roots)
@@ -1749,6 +1751,7 @@ def _current_external_ground_truth_digest(
                 "declared_roots": [str(root) for root in resolved_roots],
                 "external_inventory": _external_inventory_records(inventory),
                 "raw_external_mapping": _raw_external_mapping(source, origin=origin, inventory=inventory, exempt=False),
+                "inventory_change_detector": detector,
             }
     return _canonical_external_ground_truth_digest(current)
 
@@ -1760,6 +1763,7 @@ def validate_schema_inference_receipt(
     now: datetime | None = None,
     inventory_token: dict[str, object] | None = None,
     verify_blob_integrity: bool = False,
+    verified_blob_integrity_snapshot: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Validate the evidence a rebuild is authorized to consume.
 
@@ -1779,6 +1783,7 @@ def validate_schema_inference_receipt(
         raise SchemaInferenceGateError("schema-inference receipt root must be an object")
 
     errors: list[str] = []
+    verified_snapshot: dict[str, object] | None = None
     if document.get("schema") != RECEIPT_SCHEMA:
         errors.append(f"schema must be {RECEIPT_SCHEMA!r}")
     if document.get("verdict") != "PASS":
@@ -1854,7 +1859,7 @@ def validate_schema_inference_receipt(
             if recorded_digest != recorded_structure_digest:
                 errors.append("receipt raw external mapping or inventory does not match its digest")
             receipt_token = _as_dict(document.get("external_ground_truth_inventory_token"))
-            if inventory_token is not None:
+            if inventory_token:
                 expected_token_fields = {
                     "schema": "polylogue.external-ground-truth-inventory-token.v1",
                     "archive_root": str(root.resolve()),
@@ -1868,7 +1873,7 @@ def validate_schema_inference_receipt(
             current_digest = _current_external_ground_truth_digest(root, ground_truth, inventory_token=active_token)
             if recorded_digest != current_digest:
                 errors.append("external ground-truth corpus changed since the receipt was produced")
-            if inventory_token is None and receipt_token:
+            if not inventory_token and receipt_token:
                 active_token = receipt_token
         except (OSError, SchemaInferenceGateError, sqlite3.Error) as exc:
             errors.append(str(exc))
@@ -1876,13 +1881,17 @@ def validate_schema_inference_receipt(
             try:
                 with open_readonly_connection(root / "source.db") as source:
                     referenced_hashes = _referenced_blob_hashes(source)
-                current_blob_snapshot = _referenced_blob_integrity_snapshot(root, referenced_hashes=referenced_hashes)
+                verified_snapshot = (
+                    verified_blob_integrity_snapshot
+                    if verified_blob_integrity_snapshot is not None
+                    else _referenced_blob_integrity_snapshot(root, referenced_hashes=referenced_hashes)
+                )
                 recorded_blob_snapshot = _as_dict(
                     _as_dict(document.get("full_blob_hash_verification")).get("referenced_blob_integrity_snapshot")
                 )
-                if not current_blob_snapshot.get("passed"):
+                if not verified_snapshot.get("passed"):
                     errors.append("referenced source blob integrity verification failed before candidate readiness")
-                if recorded_blob_snapshot and recorded_blob_snapshot != current_blob_snapshot:
+                if recorded_blob_snapshot and recorded_blob_snapshot != verified_snapshot:
                     errors.append("receipt referenced source blob integrity snapshot changed")
             except (OSError, SchemaInferenceGateError, sqlite3.Error, ValueError) as exc:
                 errors.append(f"could not verify referenced source blob integrity: {exc}")
@@ -1903,7 +1912,7 @@ def validate_schema_inference_receipt(
         raise SchemaInferenceGateError("schema-inference receipt rejected: " + "; ".join(errors))
 
     identity = _as_dict(document.get("archive_identity"))
-    return {
+    result = {
         "receipt_path": str(path),
         "schema": document.get("schema"),
         "generated_at": document.get("generated_at"),
@@ -1923,6 +1932,9 @@ def validate_schema_inference_receipt(
             ground_truth=cast(Mapping[str, object], document.get("ground_truth_inputs", {})),
         ),
     }
+    if verified_snapshot is not None:
+        result["_verified_blob_integrity_snapshot"] = verified_snapshot
+    return result
 
 
 def schema_inference_gate_receipt_digest(payload: Mapping[str, object]) -> str:

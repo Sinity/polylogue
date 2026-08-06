@@ -15,11 +15,12 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from http import HTTPStatus
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.config import Config
 from polylogue.core.errors import PolylogueError
@@ -130,7 +131,7 @@ def require_rebuild_schema_currency(root: Path) -> dict[str, object]:
     return diagnostic
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class RebuildProvenanceContext:
     """Validated evidence shared by every mutation in one rebuild pass.
 
@@ -147,14 +148,20 @@ class RebuildProvenanceContext:
     source_snapshot: str
     consumed_evidence: dict[str, object]
     external_inventory_token: dict[str, object] = field(default_factory=dict)
+    verified_blob_integrity_snapshot: dict[str, object] | None = None
 
     def validate(self, *, verify_blob_integrity: bool = False) -> None:
-        _validate_rebuild_provenance_receipt(
+        validated = _validate_rebuild_provenance_receipt(
             self.root,
             self.receipt_path,
             inventory_token=self.external_inventory_token,
             verify_blob_integrity=verify_blob_integrity,
+            verified_blob_integrity_snapshot=self.verified_blob_integrity_snapshot,
         )
+        if verify_blob_integrity:
+            snapshot = validated.pop("_verified_blob_integrity_snapshot", None)
+            if isinstance(snapshot, dict):
+                self.verified_blob_integrity_snapshot = snapshot
         from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
 
         if rebuild_source_revision_snapshot(self.root) != self.source_snapshot:
@@ -174,6 +181,7 @@ def _validate_rebuild_provenance_receipt(
     *,
     inventory_token: dict[str, object] | None = None,
     verify_blob_integrity: bool = False,
+    verified_blob_integrity_snapshot: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Validate rebuild provenance at the current ownership boundary."""
     from polylogue.maintenance.schema_inference_gate import (
@@ -189,6 +197,7 @@ def _validate_rebuild_provenance_receipt(
             receipt_path,
             inventory_token=inventory_token,
             verify_blob_integrity=verify_blob_integrity,
+            verified_blob_integrity_snapshot=verified_blob_integrity_snapshot,
         )
     except SchemaInferenceGateError as exc:
         raise RebuildProvenanceError(f"rebuild schema-inference preflight gate failed: {exc}") from exc
@@ -210,10 +219,11 @@ def _mark_rebuild_transaction_stale_after_provenance_failure(
         return
     from polylogue.storage.index_generation import IndexGenerationStore
 
-    store = IndexGenerationStore.for_archive_root(root)
     try:
+        store = IndexGenerationStore.for_archive_root(root)
         transaction = store.load_transaction(operation_id)
-    except (FileNotFoundError, OSError, ValueError, TypeError):
+    except Exception as load_error:
+        error.add_note(f"could not load rebuild transaction to mark it stale: {load_error}")
         return
     if transaction.status in {"promoted", "promoted-attestation-failed", "stale"}:
         return
@@ -223,7 +233,7 @@ def _mark_rebuild_transaction_stale_after_provenance_failure(
             status="stale",
             error=f"stale because source evidence or receipt validation failed: {error}",
         )
-    except BaseException as checkpoint_error:
+    except Exception as checkpoint_error:
         error.add_note(f"could not persist stale rebuild transaction: {checkpoint_error}")
 
 
@@ -926,61 +936,76 @@ def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tu
 
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+    bind_chunk_size = 900
+
+    def chunks(values: Sequence[str]) -> Iterable[list[str]]:
+        for start in range(0, len(values), bind_chunk_size):
+            yield list(values[start : start + bind_chunk_size])
+
     with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as connection:
         expanded, logical_keys = ArchiveStore.expand_raw_membership_selection_sync(connection, list(raw_ids))
-        placeholders_raw = ",".join("?" for _ in expanded)
-        placeholders_key = ",".join("?" for _ in logical_keys)
-        clauses: list[str] = []
-        parameters: list[str] = []
-        if expanded:
-            clauses.append(f"raw_id IN ({placeholders_raw})")
-            parameters.extend(expanded)
-        if logical_keys:
-            clauses.append(f"logical_source_key IN ({placeholders_key})")
-            parameters.extend(logical_keys)
-        rows: list[dict[str, object]] = []
-        if clauses:
-            selected = connection.execute(
-                "SELECT raw_id, logical_source_key, provider_session_id, source_revision, "
-                "normalized_content_hash, message_count, predecessor_raw_id, acquisition_generation, "
-                "revision_authority, decision, decided_at_ms "
-                "FROM raw_session_memberships WHERE " + " OR ".join(clauses) + " ORDER BY logical_source_key, raw_id",
-                parameters,
-            )
-            for row in selected:
-                rows.append(
-                    {
-                        "raw_id": str(row[0]),
-                        "logical_source_key": str(row[1]),
-                        "provider_session_id": str(row[2]),
-                        "source_revision": str(row[3]),
-                        "normalized_content_hash": bytes(row[4]).hex(),
-                        "message_count": int(row[5]),
-                        "predecessor_raw_id": None if row[6] is None else str(row[6]),
-                        "acquisition_generation": int(row[7]),
-                        "revision_authority": str(row[8]),
-                        "decision": None if row[9] is None else str(row[9]),
-                        "decided_at_ms": None if row[10] is None else int(row[10]),
-                    }
-                )
-        raw_rows = (
-            connection.execute(
-                """
-            SELECT raw_id, origin, capture_mode, native_id, source_path,
-                   source_index, blob_hash, blob_size, acquired_at_ms,
-                   logical_source_key, revision_kind, source_revision,
-                   predecessor_source_revision, predecessor_raw_id,
-                   baseline_raw_id, append_start_offset, append_end_offset,
-                   acquisition_generation, revision_authority,
-                   revision_authority_evidence
-            FROM raw_sessions WHERE raw_id IN ({}) ORDER BY raw_id
-            """.format(",".join("?" for _ in expanded)),
-                expanded,
-            ).fetchall()
-            if expanded
-            else []
+        membership_rows: dict[tuple[str, str], tuple[Any, ...]] = {}
+        membership_columns = (
+            "raw_id, logical_source_key, provider_session_id, source_revision, "
+            "normalized_content_hash, message_count, predecessor_raw_id, acquisition_generation, "
+            "revision_authority, decision, decided_at_ms"
         )
+        for column, values in (("raw_id", expanded), ("logical_source_key", logical_keys)):
+            for batch in chunks(values):
+                placeholders = ",".join("?" for _ in batch)
+                selected = connection.execute(
+                    f"SELECT {membership_columns} FROM raw_session_memberships WHERE {column} IN ({placeholders})",
+                    batch,
+                )
+                for row in selected:
+                    membership_rows[(str(row[0]), str(row[1]))] = tuple(row)
+
+        rows: list[dict[str, object]] = []
+        for row in sorted(membership_rows.values(), key=lambda item: (str(item[1]), str(item[0]))):
+            rows.append(
+                {
+                    "raw_id": str(row[0]),
+                    "logical_source_key": str(row[1]),
+                    "provider_session_id": str(row[2]),
+                    "source_revision": str(row[3]),
+                    "normalized_content_hash": bytes(row[4]).hex(),
+                    "message_count": int(row[5]),
+                    "predecessor_raw_id": None if row[6] is None else str(row[6]),
+                    "acquisition_generation": int(row[7]),
+                    "revision_authority": str(row[8]),
+                    "decision": None if row[9] is None else str(row[9]),
+                    "decided_at_ms": None if row[10] is None else int(row[10]),
+                }
+            )
+
+        raw_rows: list[tuple[Any, ...]] = []
+        for batch in chunks(expanded):
+            placeholders = ",".join("?" for _ in batch)
+            raw_rows.extend(
+                tuple(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT raw_id, origin, capture_mode, native_id, source_path,
+                           source_index, blob_hash, blob_size, acquired_at_ms,
+                           logical_source_key, revision_kind, source_revision,
+                           predecessor_source_revision, predecessor_raw_id,
+                           baseline_raw_id, append_start_offset, append_end_offset,
+                           acquisition_generation, revision_authority,
+                           revision_authority_evidence
+                    FROM raw_sessions WHERE raw_id IN ({placeholders})
+                    """,
+                    batch,
+                ).fetchall()
+            )
+        raw_rows.sort(key=lambda row: str(row[0]))
         from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+
+        lowering = lowering_fingerprint()
+        parser_fingerprints: dict[str, str] = {}
+        for row in raw_rows:
+            origin = str(row[1])
+            if origin not in parser_fingerprints:
+                parser_fingerprints[origin] = parser_fingerprint_for_origin(origin)
 
         raw_evidence = [
             {
@@ -1004,8 +1029,8 @@ def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tu
                 "acquisition_generation": None if row[17] is None else int(row[17]),
                 "revision_authority": str(row[18]),
                 "revision_authority_evidence": None if row[19] is None else str(row[19]),
-                "parser_fingerprint": parser_fingerprint_for_origin(str(row[1])),
-                "lowering_fingerprint": lowering_fingerprint(),
+                "parser_fingerprint": parser_fingerprints[str(row[1])],
+                "lowering_fingerprint": lowering,
             }
             for row in raw_rows
         ]
@@ -2040,7 +2065,8 @@ async def _rebuild_index_from_source_owned(
                             status="promoted",
                             post_promotion_attestation=attestation,
                         )
-                    except BaseException as attestation_error:
+                    except Exception as attestation_error:
+                        source_drifted = True
                         try:
                             transaction = generation_store.load_transaction(transaction.operation_id)
                             transaction = generation_store.checkpoint_transaction(
@@ -2054,11 +2080,13 @@ async def _rebuild_index_from_source_owned(
                                     "error": str(attestation_error),
                                 },
                             )
-                        except BaseException as recovery_error:
+                        except Exception as recovery_error:
                             attestation_error.add_note(
                                 "active generation post-promotion attestation checkpoint failed: "
                                 f"{type(recovery_error).__name__}: {recovery_error}"
                             )
+                            raise
+                        raise
         except Exception as exc:
             fresh_provenance_failure = isinstance(exc, RebuildProvenanceError) and (
                 transaction_created_here or transaction is None or sharded_replay

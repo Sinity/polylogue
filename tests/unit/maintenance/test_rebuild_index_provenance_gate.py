@@ -16,6 +16,7 @@ import pytest
 import polylogue.maintenance.rebuild_index as rebuild_index_module
 import polylogue.maintenance.schema_inference_gate as schema_gate_module
 import polylogue.maintenance.sharded_rebuild as sharded_rebuild_module
+import polylogue.sources.origin_specs as origin_specs_module
 import polylogue.storage.index_generation as index_generation_module
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.config import Config
@@ -723,12 +724,14 @@ def test_revision_authority_binding_stales_a_resumed_real_rebuild(
     assert first.status == "paused"
     assert first.transaction is not None
     operation_id = str(first.transaction["operation_id"])
+    before_evidence_digest = rebuild_source_evidence_snapshot(root)
     with sqlite3.connect(root / "source.db") as source:
         source.execute(
             "UPDATE raw_sessions SET revision_authority_evidence = 'live_source_verification_v1' "
             "WHERE raw_id = (SELECT raw_id FROM raw_sessions ORDER BY raw_id LIMIT 1)"
         )
         source.commit()
+    assert rebuild_source_evidence_snapshot(root) != before_evidence_digest
 
     with pytest.raises(RuntimeError, match="source snapshot does not match"):
         rebuild_index_from_source_sync(
@@ -797,19 +800,22 @@ def test_pointer_flip_records_post_promotion_attestation_failure(
         return original_checkpoint(self, transaction, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(IndexGenerationStore, "checkpoint_transaction", fail_promoted_checkpoint)
-    result = rebuild_index_from_source_sync(
-        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path, promote=True)
-    )
+    with pytest.raises(OSError, match="simulated post-promotion attestation failure"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path, promote=True)
+        )
 
-    assert result.transaction is not None
-    assert result.transaction["status"] == "promoted-attestation-failed"
-    attestation = result.transaction["post_promotion_attestation"]
+    store = IndexGenerationStore.for_archive_root(root)
+    operation_id = next(path.stem for path in store.transactions_root.glob("*.json"))
+    transaction = store.load_transaction(operation_id)
+    assert transaction.status == "promoted-attestation-failed"
+    attestation = transaction.post_promotion_attestation
     assert isinstance(attestation, dict)
     assert attestation["status"] == "failed"
-    assert result.generation["state"] == "active"
-    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve(strict=True) == Path(
-        cast(str, result.generation["index_path"])
-    ).resolve(strict=True)
+    assert store.load(transaction.generation_id).state == "active"
+    assert store.active_pointer.resolve(strict=True) == Path(store.load(transaction.generation_id).index_path).resolve(
+        strict=True
+    )
 
 
 def test_daemon_does_not_route_promoted_attestation_failure_back_to_rebuild(
@@ -819,6 +825,11 @@ def test_daemon_does_not_route_promoted_attestation_failure_back_to_rebuild(
     root = tmp_path / "archive"
     _seed(root, count=1)
     receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    store = IndexGenerationStore.for_archive_root(root)
+    store.create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root),
+        operation_id=bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID,
+    )
     original_checkpoint = IndexGenerationStore.checkpoint_transaction
 
     def fail_promoted_checkpoint(self: IndexGenerationStore, transaction: object, **kwargs: object) -> object:
@@ -827,22 +838,20 @@ def test_daemon_does_not_route_promoted_attestation_failure_back_to_rebuild(
         return original_checkpoint(self, transaction, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(IndexGenerationStore, "checkpoint_transaction", fail_promoted_checkpoint)
-    rebuild_index_from_source_sync(
-        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path, promote=True)
-    )
-    store = IndexGenerationStore.for_archive_root(root)
-    operation_id = next(path.stem for path in store.transactions_root.glob("*.json"))
-    terminal = store.load_transaction(operation_id)
+    with pytest.raises(OSError, match="simulated post-promotion attestation failure"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID,
+                promote=True,
+            )
+        )
+    terminal = store.load_transaction(bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID)
     assert terminal.status == "promoted-attestation-failed"
     assert bulk_rebuild_module.has_resumable_daemon_bulk_rebuild_transaction(root) is False
 
-    monkeypatch.setattr(
-        bulk_rebuild_module,
-        "resolve_or_start_daemon_bulk_rebuild_transaction",
-        lambda *args, **kwargs: terminal,
-    )
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
-    monkeypatch.setattr(bulk_rebuild_module, "_validate_rebuild_provenance_receipt", lambda *args, **kwargs: None)
     rebuild_called = False
 
     def unexpected_rebuild(*args: object, **kwargs: object) -> object:
@@ -1005,6 +1014,55 @@ def test_full_blob_verification_supplies_referenced_snapshot_without_rehash(
     snapshot = cast(dict[str, object], evidence["referenced_blob_integrity_snapshot"])
     assert snapshot["verifier"] == "polylogue.storage.blob_store.BlobStore.verify_all"
     assert snapshot["passed"] is True
+
+
+def test_rebuild_reuses_verified_blob_snapshot_across_readiness_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two production readiness checks share one byte-verification result."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    calls = 0
+    original_snapshot = schema_gate_module._referenced_blob_integrity_snapshot
+
+    def count_snapshot(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return original_snapshot(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(schema_gate_module, "_referenced_blob_integrity_snapshot", count_snapshot)
+    result = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path, promote=False)
+    )
+    assert result.status == "replayed"
+    assert calls == 1
+
+
+def test_replay_closure_caches_fingerprints_per_origin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replay evidence computes parser and lowering fingerprints once per closure."""
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    lower_calls = 0
+    parser_calls: list[str] = []
+    original_lowering = origin_specs_module.lowering_fingerprint
+    original_parser = origin_specs_module.parser_fingerprint_for_origin
+
+    def count_lowering() -> str:
+        nonlocal lower_calls
+        lower_calls += 1
+        return original_lowering()
+
+    def count_parser(origin: str) -> str:
+        parser_calls.append(origin)
+        return original_parser(origin)
+
+    monkeypatch.setattr(origin_specs_module, "lowering_fingerprint", count_lowering)
+    monkeypatch.setattr(origin_specs_module, "parser_fingerprint_for_origin", count_parser)
+    evidence = rebuild_index_module._rebuild_replay_closure_evidence(root, _raw_ids(root))
+    assert evidence["raw_session_evidence"]
+    assert lower_calls == 1
+    assert parser_calls == ["codex-session"]
 
 
 def test_referenced_blob_snapshot_ignores_volatile_filesystem_metadata(

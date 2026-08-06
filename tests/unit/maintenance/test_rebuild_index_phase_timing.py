@@ -31,7 +31,6 @@ every receipt's ``timings_s``, not merely zero.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from pathlib import Path
 
@@ -64,7 +63,7 @@ def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> byt
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
-def _seed_distinct_codex_sessions(root: Path, count: int) -> list[str]:
+def _seed_distinct_codex_sessions(root: Path, count: int, *, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     initialize_active_archive_root(root)
     raw_ids: list[str] = []
     with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -97,7 +96,7 @@ def _seed_distinct_codex_sessions(root: Path, count: int) -> list[str]:
         )
         source.commit()
     receipt_path = write_valid_rebuild_receipt(root, root.parent / f"{root.name}-schema-receipt.json")
-    os.environ["POLYLOGUE_SCHEMA_INFERENCE_RECEIPT"] = str(receipt_path)
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     return raw_ids
 
 
@@ -106,7 +105,7 @@ def test_replayed_receipt_carries_selection_phase_timing(tmp_path: Path, monkeyp
     raw-id selection took, distinct from replay/parse/apply/terminal costs."""
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    _seed_distinct_codex_sessions(root, 2)
+    _seed_distinct_codex_sessions(root, 2, monkeypatch=monkeypatch)
 
     receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
 
@@ -127,7 +126,7 @@ def test_real_receipt_accounts_for_all_rebuild_phases(tmp_path: Path, monkeypatc
     """
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    _seed_distinct_codex_sessions(root, 3)
+    _seed_distinct_codex_sessions(root, 3, monkeypatch=monkeypatch)
 
     receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
 
@@ -177,7 +176,7 @@ def test_phase_rollups_are_bound_to_production_stage_timing_mutation(
     """The receipt's phase rollups cannot pass from selection timing alone."""
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    _seed_distinct_codex_sessions(root, 2)
+    _seed_distinct_codex_sessions(root, 2, monkeypatch=monkeypatch)
 
     original = rebuild_index._repopulate_bulk_build_derived_state
 
@@ -205,7 +204,7 @@ def test_archive_wide_derived_refresh_runs_once_at_terminal_boundary(
     """
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    _seed_distinct_codex_sessions(root, 4)
+    _seed_distinct_codex_sessions(root, 4, monkeypatch=monkeypatch)
     receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
 
     calls = 0
@@ -237,7 +236,7 @@ def test_partial_rebuild_cannot_complete_when_candidate_omits_source_document(
     """
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    raw_ids = _seed_distinct_codex_sessions(root, 2)
+    raw_ids = _seed_distinct_codex_sessions(root, 2, monkeypatch=monkeypatch)
 
     with pytest.raises(RuntimeError, match="reindex acceptance gate failed.*corpus-absences"):
         rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, raw_ids=(raw_ids[0],), promote=False))
@@ -270,7 +269,7 @@ def test_rebuild_corpus_gate_blocks_mutated_inactive_candidate(
     """
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    _seed_distinct_codex_sessions(root, 1)
+    _seed_distinct_codex_sessions(root, 1, monkeypatch=monkeypatch)
     original_repopulate = rebuild_index._repopulate_bulk_build_derived_state
 
     def corrupt_candidate_before_acceptance(index_path: Path) -> dict[str, float]:
@@ -330,7 +329,7 @@ def test_deferred_pass_cost_carries_selection_phase_timing(tmp_path: Path, monke
     not a different shape for the deferred path."""
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    _seed_distinct_codex_sessions(root, 2)
+    _seed_distinct_codex_sessions(root, 2, monkeypatch=monkeypatch)
 
     # A sub-millisecond deadline truncates to pass_deadline_ms=0, so the
     # first between-cohorts check always trips deterministically (see

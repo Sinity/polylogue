@@ -61,6 +61,7 @@ def write_valid_rebuild_receipt(
                 "exempt": False,
                 "declared_roots": [str(external_root)],
                 "external_inventory": inventory_records,
+                "inventory_change_detector": gate._external_inventory_change_detector((external_root,)),
                 "raw_external_mapping": mapping,
                 "passed": all(item["disposition"] == "matched-external" for item in mapping),
             }
