@@ -25,6 +25,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
+from tests.infra.whale_fixtures import WHALE_FIXTURE_DIMENSIONS
 
 REINDEX_CAMPAIGN_REQUIRED_ORIGINS = frozenset(
     {
@@ -68,6 +69,7 @@ class ReindexCampaignManifest:
     fts_queries: tuple[str, ...]
     origin_session_counts: tuple[tuple[str, int], ...]
     denominators: tuple[tuple[str, int], ...]
+    fixture_dimensions: tuple[tuple[str, int | str], ...]
 
     def denominator(self, name: str) -> int:
         try:
@@ -364,6 +366,7 @@ def _campaign_manifest(
         fts_queries=("generated", "fixture", "failed"),
         origin_session_counts=origin_session_counts,
         denominators=denominators,
+        fixture_dimensions=WHALE_FIXTURE_DIMENSIONS.manifest_dimensions(),
     )
     manifest.assert_positive()
     if parser_failure_residuals < len(parser_failure_raw_ids):
