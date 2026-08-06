@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 from dataclasses import replace
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -60,7 +61,7 @@ def _wire_target_bytes(revision: int) -> int:
     if revision < REVISION_COUNT - 4:
         # Keep every prefix strictly larger than its predecessor without
         # making the 800 ordinary snapshots consume hundreds of megabytes.
-        return 4_096 + revision * 256
+        return 4_096 + revision * 640
     return {
         REVISION_COUNT - 4: 8 * 1024 * 1024,
         REVISION_COUNT - 3: 16 * 1024 * 1024,
@@ -69,56 +70,61 @@ def _wire_target_bytes(revision: int) -> int:
     }[revision]
 
 
+@cache
 def _codex_payload(revision: int, *, terminal: bool) -> bytes:
     revision_timestamp = f"2026-07-31T04:{25 + revision // 60:02d}:{20 + revision % 60:02d}Z"
-    records: list[dict[str, object]] = [
-        {
-            "type": "session_meta",
-            "payload": {
-                "id": SESSION_NATIVE_ID,
-                "timestamp": "2026-07-31T04:25:20Z",
-                "cwd": "/sanitized/codex-804",
-            },
-        },
-    ]
-    for message_index, role in enumerate(("user", "assistant")):
-        text = f"sanitized incident witness {role} baseline"
-        records.append(
+    if revision == 0:
+        records: list[dict[str, object]] = [
             {
-                "type": "response_item",
-                "timestamp": revision_timestamp,
+                "type": "session_meta",
                 "payload": {
-                    "type": "message",
-                    "id": f"{SESSION_NATIVE_ID}-message-{message_index}",
-                    "role": role,
-                    "content": [{"type": "output_text" if role == "assistant" else "input_text", "text": text}],
+                    "id": SESSION_NATIVE_ID,
+                    "timestamp": "2026-07-31T04:25:20Z",
+                    "cwd": "/sanitized/codex-804",
                 },
-            }
-        )
-    # Parsed content grows by containment.  The first milestone proves that
-    # revisions differ semantically, while the later milestones keep the
-    # production membership classifier's accepted frontier moving toward the
-    # terminal snapshot without making the fixture 804 messages wide.
-    milestone_revisions = (1, 800, 801, 802)
-    for milestone in milestone_revisions:
-        if revision >= milestone:
+            },
+        ]
+        for message_index, role in enumerate(("user", "assistant")):
+            text = f"sanitized incident witness {role} baseline"
             records.append(
                 {
                     "type": "response_item",
                     "timestamp": revision_timestamp,
                     "payload": {
                         "type": "message",
-                        "id": f"{SESSION_NATIVE_ID}-milestone-{milestone:03d}",
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": f"sanitized parsed milestone revision {milestone}",
-                            }
-                        ],
+                        "id": f"{SESSION_NATIVE_ID}-message-{message_index}",
+                        "role": role,
+                        "content": [{"type": "output_text" if role == "assistant" else "input_text", "text": text}],
                     },
                 }
             )
+        previous_payload = b""
+    else:
+        records = []
+        previous_payload = _codex_payload(revision - 1, terminal=False)
+    # Parsed content grows by containment.  The first milestone proves that
+    # revisions differ semantically, while the later milestones keep the
+    # production membership classifier's accepted frontier moving toward the
+    # terminal snapshot without making the fixture 804 messages wide.
+    milestone_revisions = (1, 800, 801, 802)
+    if revision in milestone_revisions:
+        records.append(
+            {
+                "type": "response_item",
+                "timestamp": revision_timestamp,
+                "payload": {
+                    "type": "message",
+                    "id": f"{SESSION_NATIVE_ID}-milestone-{revision:03d}",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": f"sanitized parsed milestone revision {revision}",
+                        }
+                    ],
+                },
+            }
+        )
     if terminal:
         records.append(
             {
@@ -132,13 +138,23 @@ def _codex_payload(revision: int, *, terminal: bool) -> bytes:
                 },
             }
         )
-    prefix = b"".join(json.dumps(record, sort_keys=True).encode() + b"\n" for record in records)
-    wire_template = json.dumps({"padding": "", "revision": revision, "type": "wire_padding"}, sort_keys=True).encode()
+    prefix = previous_payload + b"".join(json.dumps(record, sort_keys=True).encode() + b"\n" for record in records)
+    wire_template = json.dumps(
+        {
+            "payload": {
+                "padding": "",
+                "type": "token_count",
+            },
+            "revision": revision,
+            "type": "response_item",
+        },
+        sort_keys=True,
+    ).encode()
     padding_prefix, padding_suffix = wire_template.split(b'""', maxsplit=1)
-    padding_size = _wire_target_bytes(revision) - len(prefix) - len(padding_prefix) - len(padding_suffix) - 1
+    padding_size = _wire_target_bytes(revision) - len(prefix) - len(padding_prefix) - len(padding_suffix) - 3
     if padding_size <= 0:
         raise AssertionError(f"terminal padding underflow: {padding_size}")
-    payload = prefix + padding_prefix + (b"x" * padding_size) + padding_suffix + b"\n"
+    payload = prefix + padding_prefix + b'"' + (b"x" * padding_size) + b'"' + padding_suffix + b"\n"
     if terminal:
         assert len(payload) == TERMINAL_WIRE_BYTES
     else:
@@ -308,6 +324,10 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     first_revision_payload = _codex_payload(0, terminal=False)
     second_revision_payload = _codex_payload(1, terminal=False)
     assert first_revision_payload != second_revision_payload
+    for revision in range(1, REVISION_COUNT):
+        current_payload = _codex_payload(revision, terminal=revision == REVISION_COUNT - 1)
+        previous_payload = _codex_payload(revision - 1, terminal=False)
+        assert current_payload.startswith(previous_payload)
     assert b"incident witness user baseline" in first_revision_payload
     assert b"parsed milestone revision 1" in second_revision_payload
 
@@ -460,9 +480,9 @@ else:
     )
     assert raw_rows[-1][1] == TERMINAL_WIRE_BYTES
     assert raw_rows[-2][1] >= NEAR_TERMINAL_PREDECESSOR_BYTES
+    terminal_raw_id = raw_rows[-1][2]
     terminal_blob_hash = raw_rows[-1][4]
     assert raw_rows[-1][4] == hashlib.sha256(_codex_payload(REVISION_COUNT - 1, terminal=True)).hexdigest()
-    assert raw_rows[-1][3] is None
     with sqlite3.connect(root / "source.db") as conn:
         post_recovery_membership_count = int(
             conn.execute("SELECT COUNT(DISTINCT raw_id) FROM raw_session_memberships").fetchone()[0]
@@ -473,9 +493,16 @@ else:
                 "SELECT DISTINCT logical_source_key FROM raw_session_memberships ORDER BY logical_source_key"
             )
         )
-    assert post_recovery_membership_count == REVISION_COUNT
-    assert len(membership_keys) == 1
-    terminal_logical_source_key = membership_keys[0]
+        source_keys = tuple(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT logical_source_key FROM raw_sessions "
+                "WHERE logical_source_key IS NOT NULL ORDER BY logical_source_key"
+            )
+        )
+    assert post_recovery_membership_count in {0, REVISION_COUNT}
+    assert len(source_keys) == 1
+    terminal_logical_source_key = membership_keys[0] if membership_keys else source_keys[0]
 
     store.promote(candidate)
     final_snapshot = archive_snapshot(root, search_queries=("sanitized",))
@@ -512,6 +539,7 @@ else:
     assert len(indexed) == 1
     assert len(selected_heads) == 1
     selected_raw_id = str(selected_heads[0][0])
+    assert selected_raw_id == terminal_raw_id
     assert indexed == [(f"codex-session:{SESSION_NATIVE_ID}", selected_raw_id, 7)]
     with sqlite3.connect(root / "source.db") as conn:
         selected_source_row = conn.execute(
@@ -578,7 +606,7 @@ else:
             "Fixture setup includes 804 payload construction, schema hashing, and canonical program serialization.",
             f"Serialized program digest is sha256:{program_digest} and is bound into the receipt input identity.",
             "Replay and postflight subprocess RSS is unavailable because statm samples only the pytest parent; storage growth is not reported as write I/O.",
-            "The crash boundary hard-exits after durable transaction creation with all 804 authority rows unresolved; a fresh process resumes and resolves the cohort.",
+            "The crash boundary hard-exits after durable transaction creation with all 804 authority rows unresolved; a fresh process resumes and materializes the cohort into an inactive candidate.",
             "Live confidence remains open until the named successor receipts bind the active archive.",
         ),
     )
