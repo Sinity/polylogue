@@ -824,19 +824,38 @@ class IndexGenerationStore:
         return removed
 
     def recover_promotion(self, generation_id: str) -> IndexGeneration:
-        """Reconcile a crash after the pointer swap but before active metadata."""
+        """Reconcile an incomplete promotion without trusting the pointer alone.
+
+        A pointer swap is only one durable step in promotion.  When the
+        pointer already targets the promoting generation, leave the metadata
+        in ``promoting`` until the activation caller has revalidated the
+        candidate against the current archive and explicitly completes
+        recovery.  A pointer mismatch means the swap never became visible, so
+        the candidate can safely return to ``inactive``.
+        """
         generation = self.load(generation_id)
         if generation.state != "promoting":
             return generation
         pointer = self.active_pointer
-        state = "inactive"
-        if pointer.exists() or pointer.is_symlink():
-            state = (
-                "active"
-                if pointer.resolve(strict=True) == Path(generation.index_path).resolve(strict=True)
-                else "inactive"
-            )
-        recovered = IndexGeneration(**{**asdict(generation), "state": state})
+        if (pointer.exists() or pointer.is_symlink()) and pointer.resolve(strict=True) == Path(
+            generation.index_path
+        ).resolve(strict=True):
+            return generation
+        recovered = IndexGeneration(**{**asdict(generation), "state": "inactive"})
+        self._write(recovered)
+        return recovered
+
+    def complete_promotion_recovery(self, generation_id: str) -> IndexGeneration:
+        """Record a pointer-swapped promotion as active after external validation."""
+        generation = self.load(generation_id)
+        if generation.state != "promoting":
+            return generation
+        pointer = self.active_pointer
+        if not (pointer.exists() or pointer.is_symlink()):
+            raise RuntimeError("cannot complete promotion recovery without an active index pointer")
+        if pointer.resolve(strict=True) != Path(generation.index_path).resolve(strict=True):
+            raise RuntimeError("cannot complete promotion recovery for a non-active generation")
+        recovered = IndexGeneration(**{**asdict(generation), "state": "active"})
         self._write(recovered)
         return recovered
 
@@ -864,7 +883,7 @@ class IndexGenerationStore:
 
 
 def source_revision_snapshot(archive_root: Path) -> str:
-    """Stable raw-evidence vector used to reject an unsafe rebuild delta."""
+    """Hash the full mutable raw-session state after a rebuild replay."""
     import hashlib
 
     digest = hashlib.sha256()
@@ -875,6 +894,97 @@ def source_revision_snapshot(archive_root: Path) -> str:
                 digest.update(encoded.encode())
                 digest.update(b"\0")
             digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
+    """Hash the immutable source evidence a rebuild is allowed to replay.
+
+    Parse, validation, and revision-governance state are rebuild outputs or
+    post-acquisition interpretation. They can legitimately change while the
+    rebuild runs, so they must never invalidate its before/after source proof.
+    The selected columns capture durable raw identity, membership, and bytes,
+    together with acquired raw-payload references and capture-mode observations,
+    in deterministic order.
+    """
+    import hashlib
+
+    from polylogue.storage.blob_store import BlobStore
+
+    digest = hashlib.sha256()
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+        rows = conn.execute(
+            """
+            SELECT raw_id, origin, capture_mode, native_id, source_path,
+                   source_index, blob_hash, blob_size, acquired_at_ms,
+                   file_mtime_ms
+            FROM raw_sessions
+            ORDER BY raw_id
+            """
+        )
+        for row in rows:
+            for value in row:
+                if value is None:
+                    encoded = b"n"
+                elif isinstance(value, bytes):
+                    encoded = b"b" + value
+                elif isinstance(value, str):
+                    encoded = b"s" + value.encode()
+                else:
+                    encoded = b"i" + str(value).encode()
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+        raw_blob_hashes = {
+            bytes(row[0]).hex() if isinstance(row[0], (bytes, bytearray, memoryview)) else str(row[0])
+            for row in conn.execute("SELECT DISTINCT blob_hash FROM raw_sessions ORDER BY blob_hash")
+        }
+        blob_store = BlobStore(archive_root / "blob")
+        digest.update(b"raw_payload_bytes_verified\0")
+        for blob_hash in sorted(raw_blob_hashes):
+            if not blob_store.verify(blob_hash):
+                raise RuntimeError(f"raw payload blob bytes failed verification: {blob_hash}")
+            # ``BlobStore.verify`` has re-hashed the bytes at this point. Keep
+            # the verified content identity in the existing canonical digest,
+            # rather than introducing a second blob hashing implementation.
+            encoded = b"s" + blob_hash.encode()
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        digest.update(b"raw_payload_refs\0")
+        blob_refs = conn.execute(
+            """
+            SELECT b.ref_type, b.ref_id, b.blob_hash, b.source_path,
+                   b.size_bytes, b.acquired_at_ms
+            FROM blob_refs AS b
+            JOIN raw_sessions AS r ON r.raw_id = b.ref_id
+            WHERE b.ref_type = 'raw_payload'
+            ORDER BY b.ref_id, b.blob_hash
+            """
+        )
+        for row in blob_refs:
+            for value in row:
+                if value is None:
+                    encoded = b"n"
+                elif isinstance(value, bytes):
+                    encoded = b"b" + value
+                elif isinstance(value, str):
+                    encoded = b"s" + value.encode()
+                else:
+                    encoded = b"i" + str(value).encode()
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+        digest.update(b"raw_capture_observations\0")
+        observations = conn.execute(
+            """
+            SELECT raw_id, capture_mode, first_observed_at_ms
+            FROM raw_capture_observations
+            ORDER BY raw_id, capture_mode
+            """
+        )
+        for row in observations:
+            for value in row:
+                encoded = b"s" + value.encode() if isinstance(value, str) else b"i" + str(value).encode()
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
     return digest.hexdigest()
 
 
@@ -903,5 +1013,6 @@ __all__ = [
     "RebuildLease",
     "RebuildLeaseUnavailableError",
     "rebuild_lease_status",
+    "rebuild_source_evidence_snapshot",
     "source_revision_snapshot",
 ]

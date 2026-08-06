@@ -46,10 +46,11 @@
 #   git-repo: ""       # Separate git repo for backups (default: project repo)
 
 # A linked worktree keeps the JSONL snapshot from its branch point while all
-# worktrees share one live Dolt database. The Beads post-checkout/post-merge
-# importer is a blind upsert, so importing that snapshot can revert newer
-# coordinator writes. JSONL remains an export and explicit reconciliation
-# input; automatic hook imports stay disabled.
+# worktrees share one live Dolt database. The repository's scripts/bd wrapper
+# performs a monotonic per-row preflight before every normal invocation. Keep
+# Beads' own automatic import disabled so bypassing the wrapper cannot perform
+# a blind upsert; explicit newer rows are imported by the wrapper and explicit
+# recovery still goes through devtools/bd_reimport_guard.py reconcile.
 import.auto: false
 
 # Integration settings (access with 'bd config get/set')

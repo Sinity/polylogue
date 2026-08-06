@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 
-from polylogue.archive.artifact_taxonomy import classify_artifact_path
+from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.core.json import JSONDecodeError
+from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
@@ -29,6 +31,20 @@ from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapsh
 logger = get_logger(__name__)
 _cursor.logger = logger
 _decoders.logger = logger
+
+
+def has_decoded_session_evidence(path: Path, *, provider: Provider) -> bool:
+    """Return whether decoded JSON content outranks a non-session path rule."""
+    if path.suffix.lower() == ".jsonl":
+        return jsonl_session_artifact(path, provider=provider) is not None
+
+    if path.suffix.lower() != ".json":
+        return False
+    try:
+        document = json_loads(path.read_bytes())
+    except (JSONDecodeError, OSError):
+        return False
+    return classify_artifact(document, provider=provider, source_path=path).parse_as_session
 
 
 def iter_antigravity_language_server_sessions(
@@ -76,9 +92,11 @@ def iter_antigravity_language_server_sessions(
     conversations_dir = source.path / "conversations"
     if not conversations_dir.is_dir():
         logger.warning(
-            "Antigravity conversation export unavailable for %s: no conversations directory; "
-            "brain metadata remains artifact-only and this source has no session coverage",
-            source.path,
+            "antigravity_coverage_gap",
+            source_name="antigravity",
+            source_path=str(source.path),
+            reason="conversations_directory_missing",
+            action="restore the conversations/ directory or configure the language-server export",
         )
         return
 
@@ -94,30 +112,36 @@ def iter_antigravity_language_server_sessions(
             yield (raw_data, session)
     except antigravity.AntigravityBinaryUnavailableError as exc:
         logger.warning(
-            "Antigravity conversation export unavailable for %s; brain metadata remains artifact-only "
-            "and this source has no session coverage: %s",
-            source.path,
-            exc,
+            "antigravity_coverage_gap",
+            source_name="antigravity",
+            source_path=str(source.path),
+            reason="language_server_unavailable",
+            action="install or configure the language-server export and rerun acquisition",
+            detail=str(exc),
         )
     except antigravity.AntigravityPartialExportError as exc:
         # Mid-export failure: some sessions were obtained before the abort.
         # Surface obtained-vs-expected loudly instead of replacing the lost
         # conversations with unrelated per-artifact fragments.
         logger.error(
-            "Antigravity language-server export of %s truncated mid-iteration: "
-            "obtained %d of %d sessions; %d remain uncovered; brain metadata remains artifact-only: %s",
-            source.path,
-            exc.obtained,
-            exc.expected,
-            max(exc.expected - exc.obtained, 0),
-            exc,
+            "antigravity_coverage_gap",
+            source_name="antigravity",
+            source_path=str(source.path),
+            reason="partial_language_server_export",
+            action="resolve the export failure and rerun acquisition for the uncovered conversations",
+            obtained=exc.obtained,
+            expected=exc.expected,
+            uncovered=max(exc.expected - exc.obtained, 0),
+            detail=str(exc),
         )
     except antigravity.AntigravityExportError as exc:
         logger.warning(
-            "Antigravity conversation export failed for %s; brain metadata remains artifact-only "
-            "and this source has no session coverage: %s",
-            source.path,
-            exc,
+            "antigravity_coverage_gap",
+            source_name="antigravity",
+            source_path=str(source.path),
+            reason="language_server_export_failed",
+            action="repair the language-server export and rerun acquisition",
+            detail=str(exc),
         )
 
 
@@ -186,7 +210,11 @@ def parse_one_source_path(
     path = Path(path_str)
     provider_hint = Provider.from_string(source_name)
     path_classification = classify_artifact_path(path, provider=source_name)
-    if path_classification is not None and not path_classification.parse_as_session:
+    if (
+        path_classification is not None
+        and not path_classification.parse_as_session
+        and not has_decoded_session_evidence(path, provider=provider_hint)
+    ):
         return
     should_group = provider_hint in _GROUP_PROVIDERS
 
@@ -378,7 +406,7 @@ def iter_source_sessions_with_raw(
                 str(path),
                 f"File not found (may have been deleted): {exc}",
             )
-        except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+        except (JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             failed_count += 1
             logger.warning("Failed to parse %s: %s", path, exc)
             _record_cursor_failure(cursor_state, str(path), str(exc))
@@ -400,5 +428,6 @@ __all__ = [
     "iter_antigravity_language_server_sessions",
     "iter_source_sessions",
     "iter_source_sessions_with_raw",
+    "has_decoded_session_evidence",
     "parse_one_source_path",
 ]

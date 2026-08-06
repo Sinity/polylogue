@@ -18,11 +18,17 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.core.enums import Provider
+from polylogue.sources.decoder_zip import (
+    MAX_UNCOMPRESSED_SIZE,
+    ZIP_JSON_SUFFIXES,
+    ZipBombError,
+    ZipEntryValidator,
+    open_bounded_zip_entry,
+)
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.sources.dispatch import detect_provider
 
 _JSON_SUFFIXES = frozenset({".json", ".jsonl", ".ndjson"})
-_ZIP_JSON_SUFFIXES = (".json", ".jsonl", ".ndjson", ".jsonl.txt")
 _MAX_DIRECTORY_CANDIDATES = 256
 _MAX_STREAM_RECORDS = 32
 
@@ -201,22 +207,35 @@ def _preflight_file(path: Path, acc: _PreflightAccumulator, *, label: str) -> No
 def _preflight_zip(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
     try:
         with zipfile.ZipFile(path) as zf:
-            json_entries = [
-                info
-                for info in zf.infolist()
-                if not info.is_dir() and info.filename.lower().endswith(_ZIP_JSON_SUFFIXES)
-            ]
-            if not json_entries:
-                acc.unsupported(label, "ZIP contains no JSON or JSONL import candidates")
-                return
-            for info in json_entries:
+            validator = ZipEntryValidator("unknown", cursor_state=None, zip_path=path)
+            admitted = False
+            rejected = False
+
+            def record_rejection(info: zipfile.ZipInfo, reason: str) -> None:
+                nonlocal rejected
+                rejected = True
+                acc.malformed(
+                    f"{label}:{info.filename}",
+                    f"ZIP entry rejected before read: {reason}",
+                )
+
+            for info in validator.filter_entries(
+                zf.infolist(),
+                allowed_suffixes=ZIP_JSON_SUFFIXES,
+                on_rejected=record_rejection,
+            ):
+                admitted = True
                 entry_label = f"{label}:{info.filename}"
                 try:
-                    raw = zf.read(info)
-                except (OSError, zipfile.BadZipFile) as exc:
+                    with open_bounded_zip_entry(zf, info) as handle:
+                        raw = handle.read(MAX_UNCOMPRESSED_SIZE + 1)
+                except (OSError, KeyError, zipfile.BadZipFile, ZipBombError) as exc:
                     acc.malformed(entry_label, f"could not read ZIP entry: {exc}")
                     continue
                 _preflight_json_bytes(raw, acc, label=entry_label)
+
+            if not admitted and not rejected:
+                acc.unsupported(label, "ZIP contains no JSON or JSONL import candidates")
     except zipfile.BadZipFile as exc:
         acc.malformed(label, f"invalid ZIP archive: {exc}")
     except OSError as exc:

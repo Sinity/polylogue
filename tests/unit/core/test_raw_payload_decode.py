@@ -66,6 +66,23 @@ def test_build_raw_payload_envelope_reports_first_bad_jsonl_line(tmp_path: Path)
     assert "line 2" in envelope.malformed_jsonl_detail
 
 
+def test_build_raw_payload_envelope_admits_repeated_bare_codex_session_meta_records() -> None:
+    """Repeated Codex headers remain eligible even when their envelopes were truncated."""
+    raw_content = (b'{"type":"session_meta"}\n' * 1024) + b"not json at all\n"
+
+    envelope = build_raw_payload_envelope(
+        raw_content,
+        source_path="/tmp/rollout-repeated.jsonl",
+        fallback_provider="codex",
+        jsonl_dict_only=True,
+    )
+
+    assert envelope.wire_format == "jsonl"
+    assert envelope.artifact.kind is ArtifactKind.SESSION_RECORD_STREAM
+    assert envelope.artifact.schema_eligible is True
+    assert envelope.malformed_jsonl_lines == 1
+
+
 def test_build_raw_payload_envelope_refuses_bare_session_meta_for_non_codex() -> None:
     envelope = build_raw_payload_envelope(
         b'{"type":"session_meta"}\n' * 2,

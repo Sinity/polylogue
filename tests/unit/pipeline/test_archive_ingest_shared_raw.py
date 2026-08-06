@@ -36,10 +36,12 @@ sessions instead of writing a duplicate raw row.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -49,6 +51,25 @@ from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+
+class _RejectUnboundedRead:
+    """ZIP handle proxy that rejects a full member read in archive admission."""
+
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+
+    def __enter__(self) -> _RejectUnboundedRead:
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._handle.__exit__(*args)
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            raise AssertionError("ZIP artifact admission must stream to the blob store")
+        return cast("bytes", self._handle.read(size))
 
 
 def _write_carryover_chain(root: Path, *, session_prefix: str = "") -> tuple[Path, Path]:
@@ -132,6 +153,258 @@ def _membership_rows(source_db: Path, raw_id: str) -> set[tuple[str, str]]:
     finally:
         conn.close()
     return {(str(row[0]), str(row[1])) for row in rows}
+
+
+def _workflow_journal_payload(*, malformed: bool = False, delayed: bool = False) -> bytes:
+    if malformed:
+        return b'{"contentKey":"broken"\n'
+    prefix = b""
+    if delayed:
+        prefix = b"".join(
+            b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
+            for index in range(32)
+        )
+    return prefix + (
+        b'{"sessionId":"journal-session","parentUuid":null,"type":"user",'
+        b'"message":{"role":"user","content":[{"type":"text","text":"recover journal"}]},'
+        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"sessionId":"journal-session","parentUuid":"journal-user","type":"assistant",'
+        b'"message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+
+
+def _write_session_shaped_workflow_journal(root: Path, *, malformed: bool = False) -> Path:
+    journal = root / "subagents" / "workflows" / "wf-archive" / "journal.jsonl"
+    journal.parent.mkdir(parents=True)
+    journal.write_bytes(_workflow_journal_payload(malformed=malformed))
+    return journal
+
+
+def _write_workflow_journal_zip(root: Path, *, malformed: bool = False) -> Path:
+    archive = root / "claude-export.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "subagents/workflows/wf-archive/journal.jsonl",
+            _workflow_journal_payload(malformed=malformed, delayed=not malformed),
+        )
+    return archive
+
+
+def _write_large_zip_member(root: Path, name: str, payload: bytes) -> Path:
+    archive = root / "large-export.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr(name, payload)
+    return archive
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_session_shaped_workflow_journal_reaches_parser_idempotently(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """The production one-shot route must decode a journal before path exclusion."""
+    archive_root = workspace_env["archive_root"]
+    journal = _write_session_shaped_workflow_journal(tmp_path / "sessions")
+    sources = [Source(name="claude-code", path=journal)]
+
+    first = await parse_sources_archive(archive_root, sources, parse_workers=1)
+    second = await parse_sources_archive(archive_root, sources, parse_workers=1)
+
+    assert first.parse_failures == 0
+    assert first.counts["sessions"] == 1
+    assert second.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """A journal with no decodable session evidence remains a typed artifact."""
+    archive_root = workspace_env["archive_root"]
+    journal = _write_session_shaped_workflow_journal(tmp_path / "sessions", malformed=True)
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=journal)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
+            "workflow_journal",
+            0,
+        )
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_zip_workflow_journal_scans_delayed_session_evidence_idempotently(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """ZIP member routing must decode beyond 32 artifact records before exclusion."""
+    archive_root = workspace_env["archive_root"]
+    journal_zip = _write_workflow_journal_zip(tmp_path / "sessions")
+    sources = [Source(name="claude-code", path=journal_zip)]
+
+    first = await parse_sources_archive(archive_root, sources, parse_workers=1)
+    second = await parse_sources_archive(archive_root, sources, parse_workers=1)
+
+    assert first.parse_failures == 0
+    assert first.counts["sessions"] == 1
+    assert second.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evidence(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """Malformed ZIP journals are retained as typed evidence without sessions."""
+    archive_root = workspace_env["archive_root"]
+    journal_zip = _write_workflow_journal_zip(tmp_path / "sessions", malformed=True)
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=journal_zip)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
+            "workflow_journal",
+            0,
+        )
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large ZIP journal artifact must not be read into an admission payload."""
+    from polylogue.sources.decoder_zip import _ZIP_READ_CHUNK_SIZE, MAX_UNCOMPRESSED_SIZE, open_bounded_zip_entry
+
+    archive_root = workspace_env["archive_root"]
+    payload = b'{"contentKey":"artifact","agentId":"workflow-agent","body":"' + b"x" * _ZIP_READ_CHUNK_SIZE + b'"}\n'
+    journal_zip = _write_large_zip_member(
+        tmp_path / "sessions",
+        "subagents/workflows/wf-archive/journal.jsonl",
+        payload,
+    )
+    original_open = open_bounded_zip_entry
+
+    def reject_unbounded_read(
+        zf: zipfile.ZipFile,
+        info: zipfile.ZipInfo,
+        *,
+        max_bytes: int = MAX_UNCOMPRESSED_SIZE,
+    ) -> _RejectUnboundedRead:
+        return _RejectUnboundedRead(original_open(zf, info, max_bytes=max_bytes))
+
+    monkeypatch.setattr(
+        "polylogue.pipeline.services.archive_ingest.open_bounded_zip_entry",
+        reject_unbounded_read,
+    )
+
+    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=journal_zip)], parse_workers=1)
+
+    assert result.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
+        assert conn.execute("SELECT blob_size FROM raw_sessions").fetchone() == (len(payload),)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_large_ordinary_zip_jsonl_skips_delayed_artifact_scan(
+    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unclassified ZIP JSONL follows normal parsing without a second full scan."""
+    from polylogue.sources import decoder_zip
+
+    archive_root = workspace_env["archive_root"]
+    payload = (
+        b'{"sessionId":"ordinary-session","parentUuid":null,"type":"user",'
+        b'"message":{"role":"user","content":[{"type":"text","text":"' + b"x" * (1024 * 1024) + b'"}]},'
+        b'"uuid":"ordinary-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"sessionId":"ordinary-session","parentUuid":"ordinary-user","type":"assistant",'
+        b'"message":{"role":"assistant","content":[{"type":"text","text":"reply"}]},'
+        b'"uuid":"ordinary-assistant","timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    session_zip = _write_large_zip_member(tmp_path / "sessions", "nested/ordinary.jsonl", payload)
+
+    def fail_unexpected_scan(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ordinary ZIP JSONL must not receive a delayed artifact scan")
+
+    monkeypatch.setattr(decoder_zip, "zip_entry_session_artifact", fail_unexpected_scan)
+
+    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=session_zip)], parse_workers=1)
+
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_path_classified_zip_json_record_array_reaches_parser(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """Decoded Claude records outrank a non-session workflow snapshot path."""
+    archive_root = workspace_env["archive_root"]
+    journal_zip = _write_large_zip_member(
+        tmp_path / "sessions",
+        "workflows/wf-json.json",
+        json.dumps(
+            [
+                {
+                    "sessionId": "json-array-session",
+                    "parentUuid": None,
+                    "type": "user",
+                    "message": {"role": "user", "content": "recover JSON records"},
+                    "uuid": "json-array-user",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                },
+                {
+                    "sessionId": "json-array-session",
+                    "parentUuid": "json-array-user",
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "recovered reply"}],
+                    },
+                    "uuid": "json-array-assistant",
+                    "timestamp": "2025-01-01T00:00:01Z",
+                },
+            ]
+        ).encode(),
+    )
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=journal_zip)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] >= 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
 
 
 @pytest.mark.asyncio

@@ -1305,6 +1305,133 @@ def test_unclassified_large_non_jsonl_is_not_streamed_as_session_artifact(
     assert _parse_path_as_session_artifact(target, provider=Provider.UNKNOWN) is False
 
 
+def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_path: Path) -> None:
+    """Full live acquisition keeps non-session evidence and repairs session-shaped journals."""
+    root = tmp_path / ".claude"
+    metadata_path = root / "projects" / "project" / "subagents" / "agent-a.meta.json"
+    journal_path = root / "projects" / "project" / "subagents" / "workflows" / "wf-run-1" / "journal.jsonl"
+    session_path = root / "projects" / "project" / "genuine-session.jsonl"
+    metadata_path.parent.mkdir(parents=True)
+    journal_path.parent.mkdir(parents=True)
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+
+    metadata_payload = b'{"agentId":"agent-a","transcriptPath":"agent-a.jsonl"}'
+    journal_payload = (
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "wf-run-1",
+                "uuid": "journal-message-1",
+                "message": {"role": "user", "content": "retain this workflow evidence"},
+            }
+        )
+        + "\n"
+    ).encode()
+    session_payload = (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"real session"},'
+        b'"uuid":"real-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":"real-user","type":"assistant","message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"real reply"}]},"uuid":"real-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    metadata_path.write_bytes(metadata_payload)
+    journal_path.write_bytes(journal_payload)
+    session_path.write_bytes(session_payload)
+
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    result = asyncio.run(processor.ingest_files([metadata_path, journal_path, session_path], emit_event=False))
+
+    assert result.succeeded_file_count == 3
+    assert result.failed_file_count == 0
+    assert result.ingested_session_count == 2
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT a.source_path, a.artifact_kind, a.support_status, a.parse_as_session, r.blob_hash
+            FROM raw_artifacts AS a
+            JOIN raw_sessions AS r ON r.raw_id = a.raw_id
+            WHERE a.parse_as_session = 0
+            ORDER BY a.source_path
+            """
+        ).fetchall()
+
+    assert [(Path(row[0]).name, row[1], row[2], row[3]) for row in rows] == [
+        ("agent-a.meta.json", "agent_sidecar_meta", "unknown", 0),
+    ]
+    expected_payloads = {
+        metadata_path.name: metadata_payload,
+    }
+    for source_path, _kind, _support_status, _parse_as_session, blob_hash in rows:
+        blob_hash_hex = bytes(blob_hash).hex()
+        assert (tmp_path / "blob" / blob_hash_hex[:2] / blob_hash_hex[2:]).read_bytes() == expected_payloads[
+            Path(source_path).name
+        ]
+
+
+def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp_path: Path) -> None:
+    """Malformed journals remain typed evidence when decoding cannot recover them."""
+    path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
+    path.parent.mkdir(parents=True)
+    payload = b'{"contentKey":"broken"\n'
+    path.write_bytes(payload)
+    plan = replace(_append_plan(path, payload, payload_hash="artifact"), source_name="claude-code")
+
+    result = ingest_append_plans(cast(Any, _append_owner(tmp_path)), [plan])
+
+    assert result.succeeded == [plan]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifacts = conn.execute(
+            """
+            SELECT artifact_kind, classification_reason, parse_as_session
+            FROM raw_artifacts
+            """
+        ).fetchall()
+    assert len(artifacts) == 1
+    assert [row[0] for row in artifacts] == ["workflow_journal"]
+    assert all(row[2] == 0 for row in artifacts)
+    assert all("OriginSpec" in row[1] for row in artifacts)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path: Path) -> None:
+    """Decoded session evidence bypasses path-only workflow-journal admission."""
+    path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
+    path.parent.mkdir(parents=True)
+    payload = b"".join(
+        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(64)
+    ) + (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
+        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    path.write_bytes(payload)
+    plan = replace(_append_plan(path, payload, payload_hash="session-shaped"), source_name="claude-code")
+
+    result = ingest_append_plans(cast(Any, _append_owner(tmp_path)), [plan])
+
+    assert result.succeeded == []
+    assert result.failed == []
+    assert result.deferred == [plan]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+        assert conn.execute("SELECT revision_kind, revision_authority FROM raw_sessions").fetchall() == [
+            ("append", "quarantined")
+        ]
+
+
 def _write_plain_sqlite_db(path: Path) -> None:
     """A genuine SQLite database with no Hermes state.db/verification_evidence.db shape."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -3830,6 +3957,108 @@ def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
     assert raw is not None
     assert raw[1:] == (None, "unknown", "quarantined")
     assert artifact == ("workflow_journal", 0, raw[0])
+
+
+def test_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(
+        b"".join(
+            b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
+            for index in range(64)
+        )
+        + b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
+        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+
+    first = asyncio.run(processor.ingest_files([source], emit_event=False))
+    second = asyncio.run(processor.ingest_files([source], emit_event=False))
+
+    assert first.ingested_session_count == 1
+    assert first.failed_file_count == 0
+    assert second.failed_file_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
+def test_large_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(tmp_path: Path) -> None:
+    from polylogue.sources.live.batch_support import _STREAMING_FULL_INGEST_BYTES
+
+    root = tmp_path / "sessions"
+    source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(
+        b'{"contentKey":"artifact-0","agentId":"workflow-agent","summary":"'
+        + b"x" * _STREAMING_FULL_INGEST_BYTES
+        + b'"}\n'
+        + b"".join(
+            b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
+            for index in range(1, 32)
+        )
+        + b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
+        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        + b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+
+    first = asyncio.run(processor.ingest_files([source], emit_event=False))
+    second = asyncio.run(processor.ingest_files([source], emit_event=False))
+
+    assert first.ingested_session_count == 1
+    assert first.failed_file_count == 0
+    assert second.failed_file_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
+def test_full_batch_malformed_workflow_journal_remains_typed_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b'{"contentKey":"broken"\n')
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+
+    metrics = asyncio.run(processor.ingest_files([source], emit_event=False))
+
+    assert metrics.succeeded_file_count == 1
+    assert metrics.failed_file_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
+            "workflow_journal",
+            0,
+        )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
 def test_append_admission_bind_failure_persists_exact_pending_envelope_and_retries(

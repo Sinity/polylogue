@@ -18,6 +18,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.storage.attachment_relink import (
+    UnrecoverableAttachmentReason,
     plan_orphaned_attachment_relink,
     relink_orphaned_attachments,
 )
@@ -179,11 +180,12 @@ async def test_orphaned_attachment_is_reachable_via_production_read_path_after_r
     """Anti-vacuity: after relink, the production ``get_attachments`` read
     path -- the one every session/message attachment surface (MCP, CLI
     ``read --view``, transcript view) goes through -- can see it. Reverting
-    the ``INSERT OR REPLACE INTO attachment_refs`` write in
-    ``relink_orphaned_attachments`` makes this assertion fail: the row would
+    the attachment-ref insert in ``relink_orphaned_attachments`` makes this
+    assertion fail: the row would
     still be present in ``attachments`` (visible via a direct SELECT) but
     ``get_attachments`` INNER JOINs ``attachment_refs``, so a still-ref-less
-    row can never be returned.
+    row can never be returned. Reverting the attachment-ref insert or the
+    typed native-id restoration makes this production read assertion fail.
     """
     import aiosqlite
 
@@ -256,6 +258,7 @@ def test_orphan_with_no_matching_raw_is_reported_unrecoverable_not_guessed(tmp_p
     assert sum(plan.unrecoverable_reason_counts.values()) == 1
     assert plan.unrecoverable_samples[0].attachment_id == "ghost-attachment-id"
     assert "no raw session" in plan.unrecoverable_samples[0].reason
+    assert plan.unrecoverable_samples[0].reason_kind is UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW
 
     exec_result = relink_orphaned_attachments(
         index_conn, source_conn, archive_root=tmp_path, blob_root=blob_store.root, dry_run=False

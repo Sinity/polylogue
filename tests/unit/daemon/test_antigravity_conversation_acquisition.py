@@ -17,6 +17,7 @@ language-server client, proving:
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -24,6 +25,7 @@ from polylogue.daemon.antigravity_conversation_acquisition import (
     ANTIGRAVITY_ACQUISITION_MAX_PER_TICK,
     acquire_antigravity_conversations_once,
 )
+from polylogue.sources import source_parsing
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
 from polylogue.storage.blob_store import BlobStore
 
@@ -83,15 +85,35 @@ def _fake_client(monkeypatch: pytest.MonkeyPatch) -> _FakeLanguageServerClient:
     return fake
 
 
-def test_no_conversations_dir_is_a_bounded_noop(
-    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+def test_no_conversations_dir_reports_gap_without_promoting_brain_sidecar(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     antigravity_root = tmp_path / "antigravity-empty"
+    sidecar = antigravity_root / "brain" / "work-session" / "plan.md.metadata.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.with_name("plan.md").write_text("# Plan\n\nInspect the archive.\n", encoding="utf-8")
+    sidecar.write_text(
+        '{"artifactType":"ARTIFACT_TYPE_OTHER","summary":"Plan","updatedAt":"2026-08-04T08:00:00Z"}',
+        encoding="utf-8",
+    )
     monkeypatch.setattr("polylogue.paths.antigravity_path", lambda: antigravity_root)
+    gap_logger = Mock()
+    monkeypatch.setattr(source_parsing, "logger", gap_logger)
 
-    acquired = acquire_antigravity_conversations_once(workspace_env["archive_root"])
+    archive_root = workspace_env["archive_root"]
+    acquired = acquire_antigravity_conversations_once(archive_root)
 
     assert acquired == 0
+    assert _raw_pb_blobs_by_source_path(archive_root / "source.db") == {}
+    gap_logger.warning.assert_called_once()
+    warning = gap_logger.warning.call_args
+    assert warning.args == ("antigravity_coverage_gap",)
+    assert warning.kwargs["source_name"] == "antigravity"
+    assert warning.kwargs["source_path"] == str(antigravity_root)
+    assert warning.kwargs["reason"] == "conversations_directory_missing"
+    assert "restore" in warning.kwargs["action"]
 
 
 def test_acquires_real_pb_conversations_not_yet_in_raw_sessions(

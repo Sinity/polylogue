@@ -181,19 +181,13 @@ def _classify_artifact_path_strong(
             reason="Hermes SQLite evidence sidecar",
         )
     if provider_token is Provider.ANTIGRAVITY:
-        if inner_name.endswith(".md.metadata.json"):
-            # Per-artifact brain metadata is a sidecar, never a primary
-            # session: fragmenting one file per artifact produced 116
-            # single-message "sessions" that were 100% noise (all real
-            # conversation content lives in the .pb trajectories the
-            # language-server export route now acquires directly --
-            # polylogue-eo81, GH #1764). Still accounted for via
-            # ``raw_artifacts.artifact_kind`` rather than silently dropped.
-            # The one legitimate use of this shape -- a degraded fallback
-            # when the language server truly cannot be reached -- is wired
-            # explicitly in ``source_parsing._iter_antigravity_brain_metadata_fallback``,
-            # which calls ``parse_brain_metadata`` directly and bypasses this
-            # path-only classification.
+        if inner_name.endswith(".metadata.json"):
+            # Brain metadata is a sidecar, never a primary session: fragmenting
+            # one file per artifact produced single-message sessions that were
+            # noise (all real conversation content lives in the .pb trajectories
+            # the language-server export route acquires directly -- polylogue-eo81,
+            # GH #1764). Still accounted for via ``raw_artifacts.artifact_kind``
+            # rather than silently dropped.
             return ArtifactClassification(
                 provider=provider_token,
                 kind=ArtifactKind.AGENT_SIDECAR_META,
@@ -424,15 +418,36 @@ def _classify_list(
                 default_priority=90 if subagent else 120,
                 reason="parser-supported Codex session record stream",
             )
-        if dict_items and any(looks_like_record_entry(item) for item in dict_items):
-            return ArtifactClassification(
-                provider=provider,
-                kind=ArtifactKind.UNKNOWN,
-                parse_as_session=False,
-                schema_eligible=False,
-                default_priority=0,
-                reason="Codex record stream contains unsupported session records",
-            )
+
+    # A Codex rollout can be truncated to repeated bare session headers while
+    # still remaining a JSONL record stream.  A single bare ``type`` is too
+    # weak to admit generically, but multiple exact Codex session-meta records
+    # with a declared Codex origin are provider-specific structural evidence.
+    # Keep this before the generic record predicate so the narrow recovery
+    # shape reaches schema inference without reopening the generic type-only
+    # false-positive class.
+    if (
+        provider is Provider.CODEX
+        and len(dict_items) > 1
+        and all(item == {"type": "session_meta"} for item in dict_items)
+    ):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_RECORD_STREAM,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=120,
+            reason="repeated bare Codex session-meta record stream",
+        )
+    if provider is Provider.CODEX and dict_items and any(looks_like_record_entry(item) for item in dict_items):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.UNKNOWN,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason="Codex record stream contains unsupported session records",
+        )
 
     if dict_items and looks_like_record_stream(dict_items):
         subagent = is_subagent_path(source_path)
@@ -519,6 +534,7 @@ def _classify_dict(
 ) -> ArtifactClassification:
     # Keep this deferred to avoid the artifact-taxonomy/sources bootstrap
     # cycle described below. List streams import the same pair locally.
+    from polylogue.sources.parsers.grok import looks_like_export as looks_like_grok_export
     from polylogue.sources.parsers.hermes_spans import looks_like_atif_payload
 
     if provider is Provider.CHATGPT:
@@ -550,6 +566,16 @@ def _classify_dict(
             schema_eligible=False,
             default_priority=120,
             reason="Beads interaction-history record",
+        )
+
+    if provider is Provider.GROK and looks_like_grok_export(payload):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=120,
+            reason="Grok account-data export document",
         )
 
     if provider is Provider.ANTIGRAVITY and _is_antigravity_markdown_export(payload):

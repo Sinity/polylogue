@@ -436,8 +436,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.reindex_canary",
         use_when="Exercise the bounded semantic reindex canary before paying for a full rebuild.",
         examples=(
-            "devtools reindex-canary --archive-root /path/to/isolated-archive --input /path/to/index.db --sample 100 --report /path/to/canary.json --no-promote",
-            "devtools reindex-canary --archive-root /path/to/isolated-archive --pathology-session-id codex-session:whale --report /path/to/canary.json --no-promote",
+            "devtools reindex-canary --archive-root /path/to/isolated-archive --input /path/to/index.db --schema-inference-receipt /path/to/schema-inference-gate-receipt.json --sample 100 --report /path/to/canary.json --no-promote",
+            "devtools reindex-canary --archive-root /path/to/isolated-archive --schema-inference-receipt /path/to/schema-inference-gate-receipt.json --pathology-session-id codex-session:whale --report /path/to/canary.json --no-promote",
         ),
     ),
     CommandSpec(
@@ -1146,6 +1146,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace raw-membership-writeback-apply",
             "devtools workspace raw-membership-writeback-apply --json",
             "devtools workspace raw-membership-writeback-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
+        "workspace raw-failure-disposition-apply",
+        "workspace",
+        "Apply reviewed terminal dispositions to historical raw parse failures.",
+        "devtools.raw_failure_disposition_apply",
+        use_when=(
+            "polylogue-dyica: terminal historical parse failures predate typed lifecycle evidence. "
+            "Default is dry-run; --apply requires an exact JSONL disposition manifest and a verified "
+            "source-tier backup. It retains raw bytes and parser errors while replacing only the stale "
+            "artifact classification and writing immutable per-row receipts."
+        ),
+        examples=(
+            "devtools workspace raw-failure-disposition-apply --manifest-path /realm/staging/raw-failure-disposition.jsonl",
+            "devtools workspace raw-failure-disposition-apply --apply --manifest-path /realm/staging/raw-failure-disposition.jsonl "
             "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
         ),
     ),

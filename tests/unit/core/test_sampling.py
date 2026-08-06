@@ -6,8 +6,10 @@ and load_samples_from_sessions with JSON/JSONL fixtures.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -504,20 +506,10 @@ class TestLoadSamplesFromDb:
             "reason": "duplicate_blob_content",
         }
 
-    def test_schema_observation_classifies_supported_and_unsupported_codex_streams(self, tmp_path: Path) -> None:
-        """DB sampling admits real envelopes and refuses bare session headers."""
+    def test_schema_observation_includes_repeated_bare_codex_session_meta_records(self, tmp_path: Path) -> None:
+        """The DB-backed record sampler reaches the shared envelope eligibility route."""
         db = _archive_index_db(tmp_path)
-        supported_raw_id = _insert_raw_session(
-            db_path=db,
-            origin="codex-session",
-            source_path="/tmp/rollout-supported.jsonl",
-            raw_content=(
-                b'{"type":"session_meta","payload":{"id":"supported-session"}}\n'
-                b'{"type":"response_item","payload":{"type":"message","role":"user",'
-                b'"content":[{"type":"input_text","text":"hello"}]}}\n'
-            ),
-        )
-        unsupported_raw_id = _insert_raw_session(
+        raw_id = _insert_raw_session(
             db_path=db,
             origin="codex-session",
             source_path="/tmp/rollout-repeated.jsonl",
@@ -534,7 +526,51 @@ class TestLoadSamplesFromDb:
             )
         )
 
-        assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [(supported_raw_id, "session_record_stream")]
+        assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [(raw_id, "session_record_stream")]
+        assert [outcome for outcome in outcomes if outcome["raw_id"] == raw_id] == [
+            {
+                "raw_id": raw_id,
+                "status": "included",
+                "artifact_kind": "session_record_stream",
+                "source_path": "/tmp/rollout-repeated.jsonl",
+                "reason": "observed_schema_units",
+            }
+        ]
+
+    def test_schema_observation_classifies_supported_codex_streams(self, tmp_path: Path) -> None:
+        """DB sampling admits parser-supported and repeated-header Codex streams."""
+        db = _archive_index_db(tmp_path)
+        supported_raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/rollout-supported.jsonl",
+            raw_content=(
+                b'{"type":"session_meta","payload":{"id":"supported-session"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+            ),
+        )
+        repeated_raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/rollout-repeated.jsonl",
+            raw_content=b'{"type":"session_meta"}\n' * 1024,
+        )
+        outcomes: list[dict[str, object]] = []
+
+        units = list(
+            iter_schema_units(
+                "codex",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [
+            (supported_raw_id, "session_record_stream"),
+            (repeated_raw_id, "session_record_stream"),
+        ]
         outcomes_by_raw_id = {outcome["raw_id"]: outcome for outcome in outcomes}
         assert outcomes_by_raw_id[supported_raw_id] == {
             "raw_id": supported_raw_id,
@@ -543,12 +579,12 @@ class TestLoadSamplesFromDb:
             "source_path": "/tmp/rollout-supported.jsonl",
             "reason": "observed_schema_units",
         }
-        assert outcomes_by_raw_id[unsupported_raw_id] == {
-            "raw_id": unsupported_raw_id,
-            "status": "unsupported",
-            "artifact_kind": None,
+        assert outcomes_by_raw_id[repeated_raw_id] == {
+            "raw_id": repeated_raw_id,
+            "status": "included",
+            "artifact_kind": "session_record_stream",
             "source_path": "/tmp/rollout-repeated.jsonl",
-            "reason": "no_schema_eligible_units",
+            "reason": "observed_schema_units",
         }
 
     def test_schema_observation_excludes_hermes_sqlite_evidence_before_json_decode(self, tmp_path: Path) -> None:
@@ -581,6 +617,77 @@ class TestLoadSamplesFromDb:
                 "reason": "artifact_taxonomy:Hermes SQLite evidence sidecar",
             }
         ]
+
+    def test_hermes_sqlite_schema_sampling_keeps_blob_namespace_pristine(self, tmp_path: Path) -> None:
+        """Schema sampling decodes retained SQLite blobs through an immutable URI."""
+        from polylogue.storage.blob_store import get_blob_store
+
+        db = _archive_index_db(tmp_path)
+        sqlite_path = tmp_path / "state.db"
+        with sqlite3.connect(sqlite_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(
+                """
+                CREATE TABLE schema_version(version INTEGER NOT NULL);
+                INSERT INTO schema_version(version) VALUES (16);
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    source TEXT,
+                    model_config TEXT,
+                    parent_session_id TEXT,
+                    started_at REAL
+                );
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT,
+                    tool_calls TEXT,
+                    timestamp REAL NOT NULL,
+                    observed INTEGER DEFAULT 0,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    compacted INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO sessions(id, model_config, started_at) VALUES ('hermes-root', '{}', 1.0);
+                INSERT INTO messages(session_id, role, content, timestamp)
+                VALUES ('hermes-root', 'assistant', 'hello', 2.0);
+                """
+            )
+            conn.commit()
+        content = sqlite_path.read_bytes()
+        raw_id = _insert_raw_session(
+            db_path=db,
+            origin="hermes-session",
+            source_path="/original/profile/state.db",
+            raw_content=content,
+        )
+
+        outcomes: list[dict[str, object]] = []
+        units = list(
+            iter_schema_units(
+                "hermes",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+        verification = get_blob_store().verify_all()
+
+        assert units == []
+        assert outcomes == [
+            {
+                "raw_id": raw_id,
+                "status": "unsupported",
+                "artifact_kind": None,
+                "source_path": "/original/profile/state.db",
+                "reason": "no_schema_eligible_units",
+            }
+        ]
+        assert verification.passed, verification.failures
+        assert verification.checked == 1
+        blob_path = get_blob_store().blob_path(hashlib.sha256(content).hexdigest())
+        assert not blob_path.with_name(blob_path.name + "-wal").exists()
+        assert not blob_path.with_name(blob_path.name + "-shm").exists()
 
     def test_explicit_db_path_zero_units_does_not_scan_session_dir(
         self,

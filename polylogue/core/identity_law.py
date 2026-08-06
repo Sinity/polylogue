@@ -43,13 +43,14 @@ def message_local_id(
 ) -> str:
     """Return the message-local identity component.
 
-    Provider-native message IDs win when present. When the provider omits a
-    native ID, archive falls back to ``position.variant_index`` so sibling
-    regeneration branches cannot collide.
+    Provider-native message IDs and position-derived coordinates occupy
+    disjoint tagged namespaces. This prevents a provider id such as ``0.0``
+    from colliding with the positional identity for ``(position=0,
+    variant_index=0)`` while keeping both components opaque.
     """
     if native_id is not None and native_id.strip():
-        return _required_text("message native_id", native_id)
-    return f"{_required_non_negative('position', position)}.{_required_non_negative('variant_index', variant_index)}"
+        return f"n:{_required_text('message native_id', native_id)}"
+    return f"p:{_required_non_negative('position', position)}.{_required_non_negative('variant_index', variant_index)}"
 
 
 def message_id(

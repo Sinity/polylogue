@@ -10,25 +10,31 @@ import shutil
 import sqlite3
 from pathlib import Path
 from shutil import copytree
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from polylogue.core.enums import ArtifactSupportStatus, Origin
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ARCHIVE_VERIFICATION_CHECK_NAMES,
     ARCHIVE_VERIFICATION_CHECKS,
     ARCHIVE_VERIFICATION_WAIVERS,
     REINDEX_ACCEPTANCE_CHECKS,
+    REINDEX_CANARY_ACCEPTANCE_CHECKS,
     REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+    REINDEX_SOURCE_PREFLIGHT_CHECKS,
     ArchiveVerificationCheck,
     ArchiveVerificationCheckClass,
     ArchiveVerificationReport,
     ArchiveVerificationWaiver,
+    passes_strict_acceptance,
     verify_archive,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.pathology_zoo import build_pathology_zoo, make_pathology_zoo_member_red
 from tests.infra.workload_artifacts import SeededArchiveArtifact
@@ -42,6 +48,7 @@ def _seed_coherent_archive(root: Path) -> None:
     """Build a minimal but fully coherent 5-tier archive: one raw, one session."""
     initialize_active_archive_root(root)
 
+    blob_hash = BlobStore(root / "blob").write_from_bytes(b"coherent raw payload")[0]
     source_conn = _connect(root / "source.db")
     try:
         source_conn.execute(
@@ -49,13 +56,20 @@ def _seed_coherent_archive(root: Path) -> None:
             INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
             VALUES ('raw-1', 'codex-session', 'session', '/x', ?, 10, 100)
             """,
-            (b"a" * 32,),
+            (bytes.fromhex(blob_hash),),
         )
         source_conn.execute(
             """
             INSERT INTO raw_membership_census(raw_id, parser_fingerprint, status, member_count, censused_at_ms)
             VALUES ('raw-1', 'fp', 'complete', 1, 100)
             """
+        )
+        source_conn.execute(
+            """
+            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-1', 'raw_payload', '/x', 10, 100)
+            """,
+            (bytes.fromhex(blob_hash),),
         )
         source_conn.commit()
     finally:
@@ -111,6 +125,92 @@ def test_coherent_archive_is_all_ok(tmp_path: Path) -> None:
     assert {check.name for check in report.checks} == set(ARCHIVE_VERIFICATION_CHECK_NAMES)
     for check in report.checks:
         assert check.status is OutcomeStatus.OK, f"{check.name}: {check.summary}"
+
+
+def test_raw_failure_lifecycle_accepts_only_typed_deferred_or_terminal_evidence(tmp_path: Path) -> None:
+    """A real source-tier failure without its closed outcome blocks reindex."""
+    _seed_coherent_archive(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parse_error = 'parser failed' WHERE raw_id = 'raw-1'")
+        upsert_raw_artifact(
+            conn,
+            "raw-1",
+            ArchiveSourceArtifact(
+                artifact_id="failure-evidence",
+                origin=Origin.CODEX_SESSION,
+                source_path="/x",
+                source_index=0,
+                artifact_kind="terminal_corrupt_input",
+                classification_reason="terminal_corrupt_input",
+                support_status=ArtifactSupportStatus.DECODE_FAILED,
+                first_observed_at_ms=100,
+                last_observed_at_ms=100,
+            ),
+        )
+        conn.commit()
+
+    typed = verify_archive(tmp_path, checks=("raw-failure-lifecycle",))
+    typed_check = _check(typed, "raw-failure-lifecycle")
+    assert typed_check.status is OutcomeStatus.WARNING
+    assert not typed.blocking
+    assert typed_check.evidence["terminal"] == 1
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM raw_artifacts WHERE raw_id = 'raw-1'")
+        conn.commit()
+
+    untyped = verify_archive(tmp_path, checks=("raw-failure-lifecycle",))
+    untyped_check = _check(untyped, "raw-failure-lifecycle")
+    assert untyped_check.status is OutcomeStatus.ERROR
+    assert untyped.blocking
+    assert untyped_check.evidence["unexplained"] == 1
+
+
+def test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures(tmp_path: Path) -> None:
+    """Validation failures cannot be hidden by a parse-outcome artifact label."""
+    _seed_coherent_archive(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET validation_status = 'failed' WHERE raw_id = 'raw-1'")
+        upsert_raw_artifact(
+            conn,
+            "raw-1",
+            ArchiveSourceArtifact(
+                artifact_id="validation-evidence",
+                origin=Origin.CODEX_SESSION,
+                source_path="/x",
+                source_index=0,
+                artifact_kind="terminal_unsupported_shape",
+                classification_reason="terminal_unsupported_shape",
+                support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                first_observed_at_ms=100,
+                last_observed_at_ms=100,
+            ),
+        )
+        conn.commit()
+
+    report = verify_archive(tmp_path, checks=("raw-failure-lifecycle",))
+    check = _check(report, "raw-failure-lifecycle")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["validation_failures"] == 1
+    assert check.evidence["unexplained"] == 1
+
+
+def test_cross_tier_reindex_profile_includes_raw_failure_lifecycle(tmp_path: Path) -> None:
+    """Candidate acceptance cannot bypass the source failure lifecycle gate."""
+    _seed_coherent_archive(tmp_path)
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(tmp_path / "index.db", candidate)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parse_error = 'parser failed' WHERE raw_id = 'raw-1'")
+        conn.commit()
+
+    report = verify_archive(
+        tmp_path,
+        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        index_path_override=candidate,
+    )
+
+    assert _check(report, "raw-failure-lifecycle").status is OutcomeStatus.ERROR
 
 
 def test_missing_tier_trips_tier_schema_check(tmp_path: Path) -> None:
@@ -619,18 +719,6 @@ def test_blob_ref_with_no_referent_trips_blob_refs_liveness(tmp_path: Path) -> N
 
 def test_blob_refs_liveness_passes_on_coherent_archive(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
-    conn = _connect(tmp_path / "source.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, size_bytes, acquired_at_ms)
-            VALUES (?, 'raw-1', 'raw_payload', 10, 100)
-            """,
-            (b"a" * 32,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
     report = verify_archive(tmp_path, checks=("blob-refs-liveness",))
 
@@ -642,6 +730,25 @@ def test_blob_refs_liveness_passes_on_coherent_archive(tmp_path: Path) -> None:
         "raw_payload": 0,
         "sidecar": 0,
     }
+
+
+def test_blob_reference_closure_rejects_acquired_attachment_without_ref(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute(
+            "INSERT INTO attachments (attachment_id, byte_count, blob_hash, acquisition_status, ref_count) "
+            "VALUES ('orphan-acquired', 1, ?, 'acquired', 0)",
+            (b"a" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("blob-reference-closure",))
+    check = _check(report, "blob-reference-closure")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["acquired_attachment_missing_ref_count"] == 1
 
 
 def test_attachment_blob_ref_joins_its_parent_raw_session(tmp_path: Path) -> None:
@@ -664,6 +771,58 @@ def test_attachment_blob_ref_joins_its_parent_raw_session(tmp_path: Path) -> Non
     check = _check(report, "blob-refs-liveness")
     assert check.status is OutcomeStatus.OK
     assert check.evidence["orphans_by_ref_type"]["attachment"] == 0
+
+
+@pytest.mark.parametrize("mutation", ("missing", "corrupt", "orphan"))
+def test_full_blob_integrity_red_twin(tmp_path: Path, mutation: str) -> None:
+    """Full archive verification rejects every physical blob failure class."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "source.db") as conn:
+        raw_hash = bytes(conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = 'raw-1'").fetchone()[0]).hex()
+    store = BlobStore(tmp_path / "blob")
+    if mutation == "missing":
+        store.blob_path(raw_hash).unlink()
+    elif mutation == "corrupt":
+        store.blob_path(raw_hash).write_bytes(b"corrupt bytes")
+    else:
+        store.write_from_bytes(b"orphan bytes")
+
+    report = verify_archive(tmp_path, checks=("blob-integrity",))
+
+    check = _check(report, "blob-integrity")
+    assert check.status is OutcomeStatus.ERROR
+    assert report.blocking
+    finding_kinds = set(cast(dict[str, object], check.evidence["finding_counts"]))
+    expected_kind = {
+        "missing": "missing_referenced_blobs",
+        "corrupt": "hash_mismatch",
+        "orphan": "orphan_blobs",
+    }[mutation]
+    assert expected_kind in finding_kinds
+    assert cast(dict[str, object], check.evidence["scan"])["full_scan"] is True
+
+
+def test_acquired_unreachable_attachment_debt_is_blocking(tmp_path: Path) -> None:
+    """Acquired bytes without an attachment_refs edge are not queryable."""
+    _seed_coherent_archive(tmp_path)
+    blob_hash, size = BlobStore(tmp_path / "blob").write_from_bytes(b"unreachable attachment")
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
+            VALUES ('unreachable-attachment', ?, ?, 'acquired', 0)
+            """,
+            (bytes.fromhex(blob_hash), size),
+        )
+        conn.commit()
+
+    report = verify_archive(tmp_path, checks=("attachment-acquisition-debt",))
+
+    check = _check(report, "attachment-acquisition-debt")
+    assert check.status is OutcomeStatus.ERROR
+    assert report.blocking
+    assert check.evidence["unreachable_count"] == 1
+    assert "unreachable-attachment" in check.details[0]
 
 
 def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -> None:
@@ -875,12 +1034,13 @@ def test_byte_dup_of_indexed_head_is_reported_as_evidence_not_hidden(tmp_path: P
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "source.db")
     try:
+        indexed_blob_hash = conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = 'raw-1'").fetchone()[0]
         conn.execute(
             """
             INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
             VALUES ('raw-dup', 'codex-session', 'session-dup', '/y', ?, 10, 200)
             """,
-            (b"a" * 32,),  # same blob_hash as raw-1, which IS indexed; defaults to quarantined
+            (indexed_blob_hash,),  # same blob_hash as raw-1, which IS indexed; defaults to quarantined
         )
         conn.commit()
     finally:
@@ -1338,12 +1498,62 @@ def test_real_waiver_table_also_waives_embeddings_refs_liveness(tmp_path: Path) 
     assert not report.blocking  # waived by the real table too -- consistent with the mechanism test above
 
 
+def test_strict_acceptance_rejects_warning_skip_and_waived_error() -> None:
+    report = ArchiveVerificationReport(
+        checks=[
+            ArchiveVerificationCheck(name="warning", status=OutcomeStatus.WARNING),
+            ArchiveVerificationCheck(name="skip", status=OutcomeStatus.SKIP),
+            ArchiveVerificationCheck(
+                name="waived-error",
+                status=OutcomeStatus.ERROR,
+                waived_bead_id="polylogue-feu0",
+            ),
+        ]
+    )
+
+    assert not report.blocking
+    assert not passes_strict_acceptance(report)
+
+
+def test_strict_acceptance_requires_every_named_check() -> None:
+    report = ArchiveVerificationReport(checks=[ArchiveVerificationCheck(name="present", status=OutcomeStatus.OK)])
+
+    assert not passes_strict_acceptance(report, required_checks=("present", "missing"))
+
+
 def test_reindex_acceptance_checks_are_all_registered_and_ground_truth_eligible() -> None:
     """Every name in :data:`REINDEX_ACCEPTANCE_CHECKS` must be a real
     registry check, and running it against an index-only root (mirroring a
     real generation directory, which has no source.db/user.db/embeddings.db)
     must never report ``error`` from a missing-tier false positive."""
     assert set(REINDEX_ACCEPTANCE_CHECKS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
+
+
+def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_stays_partial() -> None:
+    expected = {
+        "source-index-coverage",
+        "fts-parity",
+        "lineage-sanity",
+        "session-lineage-acyclic",
+        "blob-refs-liveness",
+        "blob-integrity",
+        "attachment-acquisition-debt",
+        "raw-failure-lifecycle",
+        "embeddings-refs-liveness",
+        "user-tier-refs",
+        "session-fingerprint-stamps",
+        "message-count-projection",
+        "excluded-cursor-vocabulary-honesty",
+        "stalled-append-cursor-freshness",
+        "corpus-absences",
+        "corpus-attachment-fidelity",
+        "corpus-revision-fidelity",
+        "pathology-zoo-invariants",
+    }
+
+    assert expected <= set(REINDEX_ACCEPTANCE_CHECKS) | set(REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
+    assert REINDEX_CANARY_ACCEPTANCE_CHECKS == ("pathology-zoo-invariants",)
+    assert set(REINDEX_SOURCE_PREFLIGHT_CHECKS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
 
 
 def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path: Path) -> None:
@@ -1394,6 +1604,10 @@ RED_TWIN_TESTS: dict[str, str] = {
     "lineage-sanity": "test_dangling_resolved_dst_trips_lineage_sanity",
     "enum-superset-check": "test_missing_enum_value_trips_enum_superset_check",
     "blob-refs-liveness": "test_blob_ref_with_no_referent_trips_blob_refs_liveness",
+    "blob-reference-closure": "test_blob_reference_closure_rejects_acquired_attachment_without_ref",
+    "blob-integrity": "test_full_blob_integrity_red_twin",
+    "attachment-acquisition-debt": "test_acquired_unreachable_attachment_debt_is_blocking",
+    "raw-failure-lifecycle": "test_raw_failure_lifecycle_mutation_red_twin_for_validation_failures",
     "pathology-zoo-invariants": "test_pathology_zoo_invariants_red_twin",
     "embeddings-refs-liveness": "test_orphaned_embedding_ref_trips_embeddings_refs_liveness",
     "session-lineage-acyclic": "test_parent_session_id_cycle_trips_session_lineage_acyclic",

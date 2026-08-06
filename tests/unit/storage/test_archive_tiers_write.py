@@ -109,6 +109,34 @@ def test_message_content_hash_tracks_same_identity_body_edits(tmp_path: Path) ->
         conn.close()
 
 
+def test_writer_separates_native_and_positional_message_identity(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="native-positional-identity",
+            messages=[
+                ParsedMessage(provider_message_id="0.0", role=Role.USER, text="native", position=1),
+                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="positional", position=0),
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+
+        rows = conn.execute(
+            "SELECT message_id, native_id FROM messages WHERE session_id = ? ORDER BY position",
+            (session_id,),
+        ).fetchall()
+        assert [(row["message_id"], row["native_id"]) for row in rows] == [
+            (f"{session_id}:p:0.0", None),
+            (f"{session_id}:n:0.0", "0.0"),
+        ]
+
+        write_parsed_session_to_archive(conn, session.model_copy(update={"messages": list(reversed(session.messages))}))
+        assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
 def _block_hash(conn: sqlite3.Connection, session_id: str, native_message_id: str, position: int) -> bytes:
     row = conn.execute(
         """
@@ -324,10 +352,10 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
 
     assert envelope.session_id == "codex-session:codex-session-1"
     assert envelope.origin == "codex-session"
-    assert envelope.active_leaf_message_id == "codex-session:codex-session-1:a1"
+    assert envelope.active_leaf_message_id == "codex-session:codex-session-1:n:a1"
     assert [message.message_id for message in envelope.messages] == [
-        "codex-session:codex-session-1:u1",
-        "codex-session:codex-session-1:a1",
+        "codex-session:codex-session-1:n:u1",
+        "codex-session:codex-session-1:n:a1",
     ]
     assert envelope.messages[1].is_active_leaf is True
     assert [block.block_type for block in envelope.messages[1].blocks] == ["tool_use", "tool_result"]
@@ -341,7 +369,7 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
         "is_error": 0,
         "exit_code": 0,
     }
-    assert search_archive_blocks(conn, "focused") == ["codex-session:codex-session-1:u1:0"]
+    assert search_archive_blocks(conn, "focused") == ["codex-session:codex-session-1:n:u1:0"]
 
 
 def test_archive_tiers_writer_splits_provider_user_from_authored_user_counts(tmp_path: Path) -> None:
@@ -520,13 +548,13 @@ def test_archive_tiers_writer_does_not_collapse_duplicate_message_native_ids(tmp
         (0, "user", None),
         (1, "assistant", None),
     ]
-    assert [row["message_id"] for row in message_rows] == [f"{session_id}:0.0", f"{session_id}:1.0"]
+    assert [row["message_id"] for row in message_rows] == [f"{session_id}:p:0.0", f"{session_id}:p:1.0"]
     assert [(row["message_id"], row["text"]) for row in block_rows] == [
-        (f"{session_id}:0.0", "first"),
-        (f"{session_id}:1.0", "second"),
+        (f"{session_id}:p:0.0", "first"),
+        (f"{session_id}:p:1.0", "second"),
     ]
     assert session_row["message_count"] == 2
-    assert session_row["active_leaf_message_id"] == f"{session_id}:1.0"
+    assert session_row["active_leaf_message_id"] == f"{session_id}:p:1.0"
 
 
 def test_archive_tiers_writer_normalizes_duplicate_idless_active_leaves_by_position(tmp_path: Path) -> None:
@@ -654,16 +682,16 @@ def test_archive_tiers_writer_preserves_chatgpt_branch_variants(tmp_path: Path) 
     ).fetchall()
 
     assert [row["message_id"] for row in rows] == [
-        "chatgpt-export:chatgpt-branch-1:u1",
-        "chatgpt-export:chatgpt-branch-1:a-old",
-        "chatgpt-export:chatgpt-branch-1:a-new",
+        "chatgpt-export:chatgpt-branch-1:n:u1",
+        "chatgpt-export:chatgpt-branch-1:n:a-old",
+        "chatgpt-export:chatgpt-branch-1:n:a-new",
     ]
-    assert rows[1]["parent_message_id"] == "chatgpt-export:chatgpt-branch-1:u1"
-    assert rows[2]["parent_message_id"] == "chatgpt-export:chatgpt-branch-1:u1"
+    assert rows[1]["parent_message_id"] == "chatgpt-export:chatgpt-branch-1:n:u1"
+    assert rows[2]["parent_message_id"] == "chatgpt-export:chatgpt-branch-1:n:u1"
     assert [(row["is_active_path"], row["is_active_leaf"]) for row in rows] == [(1, 0), (0, 0), (1, 1)]
     assert (
         read_archive_session_envelope(conn, session_id).active_leaf_message_id
-        == "chatgpt-export:chatgpt-branch-1:a-new"
+        == "chatgpt-export:chatgpt-branch-1:n:a-new"
     )
 
 
@@ -715,12 +743,12 @@ def test_archive_tiers_writer_uses_identity_law_for_messages_without_native_ids(
     envelope = read_archive_session_envelope(conn, session_id)
 
     assert [message.message_id for message in envelope.messages] == [
-        "codex-session:codex-generated-ids:0.0",
-        "codex-session:codex-generated-ids:1.0",
+        "codex-session:codex-generated-ids:p:0.0",
+        "codex-session:codex-generated-ids:p:1.0",
     ]
     assert [block.block_id for message in envelope.messages for block in message.blocks] == [
-        "codex-session:codex-generated-ids:0.0:0",
-        "codex-session:codex-generated-ids:1.0:0",
+        "codex-session:codex-generated-ids:p:0.0:0",
+        "codex-session:codex-generated-ids:p:1.0:0",
     ]
 
 
@@ -1088,7 +1116,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
     assert [dict(row) for row in rows] == [
         {
             "event_id": f"{session_id}:0",
-            "source_message_id": f"{session_id}:m1",
+            "source_message_id": f"{session_id}:n:m1",
             "source_message_provider_id": "m1",
             "position": 0,
             "event_type": "compaction",
@@ -1249,7 +1277,7 @@ def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path)
     ).fetchone()
     assert dict(usage) == {
         "usage_event_id": f"{session_id}:usage:0",
-        "source_message_id": f"{session_id}:m1",
+        "source_message_id": f"{session_id}:n:m1",
         "position": 0,
         "provider_event_type": "token_count",
         "last_input_tokens": 11,
@@ -1849,14 +1877,14 @@ def test_provider_usage_events_append_preserves_prior_history(tmp_path: Path) ->
     assert [dict(row) for row in rows] == [
         {
             "usage_event_id": f"{session_id}:usage:0",
-            "source_message_id": f"{session_id}:m1",
+            "source_message_id": f"{session_id}:n:m1",
             "position": 0,
             "total_input_tokens": 10,
             "total_output_tokens": 5,
         },
         {
             "usage_event_id": f"{session_id}:usage:1",
-            "source_message_id": f"{session_id}:m2",
+            "source_message_id": f"{session_id}:n:m2",
             "position": 1,
             "total_input_tokens": 30,
             "total_output_tokens": 15,
@@ -3450,7 +3478,7 @@ def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: P
     }
     assert dict(session_row) == {"git_branch": None, "git_repository_url": None, "commit_hash": None}
     assert search_archive_blocks(conn, "old") == []
-    assert search_archive_blocks(conn, "replacement") == [f"{session_id}:m1:0"]
+    assert search_archive_blocks(conn, "replacement") == [f"{session_id}:n:m1:0"]
     assert (
         conn.execute(
             """
@@ -3518,7 +3546,7 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
         attachment_hash.update(part.encode("utf-8", errors="surrogatepass"))
         attachment_hash.update(b"\0")
     attachment_id = attachment_hash.hexdigest()
-    message_id = f"{session_id}:m1"
+    message_id = f"{session_id}:n:m1"
 
     attachment = conn.execute(
         """
@@ -3569,6 +3597,36 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
         ("drive", "drive-1"),
         ("url", "https://example.test/report.pdf"),
     }
+
+
+def test_writer_sanitizes_unpaired_surrogates_in_attachment_native_ids(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="attachment-surrogate-native-id",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="surrogate")],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="attachment-\ud800",
+                    provider_file_id="file-\udfff",
+                    message_provider_id="m1",
+                    name="surrogate.txt",
+                    mime_type="text/plain",
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+        ref_id = conn.execute("SELECT ref_id FROM attachment_refs WHERE session_id = ?", (session_id,)).fetchone()[0]
+        native_ids = {
+            row[0]
+            for row in conn.execute(
+                "SELECT native_id FROM attachment_native_ids WHERE ref_id = ?", (ref_id,)
+            ).fetchall()
+        }
+        assert native_ids == {"attachment-�", "file-�"}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -4707,6 +4765,62 @@ def test_reingest_restores_attachment_ref_for_reinjected_message(tmp_path: Path)
         ).fetchone()
         assert native_id_row is not None, "reinjected attachment_ref's native id was not restored"
         assert native_id_row["native_id"] == "att-1"
+    finally:
+        conn.close()
+
+
+def test_full_replace_preserves_distinct_attachments_with_colliding_positions(tmp_path: Path) -> None:
+    """A truncated positional hash must not let one attachment replace another.
+
+    These are the certification witness ids: both produce the historical
+    four-byte ``_attachment_position`` value ``0xf5f6e7cd``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        attachments = [
+            ParsedAttachment(
+                provider_attachment_id="cert-collision-50449",
+                message_provider_id="m1",
+                name="first.txt",
+                mime_type="text/plain",
+                size_bytes=5,
+            ),
+            ParsedAttachment(
+                provider_attachment_id="cert-collision-111329",
+                message_provider_id="m1",
+                name="second.txt",
+                mime_type="text/plain",
+                size_bytes=6,
+            ),
+        ]
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="attachment-position-collision",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="two files")],
+            attachments=attachments,
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+
+        def rows() -> list[tuple[str, int]]:
+            return [
+                (str(row["attachment_id"]), int(row["position"]))
+                for row in conn.execute(
+                    "SELECT attachment_id, position FROM attachment_refs WHERE session_id = ? ORDER BY attachment_id",
+                    (session_id,),
+                ).fetchall()
+            ]
+
+        first_rows = rows()
+        assert len(first_rows) == 2
+        assert len({attachment_id for attachment_id, _position in first_rows}) == 2
+        assert len({position for _attachment_id, position in first_rows}) == 2
+
+        write_parsed_session_to_archive(
+            conn,
+            session.model_copy(update={"attachments": list(reversed(attachments))}),
+            force_replace=True,
+        )
+        assert rows() == first_rows
     finally:
         conn.close()
 

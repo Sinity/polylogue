@@ -339,18 +339,6 @@ def _unsupported_for_package(
     registry: SchemaReceiptRegistry, provider: str, package: SchemaVersionPackage
 ) -> tuple[SchemaInferenceUnsupportedDecision, ...]:
     decisions: list[SchemaInferenceUnsupportedDecision] = []
-    if provider not in PROVIDER_WIRE_FORMATS:
-        for element in package.elements:
-            decisions.append(
-                SchemaInferenceUnsupportedDecision(
-                    provider,
-                    package.version,
-                    element.element_kind,
-                    "unsupported",
-                    "provider_without_wire_format",
-                )
-            )
-        return tuple(sorted(decisions))
     for element in package.elements:
         if not element.supported or element.schema_file is None:
             decisions.append(
@@ -360,6 +348,17 @@ def _unsupported_for_package(
                     element.element_kind,
                     "unsupported",
                     "unsupported_element" if not element.supported else "missing_schema",
+                )
+            )
+            continue
+        if provider not in PROVIDER_WIRE_FORMATS:
+            decisions.append(
+                SchemaInferenceUnsupportedDecision(
+                    provider,
+                    package.version,
+                    element.element_kind,
+                    "unsupported",
+                    "provider_without_wire_format",
                 )
             )
             continue

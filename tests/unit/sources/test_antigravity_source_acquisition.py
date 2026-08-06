@@ -35,8 +35,9 @@ def test_unavailable_language_server_never_promotes_brain_sidecars_to_sessions(
     """A missing exporter leaves the conversation coverage gap visible.
 
     This enters the real Antigravity source iterator that batch import uses.
-    Metadata is an artifact, so it cannot substitute for a conversation
-    trajectory when the language-server export is unavailable.
+    Before the fix, its fallback parsed this sidecar into a degraded session,
+    bypassing the same taxonomy rule that excludes the file from live ingest
+    and schema inference.
     """
     root = tmp_path / "antigravity"
     (root / "conversations").mkdir(parents=True)
@@ -54,4 +55,4 @@ def test_unavailable_language_server_never_promotes_brain_sidecars_to_sessions(
     sessions = list(iter_antigravity_language_server_sessions(Source(name="antigravity", path=root)))
 
     assert sessions == []
-    assert "no session coverage" in caplog.messages[-1]
+    assert "antigravity_coverage_gap" in caplog.messages[-1]

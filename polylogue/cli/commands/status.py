@@ -1199,9 +1199,11 @@ def status_command(
             obs.attributes["daemon_reachable"] = True
             obs.daemon_path = "daemon"
             if output_format == "json":
-                _show_status_json(env, result, full=full_payload)
+                status_ok = _show_status_json(env, result, full=full_payload)
             else:
-                _show_daemon_status(env, result)
+                status_ok = _show_daemon_status(env, result)
+            if not status_ok:
+                raise click.exceptions.Exit(1)
             return
 
         obs.attributes["daemon_reachable"] = False
@@ -1210,14 +1212,20 @@ def status_command(
             if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
                 obs.status = "degraded"
                 _show_daemon_status_unavailable_json(env)
+                raise click.exceptions.Exit(1)
             else:
-                _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
+                status_ok = _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
+                if not status_ok:
+                    raise click.exceptions.Exit(1)
         else:
             if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
                 obs.status = "degraded"
                 _show_daemon_status_unavailable(env)
+                raise click.exceptions.Exit(1)
             else:
-                _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
+                status_ok = _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
+                if not status_ok:
+                    raise click.exceptions.Exit(1)
     return
 
 
@@ -1249,7 +1257,7 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
         _show_direct_status(env, compact=True)
 
 
-def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> None:
+def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> bool:
     """Render daemon status from the real DaemonStatus payload."""
     status = normalize_raw_frontier_status_payload(status, require_fresh_snapshot=True)
     liveness = status.get("daemon_liveness", False)
@@ -1353,17 +1361,25 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
             f" [{fail_color}]({raw_parse} parse + {raw_val} validation)[/{fail_color}]"
         )
 
+    if not _raw_failure_lifecycle_is_healthy(status):
+        lifecycle_state = str(status.get("raw_failure_lifecycle_state") or "unavailable")
+        lifecycle_reason = str(status.get("raw_failure_lifecycle_reason") or "source.db evidence is unavailable")
+        if total_raw == 0 or lifecycle_state in {"unavailable", "blocked"}:
+            env.ui.console.print(f"  Raw failure lifecycle: [{lifecycle_state}] {lifecycle_reason}")
+
     if not compact:
         checked = status.get("checked_at", "")
         if checked:
             env.ui.console.print(f"\n  [dim]Checked: {checked}[/dim]")
+    return overall_ok
 
 
-def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False) -> None:
+def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False) -> bool:
     """Machine-readable JSON status output."""
     normalized = normalize_raw_frontier_status_payload(status, require_fresh_snapshot=True)
     payload = normalized if full else _compact_status_payload(normalized, source="daemon")
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
+    return _status_ok(normalized, require_fresh_snapshot=True)
 
 
 def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str, Any]:
@@ -1482,6 +1498,8 @@ def _status_ok(status: dict[str, Any], *, require_fresh_snapshot: bool = False) 
         return False
     if isinstance(snapshot, dict) and snapshot.get("state") not in {None, "fresh"}:
         return False
+    if not _raw_failure_lifecycle_is_healthy(status):
+        return False
     return ok and raw_frontier_integrity_is_proven_healthy(status.get("raw_frontier_integrity"))
 
 
@@ -1587,12 +1605,26 @@ def _compact_raw_failure_status(status: dict[str, Any]) -> dict[str, Any]:
         "terminal_rejections": "raw_terminal_rejections",
         "unexplained": "raw_unexplained_failures",
         "detection_warnings": "raw_detection_warnings",
+        "lifecycle_available": "raw_failure_lifecycle_available",
+        "lifecycle_state": "raw_failure_lifecycle_state",
+        "lifecycle_reason": "raw_failure_lifecycle_reason",
     }
     failures = {label: status[key] for label, key in keys.items() if key in status}
     samples = status.get("raw_failure_samples")
     if isinstance(samples, list):
         failures["sample_count"] = len(samples)
     return failures
+
+
+def _raw_failure_lifecycle_is_healthy(status: dict[str, Any]) -> bool:
+    """Require explicit, clean source-tier lifecycle evidence for green status."""
+    return (
+        status.get("raw_failure_lifecycle_available") is True
+        and status.get("raw_failure_lifecycle_state") == "healthy"
+        and status.get("raw_parse_failures") == 0
+        and status.get("raw_validation_failures") == 0
+        and status.get("raw_unexplained_failures") == 0
+    )
 
 
 def _direct_raw_failure_status(root: Path) -> dict[str, Any]:
@@ -1608,6 +1640,9 @@ def _direct_raw_failure_status(root: Path) -> dict[str, Any]:
         "raw_deferred_failures": _safe_int(info.get("deferred_failures")),
         "raw_terminal_rejections": _safe_int(info.get("terminal_rejections")),
         "raw_unexplained_failures": _safe_int(info.get("unexplained_failures")),
+        "raw_failure_lifecycle_available": info.get("raw_failure_lifecycle_available"),
+        "raw_failure_lifecycle_state": info.get("raw_failure_lifecycle_state"),
+        "raw_failure_lifecycle_reason": info.get("raw_failure_lifecycle_reason"),
         "raw_failure_samples": info.get("samples", []),
     }
 
@@ -1645,7 +1680,7 @@ def _show_direct_json(
     *,
     full: bool = False,
     include_archive_readiness: bool = False,
-) -> None:
+) -> bool:
     """Machine-readable JSON fallback when daemon is not running."""
     from polylogue.cli.commands.init import starter_config_path
     from polylogue.cli.commands.status_diagnostics import (
@@ -1666,6 +1701,7 @@ def _show_direct_json(
     )
     raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
     raw_frontier_integrity = _direct_raw_frontier_integrity(active_root, raw_materialization_readiness)
+    raw_failure_status = _direct_raw_failure_status(root)
     component_readiness = _direct_component_readiness(
         env,
         active_root=active_root,
@@ -1681,7 +1717,7 @@ def _show_direct_json(
     )
     schema_drift = schema_drift_status(active_root, now_ms=int(time.time() * 1000))
     payload: dict[str, Any] = {
-        "ok": _direct_status_ok(component_readiness),
+        "ok": _direct_status_ok(component_readiness) and _raw_failure_lifecycle_is_healthy(raw_failure_status),
         "daemon_liveness": False,
         "archive_root": str(root),
         "active_archive_root": str(active_root),
@@ -1714,7 +1750,7 @@ def _show_direct_json(
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
-    payload.update(_direct_raw_failure_status(root))
+    payload.update(raw_failure_status)
     if active_db is not None and active_db.exists():
         payload["active_db_path"] = str(active_db)
         try:
@@ -1735,6 +1771,7 @@ def _show_direct_json(
         else _compact_status_payload(normalized_payload, source="direct")
     )
     env.ui.console.print(json.dumps(output, indent=2, default=str))
+    return _status_ok(normalized_payload)
 
 
 def _component_computation_failure(component: str, exc: Exception, *, scope: str = "archive") -> dict[str, Any]:
@@ -2236,7 +2273,7 @@ def _show_direct_status(
     *,
     compact: bool = False,
     include_archive_readiness: bool = False,
-) -> None:
+) -> bool:
     """Fallback status when daemon is not running."""
     from polylogue.cli.commands.status_diagnostics import diagnose_first_run
     from polylogue.paths import archive_root, db_path
@@ -2247,7 +2284,7 @@ def _show_direct_status(
     if active_db is None or not active_db.exists():
         diag = diagnose_first_run(daemon_alive=False)
         _render_diagnostic(env, diag)
-        return
+        return False
     # An index-only external generation's active_db can live outside the
     # configured root (polylogue-yla8.1 split-root contract); source.db must
     # then resolve against the active db's own directory, not the configured
@@ -2261,7 +2298,7 @@ def _show_direct_status(
         diag = diagnose_first_run(daemon_alive=False)
         if diag.kind in {"schema_mismatch", "locked_db", "stale_pidfile"}:
             _render_diagnostic(env, diag)
-            return
+            return False
 
     try:
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -2345,6 +2382,7 @@ def _show_direct_status(
         env.ui.console.print(f"  Messages: {msgs:,}")
         env.ui.console.print(f"  Raw records: {raw:,}")
         raw_failure_status = _direct_raw_failure_status(root)
+        raw_lifecycle_healthy = _raw_failure_lifecycle_is_healthy(raw_failure_status)
         raw_total = (
             raw_failure_status["raw_parse_failures"]
             + raw_failure_status["raw_validation_failures"]
@@ -2357,6 +2395,12 @@ def _show_direct_status(
                 f"{raw_failure_status['raw_terminal_rejections']:,} terminal, "
                 f"{raw_failure_status['raw_unexplained_failures']:,} unexplained"
             )
+        if not raw_lifecycle_healthy and (
+            not raw_total or raw_failure_status["raw_failure_lifecycle_state"] in {"unavailable", "blocked"}
+        ):
+            lifecycle_state = raw_failure_status["raw_failure_lifecycle_state"] or "unavailable"
+            lifecycle_reason = raw_failure_status["raw_failure_lifecycle_reason"] or "source.db evidence is unavailable"
+            env.ui.console.print(f"  Raw failure lifecycle: [{lifecycle_state}] {lifecycle_reason}")
         if unidentified:
             env.ui.console.print(
                 f"  Unidentified artifacts: [yellow]{unidentified:,}[/yellow] "
@@ -2385,10 +2429,11 @@ def _show_direct_status(
             diag = diagnose_first_run(daemon_alive=False)
             if diag.kind in {"no_sources", "no_daemon", "missing_optional_dep"}:
                 _render_diagnostic(env, diag)
-                return
+                return raw_lifecycle_healthy
 
         if not compact and not actively_ingesting:
             env.ui.console.print("\n  [dim]Run [bold]polylogued run[/bold] to start the daemon.[/dim]")
+        return raw_lifecycle_healthy
     except Exception as exc:
         # markup=False: raw exception text may contain [brackets] Rich would
         # otherwise parse as style tags and crash on, hiding the error.
@@ -2397,6 +2442,7 @@ def _show_direct_status(
             style="yellow",
             markup=False,
         )
+        return False
 
 
 def _render_archive_readiness(env: AppEnv, readiness: dict[str, Any]) -> None:

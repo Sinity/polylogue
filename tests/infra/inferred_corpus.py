@@ -551,12 +551,12 @@ def _unsupported_reason(
     wire_format: WireFormat | None,
     construct_support: tuple[ConstructSupport, ...],
 ) -> UnsupportedCorpusRecord | None:
-    if wire_format is None:
-        return UnsupportedCorpusRecord("provider_without_wire_format")
     if not element.supported:
         return UnsupportedCorpusRecord("unsupported_element")
     if schema is None or element.schema_file is None:
         return UnsupportedCorpusRecord("missing_schema")
+    if wire_format is None:
+        return UnsupportedCorpusRecord("provider_without_wire_format")
     unsupported_constructs = tuple(item.construct for item in construct_support if item.state == "unsupported")
     if unsupported_constructs:
         return UnsupportedCorpusRecord("unsupported_json_schema_construct", unsupported_constructs)

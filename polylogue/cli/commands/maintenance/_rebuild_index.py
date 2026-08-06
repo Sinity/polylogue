@@ -43,6 +43,7 @@ def _run_daemon_rebuild(
     max_blob_mb: float | None,
     no_promote: bool,
     operation_id: str | None,
+    schema_inference_receipt_path: Path | None,
     raw_batch_size: int,
     pass_byte_budget_mb: float | None,
     pass_deadline_seconds: float | None,
@@ -58,6 +59,9 @@ def _run_daemon_rebuild(
             "max_blob_mb": max_blob_mb,
             "promote": not no_promote,
             "operation_id": operation_id,
+            "schema_inference_receipt_path": (
+                str(schema_inference_receipt_path) if schema_inference_receipt_path is not None else None
+            ),
             "raw_batch_size": raw_batch_size,
             "pass_byte_budget_mb": pass_byte_budget_mb,
             "pass_deadline_seconds": pass_deadline_seconds,
@@ -330,6 +334,13 @@ def _rebuild_index_selection_plan(
     help="Resume the retained candidate generation for this rebuild operation.",
 )
 @click.option(
+    "--schema-inference-receipt",
+    "schema_inference_receipt_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Fresh schema-inference PASS receipt; policy fallback is POLYLOGUE_SCHEMA_INFERENCE_RECEIPT.",
+)
+@click.option(
     "--raw-batch-size",
     type=int,
     default=500,
@@ -384,6 +395,7 @@ def rebuild_index_command(
     plan_only: bool,
     plan_limit: int,
     operation_id: str | None,
+    schema_inference_receipt_path: Path | None,
     raw_batch_size: int,
     pass_byte_budget_mb: float | None,
     pass_deadline_seconds: float | None,
@@ -437,6 +449,7 @@ def rebuild_index_command(
             max_blob_mb=max_blob_mb,
             no_promote=no_promote,
             operation_id=operation_id,
+            schema_inference_receipt_path=schema_inference_receipt_path,
             raw_batch_size=raw_batch_size,
             pass_byte_budget_mb=pass_byte_budget_mb,
             pass_deadline_seconds=pass_deadline_seconds,
@@ -531,6 +544,7 @@ def rebuild_index_command(
                 max_blob_mb=max_blob_mb,
                 promote=not no_promote,
                 operation_id=operation_id,
+                schema_inference_receipt_path=schema_inference_receipt_path,
                 raw_batch_size=raw_batch_size,
                 pass_byte_budget_mb=pass_byte_budget_mb,
                 pass_deadline_seconds=pass_deadline_seconds,

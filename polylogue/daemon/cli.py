@@ -933,9 +933,20 @@ async def _daemon_bulk_rebuild_transaction_in_flight() -> bool:
     Checking survives a daemon restart via a durable transaction record.
     """
     from polylogue.daemon.bulk_rebuild import has_resumable_daemon_bulk_rebuild_transaction
+    from polylogue.maintenance.schema_inference_gate import (
+        SchemaInferenceGateError,
+        resolve_schema_inference_receipt_reference,
+        validate_schema_inference_receipt,
+    )
     from polylogue.paths import archive_root
 
-    return await asyncio.to_thread(has_resumable_daemon_bulk_rebuild_transaction, archive_root())
+    root = archive_root()
+    try:
+        receipt_path = resolve_schema_inference_receipt_reference(root)
+        await asyncio.to_thread(validate_schema_inference_receipt, root, receipt_path)
+    except (SchemaInferenceGateError, RuntimeError, OSError, ValueError):
+        return False
+    return await asyncio.to_thread(has_resumable_daemon_bulk_rebuild_transaction, root)
 
 
 async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> bool:
@@ -971,15 +982,12 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
     from polylogue.config import Config
     from polylogue.daemon.bulk_rebuild import (
         DAEMON_BULK_REBUILD_OPERATION_ID,
-        has_resumable_daemon_bulk_rebuild_transaction,
         run_daemon_bulk_rebuild_pass,
     )
     from polylogue.paths import archive_root, render_root
 
     root = archive_root()
-    if not _bulk_scale_raw_materialization_backlog(counts) and not await asyncio.to_thread(
-        has_resumable_daemon_bulk_rebuild_transaction, root
-    ):
+    if not _bulk_scale_raw_materialization_backlog(counts) and not await _daemon_bulk_rebuild_transaction_in_flight():
         return False
     config = Config(archive_root=root, render_root=render_root(), sources=[])
     try:
@@ -1241,8 +1249,14 @@ def _drain_raw_materialization_once(
     function is ever scheduled onto the writer hold; passing ``None``
     (the flag-off default) reproduces the exact unmodified in-hold parse.
     """
+    from polylogue.paths import archive_root
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+    if reason := raw_frontier_source_selection_block_reason(archive_root()):
+        raise RuntimeError(f"raw materialization source-selection gate blocked: {reason}")
+
     from polylogue.config import Config
-    from polylogue.paths import archive_root, render_root
+    from polylogue.paths import render_root
     from polylogue.product import raw_authority
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
 
@@ -1336,8 +1350,14 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
     specific to this one escalated component, and the ordinary pass already
     runs them on its own cadence.
     """
+    from polylogue.paths import archive_root
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+    if reason := raw_frontier_source_selection_block_reason(archive_root()):
+        raise RuntimeError(f"raw whale materialization source-selection gate blocked: {reason}")
+
     from polylogue.config import Config
-    from polylogue.paths import archive_root, render_root
+    from polylogue.paths import render_root
     from polylogue.product import raw_authority
 
     archive = archive_root()
@@ -2865,11 +2885,14 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
                 browser_capture_spool_path=spool_path,
                 include_browser_capture_spool_path=spool_path is not None,
             )
+    status_ok = payload.get("ok") is True
     if output_format == "json":
         click.echo(dumps(payload))
-        return
-    for line in format_daemon_status_lines(payload):
-        click.echo(line)
+    else:
+        for line in format_daemon_status_lines(payload):
+            click.echo(line)
+    if not status_ok:
+        raise SystemExit(1)
 
 
 @main.command("health", help="Run tiered daemon health checks.")

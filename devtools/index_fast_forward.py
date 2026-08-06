@@ -25,12 +25,23 @@ from typing import cast
 
 from devtools.clone_support import reflink_clone
 from polylogue.config import Config
-from polylogue.maintenance.archive_verification import CORPUS_FIDELITY_CHECKS, verify_archive
+from polylogue.maintenance.archive_verification import (
+    REINDEX_ACCEPTANCE_CHECKS,
+    REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+    REINDEX_SOURCE_PREFLIGHT_CHECKS,
+    strict_acceptance_failures,
+    verify_archive,
+)
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
+from polylogue.storage.index_generation import (
+    IndexGeneration,
+    IndexGenerationStore,
+    RebuildLease,
+    source_revision_snapshot,
+)
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -475,13 +486,121 @@ def _require_complete_proof(proof: dict[str, object]) -> None:
         raise IndexFastForwardError("source replay proof hashes disagree between clone and canonical replay")
 
 
-def _require_candidate_corpus_fidelity(archive_root: Path, candidate_index: Path) -> None:
-    report = verify_archive(archive_root, checks=CORPUS_FIDELITY_CHECKS, index_path_override=candidate_index)
-    if report.blocking:
-        failing = "; ".join(
-            f"{check.name}: {check.summary}" for check in report.checks if check.status.value == "error"
-        )
-        raise IndexFastForwardError(f"candidate corpus fidelity gate failed: {failing}")
+def _require_candidate_strict_acceptance(archive_root: Path, candidate_index: Path) -> None:
+    index_only_report = verify_archive(
+        candidate_index.parent,
+        checks=REINDEX_ACCEPTANCE_CHECKS,
+    )
+    cross_tier_report = verify_archive(
+        archive_root,
+        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        index_path_override=candidate_index,
+    )
+    failures = (
+        *strict_acceptance_failures(index_only_report, required_checks=REINDEX_ACCEPTANCE_CHECKS),
+        *strict_acceptance_failures(cross_tier_report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS),
+    )
+    if failures:
+        failing = "; ".join(failures)
+        raise IndexFastForwardError(f"candidate strict acceptance gate failed: {failing}")
+
+
+def _require_source_preflight(archive_root: Path) -> dict[str, object]:
+    """Require a complete source/blob/attachment preflight before cloning."""
+    report = verify_archive(archive_root, checks=REINDEX_SOURCE_PREFLIGHT_CHECKS)
+    failures = strict_acceptance_failures(report, required_checks=REINDEX_SOURCE_PREFLIGHT_CHECKS)
+    if failures:
+        raise IndexFastForwardError(f"source strict preflight gate failed: {'; '.join(failures)}")
+    return cast(dict[str, object], report.to_json())
+
+
+def _require_generation_binding(
+    archive_root: Path,
+    receipt: dict[str, object],
+    generation_payload: dict[str, object],
+    generation: IndexGeneration,
+) -> None:
+    """Bind the loaded generation metadata to this receipt's archive and source."""
+    expected_archive_root = archive_root.resolve(strict=True)
+    receipt_archive_root = generation_payload.get("archive_root")
+    if (
+        not isinstance(receipt_archive_root, str)
+        or Path(receipt_archive_root).resolve(strict=False) != expected_archive_root
+    ):
+        raise IndexFastForwardError("prepared generation archive root changed or is foreign")
+    if Path(generation.archive_root).resolve(strict=False) != expected_archive_root:
+        raise IndexFastForwardError("prepared generation archive root changed or is foreign")
+    if generation.archive_root != receipt_archive_root:
+        raise IndexFastForwardError("prepared generation archive root metadata changed")
+
+    expected_source_snapshot = receipt.get("source_snapshot")
+    if not isinstance(expected_source_snapshot, str):
+        raise IndexFastForwardError("prepared generation source snapshot is missing")
+    if generation_payload.get("source_snapshot") != expected_source_snapshot:
+        raise IndexFastForwardError("prepared generation source snapshot changed since preparation")
+    if generation.source_snapshot != expected_source_snapshot:
+        raise IndexFastForwardError("prepared generation source snapshot changed since preparation")
+    current_metadata = asdict(generation)
+    expected_metadata = dict(generation_payload)
+    current_metadata.pop("state", None)
+    expected_metadata.pop("state", None)
+    if current_metadata != expected_metadata:
+        raise IndexFastForwardError("prepared generation metadata changed since preparation")
+
+
+def _require_active_receipt_binding(
+    store: IndexGenerationStore,
+    receipt: dict[str, object],
+    generation_payload: dict[str, object],
+    generation: IndexGeneration,
+    generation_index: Path,
+) -> None:
+    """Prove an activated receipt still describes the live generation."""
+    if generation.state != "active":
+        raise IndexFastForwardError(f"activated receipt generation is not active: {generation.state}")
+    if asdict(generation) != generation_payload:
+        raise IndexFastForwardError("activated receipt generation metadata changed")
+    try:
+        pointer_target = store.active_pointer.resolve(strict=True)
+        generation_target = generation_index.resolve(strict=True)
+    except OSError as exc:
+        raise IndexFastForwardError("activated receipt active index pointer is not resolvable") from exc
+    if pointer_target != generation_target:
+        raise IndexFastForwardError("activated receipt generation no longer owns the active index pointer")
+    expected_identity = receipt.get("active_identity_after")
+    if not isinstance(expected_identity, dict):
+        raise IndexFastForwardError("activated receipt active pointer identity is missing")
+    if _file_identity(store.active_pointer) != expected_identity:
+        raise IndexFastForwardError("activated receipt active pointer identity changed")
+
+
+def _require_recovery_evidence(
+    archive_root: Path,
+    receipt: dict[str, object],
+    generation: IndexGeneration,
+    generation_index: Path,
+) -> None:
+    """Reprove a pointer-swapped candidate before completing crash recovery."""
+    if generation.source_snapshot != receipt.get("source_snapshot"):
+        raise IndexFastForwardError("promoting generation source snapshot changed since preparation")
+    if source_revision_snapshot(archive_root) != receipt["source_snapshot"]:
+        raise IndexFastForwardError("source evidence changed since fast-forward preparation")
+    expected_identity = receipt.get("clone_identity")
+    if _proven_clone_identity(generation_index) != expected_identity:
+        raise IndexFastForwardError("prepared clone bytes changed before recovery")
+    canonical_sha = _canonical_schema_sha256(_canonical_schema_objects())
+    if canonical_sha != receipt.get("canonical_schema_sha256"):
+        raise IndexFastForwardError("canonical index schema changed since preparation")
+    _require_complete_proof(cast(dict[str, object], receipt.get("proof", {})))
+    manifest = cast(list[dict[str, object]], receipt.get("sample_manifest", []))
+    origins = tuple(sorted({str(origin) for entry in manifest for origin in cast(list[str], entry["origins"])}))
+    if _fingerprints(origins) != receipt.get("fingerprints"):
+        raise IndexFastForwardError("parser/materializer fingerprints changed since preparation")
+    _require_candidate_strict_acceptance(archive_root, generation_index)
+    if source_revision_snapshot(archive_root) != receipt["source_snapshot"]:
+        raise IndexFastForwardError("source evidence changed during promotion recovery")
+    if _proven_clone_identity(generation_index) != expected_identity:
+        raise IndexFastForwardError("prepared clone bytes changed during promotion recovery")
 
 
 def prepare_forward(
@@ -493,6 +612,7 @@ def prepare_forward(
     archive_root = archive_root.resolve(strict=True)
     _require_daemon_stopped(archive_root)
     _require_receipt_destination_writable(receipt_path)
+    source_preflight = _require_source_preflight(archive_root)
     store = IndexGenerationStore.for_archive_root(archive_root)
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
@@ -535,6 +655,7 @@ def prepare_forward(
                 "proof": proof,
                 "postflight": postflight,
                 "raw_reparse": False,
+                "source_preflight": source_preflight,
             }
             _write_receipt(receipt_path, receipt)
             return receipt
@@ -549,8 +670,6 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
     status = receipt.get("status")
     if status not in {"prepared", "activating", "activated"}:
         raise IndexFastForwardError(f"receipt is not prepared: {status}")
-    if status == "activated":
-        return receipt
     archive_root = Path(str(receipt["archive_root"])).resolve(strict=True)
     _require_daemon_stopped(archive_root)
     store = IndexGenerationStore.for_archive_root(archive_root)
@@ -558,12 +677,30 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
     generation = store.load(str(generation_payload["generation_id"]))
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
-        if status == "activating":
-            generation = store.recover_promotion(generation.generation_id)
+        _require_generation_binding(archive_root, receipt, generation_payload, generation)
         if generation.owner_id != generation_payload["owner_id"]:
             raise IndexFastForwardError("prepared generation ownership changed")
         clone = Path(generation.index_path)
+        if status == "activating":
+            pointer_target = (
+                store.active_pointer.resolve(strict=True)
+                if store.active_pointer.exists() or store.active_pointer.is_symlink()
+                else None
+            )
+            clone_target = clone.resolve(strict=True)
+            if pointer_target == clone_target:
+                if generation.state == "promoting":
+                    _require_recovery_evidence(archive_root, receipt, generation, clone)
+                    generation = store.complete_promotion_recovery(generation.generation_id)
+                elif generation.state == "active":
+                    _require_recovery_evidence(archive_root, receipt, generation, clone)
+            else:
+                generation = store.recover_promotion(generation.generation_id)
         if generation.state == "active":
+            if status == "activated":
+                _require_active_receipt_binding(store, receipt, generation_payload, generation, clone)
+                _require_recovery_evidence(archive_root, receipt, generation, clone)
+                return receipt
             if store.active_pointer.resolve(strict=True) != clone.resolve(strict=True):
                 raise IndexFastForwardError("active generation does not own the active index pointer")
             receipt.update(
@@ -571,6 +708,7 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
                     "status": "activated",
                     "activated_at_ms": receipt.get("activated_at_ms", _now_ms()),
                     "generation": asdict(generation),
+                    "active_identity_after": _file_identity(store.active_pointer),
                 }
             )
             _write_receipt(receipt_path, receipt)
@@ -592,7 +730,8 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
         origins = tuple(sorted({str(origin) for entry in manifest for origin in cast(list[str], entry["origins"])}))
         if _fingerprints(origins) != receipt.get("fingerprints"):
             raise IndexFastForwardError("parser/materializer fingerprints changed since preparation")
-        _require_candidate_corpus_fidelity(archive_root, clone)
+        _require_candidate_strict_acceptance(archive_root, clone)
+        _require_source_preflight(archive_root)
         if source_revision_snapshot(archive_root) != receipt["source_snapshot"]:
             raise IndexFastForwardError("source evidence changed immediately before promotion")
         if _proven_clone_identity(clone) != receipt.get("clone_identity"):

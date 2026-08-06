@@ -886,6 +886,14 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=66,
+        # Native and positional message identities now use disjoint tagged
+        # namespaces. Existing generated ids are still valid read values, but
+        # every newly written message and dependent reference must be produced
+        # by raw replay under the new expression.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

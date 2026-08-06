@@ -8,6 +8,8 @@ covered end-to-end in ``tests/unit/schemas/test_operator_commit.py``.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +38,11 @@ class _ConfigStub:
     db_path: Path
 
 
+@contextmanager
+def _allow_schema_generation(*_args: object, **_kwargs: object) -> Iterator[dict[str, object]]:
+    yield {}
+
+
 def test_schema_commit_forwards_request_and_defaults_output_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -55,7 +62,6 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
 
     monkeypatch.setattr(schema_commit, "get_config", fake_get_config)
     monkeypatch.setattr(schema_commit, "commit_provider_schema", fake_commit)
-
     assert (
         schema_commit.main(["--provider", "chatgpt", "--schema-inference-gate-receipt", str(tmp_path / "gate.json")])
         == 0

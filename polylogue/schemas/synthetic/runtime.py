@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from polylogue.archive.raw_payload.decode import JSONValue
+from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
 from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator, _text_for_role
 from polylogue.schemas.synthetic.wire_formats import WireFormat
@@ -19,14 +20,34 @@ if TYPE_CHECKING:
 
 SyntheticRecord: TypeAlias = dict[str, JSONValue]
 
+# The receipt reads this registry and the recursive generator gates dispatch on
+# it. Removing a construct handler therefore changes both generated behavior
+# and the support receipt instead of becoming a silent ``None`` fallback.
+SCHEMA_CONSTRUCT_HANDLERS: dict[str, str] = {
+    "anyOf": "schema-union",
+    "array": "_generate_array",
+    "boolean": "boolean",
+    "integer": "_generate_number",
+    "null": "null",
+    "number": "_generate_number",
+    "object": "_generate_object",
+    "oneOf": "schema-union",
+    "string": "_generate_string",
+}
+
 
 class _SyntheticRuntimeContext(Protocol):
+    provider: str
     wire_format: WireFormat
     _semantic_gen: SemanticValueGenerator | None
     _relation_solver: RelationConstraintSolver
     _active_profile_tokens: tuple[str, ...]
     _active_record_bucket: tuple[str, str] | None
     _max_array_items: int | None
+    _coverage_branch_choices: dict[str, int]
+    _coverage_type_choices: dict[str, str]
+    _coverage_null_paths: set[str]
+    _coverage_witness_mode: bool
 
     def _generate_from_schema(
         self,
@@ -81,11 +102,16 @@ def _schema_records(value: SchemaValue | object) -> list[SchemaRecord]:
     return [record for item in value if (record := _schema_record(item))]
 
 
-def _schema_type(schema: SchemaRecord, rng: random.Random) -> str | None:
+def _schema_type(self: _SyntheticRuntimeContext, schema: SchemaRecord, rng: random.Random, path: str) -> str | None:
     schema_type = schema.get("type")
     if isinstance(schema_type, str):
         return schema_type
     if isinstance(schema_type, list):
+        selected_type = self._coverage_type_choices.get(path) if self._coverage_witness_mode else None
+        if selected_type in schema_type:
+            return selected_type
+        if self._coverage_witness_mode and path in self._coverage_null_paths and "null" in schema_type:
+            return "null"
         non_null = [item for item in schema_type if isinstance(item, str) and item != "null"]
         return rng.choice(non_null) if non_null else "null"
     return None
@@ -166,22 +192,46 @@ def _generate_from_schema(
         return None
 
     semantic_role = schema.get("x-polylogue-semantic-role")
-    if isinstance(semantic_role, str) and self._semantic_gen is not None:
+    if (
+        isinstance(semantic_role, str)
+        and self._semantic_gen is not None
+        and not (self._coverage_witness_mode and path in self._coverage_type_choices)
+    ):
         handled, value = self._semantic_gen.try_generate(schema)
         if handled:
             return value
 
     for keyword in ("anyOf", "oneOf"):
-        variants = _schema_records(schema.get(keyword))
+        raw_variants = schema.get(keyword)
+        variants = [
+            (index, variant)
+            for index, item in enumerate(raw_variants if isinstance(raw_variants, list) else [])
+            if (variant := _schema_record(item))
+        ]
         if variants:
-            non_null = [variant for variant in variants if variant.get("type") != "null"]
+            if keyword not in SCHEMA_CONSTRUCT_HANDLERS:
+                return None
+            selected_index = self._coverage_branch_choices.get(path) if self._coverage_witness_mode else None
+            if selected_index is not None:
+                selected = next((variant for index, variant in variants if index == selected_index), None)
+                if selected is not None:
+                    return self._generate_from_schema(
+                        selected,
+                        rng,
+                        skip_keys=skip_keys,
+                        depth=depth,
+                        max_depth=max_depth,
+                        path=(f"{path}.{keyword}[{selected_index}]" if self._coverage_witness_mode else path),
+                    )
+
+            non_null = [item for item in variants if item[1].get("type") != "null"]
             candidates = non_null if non_null else variants
 
             # Weight by x-polylogue-frequency when available on variants.
             # Falls back to uniform when no variant carries the annotation
             # (backward-compatible with un-annotated schemas).
             weights: list[float] = []
-            for variant in candidates:
+            for _, variant in candidates:
                 f = variant.get("x-polylogue-frequency")
                 weights.append(float(f) if isinstance(f, (int, float)) and f > 0 else 0.0)
             if sum(weights) > 0:
@@ -192,15 +242,17 @@ def _generate_from_schema(
             else:
                 chosen = rng.choice(candidates)
             return self._generate_from_schema(
-                chosen,
+                chosen[1],
                 rng,
                 skip_keys=skip_keys,
                 depth=depth,
                 max_depth=max_depth,
-                path=path,
+                path=(f"{path}.{keyword}[{chosen[0]}]" if self._coverage_witness_mode else path),
             )
 
-    schema_type = _schema_type(schema, rng)
+    schema_type = _schema_type(self, schema, rng, path)
+    if schema_type is not None and schema_type not in SCHEMA_CONSTRUCT_HANDLERS:
+        return None
     freq_value = schema.get("x-polylogue-frequency")
     freq = float(freq_value) if isinstance(freq_value, (int, float)) else 1.0
     if depth > 0 and freq < 1.0 and rng.random() > freq:
@@ -234,6 +286,8 @@ def _generate_from_schema(
         case "null":
             return None
         case _:
+            if "object" not in SCHEMA_CONSTRUCT_HANDLERS:
+                return None
             if "properties" in schema:
                 return self._generate_object(
                     schema,
@@ -280,7 +334,7 @@ def _generate_object(
     if skip_keys:
         candidate_keys -= skip_keys
 
-    if self._relation_solver.mutual_exclusions:
+    if self._relation_solver.mutual_exclusions and not self._coverage_witness_mode:
         candidate_keys = self._relation_solver.filter_mutually_exclusive(path, candidate_keys, rng)
 
     for prop_name, prop_value in properties.items():
@@ -297,7 +351,7 @@ def _generate_object(
         if prop_name in selected_root_fields and freq < 1.0:
             prop_schema = {**prop_schema, "x-polylogue-frequency": 1.0}
 
-        child_path = f"{path}.{prop_name}"
+        child_path = f"{path}.properties.{prop_name}" if self._coverage_witness_mode else f"{path}.{prop_name}"
         ref = self._relation_solver.resolve_foreign_key(child_path, rng)
         if ref is not None:
             obj[prop_name] = ref
@@ -310,10 +364,38 @@ def _generate_object(
             max_depth=max_depth,
             path=child_path,
         )
-        if value is not None:
+        if value is not None or (self._coverage_witness_mode and _schema_allows_null(prop_schema)):
             obj[prop_name] = value
 
+    additional_schema = _schema_record(schema.get("additionalProperties"))
+    if self._coverage_witness_mode and additional_schema:
+        extra_name = "__polylogue_coverage_extra__"
+        while extra_name in properties:
+            extra_name = f"_{extra_name}"
+        extra_value = self._generate_from_schema(
+            additional_schema,
+            rng,
+            depth=depth + 1,
+            max_depth=max_depth,
+            path=f"{path}.additionalProperties.*",
+        )
+        if extra_value is not None or _schema_allows_null(additional_schema):
+            obj[extra_name] = extra_value
+
     return obj
+
+
+def _schema_allows_null(schema: SchemaRecord) -> bool:
+    schema_type = schema.get("type")
+    if schema_type == "null":
+        return True
+    if isinstance(schema_type, list) and "null" in schema_type:
+        return True
+    return any(
+        _schema_allows_null(variant)
+        for keyword in ("anyOf", "oneOf")
+        for variant in _schema_records(schema.get(keyword))
+    )
 
 
 def _generate_string(self: _SyntheticRuntimeContext, schema: SchemaRecord, rng: random.Random) -> str:
@@ -390,6 +472,8 @@ def _generate_array(
         n_items = rng.randint(bounded_lo, bounded_hi)
     else:
         n_items = rng.randint(1, 3)
+    if self._coverage_witness_mode:
+        n_items = 1
     if self._max_array_items is not None:
         n_items = min(n_items, self._max_array_items)
 
@@ -402,13 +486,14 @@ def _generate_array(
     if not item_allows_null:
         item_allows_null = any(variant.get("type") == "null" for variant in _schema_records(item_schema.get("oneOf")))
 
+    item_path = f"{path}.items[*]" if self._coverage_witness_mode else f"{path}[*]"
     items = [
         self._generate_from_schema(
             item_schema,
             rng,
             depth=depth + 1,
             max_depth=max_depth,
-            path=f"{path}[*]",
+            path=item_path,
         )
         for _ in range(n_items)
     ]
@@ -418,6 +503,7 @@ def _generate_array(
 
 
 def _serialize(self: _SyntheticRuntimeContext, data: JSONValue) -> bytes:
+    validate_wire_payload(self.provider, data)
     if self.wire_format.encoding == "jsonl":
         if not isinstance(data, list):
             raise ValueError("JSONL wire format requires a list payload")
@@ -427,6 +513,7 @@ def _serialize(self: _SyntheticRuntimeContext, data: JSONValue) -> bytes:
 
 
 __all__ = [
+    "SCHEMA_CONSTRUCT_HANDLERS",
     "_generate_array",
     "_generate_from_schema",
     "_generate_number",

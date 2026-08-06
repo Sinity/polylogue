@@ -155,6 +155,9 @@ not classify orphaned canonical blobs and never runs GC.
 
 ```bash
 polylogue ops maintenance blob-namespace-quarantine --output-format json
+polylogue ops maintenance blob-namespace-quarantine --plan \
+  --backup-manifest /path/to/verified-source-backup/manifest.json \
+  --output-format json
 polylogue ops maintenance blob-namespace-quarantine --apply \
   --backup-manifest /path/to/verified-source-backup/manifest.json \
   --receipt-dir /path/to/new/namespace-quarantine-receipt \
@@ -162,6 +165,18 @@ polylogue ops maintenance blob-namespace-quarantine --apply \
 polylogue ops maintenance blob-namespace-quarantine --recover \
   --receipt-dir /path/to/existing/namespace-quarantine-receipt
 ```
+
+`--plan` is the backup-gated operator audit. It authenticates the supplied
+source-tier backup against an immutable read of `source.db`, then emits a
+typed census of canonical blobs, SQLite `-wal`/`-shm` sidecars, `.blob.*`
+temporary files, and other invalid entries. It does not create receipts,
+checkpoint SQLite, move files, delete files, or change archive rows. Run this
+plan before any later offline quarantine decision.
+
+This plan is an offline safety prerequisite, not a production cleanup receipt
+or a complete bead-closure claim. The full-hash pristine receipt required by
+`r9xsj` remains a separate residual dependency, and production cleanup remains
+a separate operator-authorized residual dependency. No receipt is claimed here.
 
 Apply requires the daemon stopped, no archive writer lease, the archive-wide
 exclusive maintenance lease, a successful attested source-tier backup manifest
@@ -211,6 +226,31 @@ new receipt path that does not already exist. It revalidates the backup and
 reclassifies under `BEGIN IMMEDIATE` before fsyncing the prepared receipt and
 deleting the exact candidate set. Review the receipt's final `committed` line
 before treating the pass as complete.
+
+### `polylogue ops maintenance blob-reference-closure` - acquired reference closure
+
+Read-only by default. It checks that each `raw_sessions` row has exactly one
+matching `raw_payload` ref and that each acquired index attachment is reachable
+through `attachment_refs`. Raw gaps are repaired from the retained raw row's
+exact hash, path, size, and acquisition timestamp. Attachment gaps are repaired
+only when a complete reparse of authoritative `source.db` bytes reproduces the
+attachment identity and its owning message still exists. Other rows are
+reported as typed blockers and remain untouched.
+
+```bash
+polylogue ops maintenance blob-reference-closure --output-format json
+polylogue ops maintenance blob-reference-closure --apply \
+  --backup-manifest /path/to/verified-full-evidence-manifest.json \
+  --receipt-file /path/to/new/blob-reference-closure.jsonl \
+  --output-format json
+```
+
+Apply requires the daemon to be offline, a verified backup manifest covering
+both `source.db` and `index.db`, and a new receipt path. It inserts exact refs
+only, never deletes or replaces existing refs. The source and index commits are
+recorded separately in the receipt so a retry can safely continue an additive
+repair. Reindex acceptance runs the same closure check against the candidate
+index before promotion.
 
 ### `polylogue ops maintenance hook-payload-ref-reconcile` - legacy hook-ref repair
 
@@ -322,7 +362,20 @@ polylogue ops maintenance blob-reference-prune-orphans \
 
 ### `polylogue ops maintenance reindex-canary` — inactive-generation semantic diff
 
-Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`, writes a durable report, and refuses a report with unclassified differences. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
+Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`. A run with observed differences writes an unreviewed durable report and exits non-zero. Re-run with `--review-manifest` to persist one classification per difference, then use `--consume-report` to validate the reviewed report and approve its evidence. Approval never authorizes promotion. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
+
+```bash
+polylogue ops maintenance reindex-canary \
+  --archive-root /realm/tmp/polylogue-canary-archive \
+  --input /realm/tmp/polylogue-canary-archive/index.db \
+  --schema-inference-receipt /realm/tmp/schema-inference-gate-receipt.json \
+  --sample 100 \
+  --report /realm/tmp/polylogue-reindex-canary.json \
+  --no-promote \
+  --output-format json
+```
+
+After reviewing the observed identities printed by the failed run, persist the classifications and validate the report. Consumption acquires the same archive ownership and rebuild lease as the rebuild path, verifies referenced raw-payload bytes through `BlobStore`, and revalidates the source closure, candidate generation, receipt, and comparison immediately before approval. Membership rows and logical-source-key expansion are part of the receipt, so drift fails closed:
 
 ```bash
 polylogue ops maintenance reindex-canary \
@@ -330,8 +383,14 @@ polylogue ops maintenance reindex-canary \
   --input /realm/tmp/polylogue-canary-archive/index.db \
   --sample 100 \
   --report /realm/tmp/polylogue-reindex-canary.json \
-  --no-promote \
-  --output-format json
+  --review-manifest /realm/tmp/polylogue-reindex-reviews.json \
+  --no-promote
+
+polylogue ops maintenance reindex-canary \
+  --archive-root /realm/tmp/polylogue-canary-archive \
+  --report /realm/tmp/polylogue-reindex-canary.json \
+  --consume-report \
+  --no-promote
 ```
 
 ### `polylogue ops maintenance verify-archive` — coherence gate
