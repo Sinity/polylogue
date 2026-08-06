@@ -77,14 +77,16 @@ jobs:
             if [ "${CIRCLE_BRANCH:-}" = "master" ]; then
               exit 0
             fi
-            PR_ARGS=()
             if [ -n "${CIRCLE_PULL_REQUEST:-}" ]; then
-              PR_ARGS=(--pr "${CIRCLE_PULL_REQUEST##*/}")
+              ~/.local/bin/uv run devtools workspace pr-scope check-ci \
+                --pr "${CIRCLE_PULL_REQUEST##*/}" \
+                --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
+                --expected-head-sha "${CIRCLE_SHA1}"
+            else
+              ~/.local/bin/uv run devtools workspace pr-scope check-ci \
+                --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
+                --expected-head-sha "${CIRCLE_SHA1}"
             fi
-            ~/.local/bin/uv run devtools workspace pr-scope check-ci \
-              "${PR_ARGS[@]}" \
-              --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
-              --expected-head-sha "${CIRCLE_SHA1}"
       - run:
           name: devtools verify --quick
           command: ~/.local/bin/uv run devtools verify --quick
