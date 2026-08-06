@@ -264,6 +264,7 @@ def test_gc_retains_unclassified_blob_refs_and_census_reports_disposition(tmp_pa
         "unknown_ref_types": {"future_type": 1},
         "unavailable_ref_types": {"sidecar": 1},
         "schema_unavailable_count": 0,
+        "deferred_by_ref_type": {},
     }
 
 
@@ -302,11 +303,15 @@ def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
             (blob_hash, legacy_ref_id, source_path, len(payload), 1_700_000_000_000),
         )
         classification = classify_blob_ref_liveness(conn)
+        census = census_orphaned_blob_refs(conn)
         conn.commit()
 
     assert classification.rekeyable_hook_payload_count == 1
     assert classification.safe_to_apply is False
     assert all(candidate.ref_id != legacy_ref_id for candidate in classification.candidates)
+    assert census.total == 0
+    assert census.by_ref_type == {}
+    assert census.deferred_by_ref_type == {"raw_payload": 1}
 
     monkeypatch.setattr(
         "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_manifest",
@@ -379,6 +384,7 @@ def test_gc_census_reports_untyped_blob_ref_schema_without_deleting_bytes(tmp_pa
         "unknown_ref_types": {},
         "unavailable_ref_types": {},
         "schema_unavailable_count": 1,
+        "deferred_by_ref_type": {},
     }
 
 
@@ -461,4 +467,5 @@ def test_census_orphaned_blob_refs_counts_by_ref_type(tmp_path: Path) -> None:
             "unknown_ref_types": {},
             "unavailable_ref_types": {},
             "schema_unavailable_count": 0,
+            "deferred_by_ref_type": {},
         }

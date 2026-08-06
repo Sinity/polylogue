@@ -64,7 +64,7 @@ def blob_reference_liveness_command(
         from polylogue.maintenance.blob_ref_liveness_reconciliation import census_blob_ref_liveness
 
         census = census_blob_ref_liveness(archive_root())
-        payload = {"mode": "blob_reference_census", "mutates": False, **census.to_dict()}
+        payload = {"mode": "blob_reference_census", "mutates": False, **census.to_privacy_safe_dict()}
         if output_format == "json":
             click.echo(json.dumps(payload, indent=2, sort_keys=True))
         else:

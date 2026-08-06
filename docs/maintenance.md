@@ -215,7 +215,7 @@ ref types are counted as explicit census dispositions and block an apply; blob
 GC also retains their bytes until a typed disposition is available. The
 command never deletes blob files. Use `--census-only` for the privacy-safe
 production census. It returns counts and dispositions only, without reference
-identifiers, source paths, or hashes.
+identifiers, source paths, hashes, or unknown reference-type names.
 
 ```bash
 polylogue ops maintenance blob-reference-liveness --output-format json

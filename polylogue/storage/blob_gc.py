@@ -743,6 +743,7 @@ class OrphanedBlobRefCensus:
     unknown_ref_types: dict[str, int] | None = None
     unavailable_ref_types: dict[str, int] | None = None
     schema_unavailable_count: int = 0
+    deferred_by_ref_type: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -753,7 +754,22 @@ class OrphanedBlobRefCensus:
             "unknown_ref_types": dict(self.unknown_ref_types or {}),
             "unavailable_ref_types": dict(self.unavailable_ref_types or {}),
             "schema_unavailable_count": self.schema_unavailable_count,
+            "deferred_by_ref_type": dict(self.deferred_by_ref_type or {}),
         }
+
+    def to_privacy_safe_dict(self) -> dict[str, object]:
+        """Serialize aggregate counts without exposing database-derived names."""
+        payload = self.to_dict()
+        known_ref_types = {ref_type for ref_type, _table, _column in BLOB_REF_LIVENESS_JOIN}
+        ref_type_counts = self.ref_type_counts or {}
+        payload["ref_type_counts"] = {
+            ref_type: count for ref_type, count in ref_type_counts.items() if ref_type in known_ref_types
+        }
+        payload.pop("unknown_ref_types", None)
+        payload["unknown_ref_type_count"] = sum(
+            count for ref_type, count in ref_type_counts.items() if ref_type not in known_ref_types
+        )
+        return payload
 
 
 def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus:
@@ -778,6 +794,10 @@ def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus
     by_ref_type: dict[str, int] = {}
     unknown_ref_types: dict[str, int] = {}
     unavailable_ref_types: dict[str, int] = {}
+    deferred_by_ref_type: dict[str, int] = {}
+    legacy_hook_status = "not_applicable"
+    if ref_type_counts.get("raw_payload"):
+        legacy_hook_status = _prepare_legacy_hook_liveness(conn)
     for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN:
         count = ref_type_counts.get(ref_type, 0)
         if not count:
@@ -789,14 +809,65 @@ def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus
         if referent_column not in referent_columns:
             unavailable_ref_types[ref_type] = count
             continue
+        legacy_exclusion = ""
+        if ref_type == "raw_payload" and legacy_hook_status in {"ready", "unavailable"}:
+            orphan_count = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM blob_refs AS b
+                    WHERE b.ref_type = ?
+                      AND NOT EXISTS (SELECT 1 FROM {referent_table} AS r WHERE r.{referent_column} = b.ref_id)
+                    """,
+                    (ref_type,),
+                ).fetchone()[0]
+            )
+            if legacy_hook_status == "unavailable":
+                if orphan_count:
+                    deferred_by_ref_type[ref_type] = orphan_count
+                continue
+            deferred_count = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM blob_refs AS b
+                    WHERE b.ref_type = ?
+                      AND NOT EXISTS (SELECT 1 FROM {referent_table} AS r WHERE r.{referent_column} = b.ref_id)
+                      AND (
+                          EXISTS (
+                              SELECT 1 FROM temp.hook_payload_ref_reconciliation_matches AS m
+                              WHERE m.blob_hash = b.blob_hash AND m.orphaned_ref_id = b.ref_id
+                          )
+                          OR EXISTS (
+                              SELECT 1 FROM temp.hook_payload_ref_reconciliation_ambiguous AS a
+                              WHERE a.blob_hash = b.blob_hash AND a.orphaned_ref_id = b.ref_id
+                          )
+                      )
+                    """,
+                    (ref_type,),
+                ).fetchone()[0]
+            )
+            if deferred_count:
+                deferred_by_ref_type[ref_type] = deferred_count
+            legacy_exclusion = """
+              AND NOT (
+                  EXISTS (
+                      SELECT 1 FROM temp.hook_payload_ref_reconciliation_matches AS m
+                      WHERE m.blob_hash = b.blob_hash AND m.orphaned_ref_id = b.ref_id
+                  )
+                  OR EXISTS (
+                      SELECT 1 FROM temp.hook_payload_ref_reconciliation_ambiguous AS a
+                      WHERE a.blob_hash = b.blob_hash AND a.orphaned_ref_id = b.ref_id
+                  )
+              )
+            """
         row = conn.execute(
             f"""
-            SELECT COUNT(*) FROM blob_refs
-            WHERE ref_type = ?
+            SELECT COUNT(*) FROM blob_refs AS b
+            WHERE b.ref_type = ?
               AND NOT EXISTS (
                   SELECT 1 FROM {referent_table}
-                  WHERE {referent_table}.{referent_column} = blob_refs.ref_id
+                  WHERE {referent_table}.{referent_column} = b.ref_id
               )
+              {legacy_exclusion}
             """,
             (ref_type,),
         ).fetchone()
@@ -814,6 +885,7 @@ def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus
         ref_type_counts=ref_type_counts,
         unknown_ref_types=unknown_ref_types,
         unavailable_ref_types=unavailable_ref_types,
+        deferred_by_ref_type=deferred_by_ref_type,
     )
 
 
