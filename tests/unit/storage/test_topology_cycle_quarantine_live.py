@@ -27,6 +27,7 @@ import sqlite3
 from pathlib import Path
 from typing import cast
 
+from devtools.lineage_validation import census_topology_links
 from polylogue.archive.message.roles import Role
 from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.core.enums import BlockType, Provider
@@ -120,6 +121,19 @@ def test_cross_ingest_cycle_quarantines_the_closing_edge(tmp_path: Path) -> None
     b_link = _link_row(conn, b_id)
     assert b_link["status"] is None
     assert b_link["resolved_dst_session_id"] == a_id
+
+    census = census_topology_links(conn, sample_unresolved=0)
+    assert census["checked"] is True
+    assert census["empty_effective_status_count"] == 0
+    assert census["empty_method_count"] == 0
+    assert census["effective_status_counts"] == {"quarantined": 1, "resolved": 1}
+    assert census["cycle_evidence_count"] == 1
+
+    # Anti-vacuity: the census must observe a production-row mutation rather
+    # than merely restating the expected fixture shape.
+    conn.execute("UPDATE session_links SET method = '' WHERE src_session_id = ?", (b_id,))
+    mutated = census_topology_links(conn, sample_unresolved=0)
+    assert mutated["empty_method_count"] == 1
 
 
 def test_self_referential_edge_quarantines_without_touching_projection(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Iterable
@@ -18,6 +19,10 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 SUPPORTED_PREFIX_ORIGINS = frozenset({"codex-session", "claude-code-session"})
 REQUIRED_SESSION_LINK_COLUMNS = frozenset({"branch_point_message_id", "inheritance"})
+REQUIRED_TOPOLOGY_LINK_COLUMNS = frozenset(
+    {"dst_native_id", "evidence_json", "link_type", "method", "resolved_dst_session_id", "status"}
+)
+TOPOLOGY_EFFECTIVE_STATES = frozenset({"resolved", "unresolved", "repaired", "quarantined"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +32,8 @@ class LineageValidationArgs:
     sample_prefix_sharing: int
     max_sample_stored_messages: int
     json: bool
+    sample_unresolved: int = 20
+    index_db: Path | None = None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -52,6 +59,18 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON report to stdout.")
+    parser.add_argument(
+        "--sample-unresolved",
+        type=int,
+        default=20,
+        help="Number of unresolved-parent rows to exercise through the archive read seam.",
+    )
+    parser.add_argument(
+        "--index-db",
+        type=Path,
+        default=None,
+        help="Read a specific candidate/live index database instead of <archive-root>/index.db.",
+    )
     return parser
 
 
@@ -155,6 +174,175 @@ def _lineage_counts(conn: Connection) -> dict[str, Any]:
             """,
         ),
     }
+
+
+def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
+    """Exercise unresolved-parent rows through the production composition seam.
+
+    An unresolved edge must remain a child-local read. The parent pointer is
+    retained in ``session_links`` for later repair, but the archive envelope
+    must not recurse into a parent that was not resolved. This uses
+    ``read_archive_session_envelope`` itself, rather than duplicating its
+    composition query in the census.
+    """
+    if limit < 0:
+        raise ValueError("--sample-unresolved must be non-negative")
+    rows = _rows(
+        conn,
+        """
+        SELECT l.src_session_id AS session_id, l.dst_native_id AS parent_native_id,
+               COUNT(m.message_id) AS stored_messages
+        FROM session_links l
+        LEFT JOIN messages m ON m.session_id = l.src_session_id
+        WHERE l.resolved_dst_session_id IS NULL
+          AND COALESCE(NULLIF(TRIM(l.status), ''), 'unresolved') = 'unresolved'
+        GROUP BY l.src_session_id, l.dst_native_id
+        ORDER BY l.src_session_id, l.dst_native_id
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    samples: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for row in rows:
+        session_id = str(row["session_id"])
+        stored_messages = _int(row["stored_messages"])
+        try:
+            envelope = read_archive_session_envelope(conn, session_id)
+        except Exception as exc:  # pragma: no cover - defensive for live artifacts
+            errors.append({"session_id": session_id, "error": f"{type(exc).__name__}: {exc}"})
+            samples.append({**row, "read_status": "error", "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        served_messages = len(envelope.messages)
+        safe = (
+            envelope.parent_session_id is None
+            and envelope.lineage_inheritance != "prefix-sharing"
+            and served_messages == stored_messages
+        )
+        samples.append(
+            {
+                **row,
+                "served_messages": served_messages,
+                "parent_session_id": envelope.parent_session_id,
+                "lineage_inheritance": envelope.lineage_inheritance,
+                "lineage_complete": envelope.lineage_complete,
+                "read_status": "safe" if safe else "unsafe",
+            }
+        )
+    unsafe = sum(1 for row in samples if row.get("read_status") != "safe")
+    return {
+        "requested": limit,
+        "sampled": len(samples),
+        "safe": unsafe == 0 and not errors,
+        "unsafe": unsafe,
+        "errors": errors,
+        "rows": samples,
+    }
+
+
+def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> dict[str, Any]:
+    """Return the typed topology census used by candidate and live reports.
+
+    ``session_links.status`` is intentionally nullable for ordinary edges:
+    resolvedness is carried by ``resolved_dst_session_id``. The census reports
+    that raw fact separately and computes the public effective state as
+    resolved, unresolved, repaired, or quarantined. This makes an empty
+    effective state impossible to hide behind SQL ``NULL`` while preserving
+    the storage contract.
+    """
+    if sample_unresolved < 0:
+        raise ValueError("sample_unresolved must be non-negative")
+    columns = _table_columns(conn, "session_links")
+    missing = sorted(REQUIRED_TOPOLOGY_LINK_COLUMNS - columns)
+    if missing:
+        return {
+            "checked": False,
+            "missing_columns": missing,
+            "total": 0,
+            "empty_effective_status_count": 0,
+            "empty_method_count": 0,
+            "effective_status_counts": {},
+            "method_counts": {},
+            "unknown_effective_status_count": 0,
+            "cycle_evidence_count": 0,
+            "quarantined_without_cycle_evidence": 0,
+            "unresolved_read_sample": {
+                "requested": sample_unresolved,
+                "sampled": 0,
+                "safe": False,
+                "unsafe": 0,
+                "errors": [],
+                "rows": [],
+            },
+        }
+
+    state_rows = _rows(
+        conn,
+        """
+        SELECT CASE
+                   WHEN NULLIF(TRIM(status), '') IS NOT NULL THEN TRIM(status)
+                   WHEN resolved_dst_session_id IS NOT NULL THEN 'resolved'
+                   ELSE 'unresolved'
+               END AS effective_status,
+               COUNT(*) AS links
+        FROM session_links
+        GROUP BY effective_status
+        ORDER BY effective_status
+        """,
+    )
+    method_rows = _rows(
+        conn,
+        """
+        SELECT COALESCE(NULLIF(TRIM(method), ''), '') AS method, COUNT(*) AS links
+        FROM session_links
+        GROUP BY method
+        ORDER BY method
+        """,
+    )
+    effective_status_counts = {str(row["effective_status"]): _int(row["links"]) for row in state_rows}
+    method_counts = {str(row["method"]): _int(row["links"]) for row in method_rows}
+    raw_status_empty_count = _scalar_int(
+        conn,
+        "SELECT COUNT(*) FROM session_links WHERE status IS NULL OR TRIM(status) = ''",
+    )
+    empty_effective_status_count = effective_status_counts.get("", 0)
+    empty_method_count = method_counts.get("", 0)
+    unknown_states = {
+        state: count for state, count in effective_status_counts.items() if state not in TOPOLOGY_EFFECTIVE_STATES
+    }
+    cycle_evidence_count = _scalar_int(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM session_links
+        WHERE TRIM(status) = 'quarantined'
+          AND json_extract(evidence_json, '$.reason') = 'cycle_rejected'
+        """,
+    )
+    quarantined_count = effective_status_counts.get("quarantined", 0)
+    quarantined_without_cycle_evidence = max(0, quarantined_count - cycle_evidence_count)
+    unresolved_read_sample = _topology_read_sample(conn, limit=sample_unresolved)
+    return {
+        "checked": True,
+        "missing_columns": [],
+        "total": sum(effective_status_counts.values()),
+        "raw_status_empty_count": raw_status_empty_count,
+        "empty_effective_status_count": empty_effective_status_count,
+        "empty_method_count": empty_method_count,
+        "effective_status_counts": effective_status_counts,
+        "method_counts": method_counts,
+        "unknown_effective_status_count": sum(unknown_states.values()),
+        "unknown_effective_statuses": unknown_states,
+        "cycle_evidence_count": cycle_evidence_count,
+        "quarantined_without_cycle_evidence": quarantined_without_cycle_evidence,
+        "unresolved_read_sample": unresolved_read_sample,
+    }
+
+
+def _receipt_sha256(payload: dict[str, Any]) -> str:
+    body = {key: value for key, value in payload.items() if key != "receipt_sha256"}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _lineage_integrity(conn: Connection) -> dict[str, Any]:
@@ -348,6 +536,7 @@ def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
             "link_counts": report["lineage"]["counts"],
             "integrity": report["lineage"]["integrity"],
             "sample": report["lineage"]["prefix_sharing_read_sample"],
+            "topology": report["lineage"]["topology"],
         },
         "caveats": verdict["reasons"]
         or [
@@ -387,6 +576,7 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- logical sessions: `{counts['logical_sessions']}`",
         f"- physical/logical ratio: `{ratio_text}`",
         f"- stored messages: `{counts['stored_messages']}`",
+        f"- topology receipt SHA-256: `{report['receipt_sha256']}`",
         "",
         "## Files",
         "",
@@ -410,7 +600,7 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
 
 def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
-    index_db = config.db_path
+    index_db = (args.index_db or config.db_path).expanduser().resolve()
     conn = open_readonly_connection(index_db)
     try:
         index_schema_version = _user_version(conn)
@@ -432,6 +622,7 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
         )
         lineage_counts = _lineage_counts(conn)
         integrity = _lineage_integrity(conn)
+        topology = census_topology_links(conn, sample_unresolved=args.sample_unresolved)
         prefix_sample = _sample_prefix_sharing(
             conn,
             args.sample_prefix_sharing,
@@ -459,9 +650,29 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
             reasons.append(f"prefix-sharing links found for unsupported origins: {origins}")
         if prefix_sample["errors"]:
             reasons.append(f"{len(prefix_sample['errors'])} sampled prefix-sharing composed reads failed")
+        if not topology["checked"]:
+            reasons.append(f"topology census missing columns: {', '.join(topology['missing_columns'])}")
+        else:
+            if topology["empty_effective_status_count"]:
+                reasons.append(
+                    f"{topology['empty_effective_status_count']} topology links have an empty effective status"
+                )
+            if topology["empty_method_count"]:
+                reasons.append(f"{topology['empty_method_count']} topology links have an empty method")
+            if topology["unknown_effective_status_count"]:
+                reasons.append(
+                    "topology census found unknown effective states: "
+                    + ", ".join(sorted(topology["unknown_effective_statuses"])),
+                )
+            if topology["quarantined_without_cycle_evidence"]:
+                reasons.append(
+                    f"{topology['quarantined_without_cycle_evidence']} quarantined topology links lack cycle evidence"
+                )
+            if not topology["unresolved_read_sample"]["safe"]:
+                reasons.append("sampled unresolved-parent reads did not remain child-local")
 
         report: dict[str, Any] = {
-            "report_version": 1,
+            "report_version": 2,
             "captured_at": datetime.now(UTC).isoformat(),
             "command": "devtools workspace lineage-validation",
             "archive_root": str(config.archive_root),
@@ -477,6 +688,7 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
                 "integrity": integrity,
                 "missing_profile_samples": _missing_profile_samples(conn),
                 "prefix_sharing_read_sample": prefix_sample,
+                "topology": topology,
                 "supported_prefix_origins": sorted(SUPPORTED_PREFIX_ORIGINS),
             },
             "verdict": {
@@ -484,6 +696,7 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
                 "reasons": reasons,
             },
         }
+        report["receipt_sha256"] = _receipt_sha256(report)
     finally:
         conn.close()
 
@@ -500,6 +713,8 @@ def main(argv: list[str] | None = None) -> int:
         sample_prefix_sharing=parsed.sample_prefix_sharing,
         max_sample_stored_messages=parsed.max_sample_stored_messages,
         json=parsed.json,
+        sample_unresolved=parsed.sample_unresolved,
+        index_db=parsed.index_db,
     )
     report = build_report(args)
     if args.json:
