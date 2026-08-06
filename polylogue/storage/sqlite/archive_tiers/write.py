@@ -451,6 +451,20 @@ def write_parsed_session_to_archive(
         force_spawned_fresh = False
         if parent_session_id is not None and messages:
             parent_composed: list[tuple[str, str]] | None = None
+            # Cycle quarantine happens after the session/link rows are written,
+            # but prefix normalization happens here. Detect a cycle against the
+            # current projection before deleting the copied prefix. The graph
+            # resolver remains the authority that persists quarantine evidence;
+            # this early check only preserves the full child transcript that a
+            # quarantined edge cannot later compose from its asserted parent.
+            force_spawned_fresh = (
+                _would_create_cycle(
+                    conn,
+                    child_id=session_id,
+                    proposed_parent_id=parent_session_id,
+                )
+                is not None
+            )
             if acompact:
                 parent_composed = _composed_db_signatures(conn, parent_session_id, cache=signature_cache)
                 membership = _acompact_content_membership_ratio(

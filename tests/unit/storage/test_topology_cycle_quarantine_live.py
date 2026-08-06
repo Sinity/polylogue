@@ -27,6 +27,9 @@ import sqlite3
 from pathlib import Path
 from typing import cast
 
+import aiosqlite
+import pytest
+
 from devtools.lineage_validation import census_topology_links
 from polylogue.archive.message.roles import Role
 from polylogue.archive.topology.edge import TopologyEdgeStatus
@@ -35,6 +38,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope, write_parsed_session_to_archive
+from polylogue.storage.sqlite.queries.message_query_reads import get_messages
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -67,7 +71,8 @@ def _link_row(conn: sqlite3.Connection, src_session_id: str) -> sqlite3.Row:
     return cast(sqlite3.Row, row)
 
 
-def test_cross_ingest_cycle_quarantines_the_closing_edge(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_cross_ingest_cycle_quarantines_the_closing_edge_without_losing_prefix(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     conn = _connect(db)
 
@@ -100,7 +105,10 @@ def test_cross_ingest_cycle_quarantines_the_closing_edge(tmp_path: Path) -> None
         provider_session_id="A",
         title="A",
         parent_session_provider_id="B",
-        messages=[_msg("a0", Role.USER, "start", 0), _msg("a1", Role.ASSISTANT, "revised", 1)],
+        messages=[
+            _msg("a-copy-b0", Role.USER, "child of A", 0),
+            _msg("a1", Role.ASSISTANT, "revised", 1),
+        ],
     )
     write_parsed_session_to_archive(conn, session_a_v2, force_replace=True)
 
@@ -112,6 +120,25 @@ def test_cross_ingest_cycle_quarantines_the_closing_edge(tmp_path: Path) -> None
     assert evidence["reason"] == "cycle_rejected"
     assert a_id in evidence["cycle_path"]
     assert b_id in evidence["cycle_path"]
+
+    # Anti-vacuity: the first A message exactly matches B's full stored
+    # transcript. Without the pre-normalization cycle check, the writer slices
+    # it as an inherited prefix before quarantining A -> B, and both production
+    # readers then serve only the second message.
+    own_message_ids = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+            (a_id,),
+        ).fetchall()
+    ]
+    assert len(own_message_ids) == 2
+    quarantined_envelope = read_archive_session_envelope(conn, a_id)
+    assert [message.message_id for message in quarantined_envelope.messages] == own_message_ids
+    async with aiosqlite.connect(db) as reader:
+        reader.row_factory = sqlite3.Row
+        async_messages = await get_messages(reader, a_id)
+    assert [message.message_id for message in async_messages] == own_message_ids
 
     # A's parent_session_id fast-path projection must stay NULL -- the
     # composition/ancestry walk must never enter the cycle.
@@ -130,6 +157,7 @@ def test_cross_ingest_cycle_quarantines_the_closing_edge(tmp_path: Path) -> None
     assert census["cycle_evidence_count"] == 1
     assert census["malformed_quarantine_evidence_count"] == 0
     assert census["quarantined_with_resolved_parent_count"] == 0
+    assert census["quarantined_with_stale_projection_count"] == 0
 
     valid_evidence = link["evidence_json"]
     conn.execute("UPDATE session_links SET evidence_json = '{malformed' WHERE src_session_id = ?", (a_id,))
@@ -150,11 +178,16 @@ def test_cross_ingest_cycle_quarantines_the_closing_edge(tmp_path: Path) -> None
         """,
         (valid_evidence, b_id, parent_message_id, a_id),
     )
+    conn.execute(
+        "UPDATE sessions SET parent_session_id = ?, root_session_id = ? WHERE session_id = ?",
+        (b_id, b_id, a_id),
+    )
     quarantined_read = read_archive_session_envelope(conn, a_id)
-    assert quarantined_read.parent_session_id is None
     assert quarantined_read.lineage_inheritance == "none"
+    assert [message.message_id for message in quarantined_read.messages] == own_message_ids
     contradictory = census_topology_links(conn, sample_unresolved=0)
     assert contradictory["quarantined_with_resolved_parent_count"] == 1
+    assert contradictory["quarantined_with_stale_projection_count"] == 1
     assert contradictory["cycle_evidence_count"] == 1
 
     # Anti-vacuity: the census must observe a production-row mutation rather

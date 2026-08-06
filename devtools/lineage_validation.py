@@ -358,6 +358,7 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
             "malformed_quarantine_evidence_count": 0,
             "quarantined_without_cycle_evidence": 0,
             "quarantined_with_resolved_parent_count": 0,
+            "quarantined_with_stale_projection_count": 0,
             "unresolved_count": 0,
             "unresolved_read_sample": {
                 "requested": sample_unresolved,
@@ -417,6 +418,16 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
           AND resolved_dst_session_id IS NOT NULL
         """,
     )
+    quarantined_with_stale_projection_count = _scalar_int(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM session_links l
+        JOIN sessions s ON s.session_id = l.src_session_id
+        WHERE TRIM(l.status) = 'quarantined'
+          AND s.parent_session_id IS NOT NULL
+        """,
+    )
     unresolved_read_sample = _topology_read_sample(conn, limit=sample_unresolved)
     return {
         "checked": True,
@@ -433,6 +444,7 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
         "malformed_quarantine_evidence_count": malformed_quarantine_evidence_count,
         "quarantined_without_cycle_evidence": quarantined_without_cycle_evidence,
         "quarantined_with_resolved_parent_count": quarantined_with_resolved_parent_count,
+        "quarantined_with_stale_projection_count": quarantined_with_stale_projection_count,
         "unresolved_count": unresolved_read_sample["unresolved_count"],
         "unresolved_read_sample": unresolved_read_sample,
     }
@@ -705,8 +717,11 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     conn = open_readonly_connection(index_db)
     try:
         conn.execute("BEGIN")
-        snapshot_before = _snapshot_identity(index_db)
+        # BEGIN is deferred. Force the first SQLite read before hashing WAL
+        # sidecars so this census's own reader mark cannot make a quiescent
+        # snapshot appear to change between the before and after identities.
         index_schema_version = _user_version(conn)
+        snapshot_before = _snapshot_identity(index_db)
         link_columns = _table_columns(conn, "session_links")
         missing_link_columns = sorted(REQUIRED_SESSION_LINK_COLUMNS - link_columns)
         physical_sessions = _count(conn, "sessions")
@@ -778,6 +793,10 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
             if topology["quarantined_with_resolved_parent_count"]:
                 reasons.append(
                     f"{topology['quarantined_with_resolved_parent_count']} quarantined topology links still resolve a parent"
+                )
+            if topology["quarantined_with_stale_projection_count"]:
+                reasons.append(
+                    f"{topology['quarantined_with_stale_projection_count']} quarantined topology links retain a parent projection"
                 )
             if topology["unresolved_read_sample"]["status"] == "not_observed":
                 reasons.append(

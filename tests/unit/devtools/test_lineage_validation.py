@@ -363,6 +363,20 @@ def test_lineage_validation_receipt_reproduces_before_binding_mutation(
     assert second["receipt_sha256"] != first["receipt_sha256"]
 
 
+def test_lineage_validation_snapshot_is_stable_for_a_quiescent_wal_database(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    with sqlite3.connect(db) as writer:
+        assert writer.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
+        writer.execute("UPDATE session_links SET method = 'wal-proof' WHERE src_session_id = 'child'")
+        writer.commit()
+
+        report = lineage_validation.build_report(_args(archive_root))
+
+    assert report["snapshot_identity"]["stable"] is True
+    assert report["verdict"]["external_counts_citable"] is True
+
+
 def test_lineage_validation_unchecked_census_has_checked_schema(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     db = _make_index_db(archive_root)
