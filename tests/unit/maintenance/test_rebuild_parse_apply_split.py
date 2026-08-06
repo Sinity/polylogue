@@ -32,12 +32,54 @@ from pathlib import Path
 
 import pytest
 
+from devtools.production_reachability import ProductionSeamSpec, check_production_seam
 from polylogue.config import Config
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources import revision_backfill
 from polylogue.sources.census_parse_stage import CensusParseStage
 from polylogue.sources.revision_backfill import split_parse_and_apply_seconds
 from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
+
+REINDEX_PRODUCTION_SEAMS = (
+    ProductionSeamSpec(
+        test_path="tests/unit/maintenance/test_rebuild_parse_apply_split.py",
+        test_function="test_rebuild_records_parse_apply_split_summing_to_stage_total",
+        production_entrypoint="polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",
+        tested_symbols=("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",),
+        required_symbols=(
+            "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
+            "polylogue.storage.repair.repair_session_insights",
+        ),
+    ),
+    ProductionSeamSpec(
+        test_path="tests/unit/maintenance/test_rebuild_parse_apply_split.py",
+        test_function="test_rebuild_index_from_source_sync_warms_prefetch_cache_when_caller_omits_one",
+        production_entrypoint="polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",
+        tested_symbols=("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",),
+        required_symbols=(
+            "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
+            "polylogue.storage.repair.repair_session_insights",
+        ),
+    ),
+    ProductionSeamSpec(
+        test_path="tests/unit/maintenance/test_rebuild_parse_apply_split.py",
+        test_function="test_rebuild_index_from_source_sync_auto_engages_pipelined_decode",
+        production_entrypoint="polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",
+        tested_symbols=("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",),
+        required_symbols=(
+            "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
+            "polylogue.storage.repair.repair_session_insights",
+        ),
+    ),
+)
+
+
+def test_selected_reindex_proof_tests_are_production_reachable() -> None:
+    """The selected reindex proofs bind to replay and terminal convergence."""
+    root = Path(__file__).resolve().parents[3]
+    for spec in REINDEX_PRODUCTION_SEAMS:
+        report = check_production_seam(spec, source_root=root)
+        assert report.ok, report.to_json()
 
 
 def test_split_parse_and_apply_seconds_sums_to_total() -> None:
