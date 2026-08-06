@@ -45,6 +45,10 @@ _SUPERSEDED_DECISION_PLACEHOLDERS = ",".join("?" for _ in _SUPERSEDED_DECISIONS)
 #: (~35 GB on the reference archive), so keeping more is expensive storage,
 #: not cheap insurance.
 SUPERSEDED_GENERATION_RETENTION = 1
+# Keep the current promotion receipt plus the immediately preceding one. This
+# is intentionally larger than the rollback-generation boundary so automatic
+# receipt pruning cannot erase the evidence for the active boundary.
+RETENTION_RECEIPT_HISTORY = SUPERSEDED_GENERATION_RETENTION + 1
 _GENERATIONS_DIRNAME = ".index-generations"
 _RETENTION_RECEIPTS_DIRNAME = "retention-receipts"
 
@@ -71,6 +75,7 @@ class GenerationRetentionReceipt:
     """Evidence for automatic rollback retention and generation reclamation."""
 
     promoted_generation_id: str
+    promoted_at_ns: int
     retention_boundary: int
     automatic: bool
     records: tuple[GenerationRetentionRecord, ...]
@@ -130,6 +135,12 @@ class IndexGeneration:
     state: str
     created_at_ms: int
     source_snapshot: str = ""
+    # Millisecond creation time remains for compatibility with existing
+    # generation metadata. Lifecycle ordering uses these nanosecond values so
+    # UUID text never decides which rollback target is newest.
+    created_at_ns: int = 0
+    promoted_at_ns: int = 0
+    predecessor_generation_id: str | None = None
     retention_owner_id: str | None = None
     retention_state: str | None = None
 
@@ -719,7 +730,8 @@ class IndexGenerationStore:
         return RebuildRawPage(rows=tuple(selected), has_more=has_more, deferred_reason=deferred_reason)
 
     def create(self, *, owner_id: str | None = None, source_snapshot: str) -> IndexGeneration:
-        generation_id = f"gen-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+        created_at_ns = self._next_lifecycle_timestamp_ns()
+        generation_id = f"gen-{created_at_ns // 1_000_000}-{uuid.uuid4().hex[:8]}"
         owner = owner_id or str(uuid.uuid4())
         root = self.generations_root / generation_id
         root.mkdir(parents=True, exist_ok=False)
@@ -735,8 +747,9 @@ class IndexGenerationStore:
             archive_root=str(self.archive_root.resolve(strict=False)),
             index_path=str(index_path),
             state="inactive",
-            created_at_ms=int(time.time() * 1000),
+            created_at_ms=created_at_ns // 1_000_000,
             source_snapshot=source_snapshot,
+            created_at_ns=created_at_ns,
         )
         self._write(generation)
         return generation
@@ -753,6 +766,7 @@ class IndexGenerationStore:
         target = Path(current.index_path).resolve(strict=True)
         _checkpoint_truncate(target, label="new index")
         pointer = self.active_pointer
+        predecessor_generation_id = self._generation_id_for_active_target(pointer)
         retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
         retired.mkdir(parents=True, exist_ok=False)
         if pointer.exists() or pointer.is_symlink():
@@ -766,7 +780,13 @@ class IndexGenerationStore:
         if pointer.exists() or pointer.is_symlink():
             os.link(pointer, retired / "index.db", follow_symlinks=False)
             _fsync_directory(retired)
-        promoting = IndexGeneration(**{**asdict(current), "state": "promoting"})
+        promoting = IndexGeneration(
+            **{
+                **asdict(current),
+                "state": "promoting",
+                "predecessor_generation_id": predecessor_generation_id,
+            }
+        )
         self._write(promoting)
         temporary = pointer.parent / f".index.db.promote-{uuid.uuid4().hex}"
         temporary.symlink_to(target)
@@ -776,6 +796,8 @@ class IndexGenerationStore:
             **{
                 **asdict(current),
                 "state": "active",
+                "promoted_at_ns": self._next_lifecycle_timestamp_ns(),
+                "predecessor_generation_id": predecessor_generation_id,
                 "retention_owner_id": current.generation_id,
                 "retention_state": GenerationRetentionState.ACTIVE.value,
             }
@@ -817,7 +839,7 @@ class IndexGenerationStore:
         reclaimed state after filesystem removal.
         """
         active_target = self.active_pointer.resolve(strict=True)
-        candidates: list[tuple[int, str, Path, IndexGeneration]] = []
+        candidates: list[tuple[int, int, str, Path, IndexGeneration]] = []
         for metadata_path in sorted(self.generations_root.glob("gen-*/generation.json")):
             try:
                 generation = IndexGeneration(**json.loads(metadata_path.read_text(encoding="utf-8")))
@@ -830,12 +852,25 @@ class IndexGenerationStore:
                     continue
             except OSError:
                 continue  # an incomplete candidate remains retained
-            candidates.append((generation.created_at_ms, generation.generation_id, metadata_path.parent, generation))
+            candidates.append(
+                (
+                    _generation_lifecycle_recency_ns(generation),
+                    _generation_creation_recency_ns(generation),
+                    generation.generation_id,
+                    metadata_path.parent,
+                    generation,
+                )
+            )
 
-        # generation_id breaks ties: two generations can share a millisecond,
-        # and a stable sort would otherwise fall back to glob order, making
-        # "newest" non-deterministic and the retained slot arbitrary.
-        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        # Promotion order decides rollback capability. A normal promotion
+        # records its actual predecessor before the pointer swap and pins it
+        # first; recovered promotions have no pre-swap observation, so their
+        # persisted promotion timestamp supplies the same chronology. UUIDs
+        # are only a deterministic final tie-break, never the recency signal.
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        predecessor = promoted.predecessor_generation_id
+        if predecessor is not None:
+            candidates.sort(key=lambda item: item[4].generation_id != predecessor)
         retained = candidates[:SUPERSEDED_GENERATION_RETENTION]
         eligible = candidates[SUPERSEDED_GENERATION_RETENTION:]
         records = [
@@ -846,7 +881,7 @@ class IndexGenerationStore:
                 state=GenerationRetentionState.ACTIVE,
             )
         ]
-        for _created_at_ms, _generation_id, _directory, generation in retained:
+        for _lifecycle_at_ns, _created_at_ns, _generation_id, _directory, generation in retained:
             retained_generation = IndexGeneration(
                 **{
                     **asdict(generation),
@@ -863,7 +898,7 @@ class IndexGenerationStore:
                     state=GenerationRetentionState.RETAINED,
                 )
             )
-        for _created_at_ms, _generation_id, _directory, generation in eligible:
+        for _lifecycle_at_ns, _created_at_ns, _generation_id, _directory, generation in eligible:
             eligible_generation = IndexGeneration(
                 **{
                     **asdict(generation),
@@ -874,6 +909,7 @@ class IndexGenerationStore:
             self._write(eligible_generation)
         receipt = GenerationRetentionReceipt(
             promoted_generation_id=promoted.generation_id,
+            promoted_at_ns=promoted.promoted_at_ns,
             retention_boundary=SUPERSEDED_GENERATION_RETENTION,
             automatic=True,
             records=tuple(records)
@@ -884,16 +920,17 @@ class IndexGenerationStore:
                     retention_owner_id=promoted.generation_id,
                     state=GenerationRetentionState.ELIGIBLE,
                 )
-                for _created_at_ms, _generation_id, _directory, generation in eligible
+                for _lifecycle_at_ns, _created_at_ns, _generation_id, _directory, generation in eligible
             ),
             eligible_generation_ids=tuple(
-                generation.generation_id for _created_at_ms, _generation_id, _directory, generation in eligible
+                generation.generation_id
+                for _lifecycle_at_ns, _created_at_ns, _generation_id, _directory, generation in eligible
             ),
         )
         self._write_retention_receipt(receipt)
 
         reclaimed: list[str] = []
-        for _created_at_ms, generation_id, directory, _generation in eligible:
+        for _lifecycle_at_ns, _created_at_ns, generation_id, directory, _generation in eligible:
             shutil.rmtree(directory)
             reclaimed.append(generation_id)
 
@@ -914,6 +951,7 @@ class IndexGenerationStore:
             _fsync_directory(self.generations_root)
         completed = GenerationRetentionReceipt(
             promoted_generation_id=receipt.promoted_generation_id,
+            promoted_at_ns=receipt.promoted_at_ns,
             retention_boundary=receipt.retention_boundary,
             automatic=True,
             records=tuple(
@@ -931,6 +969,7 @@ class IndexGenerationStore:
             reclaimed_marker_count=pruned_markers,
         )
         self._write_retention_receipt(completed)
+        self._prune_retention_receipts(current_generation_id=completed.promoted_generation_id)
         if reclaimed:
             logger.info("reclaimed %d superseded index generation(s): %s", len(reclaimed), ", ".join(reclaimed))
         return completed
@@ -939,6 +978,7 @@ class IndexGenerationStore:
         payload = json.loads(self._retention_receipt_path(promoted_generation_id).read_text(encoding="utf-8"))
         return GenerationRetentionReceipt(
             promoted_generation_id=str(payload["promoted_generation_id"]),
+            promoted_at_ns=int(payload.get("promoted_at_ns", 0)),
             retention_boundary=int(payload["retention_boundary"]),
             automatic=bool(payload["automatic"]),
             records=tuple(
@@ -986,8 +1026,21 @@ class IndexGenerationStore:
             raise RuntimeError("cannot complete promotion recovery without an active index pointer")
         if pointer.resolve(strict=True) != Path(generation.index_path).resolve(strict=True):
             raise RuntimeError("cannot complete promotion recovery for a non-active generation")
-        recovered = IndexGeneration(**{**asdict(generation), "state": "active"})
+        self._validate_retention_ownership()
+        recovered = IndexGeneration(
+            **{
+                **asdict(generation),
+                "state": "active",
+                "promoted_at_ns": self._next_lifecycle_timestamp_ns(),
+                "retention_owner_id": generation.generation_id,
+                "retention_state": GenerationRetentionState.ACTIVE.value,
+            }
+        )
         self._write(recovered)
+        try:
+            self._collect_superseded_generations(recovered)
+        except OSError:
+            logger.warning("index generation retention collection failed after recovered promotion", exc_info=True)
         return recovered
 
     def discard_if_inactive(self, generation: IndexGeneration) -> bool:
@@ -1004,6 +1057,39 @@ class IndexGenerationStore:
 
     def _retention_receipt_path(self, promoted_generation_id: str) -> Path:
         return self.generations_root / _RETENTION_RECEIPTS_DIRNAME / f"{promoted_generation_id}.json"
+
+    def _generation_id_for_active_target(self, pointer: Path) -> str | None:
+        """Find the generation currently exposed by ``pointer``, if any."""
+        if not (pointer.exists() or pointer.is_symlink()):
+            return None
+        try:
+            active_target = pointer.resolve(strict=True)
+        except OSError:
+            return None
+        for metadata_path in sorted(self.generations_root.glob("gen-*/generation.json")):
+            try:
+                generation = IndexGeneration(**json.loads(metadata_path.read_text(encoding="utf-8")))
+                if generation.state == "active" and Path(generation.index_path).resolve(strict=True) == active_target:
+                    return generation.generation_id
+            except (OSError, ValueError, TypeError):
+                continue
+        return None
+
+    def _next_lifecycle_timestamp_ns(self) -> int:
+        """Return a persisted lifecycle timestamp that never moves backwards.
+
+        Rebuild ownership serializes production promotion. Reading the small
+        bounded generation set here also keeps a fresh store instance monotonic
+        after a process restart or a coarse/frozen wall clock in a test.
+        """
+        latest = 0
+        for metadata_path in self.generations_root.glob("gen-*/generation.json"):
+            try:
+                generation = IndexGeneration(**json.loads(metadata_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                continue
+            latest = max(latest, _generation_lifecycle_recency_ns(generation))
+        return max(time.time_ns(), latest + 1)
 
     def _transaction_path(self, operation_id: str) -> Path:
         return self.transactions_root / f"{operation_id}.json"
@@ -1022,6 +1108,25 @@ class IndexGenerationStore:
         temporary.write_text(json.dumps(asdict(receipt), indent=2, sort_keys=True), encoding="utf-8")
         os.replace(temporary, path)
         _fsync_directory(path.parent)
+
+    def _prune_retention_receipts(self, *, current_generation_id: str) -> None:
+        """Bound receipt history without deleting current or unreadable proof."""
+        receipts_root = self.generations_root / _RETENTION_RECEIPTS_DIRNAME
+        candidates: list[tuple[int, str, Path]] = []
+        for receipt_path in receipts_root.glob("*.json"):
+            if receipt_path == self._retention_receipt_path(current_generation_id):
+                continue
+            try:
+                payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+                promoted_at_ns = int(payload.get("promoted_at_ns", 0))
+            except (OSError, ValueError, TypeError):
+                continue  # malformed evidence remains visible for investigation
+            candidates.append((promoted_at_ns, receipt_path.name, receipt_path))
+        candidates.sort(reverse=True)
+        for _promoted_at_ns, _name, receipt_path in candidates[RETENTION_RECEIPT_HISTORY - 1 :]:
+            receipt_path.unlink()
+        if len(candidates) >= RETENTION_RECEIPT_HISTORY:
+            _fsync_directory(receipts_root)
 
 
 def source_revision_snapshot(archive_root: Path) -> str:
@@ -1135,6 +1240,14 @@ def _checkpoint_truncate(path: Path, *, label: str) -> None:
         checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     if checkpoint is None or int(checkpoint[0]) != 0:
         raise RuntimeError(f"{label} WAL checkpoint failed: {checkpoint!r}")
+
+
+def _generation_creation_recency_ns(generation: IndexGeneration) -> int:
+    return generation.created_at_ns or generation.created_at_ms * 1_000_000
+
+
+def _generation_lifecycle_recency_ns(generation: IndexGeneration) -> int:
+    return generation.promoted_at_ns or _generation_creation_recency_ns(generation)
 
 
 def _fsync_directory(path: Path) -> None:

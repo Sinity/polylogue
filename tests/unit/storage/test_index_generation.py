@@ -13,6 +13,7 @@ import pytest
 
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import (
+    RETENTION_RECEIPT_HISTORY,
     ActiveWriterLease,
     IndexGenerationStore,
     RebuildLease,
@@ -248,6 +249,75 @@ def test_recover_promotion_after_pointer_swap_does_not_mark_active(tmp_path: Pat
     completed = store.complete_promotion_recovery(generation.generation_id)
 
     assert completed.state == "active"
+
+
+def test_recovered_promotion_records_automatic_retention_and_reclamation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recovery completion must use the same retention lifecycle as promotion.
+
+    Anti-vacuity: this exercises the production crash-recovery seam after a
+    pointer swap. All three generations share a millisecond, while their UUID
+    text is deliberately reverse-chronological. Removing recovery's retention
+    collection leaves the third generation without a receipt; ordering by the
+    old ``(created_at_ms, generation_id)`` tuple retains the wrong rollback
+    target.
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    monkeypatch.setattr("polylogue.storage.index_generation.time.time_ns", lambda: 1_000_000_000)
+    uuid_hexes = iter(("ffffffff", "11111111", "22222222", "00000000", "33333333"))
+    monkeypatch.setattr(
+        "polylogue.storage.index_generation.uuid.uuid4",
+        lambda: type("DeterministicUuid", (), {"hex": next(uuid_hexes)})(),
+    )
+    first = store.create(owner_id="build-1", source_snapshot="snapshot-1")
+    store.promote(first)
+
+    recovered_generations = []
+    for index in (2, 3):
+        generation = store.create(owner_id=f"build-{index}", source_snapshot=f"snapshot-{index}")
+        store._write(replace(generation, state="promoting"))
+        store.active_pointer.unlink()
+        store.active_pointer.symlink_to(generation.index_path)
+        recovered_generations.append(store.complete_promotion_recovery(generation.generation_id))
+
+    receipt = store.load_retention_receipt(recovered_generations[-1].generation_id)
+
+    assert receipt.states_by_generation_id == {
+        recovered_generations[-1].generation_id: "active",
+        recovered_generations[-2].generation_id: "retained",
+        first.generation_id: "reclaimed",
+    }
+    assert Path(recovered_generations[-2].index_path).exists()
+    assert not Path(first.index_path).parent.exists()
+    assert {
+        first.created_at_ms,
+        recovered_generations[0].created_at_ms,
+        recovered_generations[1].created_at_ms,
+    } == {1_000}
+
+
+def test_promotion_bounds_retention_receipt_history(tmp_path: Path) -> None:
+    """Receipt evidence is automatic, but its bounded history cannot grow forever.
+
+    Anti-vacuity: this performs four real promotions, then inspects the
+    production receipt directory. Removing receipt pruning leaves all four
+    receipt files behind instead of the active and immediately prior proofs.
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    promoted = []
+    for index in range(4):
+        generation = store.create(owner_id=f"build-{index}", source_snapshot=f"snapshot-{index}")
+        store.promote(generation)
+        promoted.append(generation)
+
+    receipts = {path.stem for path in (store.generations_root / "retention-receipts").glob("*.json")}
+
+    assert RETENTION_RECEIPT_HISTORY == 2
+    assert receipts == {promoted[-1].generation_id, promoted[-2].generation_id}
 
 
 def test_archive_store_init_failure_releases_writer_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -489,6 +559,44 @@ def test_promotion_records_automatic_retention_and_reclamation(tmp_path: Path) -
     assert receipt.owner_by_generation_id[promoted[-3].generation_id] == promoted[-1].generation_id
     assert Path(promoted[-2].index_path).exists(), "the rollback generation was reclaimed before its boundary"
     assert not Path(promoted[-3].index_path).parent.exists(), "eligible generation was not reclaimed automatically"
+
+
+def test_promotion_retains_actual_predecessor_when_generation_ids_reverse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rollback retention follows the preceding pointer target, never UUID text.
+
+    Anti-vacuity: this drives three production blue-green promotions with all
+    generation timestamps in one millisecond. The first ID sorts after the
+    actual predecessor, so the previous ``(created_at_ms, generation_id)``
+    ordering retains the wrong generation after the third swap.
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    monkeypatch.setattr("polylogue.storage.index_generation.time.time", lambda: 1.0)
+    monkeypatch.setattr("polylogue.storage.index_generation.time.time_ns", lambda: 1_000_000_000)
+    uuid_hexes = iter(
+        ("ffffffff", "11111111", "22222222", "00000000", "33333333", "44444444", "55555555", "66666666", "77777777")
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.index_generation.uuid.uuid4",
+        lambda: type("DeterministicUuid", (), {"hex": next(uuid_hexes)})(),
+    )
+
+    promoted = []
+    for index in range(3):
+        generation = store.create(owner_id=f"build-{index}", source_snapshot=f"snapshot-{index}")
+        store.promote(generation)
+        promoted.append(generation)
+
+    receipt = store.load_retention_receipt(promoted[-1].generation_id)
+
+    assert {generation.created_at_ms for generation in promoted} == {1_000}
+    assert receipt.states_by_generation_id == {
+        promoted[-1].generation_id: "active",
+        promoted[-2].generation_id: "retained",
+        promoted[-3].generation_id: "reclaimed",
+    }
 
 
 def test_promotion_refuses_ownerless_predecessor_before_pointer_swap(tmp_path: Path) -> None:
