@@ -250,28 +250,13 @@ PATHOLOGY_ZOO_MANIFEST: tuple[PathologyZooMember, ...] = (
         ),
     ),
     PathologyZooMember(
-        "content-blocks-vintage",
-        "content-blocks-vintage",
-        ("polylogue-yazae", "polylogue-0qfy"),
-        (f"{_CLAUDE_AI}:zoo-content-blocks-vintage",),
-        ("manual/content-blocks-old.json", "manual/content-blocks-new.json"),
-        PathologyZooCanaryEligibility.SESSION_BACKED,
-        _invariant(
-            "the content-block vintage keeps its parsed text block",
-            "index",
-            "SELECT COUNT(*) FROM blocks WHERE session_id = ?",
-            (f"{_CLAUDE_AI}:zoo-content-blocks-vintage",),
-            (1,),
-        ),
-    ),
-    PathologyZooMember(
         "claude-vintage-live-proof",
         "claude-vintage-live-proof",
         ("polylogue-claude-vintage-live-proof", "polylogue-0qfy"),
         (f"{_CLAUDE_AI}:9ed2056f-b415-4f51-b18e-5265f21a67bf",),
         (
-            "manual/claude-vintage-live-proof-old.json",
-            "manual/claude-vintage-live-proof-new.json",
+            "manual/claude-live-proof-old.json",
+            "manual/claude-live-proof-new.json",
         ),
         PathologyZooCanaryEligibility.SESSION_BACKED,
         _invariant(

@@ -113,8 +113,10 @@ _PATHOLOGY_ZOO_MUTATIONS: dict[str, PathologyZooMutation] = {
     "vintage-reorder": PathologyZooMutation(
         "source", "DELETE FROM raw_sessions WHERE source_path LIKE '%vintage-new.json'"
     ),
-    "content-blocks-vintage": PathologyZooMutation(
-        "index", "DELETE FROM blocks WHERE session_id = ?", ("claude-ai-export:zoo-content-blocks-vintage",)
+    "claude-vintage-live-proof": PathologyZooMutation(
+        "source",
+        "DELETE FROM raw_sessions WHERE native_id = ? AND source_path LIKE ?",
+        ("9ed2056f-b415-4f51-b18e-5265f21a67bf", "%claude-live-proof-new.json"),
     ),
     "lifecycle-anchor-drift": PathologyZooMutation(
         "index",
@@ -279,11 +281,11 @@ def write_claude_vintage_live_proof_pair(root: Path) -> tuple[Path, Path]:
     manual = root / "manual"
     return (
         _write_json(
-            manual / "claude-vintage-live-proof-old.json",
+            manual / "claude-live-proof-old.json",
             _claude_vintage_live_proof_payload(nested_target=False),
         ),
         _write_json(
-            manual / "claude-vintage-live-proof-new.json",
+            manual / "claude-live-proof-new.json",
             _claude_vintage_live_proof_payload(nested_target=True),
         ),
     )
