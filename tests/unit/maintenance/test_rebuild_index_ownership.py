@@ -319,6 +319,9 @@ def test_rebuild_releases_ownership_lock_after_completion(tmp_path: Path) -> Non
         RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
     )
     assert receipt.status == "empty-source"
+    assert receipt.consumed_evidence == {}
+    assert receipt.generation == {}
+    assert not (root / ".index-rebuild-transactions").exists()
 
     location = ArchiveLocation.resolve(root)
     owned = OwnedArchiveLocation.acquire(location, owner_id="post-rebuild-probe")

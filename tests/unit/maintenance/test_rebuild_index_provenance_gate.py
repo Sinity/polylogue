@@ -130,6 +130,19 @@ def test_missing_receipt_fails_before_lease_and_candidate_mutation(tmp_path: Pat
     assert not (root / ".index-generations").exists()
 
 
+def test_nonempty_source_still_requires_schema_inference_receipt_after_ownership(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+
+    assert not (root / ".index-generations").exists()
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+
+
 def test_receipt_reference_policy_fails_before_candidate_mutation(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     _seed(root, count=1)

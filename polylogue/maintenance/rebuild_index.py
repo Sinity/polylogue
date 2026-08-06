@@ -1210,6 +1210,23 @@ def count_source_raw_sessions(root: Path) -> int:
     return int(row[0]) if row is not None else 0
 
 
+def _empty_source_receipt(root: Path) -> RebuildIndexReceipt:
+    return RebuildIndexReceipt(
+        archive_root=str(root),
+        raw_session_count=0,
+        selected_raw_count=0,
+        skipped_by_blob_limit_count=0,
+        status="empty-source",
+        materialized=False,
+        materialization={},
+        generation={},
+        readiness={},
+        replay={},
+        operation=_operation_evidence(root, generation=None, transaction=None, recovery_state="empty-source"),
+        consumed_evidence={},
+    )
+
+
 def total_source_blob_bytes(root: Path) -> int:
     """Total blob payload the rebuild has to replay, for progress and ETA.
 
@@ -1322,18 +1339,20 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     # validation rather than accidentally reusing another archive/pass.
     _ACTIVE_EXTERNAL_INVENTORY_TOKEN.set(None)
     require_rebuild_schema_currency(root)
+    receipt_free_empty_probe = request.operation_id is None and count_source_raw_sessions(root) == 0
     initial_provenance_error: RebuildProvenanceError | None = None
-    try:
-        consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
-    except RebuildProvenanceError as exc:
-        if request.operation_id is None:
-            raise
-        # A resumable operation may need to be retired because this admission
-        # failed, but that lifecycle mutation must wait until both ownership
-        # boundaries are held. Control-flow exceptions are intentionally not
-        # caught here and therefore never change resumability.
-        initial_provenance_error = exc
-        consumed_evidence = {}
+    consumed_evidence: dict[str, object] = {}
+    if not receipt_free_empty_probe:
+        try:
+            consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+        except RebuildProvenanceError as exc:
+            if request.operation_id is None:
+                raise
+            # A resumable operation may need to be retired because this admission
+            # failed, but that lifecycle mutation must wait until both ownership
+            # boundaries are held. Control-flow exceptions are intentionally not
+            # caught here and therefore never change resumability.
+            initial_provenance_error = exc
     location = ArchiveLocation.resolve(root)
     # The joined raw-frontier projection is rooted at the co-located active
     # index. A split-root canary intentionally points that index elsewhere and
@@ -1379,6 +1398,8 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     try:
         assert_owns_archive_location(owned, location)
         require_rebuild_schema_currency(root)
+        if request.operation_id is None and count_source_raw_sessions(root) == 0:
+            return _empty_source_receipt(root)
         if initial_provenance_error is None:
             consumed_evidence = _validate_rebuild_provenance_receipt(
                 root,
