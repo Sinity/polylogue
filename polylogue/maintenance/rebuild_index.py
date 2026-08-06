@@ -220,7 +220,9 @@ def _reconcile_active_generation_transaction(
     transaction can still look resumable even though its generation is active.
     The next resolver pass must record that observed fact before returning it
     to the rebuild loop, otherwise the caller retries an already-active
-    generation forever.
+    generation forever. The transaction's generation owner is also required
+    to match the active generation owner, so a stale transaction cannot
+    attest a generation owned by another rebuild.
     """
 
     if transaction.status in _REBUILD_TERMINAL_NOT_RESUMABLE:
