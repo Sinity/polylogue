@@ -326,7 +326,11 @@ async def run_daemon_bulk_rebuild_pass(
     never opens a second writer connection of its own).
     """
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
-    from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+    from polylogue.maintenance.rebuild_index import (
+        RebuildIndexRequest,
+        rebuild_index_from_source_sync,
+        require_rebuild_schema_currency,
+    )
     from polylogue.maintenance.schema_inference_gate import resolve_schema_inference_receipt_reference
 
     root = Path(config.archive_root)
@@ -343,6 +347,10 @@ async def run_daemon_bulk_rebuild_pass(
     owned = await asyncio.to_thread(OwnedArchiveLocation.acquire, location)
     try:
         await asyncio.to_thread(assert_owns_archive_location, owned, location)
+        # Transaction resolution has its own ownership-bound currency check,
+        # but a migration can complete before this later page-selection hold.
+        # Recheck before consuming the receipt or selecting source material.
+        await asyncio.to_thread(require_rebuild_schema_currency, root)
         await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
         store = IndexGenerationStore(location)
         await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
