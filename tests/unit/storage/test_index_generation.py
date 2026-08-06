@@ -458,33 +458,62 @@ def test_promotion_prunes_superseded_generations(tmp_path: Path) -> None:
     assert len(list(store.generations_root.glob("retired-*"))) == 1
 
 
-def test_pruning_never_removes_the_active_generation(tmp_path: Path) -> None:
-    """Retention of zero still must not delete what the pointer resolves to."""
+def test_promotion_records_automatic_retention_and_reclamation(tmp_path: Path) -> None:
+    """The real blue-green seam retains one rollback generation, then records GC.
+
+    Anti-vacuity: this calls ``IndexGenerationStore.promote`` against actual
+    SQLite index generations. Removing promotion's retention lifecycle call
+    leaves the prior generation's metadata untouched and no durable receipt,
+    so this test fails instead of merely checking a test-local planner.
+    """
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
-    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
-    store.promote(generation)
 
-    removed = store.prune_superseded_generations(keep=0)
+    promoted = []
+    for index in range(3):
+        generation = store.create(owner_id=f"build-{index}", source_snapshot=f"snapshot-{index}")
+        store.promote(generation)
+        promoted.append(generation)
 
-    assert generation.generation_id not in removed
-    assert Path(generation.index_path).exists()
-    assert Path(store.active_pointer).resolve(strict=True) == Path(generation.index_path).resolve()
+    receipt = store.load_retention_receipt(promoted[-1].generation_id)
+
+    assert receipt.automatic is True
+    assert receipt.retention_boundary == 1
+    assert receipt.states_by_generation_id == {
+        promoted[-1].generation_id: "active",
+        promoted[-2].generation_id: "retained",
+        promoted[-3].generation_id: "reclaimed",
+    }
+    assert receipt.eligible_generation_ids == (promoted[-3].generation_id,)
+    assert receipt.owner_by_generation_id[promoted[-2].generation_id] == promoted[-1].generation_id
+    assert receipt.owner_by_generation_id[promoted[-3].generation_id] == promoted[-1].generation_id
+    assert Path(promoted[-2].index_path).exists(), "the rollback generation was reclaimed before its boundary"
+    assert not Path(promoted[-3].index_path).parent.exists(), "eligible generation was not reclaimed automatically"
 
 
-def test_pruning_retains_everything_when_the_active_pointer_is_unresolvable(tmp_path: Path) -> None:
-    """Fail closed: if the thing that says what is live is missing, delete nothing."""
+def test_promotion_refuses_ownerless_predecessor_before_pointer_swap(tmp_path: Path) -> None:
+    """An ownerless predecessor cannot become an unaccountable GC candidate.
+
+    The mutation that makes this fail is removing the promotion-time ownership
+    preflight. The old promotion path accepted this corrupted predecessor,
+    changed the active pointer, and left later GC unable to prove who owned
+    the superseded generation.
+    """
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
-    first = store.create(owner_id="operator", source_snapshot="snapshot-a")
-    store.promote(first)
-    second = store.create(owner_id="operator", source_snapshot="snapshot-b")
-    store.promote(second)
-    store.active_pointer.unlink()
+    predecessor = store.create(owner_id="first-build", source_snapshot="snapshot-a")
+    store.promote(predecessor)
+    predecessor_metadata = Path(predecessor.index_path).with_name("generation.json")
+    payload = json.loads(predecessor_metadata.read_text(encoding="utf-8"))
+    payload["owner_id"] = ""
+    predecessor_metadata.write_text(json.dumps(payload), encoding="utf-8")
+    candidate = store.create(owner_id="second-build", source_snapshot="snapshot-b")
 
-    assert store.prune_superseded_generations(keep=0) == []
-    assert Path(first.index_path).exists()
-    assert Path(second.index_path).exists()
+    with pytest.raises(RuntimeError, match="retention ownership"):
+        store.promote(candidate)
+
+    assert Path(store.active_pointer).resolve(strict=True) == Path(predecessor.index_path).resolve()
+    assert store.load(candidate.generation_id).state == "inactive"
 
 
 def test_pruning_never_removes_a_never_promoted_rebuild_candidate(tmp_path: Path) -> None:
