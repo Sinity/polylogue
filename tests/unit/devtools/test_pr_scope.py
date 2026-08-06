@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from io import BytesIO
 from pathlib import Path
+from urllib import request
 
 import pytest
 
@@ -163,12 +165,12 @@ def test_pr_lookup_falls_back_to_github_api_when_gh_is_unavailable(monkeypatch: 
     seen_urls: list[str] = []
 
     def github_response(api_request: object, *, timeout: int) -> Response:
-        assert isinstance(api_request, pr_scope.request.Request)
+        assert isinstance(api_request, request.Request)
         seen_urls.append(api_request.full_url)
         return Response(json.dumps({"body": "carrier", "draft": False, "head": {"sha": HEAD_SHA}}).encode())
 
-    monkeypatch.setattr(pr_scope.subprocess, "run", missing_gh)
-    monkeypatch.setattr(pr_scope.request, "urlopen", github_response)
+    monkeypatch.setattr(subprocess, "run", missing_gh)
+    monkeypatch.setattr(request, "urlopen", github_response)
 
     assert pr_scope._pr_body(3845) == ("carrier", HEAD_SHA, False)
     assert seen_urls == ["https://api.github.com/repos/Sinity/polylogue/pulls/3845"]
