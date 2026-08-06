@@ -258,7 +258,7 @@ def _dialogue_payload(session: Session, *, projection: ProjectionSpec | None = N
     return {
         "id": str(session.id),
         "origin": session.origin.value,
-        "title": session.title,
+        "title": session.display_title,
         "created_at": session.created_at.isoformat() if session.created_at else None,
         "updated_at": session.updated_at.isoformat() if session.updated_at else None,
         "message_count": len(all_messages),
@@ -288,6 +288,7 @@ def _archive_summary_to_domain(summary: Any) -> SessionSummary:
         id=SessionId(str(summary.session_id)),
         origin=Origin.from_string(summary.origin),
         title=summary.title,
+        display_label=summary.display_label,
         created_at=parse_archive_datetime(summary.created_at),
         updated_at=parse_archive_datetime(summary.updated_at),
         working_directories=tuple(summary.working_directories),

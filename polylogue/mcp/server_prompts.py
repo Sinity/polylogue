@@ -149,7 +149,7 @@ def _archive_prompt_session_page(archive: ArchiveStore, session_id: str, *, limi
     return PromptSession(
         id=summary.session_id,
         origin=summary.origin,
-        display_title=summary.title or "(untitled)",
+        display_title=summary.display_label or summary.title or "(untitled)",
         messages=tuple(
             PromptMessage(
                 role=row.role,

@@ -387,7 +387,7 @@ class MCPArchiveSessionSummaryPayload(SurfacePayloadModel):
             native_id=summary.native_id,
             origin=summary.origin,
             source=summary.origin,
-            title=summary.title,
+            title=summary.display_label or summary.title,
             created_at=summary.created_at,
             updated_at=summary.updated_at,
             message_count=summary.message_count,

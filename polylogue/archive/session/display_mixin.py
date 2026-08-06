@@ -41,10 +41,12 @@ class DisplayTitleTagsMixin:
     - parent_id: SessionId | None
     - branch_type: BranchType | None
     - display_name: str | None
+    - display_label: str | None
     """
 
     id: SessionId
     title: str | None
+    display_label: str | None
     created_at: datetime | None
     updated_at: datetime | None
     metadata: dict[str, object]
@@ -64,10 +66,12 @@ class DisplayTitleTagsMixin:
 
     @property
     def display_title(self) -> str:
-        """Return the display title with precedence: user_title > title > display_name > id[:8]."""
+        """Return the read-time display label, preserving provider titles."""
         user_title = self.user_title
         if user_title:
             return user_title
+        if self.display_label:
+            return self.display_label
         if self.title:
             return self.title
         # polylogue-cgfy: provider-assigned display name (e.g. Claude Code's

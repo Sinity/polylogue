@@ -39,12 +39,32 @@ from polylogue.cli.archive_query import (
     _sort,
     _stats_by_line,
     _summary_line,
+    _summary_payload,
     _tool_tokens,
     _tuple_tokens,
 )
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+
+
+def test_summary_payload_renders_read_time_display_label() -> None:
+    summary = ArchiveSessionSummary(
+        session_id="claude-code-session:display-label",
+        native_id="display-label",
+        origin="claude-code-session",
+        title=None,
+        created_at="2026-08-06T00:00:00+00:00",
+        updated_at="2026-08-06T00:00:00+00:00",
+        message_count=3,
+        word_count=10,
+        tags=(),
+        display_label="polylogue · 2 files · 3 msgs · 2026-08-06",
+    )
+
+    payload = _summary_payload(summary)
+
+    assert payload["title"] == "polylogue · 2 files · 3 msgs · 2026-08-06"
 
 
 def test_emit_no_results_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:

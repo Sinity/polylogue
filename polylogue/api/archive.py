@@ -2077,7 +2077,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, origin: Origin) ->
     )
 
 
-def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
+def _archive_session_to_session(session: ArchiveSessionEnvelope, *, display_label: str | None = None) -> Session:
     origin = Origin.from_string(session.origin)
     messages = [_archive_message_to_domain(message, origin=origin) for message in session.messages]
     timestamps = [message.timestamp for message in messages if message.timestamp is not None]
@@ -2090,7 +2090,8 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
     return Session(
         id=SessionId(session.session_id),
         origin=origin,
-        title=session.title,
+        title=session.title if session.title_source in {"origin", "heuristic"} else None,
+        display_label=display_label,
         title_source=TitleSource(session.title_source) if session.title_source is not None else None,
         title_ref=session.title_ref,
         title_confidence=session.title_confidence,
@@ -2113,6 +2114,7 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         id=SessionId(summary.session_id),
         origin=Origin.from_string(summary.origin),
         title=summary.title,
+        display_label=summary.display_label,
         title_source=TitleSource(summary.title_source) if summary.title_source is not None else None,
         title_ref=summary.title_ref,
         title_confidence=summary.title_confidence,
@@ -2282,7 +2284,10 @@ class _ArchiveNeighborRuntime:
     async def get(self, session_id: str) -> Session | None:
         try:
             resolved = self._archive.resolve_session_id(session_id)
-            return _archive_session_to_session(self._archive.read_session(resolved))
+            summary = self._archive.read_summary(resolved)
+            return _archive_session_to_session(
+                self._archive.read_session(resolved), display_label=summary.display_label
+            )
         except KeyError:
             return None
 
@@ -2526,7 +2531,10 @@ class PolylogueArchiveMixin:
                 resolved_id = archive.resolve_session_id(session_id)
             except KeyError:
                 return None
-            session = _archive_session_to_session(archive.read_session(resolved_id))
+            summary = archive.read_summary(resolved_id)
+            session = _archive_session_to_session(
+                archive.read_session(resolved_id), display_label=summary.display_label
+            )
             if content_projection is None or not content_projection.filters_content():
                 return session
             return session.with_content_projection(content_projection)
@@ -4077,7 +4085,8 @@ class PolylogueArchiveMixin:
             )
         session_id = str(row["session_id"])
         message_id = str(row["message_id"])
-        session = _archive_session_to_session(archive.read_session(session_id))
+        summary = archive.read_summary(session_id)
+        session = _archive_session_to_session(archive.read_session(session_id), display_label=summary.display_label)
         message = next((item for item in session.messages if str(item.id) == message_id), None)
         if message is None:
             return cast(
@@ -4604,7 +4613,10 @@ class PolylogueArchiveMixin:
             model_json_document,
         )
 
-        session = _archive_session_to_session(archive.read_session(str(summary.session_id)))
+        session = _archive_session_to_session(
+            archive.read_session(str(summary.session_id)),
+            display_label=summary.display_label,
+        )
         digest = compile_session_digest(session)
         if object_ref.kind == "run":
             for run in digest.run_projection.runs:
@@ -4614,7 +4626,7 @@ class PolylogueArchiveMixin:
                     run_ref=run.run_ref.format(),
                     session_id=str(summary.session_id),
                     origin=str(summary.origin),
-                    title=summary.title,
+                    title=summary.display_label or summary.title,
                     native_session_id=run.native_session_id,
                     native_parent_session_id=run.native_parent_session_id,
                     parent_run_ref=run.parent_run_ref.format() if run.parent_run_ref else None,
@@ -4638,7 +4650,7 @@ class PolylogueArchiveMixin:
                     resolved=True,
                     payload_kind="run",
                     payload=model_json_document(run_payload),
-                    title=summary.title,
+                    title=summary.display_label or summary.title,
                     summary=f"{run_payload.role} {run_payload.status}",
                     object_refs=(f"session:{summary.session_id}", normalized_ref),
                     evidence_refs=run_payload.evidence_refs,
@@ -4651,7 +4663,7 @@ class PolylogueArchiveMixin:
                     event_ref=event.event_ref.format(),
                     session_id=str(summary.session_id),
                     origin=str(summary.origin),
-                    title=summary.title,
+                    title=summary.display_label or summary.title,
                     kind=event.kind,
                     summary=event.summary,
                     delivery_state=event.delivery_state,
@@ -4666,7 +4678,7 @@ class PolylogueArchiveMixin:
                     resolved=True,
                     payload_kind="observed-event",
                     payload=model_json_document(event_payload),
-                    title=summary.title,
+                    title=summary.display_label or summary.title,
                     summary=event_payload.summary,
                     object_refs=(f"session:{summary.session_id}", normalized_ref, *event_payload.object_refs),
                     evidence_refs=event_payload.evidence_refs,
@@ -4679,7 +4691,7 @@ class PolylogueArchiveMixin:
                     snapshot_ref=snapshot.snapshot_ref.format(),
                     session_id=str(summary.session_id),
                     origin=str(summary.origin),
-                    title=summary.title,
+                    title=summary.display_label or summary.title,
                     run_ref=snapshot.run_ref.format(),
                     boundary=snapshot.boundary,
                     inheritance_mode=snapshot.inheritance_mode,
@@ -4694,7 +4706,7 @@ class PolylogueArchiveMixin:
                     resolved=True,
                     payload_kind="context-snapshot",
                     payload=model_json_document(snapshot_payload),
-                    title=summary.title,
+                    title=summary.display_label or summary.title,
                     summary=f"{snapshot_payload.boundary} ({snapshot_payload.inheritance_mode})",
                     object_refs=(
                         f"session:{summary.session_id}",
@@ -4761,7 +4773,13 @@ class PolylogueArchiveMixin:
                 origin=origin,
                 limit=50 if limit is None else limit,
             )
-            sessions = [_archive_session_to_session(archive.read_session(summary.session_id)) for summary in summaries]
+            sessions = [
+                _archive_session_to_session(
+                    archive.read_session(summary.session_id),
+                    display_label=summary.display_label,
+                )
+                for summary in summaries
+            ]
             if content_projection is None or not content_projection.filters_content():
                 return sessions
             return [session.with_content_projection(content_projection) for session in sessions]
@@ -5318,7 +5336,10 @@ class PolylogueArchiveMixin:
             stats = archive.stats()
             word_row = archive._conn.execute("SELECT COALESCE(SUM(word_count), 0) FROM sessions").fetchone()
             recent = [
-                _archive_session_to_session(archive.read_session(summary.session_id))
+                _archive_session_to_session(
+                    archive.read_session(summary.session_id),
+                    display_label=summary.display_label,
+                )
                 for summary in archive.list_summaries(limit=5)
             ]
             return PublicArchiveStats(
@@ -5992,7 +6013,7 @@ class PolylogueArchiveMixin:
         return [
             {
                 "id": summary.session_id,
-                "title": summary.title,
+                "title": summary.display_label or summary.title,
                 "origin": summary.origin,
                 "created_at": parse_archive_datetime(summary.created_at),
                 "updated_at": parse_archive_datetime(summary.updated_at),
@@ -6294,7 +6315,11 @@ class PolylogueArchiveMixin:
             operation="archive.session_tree",
             arguments={"session_id": session_id},
             work=lambda archive: [
-                _archive_session_to_session(session) for session in archive.get_session_tree(session_id)
+                _archive_session_to_session(
+                    session,
+                    display_label=archive.read_summary(session.session_id).display_label,
+                )
+                for session in archive.get_session_tree(session_id)
             ],
             projection="session-tree",
             stable_order="depth,session_id",

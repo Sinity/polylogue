@@ -1,19 +1,16 @@
-"""Session structural label projection (polylogue-cijx.4 decision 3).
+"""Session display-label projection (polylogue-6e7m).
 
 A readable session label is a **read-time projection**, never a stored
-column. It is computed from three inputs that must themselves be resolved
-correctly first (decisions 1 and 2 of the same bead):
+column. It is computed from structural inputs already present in the index:
 
 - the session's normalized repository name (or a directory fallback when no
   repository could be resolved -- see ``archive/session/repo_identity.py``
   and the write-path fix in ``storage/sqlite/archive_tiers/write.py``),
-- the session's dominant repo-relative file path (``repo_relative_path``),
-- the session's message count.
+- the number of distinct touched repo-relative file paths,
+- the session's message count,
+- the session date.
 
-When the provider supplied a real title, that title is used in place of the
-path clause -- the structural form only fires as a fallback for the large
-share of sessions that never get a provider title (auto-generated agent
-sessions, subagent dispatch, etc). The label is never written to
+The label is never written to
 ``sessions.title``: doing so would collide with genuine provider titles and
 freeze mid-session ("340 msgs" becomes wrong the moment message 341 lands).
 """
@@ -30,6 +27,7 @@ __all__ = [
     "SessionLabelInputs",
     "SessionRepoRootPath",
     "compute_session_structural_label",
+    "distinct_repo_relative_file_count_for_session",
     "dominant_repo_relative_path_for_session",
     "session_structural_label_for_session",
 ]
@@ -47,19 +45,20 @@ class SessionLabelInputs:
     """``True`` when ``repo_name`` names a bare directory rather than a
     resolved repository (no git remote, no discoverable git root)."""
     dominant_path: str | None
-    """The most-touched repo-relative file path, already stripped of the
-    checkout root (decision 2), or ``None`` when no file evidence exists."""
+    """Retained for compatibility with the earlier path-based projection."""
     additional_file_count: int
-    """Count of OTHER distinct files touched besides ``dominant_path``."""
+    """Retained for compatibility with the earlier path-based projection."""
     message_count: int
+    distinct_file_count: int | None = None
+    session_date: str | None = None
 
 
 def compute_session_structural_label(inputs: SessionLabelInputs) -> str:
     """Compose the structural label for one session.
 
     Provider title wins when present. Otherwise:
-    ``<repo-or-directory> · <dominant path>[ +N] · <messages> msgs``,
-    degrading gracefully as pieces of evidence are missing.
+    ``<repo> · <files> files · <messages> msgs · <date>``, degrading
+    gracefully as pieces of evidence are missing.
     """
     if inputs.provider_title and inputs.provider_title.strip():
         return inputs.provider_title.strip()
@@ -73,13 +72,16 @@ def compute_session_structural_label(inputs: SessionLabelInputs) -> str:
     if inputs.repo_name and not inputs.is_directory:
         parts.append(inputs.repo_name)
 
-    if inputs.dominant_path:
-        path_clause = inputs.dominant_path
-        if inputs.additional_file_count > 0:
-            path_clause = f"{path_clause} +{inputs.additional_file_count}"
-        parts.append(path_clause)
+    distinct_file_count = inputs.distinct_file_count
+    if distinct_file_count is None:
+        distinct_file_count = (1 + inputs.additional_file_count) if inputs.dominant_path else 0
+    if distinct_file_count:
+        noun = "file" if distinct_file_count == 1 else "files"
+        parts.append(f"{distinct_file_count} {noun}")
 
     parts.append(f"{inputs.message_count} msgs")
+    if inputs.session_date:
+        parts.append(inputs.session_date[:10])
     return " · ".join(parts)
 
 
@@ -170,12 +172,32 @@ def dominant_repo_relative_path_for_session(
     return dominant_path, additional_file_count
 
 
+def distinct_repo_relative_file_count_for_session(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> int:
+    """Return the number of distinct repo-relative files touched by a session."""
+    repo_root = _session_repo_root(conn, session_id)
+    root_path = repo_root.root_path if repo_root else ""
+    rows = conn.execute(
+        """
+        SELECT tool_path
+        FROM action_pairs
+        WHERE session_id = ? AND tool_path IS NOT NULL AND tool_path != ''
+        """,
+        (session_id,),
+    ).fetchall()
+    paths = {repo_relative_path(str(raw_path), root_path) if root_path else str(raw_path) for (raw_path,) in rows}
+    return len({path for path in paths if path})
+
+
 def session_structural_label_for_session(
     conn: sqlite3.Connection,
     session_id: str,
     *,
     message_count: int,
     provider_title: str | None,
+    session_date: str | None = None,
 ) -> str:
     """Compute the structural label for ``session_id`` against a live index.db.
 
@@ -183,14 +205,16 @@ def session_structural_label_for_session(
     ``action_pairs``), never writes.
     """
     repo_root = _session_repo_root(conn, session_id)
-    dominant_path, additional_file_count = dominant_repo_relative_path_for_session(conn, session_id)
+    distinct_file_count = distinct_repo_relative_file_count_for_session(conn, session_id)
 
     inputs = SessionLabelInputs(
         provider_title=provider_title,
         repo_name=repo_root.repo_name if repo_root else None,
         is_directory=repo_root.is_directory if repo_root else True,
-        dominant_path=dominant_path,
-        additional_file_count=additional_file_count,
+        dominant_path=None,
+        additional_file_count=0,
         message_count=message_count,
+        distinct_file_count=distinct_file_count,
+        session_date=session_date,
     )
     return compute_session_structural_label(inputs)

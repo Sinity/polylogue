@@ -413,6 +413,8 @@ class ArchiveSessionSummary:
     # (polylogue-cgfy): a provider-assigned name (e.g. Claude Code's slug)
     # distinct from the (possibly derived) title.
     display_name: str | None = None
+    # Read-time projection over current structural evidence. Never persisted.
+    display_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -8793,8 +8795,8 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
     message_count = int(row["message_count"] or 0)
     raw_title = str(row["title"]) if row["title"] is not None else None
     raw_title_source = str(row["title_source"]) if row["title_source"] is not None else None
-    # A non-blank ``sessions.title`` is only a genuine provider/derived title
-    # when ``title_source`` says so. ``title_source='unknown'`` rows still
+    # A non-blank ``sessions.title`` is only a genuine provider title when
+    # ``title_source`` says so. ``title_source='unknown'`` rows still
     # carry a NON-NULL title -- the writer's pre-cijx.4 fallback stores the
     # raw native id there (a bare UUID, or "<uuid>:agent-<hash>" for a
     # subagent), which is exactly the "worse than the UUID it replaces" case
@@ -8821,31 +8823,17 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
         display_name: str | None = None
     else:
         display_name = str(raw_display_name).strip() or None if raw_display_name is not None else None
-    if provider_title is not None:
-        title = provider_title
-        title_source = raw_title_source
-    elif display_name:
-        # polylogue-cgfy: a provider-assigned display name (Claude Code's
-        # slug, e.g. "greedy-squishing-hamming") is real origin evidence --
-        # prefer it over the derived structural label below. This is the fix
-        # for subagent rows rendering as "<uuid-prefix>:agent-<suffix>"
-        # instead of a human-readable name when no title sidecar evidence
-        # exists for that specific session.
-        title = display_name
-        title_source = "origin"
-    else:
-        # No provider-supplied title or display name (or a blank/synthetic
-        # one): fall back to the structural label (polylogue-cijx.4
-        # decision 3) rather than exposing a bare/blank title to CLI/MCP/API
-        # surfaces. This is a read-time projection only -- never written
-        # back to sessions.title.
-        title = session_structural_label_for_session(
-            conn,
-            session_id,
-            message_count=message_count,
-            provider_title=None,
-        )
-        title_source = "path"
+    session_date = _iso_from_ms(row["created_at_ms"]) or _iso_from_ms(row["updated_at_ms"])
+    structural_label = session_structural_label_for_session(
+        conn,
+        session_id,
+        message_count=message_count,
+        provider_title=None,
+        session_date=session_date,
+    )
+    display_label = provider_title or display_name or structural_label
+    title = provider_title
+    title_source = raw_title_source if provider_title is not None else None
     parent_id: str | None
     try:
         raw_parent_id = row["parent_session_id"]
@@ -8862,6 +8850,7 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
         native_id=str(row["native_id"]),
         origin=origin,
         title=title,
+        display_label=display_label,
         title_source=title_source,
         parent_id=parent_id,
         title_ref=str(row["title_ref"]) if row["title_ref"] is not None else None,

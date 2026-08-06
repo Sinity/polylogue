@@ -3322,7 +3322,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return {
             "id": session_id,
             "session_id": session_id,
-            "title": summary.title or session_id,
+            "title": summary.display_label or summary.title or session_id,
             "origin": summary.origin,
             "target_ref": _dump_target_ref(target_ref),
             "anchor": reader_anchor("session", session_id),

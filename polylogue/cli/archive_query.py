@@ -2819,7 +2819,7 @@ def _summary_payload(
             SessionListRowPayload(
                 id=summary.session_id,
                 origin=summary.origin,
-                title=bound_display_text(summary.title or summary.session_id, max_chars=96),
+                title=bound_display_text(summary.display_label or summary.title or summary.session_id, max_chars=96),
                 target_ref=TargetRefPayload.session(summary.session_id),
                 anchor=reader_anchor("session", summary.session_id),
                 created_at=summary.created_at,
@@ -2861,7 +2861,9 @@ def _hit_payload(
                 session=SessionSummaryPayload(
                     id=summary.session_id,
                     origin=summary.origin,
-                    title=bound_display_text(summary.title or summary.session_id, max_chars=96),
+                    title=bound_display_text(
+                        summary.display_label or summary.title or summary.session_id, max_chars=96
+                    ),
                     message_count=summary.message_count,
                     target_ref=TargetRefPayload.session(summary.session_id),
                     anchor=reader_anchor("session", summary.session_id),
