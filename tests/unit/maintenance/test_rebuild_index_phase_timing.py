@@ -31,6 +31,7 @@ every receipt's ``timings_s``, not merely zero.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -77,6 +78,26 @@ def _seed_distinct_codex_sessions(root: Path, count: int) -> list[str]:
                     acquired_at_ms=index + 1,
                 )
             )
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = CASE
+                    WHEN source_path LIKE '%/0.jsonl' THEN 'codex:sess-0'
+                    WHEN source_path LIKE '%/1.jsonl' THEN 'codex:sess-1'
+                    WHEN source_path LIKE '%/2.jsonl' THEN 'codex:sess-2'
+                    ELSE 'codex:sess-3'
+                END,
+                revision_kind = 'full',
+                source_revision = raw_id,
+                baseline_raw_id = raw_id,
+                acquisition_generation = 0,
+                revision_authority = 'byte_proven'
+            """
+        )
+        source.commit()
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / f"{root.name}-schema-receipt.json")
+    os.environ["POLYLOGUE_SCHEMA_INFERENCE_RECEIPT"] = str(receipt_path)
     return raw_ids
 
 
@@ -226,17 +247,17 @@ def test_partial_rebuild_cannot_complete_when_candidate_omits_source_document(
 
 
 @pytest.mark.parametrize(
-    ("violation", "expected_check"),
+    ("violation", "expected_error"),
     (
-        ("attachment", "corpus-attachment-fidelity"),
-        ("revision", "corpus-revision-fidelity"),
+        ("attachment", "reindex acceptance gate failed.*corpus-attachment-fidelity"),
+        ("revision", "referenced source blob integrity verification failed"),
     ),
 )
 def test_rebuild_corpus_gate_blocks_mutated_inactive_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     violation: str,
-    expected_check: str,
+    expected_error: str,
 ) -> None:
     """The real rebuild acceptance stage rejects each corrupted candidate.
 
@@ -296,7 +317,7 @@ def test_rebuild_corpus_gate_blocks_mutated_inactive_candidate(
 
     monkeypatch.setattr(rebuild_index, "_repopulate_bulk_build_derived_state", corrupt_candidate_before_acceptance)
 
-    with pytest.raises(RuntimeError, match=f"reindex acceptance gate failed.*{expected_check}"):
+    with pytest.raises(RuntimeError, match=expected_error):
         rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=False))
 
     with sqlite3.connect(root / "index.db") as conn:

@@ -465,6 +465,22 @@ def rebuild_index_command(
         if payload["status"] != "ready":
             raise click.ClickException("rebuild schema currency preflight failed; migrate or deploy before rebuilding")
         return
+    if schema_inference_receipt_path is not None:
+        # Resolve relative receipt handles against the configured archive
+        # command context before serializing the daemon request. The shared
+        # resolver also preserves the refusal for receipt paths inside the
+        # archive's durable file set.
+        from polylogue.maintenance.schema_inference_gate import (
+            SchemaInferenceGateError,
+            resolve_schema_inference_receipt_reference,
+        )
+
+        try:
+            schema_inference_receipt_path = resolve_schema_inference_receipt_reference(
+                root, schema_inference_receipt_path
+            )
+        except SchemaInferenceGateError as exc:
+            raise click.ClickException(str(exc)) from exc
     if use_daemon:
         payload = _run_daemon_rebuild(
             daemon_url,

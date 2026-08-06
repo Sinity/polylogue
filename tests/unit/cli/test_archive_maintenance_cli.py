@@ -2302,6 +2302,61 @@ def test_rebuild_index_daemon_path_posts_the_real_selection_request(
     assert "Classified:" in result.output
 
 
+def test_rebuild_index_daemon_resolves_relative_schema_receipt_before_post(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Relative receipt references are resolved before daemon serialization.
+
+    Anti-vacuity: removing CLI-side resolution sends the relative filename in
+    the captured production daemon payload.
+    """
+    root = cli_workspace["archive_root"]
+    absolute_receipt = write_valid_rebuild_receipt(root, tmp_path / "relative-receipt.json")
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, object] = {}
+
+    class Response:
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "archive_root": str(root),
+                    "classified_full_count": 0,
+                    "replayed_logical_source_count": 0,
+                    "quarantined_raw_count": 0,
+                }
+            ).encode()
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def fake_urlopen(request: object, *, timeout: int) -> Response:
+        captured["body"] = json.loads(request.data)  # type: ignore[attr-defined]
+        return Response()
+
+    monkeypatch.setattr(maintenance_rebuild_index, "urlopen", fake_urlopen)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--daemon",
+            "--schema-inference-receipt",
+            absolute_receipt.name,
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["schema_inference_receipt_path"] == str(absolute_receipt.resolve())
+
+
 @pytest.mark.parametrize("selection_args", [["--only-missing"], ["--raw-id", "raw-a"]])
 def test_partial_rebuild_requires_no_promote_before_archive_mutation(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, selection_args: list[str]
@@ -2368,6 +2423,22 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = CASE
+                    WHEN source_path = 'first.jsonl' THEN 'codex:first'
+                    ELSE 'codex:second'
+                END,
+                revision_kind = 'full',
+                source_revision = raw_id,
+                baseline_raw_id = raw_id,
+                acquisition_generation = 0,
+                revision_authority = 'byte_proven'
+            """
+        )
+        source.commit()
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
@@ -2448,6 +2519,22 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = CASE
+                    WHEN source_path = 'first.jsonl' THEN 'codex:first'
+                    ELSE 'codex:second'
+                END,
+                revision_kind = 'full',
+                source_revision = raw_id,
+                baseline_raw_id = raw_id,
+                acquisition_generation = 0,
+                revision_authority = 'byte_proven'
+            """
+        )
+        source.commit()
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 

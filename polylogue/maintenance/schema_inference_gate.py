@@ -822,8 +822,43 @@ def _full_blob_hash_evidence(archive_root: Path, *, referenced_hashes: set[str])
             for failure in verification.failures
         ],
         "missing_references": _sample(missing_references, DEFAULT_SAMPLE_LIMIT),
+        "referenced_blob_integrity_snapshot": _referenced_blob_integrity_snapshot(
+            archive_root, referenced_hashes=referenced_hashes
+        ),
         "errors": errors,
         "reason": "; ".join(errors) if errors else None,
+    }
+
+
+def _referenced_blob_integrity_snapshot(archive_root: Path, *, referenced_hashes: set[str]) -> dict[str, object]:
+    """Verify and bind the current bytes for every source-referenced blob.
+
+    The source.db hash is only the expected identity. The ``BlobStore.verify``
+    calls below establish that the bytes currently on disk still have that
+    identity, and the resulting per-hash snapshot is suitable for comparing a
+    candidate-readiness proof against a later receipt.
+    """
+
+    store = BlobStore(archive_root / "blob")
+    entries: list[dict[str, object]] = []
+    for blob_hash in sorted(referenced_hashes):
+        path = store.blob_path(blob_hash)
+        verified = store.verify(blob_hash)
+        item: dict[str, object] = {"blob_hash": blob_hash, "verified": verified}
+        try:
+            stat = path.stat()
+            item.update({"size": stat.st_size, "inode": stat.st_ino, "mtime_ns": stat.st_mtime_ns})
+        except OSError as exc:
+            item["stat_error"] = str(exc)
+        entries.append(item)
+    encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "algorithm": "sha256-referenced-blob-integrity-v1",
+        "verifier": "polylogue.storage.blob_store.BlobStore.verify",
+        "referenced_count": len(entries),
+        "passed": all(bool(item.get("verified")) for item in entries),
+        "entries": entries,
+        "digest": hashlib.sha256(encoded).hexdigest(),
     }
 
 
@@ -866,6 +901,39 @@ def _external_inventory(roots: Sequence[Path]) -> list[_ExternalGroundTruthFile]
             )
     inventory.sort(key=lambda item: (item.relative_path, item.root_index))
     return inventory
+
+
+def _external_inventory_change_detector(roots: Sequence[Path]) -> dict[str, object]:
+    """Return metadata-only evidence for a previously hashed corpus.
+
+    The detector walks and stats files without opening them. A changed
+    detector triggers the authoritative full inventory hash; an unchanged
+    detector reuses the first full inventory instead of hashing a multi-GiB
+    corpus on every rebuild checkpoint.
+    """
+
+    entries: list[dict[str, object]] = []
+    for root_index, root in enumerate(sorted({path.resolve() for path in roots}, key=str)):
+        for path in _iter_ground_truth_files(root):
+            resolved_path = path.resolve()
+            stat = resolved_path.stat()
+            relative_path = resolved_path.name if root.is_file() else resolved_path.relative_to(root).as_posix()
+            entries.append(
+                {
+                    "root_index": root_index,
+                    "relative_path": relative_path,
+                    "size": stat.st_size,
+                    "inode": stat.st_ino,
+                    "mtime_ns": stat.st_mtime_ns,
+                }
+            )
+    entries.sort(key=lambda item: (int(cast(int, item["root_index"])), str(item["relative_path"])))
+    encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "algorithm": "sha256-stat-inventory-v1",
+        "entry_count": len(entries),
+        "digest": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _external_inventory_records(inventory: Sequence[_ExternalGroundTruthFile]) -> list[dict[str, object]]:
@@ -1220,6 +1288,7 @@ def _ground_truth_evidence(
                 "cross_origin_mismatches": cross_origin_mismatches[:DEFAULT_SAMPLE_LIMIT],
                 "provenance": provenance,
                 "external_inventory": _external_inventory_records(inventory),
+                "inventory_change_detector": _external_inventory_change_detector(declared_roots),
                 "raw_external_mapping": mapping,
                 "passed": not missing and not unmatched_mapping,
             }
@@ -1594,7 +1663,40 @@ def _int_or_zero(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _current_external_ground_truth_digest(archive_root: Path, ground_truth: Mapping[str, object]) -> str:
+def _external_inventory_token(
+    archive_root: Path,
+    *,
+    receipt_path: Path,
+    receipt_nonce: object,
+    source_snapshot: object,
+    external_ground_truth_digest: object,
+    ground_truth: Mapping[str, object],
+) -> dict[str, object]:
+    origins: dict[str, object] = {}
+    for origin, raw_evidence in _as_dict(ground_truth.get("origins")).items():
+        evidence = _as_dict(raw_evidence)
+        origins[origin] = {
+            "exempt": bool(evidence.get("exempt")),
+            "declared_roots": evidence.get("declared_roots", []),
+            "inventory_change_detector": evidence.get("inventory_change_detector"),
+        }
+    return {
+        "schema": "polylogue.external-ground-truth-inventory-token.v1",
+        "archive_root": str(archive_root.resolve()),
+        "receipt_path": str(receipt_path.resolve()),
+        "receipt_nonce": receipt_nonce,
+        "source_snapshot": source_snapshot,
+        "external_ground_truth_digest": external_ground_truth_digest,
+        "origins": origins,
+    }
+
+
+def _current_external_ground_truth_digest(
+    archive_root: Path,
+    ground_truth: Mapping[str, object],
+    *,
+    inventory_token: Mapping[str, object] | None = None,
+) -> str:
     origins = _as_dict(ground_truth.get("origins"))
     current: dict[str, object] = {}
     with open_readonly_connection(archive_root / "source.db") as source:
@@ -1616,6 +1718,20 @@ def _current_external_ground_truth_digest(archive_root: Path, ground_truth: Mapp
                 raise SchemaInferenceGateError(
                     f"ground truth roots for {origin} are unavailable: {', '.join(unavailable)}"
                 )
+            detector = _external_inventory_change_detector(resolved_roots)
+            token_origin = _as_dict(_as_dict(inventory_token).get("origins")).get(origin)
+            token_origin = _as_dict(token_origin)
+            if (
+                inventory_token is not None
+                and token_origin.get("declared_roots") == [str(root) for root in resolved_roots]
+                and token_origin.get("inventory_change_detector") == detector
+            ):
+                current[origin] = {
+                    "declared_roots": [str(root) for root in resolved_roots],
+                    "external_inventory": evidence.get("external_inventory"),
+                    "raw_external_mapping": evidence.get("raw_external_mapping"),
+                }
+                continue
             inventory = _external_inventory(resolved_roots)
             current[origin] = {
                 "declared_roots": [str(root) for root in resolved_roots],
@@ -1630,6 +1746,8 @@ def validate_schema_inference_receipt(
     receipt_path: Path | None = None,
     *,
     now: datetime | None = None,
+    inventory_token: dict[str, object] | None = None,
+    verify_blob_integrity: bool = False,
 ) -> dict[str, object]:
     """Validate the evidence a rebuild is authorized to consume.
 
@@ -1722,11 +1840,40 @@ def validate_schema_inference_receipt(
             )
             if recorded_digest != recorded_structure_digest:
                 errors.append("receipt raw external mapping or inventory does not match its digest")
-            current_digest = _current_external_ground_truth_digest(root, ground_truth)
+            receipt_token = _as_dict(document.get("external_ground_truth_inventory_token"))
+            active_token = inventory_token if inventory_token is not None else None
+            if inventory_token is not None:
+                expected_token_fields = {
+                    "schema": "polylogue.external-ground-truth-inventory-token.v1",
+                    "archive_root": str(root.resolve()),
+                    "receipt_path": str(path.resolve()),
+                    "receipt_nonce": document.get("receipt_nonce"),
+                    "source_snapshot": document.get("source_snapshot"),
+                    "external_ground_truth_digest": recorded_digest,
+                }
+                if any(active_token.get(key) != value for key, value in expected_token_fields.items()):
+                    errors.append("receipt external ground-truth inventory token is not bound to this pass")
+            current_digest = _current_external_ground_truth_digest(root, ground_truth, inventory_token=active_token)
             if recorded_digest != current_digest:
                 errors.append("external ground-truth corpus changed since the receipt was produced")
+            if inventory_token is None and receipt_token:
+                active_token = receipt_token
         except (OSError, SchemaInferenceGateError, sqlite3.Error) as exc:
             errors.append(str(exc))
+        if verify_blob_integrity:
+            try:
+                with open_readonly_connection(root / "source.db") as source:
+                    referenced_hashes = _referenced_blob_hashes(source)
+                current_blob_snapshot = _referenced_blob_integrity_snapshot(root, referenced_hashes=referenced_hashes)
+                recorded_blob_snapshot = _as_dict(
+                    _as_dict(document.get("full_blob_hash_verification")).get("referenced_blob_integrity_snapshot")
+                )
+                if not current_blob_snapshot.get("passed"):
+                    errors.append("referenced source blob integrity verification failed before candidate readiness")
+                if recorded_blob_snapshot and recorded_blob_snapshot != current_blob_snapshot:
+                    errors.append("receipt referenced source blob integrity snapshot changed")
+            except (OSError, SchemaInferenceGateError, sqlite3.Error, ValueError) as exc:
+                errors.append(f"could not verify referenced source blob integrity: {exc}")
         try:
             with open_readonly_connection(root / "source.db") as source:
                 source_origins = {str(row[0]) for row in source.execute("SELECT DISTINCT origin FROM raw_sessions")}
@@ -1754,6 +1901,15 @@ def validate_schema_inference_receipt(
         "source_identity": document.get("source_identity"),
         "source_snapshot": document.get("source_snapshot"),
         "external_ground_truth_digest": document.get("external_ground_truth_digest"),
+        "external_ground_truth_inventory_token": active_token
+        or _external_inventory_token(
+            root,
+            receipt_path=path,
+            receipt_nonce=document.get("receipt_nonce"),
+            source_snapshot=document.get("source_snapshot"),
+            external_ground_truth_digest=document.get("external_ground_truth_digest"),
+            ground_truth=cast(Mapping[str, object], document.get("ground_truth_inputs", {})),
+        ),
     }
 
 
@@ -2022,11 +2178,12 @@ def _run_schema_inference_gate_locked(
             if not bool(_as_dict(entry).get("matches_expected")):
                 reasons.append(f"{tier_name}.db schema identity is stale or does not match the packaged schema")
     archive_payload = _as_dict(final_schema_identity.get("archive"))
+    receipt_nonce = uuid4().hex
     payload: dict[str, object] = {
         "schema": RECEIPT_SCHEMA,
         "gate_version": GATE_VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
-        "receipt_nonce": uuid4().hex,
+        "receipt_nonce": receipt_nonce,
         "sample_limit": sample_limit,
         "verdict": "PASS" if not reasons and passed_hard_gates and schema_identity_ok else "FAIL",
         "archive_root": str(root),
@@ -2037,6 +2194,14 @@ def _run_schema_inference_gate_locked(
         },
         "source_snapshot": source_snapshot,
         "external_ground_truth_digest": ground_truth.get("external_ground_truth_digest"),
+        "external_ground_truth_inventory_token": _external_inventory_token(
+            root,
+            receipt_path=safe_receipt_path,
+            receipt_nonce=receipt_nonce,
+            source_snapshot=source_snapshot,
+            external_ground_truth_digest=ground_truth.get("external_ground_truth_digest"),
+            ground_truth=ground_truth,
+        ),
         "archive_identity_digest": archive_payload.get("authority_identity_digest"),
         "schema_identity": final_schema_identity,
         "source_schema_identity": source_entry,

@@ -500,3 +500,37 @@ def test_gate_receipt_digest_is_canonical_and_content_bound() -> None:
     altered = dict(first)
     altered["verdict"] = "FAIL"
     assert schema_inference_gate_receipt_digest(first) != schema_inference_gate_receipt_digest(altered)
+
+
+def test_external_inventory_token_reuses_metadata_detector_and_rejects_changed_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real receipt validator hashes once, then detects corpus drift cheaply.
+
+    Anti-vacuity: removing the pass token binding makes the second validation
+    hash the full corpus again, so the call-count assertions fail.
+    """
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    receipt_path = tmp_path / "receipt" / RECEIPT_FILENAME
+    run_schema_inference_gate(root, receipt_path=receipt_path, ground_truth_roots={"codex-session": (ground_truth,)})
+
+    full_inventory_calls = 0
+    original_inventory = gate._external_inventory
+
+    def counted_inventory(roots: object) -> object:
+        nonlocal full_inventory_calls
+        full_inventory_calls += 1
+        return original_inventory(roots)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(gate, "_external_inventory", counted_inventory)
+    first = gate.validate_schema_inference_receipt(root, receipt_path)
+    token = cast(dict[str, object], first["external_ground_truth_inventory_token"])
+    assert full_inventory_calls == 1, "the first validation establishes the authoritative full inventory"
+    gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
+    assert full_inventory_calls == 1, "unchanged pass validation must reuse the bound detector token"
+
+    (ground_truth / "session.jsonl").write_bytes(b"changed external codex raw")
+    with pytest.raises(SchemaInferenceGateError, match="external ground-truth corpus changed"):
+        gate.validate_schema_inference_receipt(root, receipt_path, inventory_token=token)
+    assert full_inventory_calls == 2, "a changed detector must trigger one authoritative inventory recalculation"
