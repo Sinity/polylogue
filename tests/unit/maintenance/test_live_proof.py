@@ -113,6 +113,16 @@ def test_read_only_receipt_preserves_full_redacted_canonical_evidence(archive_ro
     assert validate_live_proof_receipt(receipt.to_document(), archive_root) == receipt
 
 
+def test_read_only_receipt_normalizes_archive_root_alias(archive_root: Path, tmp_path: Path) -> None:
+    alias = tmp_path / "archive-alias"
+    alias.symlink_to(archive_root, target_is_directory=True)
+
+    receipt = collect_live_proof(LiveProofId.ARCHIVE_VERIFICATION.value, alias)
+
+    private_paths = dict(receipt.bindings.private_paths)
+    assert private_paths["archive_root"] == live_proof.PrivatePathReference.capture(archive_root)
+
+
 def test_read_only_receipt_redacts_an_external_active_index_path(archive_root: Path) -> None:
     external_root = archive_root.parent / "private-active-index"
     external_root.mkdir()
