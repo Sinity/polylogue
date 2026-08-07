@@ -33,7 +33,6 @@ from polylogue.storage.hook_payload_ref_reconciliation import _deterministic_raw
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
-    DurableChangeTrainError,
     _clear_source_continuity_pending_intent,
     _write_source_continuity_pending_intent,
     refresh_released_source_train_continuity,
@@ -962,10 +961,11 @@ def reconcile_blob_ref_liveness(
             evidence_ref=f"proof:blob-ref-liveness:{candidate_digest}",
         )
         _clear_source_continuity_pending_intent(pending_intent)
-    except DurableChangeTrainError as exc:
+    except Exception as exc:
         # The source deletion and its committed receipt are already durable.
         # Keep the report truthful while leaving the train fail-closed until a
-        # separate continuity refresh succeeds.
+        # separate continuity refresh succeeds. This boundary also normalizes
+        # filesystem and SQLite failures after the irreversible commit.
         continuity_refresh_error = str(exc)
 
     assert staged_plan is not None

@@ -473,6 +473,46 @@ def _validate_liveness_receipt_bytes(
     return header
 
 
+def _validate_source_continuity_refresh_receipt(
+    archive_root: Path,
+    train: DurableChangeTrain,
+) -> None:
+    """Require the latest source continuity evidence to retain its receipt."""
+    if train.source_continuity_evidence is None:
+        return
+    expected_after = _migration_runner._manifest_json_value(train.source_continuity_evidence)
+    refresh_root = archive_root / ".maintenance-state" / "source-continuity-refreshes"
+    refresh_refs = [
+        ref.removeprefix("proof:source-continuity-refresh:")
+        for ref in train.proof_refs
+        if ref.startswith("proof:source-continuity-refresh:")
+    ]
+    if not refresh_refs:
+        raise DurableChangeTrainError("source continuity evidence has no retained refresh receipt")
+    matches = 0
+    for digest in refresh_refs:
+        receipt_path = refresh_root / f"{digest}.json"
+        try:
+            payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DurableChangeTrainError(f"source continuity refresh receipt is unreadable: {receipt_path}") from exc
+        if not isinstance(payload, dict):
+            raise DurableChangeTrainError(f"source continuity refresh receipt is not an object: {receipt_path}")
+        refresh_sha256 = payload.pop("refresh_sha256", None)
+        if refresh_sha256 != digest or _canonical_json_sha256(payload) != digest:
+            raise DurableChangeTrainError(f"source continuity refresh receipt checksum mismatch: {receipt_path}")
+        if payload.get("format") != "polylogue.source-continuity-refresh.v1":
+            raise DurableChangeTrainError(f"source continuity refresh receipt format mismatch: {receipt_path}")
+        if payload.get("train_id") != train.train_id:
+            raise DurableChangeTrainError(f"source continuity refresh receipt train mismatch: {receipt_path}")
+        if payload.get("source_after") == expected_after:
+            matches += 1
+    if matches != 1:
+        raise DurableChangeTrainError(
+            "source continuity evidence does not identify exactly one matching refresh receipt"
+        )
+
+
 def refresh_released_source_train_continuity(
     archive_root: Path,
     *,
@@ -1061,7 +1101,7 @@ def _verify_persisted_live_tier_continuity(conn: sqlite3.Connection, train: Dura
         ) from exc
 
 
-def _verify_released_train_live_tier(conn: sqlite3.Connection, train: DurableChangeTrain) -> None:
+def _verify_released_train_live_tier(archive_root: Path, conn: sqlite3.Connection, train: DurableChangeTrain) -> None:
     """Verify a released train remains represented after later trains advance it."""
     if train.apply_evidence is None:
         raise DurableChangeTrainError(f"{train.state.value} train lacks post-apply continuity evidence")
@@ -1073,6 +1113,7 @@ def _verify_released_train_live_tier(conn: sqlite3.Connection, train: DurableCha
         )
     if actual.user_version == train.target_version:
         if train.source_continuity_evidence is not None:
+            _validate_source_continuity_refresh_receipt(archive_root, train)
             _assert_durable_database_continuity(
                 actual,
                 train.source_continuity_evidence,
@@ -1216,7 +1257,7 @@ def execute_durable_change_train(
                     f"released {tier.value} train {train.train_id} expects live v{runtime_target_version}, "
                     f"found v{live_version}; authorize a new execution"
                 )
-            _verify_released_train_live_tier(live, train)
+            _verify_released_train_live_tier(archive_root, live, train)
         return DurableChangeTrainExecution(train=train, manifest_path=manifest_path, migration_result=None)
 
     if train.state is DurableChangeTrainState.DECLARED:
@@ -1347,7 +1388,7 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
             train = _persist_train_transition(manifest_path, recovered, expected_revision=train.revision)
         if train.state is DurableChangeTrainState.RELEASED:
             with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
-                _verify_released_train_live_tier(live, train)
+                _verify_released_train_live_tier(archive_root, live, train)
             reconciled.append(manifest_path)
             continue
         if train.state not in {

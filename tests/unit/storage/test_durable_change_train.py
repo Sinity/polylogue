@@ -458,6 +458,9 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert pending_path.is_file()
     assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
     assert not pending_path.exists()
+    refreshed_path.unlink()
+    with pytest.raises(DurableChangeTrainError, match="refresh receipt"):
+        reconcile_durable_change_train_startup(tmp_path)
 
     mutation_receipt.write_text(
         json.dumps(
