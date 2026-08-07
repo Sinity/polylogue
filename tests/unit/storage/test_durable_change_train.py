@@ -1188,6 +1188,25 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
             )
 
 
+def test_continuity_admits_legacy_full_archive_identity_digest(tmp_path: Path) -> None:
+    from polylogue.storage.archive_identity import ArchiveIdentity
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        current = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+        legacy = replace(
+            current,
+            archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
+        )
+        migration_runner._assert_durable_database_continuity(
+            current,
+            legacy,
+            label="legacy identity compatibility",
+            connection=conn,
+        )
+
+
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

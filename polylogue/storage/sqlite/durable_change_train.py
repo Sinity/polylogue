@@ -37,6 +37,7 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableMigrationClaim,
     DurableRuntimeConsumerResult,
     MigrationResult,
+    _archive_identity_continuity_matches,
     _assert_durable_database_continuity,
     _canonical_json_sha256,
     _require_nonempty,
@@ -859,6 +860,7 @@ def _refresh_released_source_train_continuity_locked(
                     current,
                     retained_current,
                     label="source continuity retained refresh",
+                    connection=connection,
                 )
             except DurableChangeTrainError:
                 pass
@@ -903,16 +905,25 @@ def _refresh_released_source_train_continuity_locked(
                 pre_mutation_evidence,
                 baseline,
                 label="source continuity pre-mutation",
+                connection=connection,
             )
         except DurableChangeTrainError as exc:
             raise DurableSourceContinuitySemanticError(
                 "source continuity refresh pre-state contains unreceipted content drift"
             ) from exc
-        if pre_mutation_evidence.archive_identity_digest != train.apply_evidence.post.archive_identity_digest:
+        if not _archive_identity_continuity_matches(
+            pre_mutation_evidence.archive_identity_digest,
+            train.apply_evidence.post.archive_identity_digest,
+            archive_root,
+        ):
             raise DurableSourceContinuitySemanticError(
                 "source continuity refresh pre-state has the wrong archive identity"
             )
-        if current.archive_identity_digest != train.apply_evidence.post.archive_identity_digest:
+        if not _archive_identity_continuity_matches(
+            current.archive_identity_digest,
+            train.apply_evidence.post.archive_identity_digest,
+            archive_root,
+        ):
             raise DurableSourceContinuitySemanticError("source continuity refresh changed archive identity")
         if pre_mutation_evidence.quick_check != ("ok",) or current.quick_check != ("ok",):
             raise DurableSourceContinuitySemanticError(
@@ -1393,7 +1404,7 @@ def _verify_persisted_live_tier_continuity(
             f"{train.tier.value} durable tier continuity proof failed; refusing startup initialization/release"
         )
     try:
-        _assert_durable_database_continuity(actual, expected, label=train.tier.value)
+        _assert_durable_database_continuity(actual, expected, label=train.tier.value, connection=conn)
     except DurableChangeTrainError as exc:
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier continuity proof failed; refusing startup initialization/release"
@@ -1459,13 +1470,14 @@ def _verify_released_train_live_tier(
                 actual,
                 train.source_continuity_evidence,
                 label="source continuity refresh",
+                connection=conn,
             )
         else:
             _verify_persisted_live_tier_continuity(conn, train, actual=actual)
         return None
     historical = _historical_schema_evidence(train)
     expected_identity = train.apply_evidence.post.archive_identity_digest
-    if actual.archive_identity_digest != expected_identity:
+    if not _archive_identity_continuity_matches(actual.archive_identity_digest, expected_identity, archive_root):
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier immutable archive identity differs from historical train "
             f"v{train.target_version} after later train advancement"

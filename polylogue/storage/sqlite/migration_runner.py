@@ -1629,18 +1629,46 @@ def capture_durable_database_evidence(
     )
 
 
+def _archive_identity_continuity_matches(
+    actual_digest: str,
+    expected_digest: str,
+    archive_root: Path,
+) -> bool:
+    if actual_digest == expected_digest:
+        return True
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
+    identity = ArchiveIdentity.resolve(archive_root)
+    legacy_digest = identity.authority_identity_digest
+    durable_digest = hashlib.sha256(identity.durable_id.encode("utf-8")).hexdigest()
+    # Manifests written before the durable-tier identity split contain the
+    # old full-archive digest. Admit that legacy evidence only when the
+    # current archive still has the same legacy identity and the newly
+    # captured evidence proves the durable identity is unchanged.
+    return expected_digest == legacy_digest and actual_digest == durable_digest
+
+
 def _assert_durable_database_continuity(
     actual: DurableDatabaseEvidence,
     expected: DurableDatabaseEvidence,
     *,
     label: str,
+    connection: sqlite3.Connection | None = None,
 ) -> None:
     """Require the live durable file to retain its authenticated evidence."""
+    identity_continuous = actual.archive_identity_digest == expected.archive_identity_digest
+    if not identity_continuous and connection is not None:
+        archive_root = _connection_main_path(connection).parent
+        identity_continuous = _archive_identity_continuity_matches(
+            actual.archive_identity_digest,
+            expected.archive_identity_digest,
+            archive_root,
+        )
     if (
         actual.quick_check != expected.quick_check
         or actual.quick_check != ("ok",)
         or actual.user_version != expected.user_version
-        or actual.archive_identity_digest != expected.archive_identity_digest
+        or not identity_continuous
         or actual.content_sha256 != expected.content_sha256
     ):
         raise DurableChangeTrainError(f"{label} durable tier identity/content continuity proof failed")
@@ -2373,6 +2401,7 @@ def recover_durable_change_train(
             capture_durable_database_evidence(conn, train.tier),
             pre,
             label="rolled-back recovery",
+            connection=conn,
         )
         updated = replace(
             train,
