@@ -267,6 +267,24 @@ def test_planner_classifies_bound_current_cursor_as_not_applicable(
     watcher.stop()
 
 
+def test_apply_plan_requires_selected_path_in_original_cursor_ahead_sample(tmp_path: Path) -> None:
+    from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
+
+    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    plan = reconcile._build_plan(tmp_path, source_path)
+
+    reconcile._require_selected_path_in_before_projection(plan, source_path)
+
+    before_projection = plan["before_projection"]
+    assert isinstance(before_projection, dict)
+    samples = before_projection["cursor_ahead_samples"]
+    assert isinstance(samples, list) and samples
+    samples[0] = {**samples[0], "source_path": reconcile.cursor_authority_path_digest(tmp_path / "other.jsonl")}
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="previously observed"):
+        reconcile._require_selected_path_in_before_projection(plan, source_path)
+    watcher.stop()
+
+
 def test_wal_effective_snapshot_matches_sqlite_backup(tmp_path: Path) -> None:
     live = tmp_path / "live.db"
     backup = tmp_path / "backup.db"

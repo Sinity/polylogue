@@ -841,6 +841,18 @@ def _before_projection(plan: Mapping[str, object]) -> dict[str, object]:
     return value
 
 
+def _require_selected_path_in_before_projection(plan: Mapping[str, object], source_path: Path) -> None:
+    before_projection = _before_projection(plan)
+    samples = before_projection.get("cursor_ahead_samples")
+    selected_path_digest = cursor_authority_path_digest(source_path)
+    if not isinstance(samples, list) or not any(
+        isinstance(sample, dict) and sample.get("source_path") == selected_path_digest for sample in samples
+    ):
+        raise CursorAuthorityReconciliationError(
+            "plan does not bind the selected path to a previously observed cursor-ahead violation"
+        )
+
+
 def _same_plan_bindings(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
     def comparable(plan: Mapping[str, object]) -> dict[str, object]:
         value = dict(plan)
@@ -942,6 +954,7 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
     with owner:
         backup_evidence = _validate_backup(backup_manifest, plan)
         current_path = _find_path_by_digest(root, str(plan["selected_path_digest"]))
+        _require_selected_path_in_before_projection(plan, current_path)
         try:
             current_plan = _build_plan(root, current_path)
         except CursorAuthorityReconciliationError:
