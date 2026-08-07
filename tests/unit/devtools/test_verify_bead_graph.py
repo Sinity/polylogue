@@ -25,6 +25,12 @@ EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES = frozenset(
         ("polylogue-stalled-cursor-live-proof", "polylogue-2qrx"),
     }
 )
+EXPECTED_REINDEX_PHASE_BINDINGS = frozenset(
+    {
+        ("polylogue-reindex-preflight-authorization", "polylogue-eqq02"),
+        ("polylogue-reindex-final-proof", "polylogue-eqq02"),
+    }
+)
 
 
 def _issue(
@@ -268,6 +274,9 @@ def test_current_export_satisfies_reindex_live_proof_edge_policy() -> None:
     assert {
         (edge.dependent_id, edge.blocker_id) for edge in verify_bead_graph.REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES
     } == EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES
+    assert {
+        (edge.dependent_id, edge.blocker_id) for edge in verify_bead_graph.REINDEX_PROOF_EDGE_GUARD_PHASE_BINDINGS
+    } == EXPECTED_REINDEX_PHASE_BINDINGS
     assert verify_bead_graph.reindex_proof_edge_findings(_exported_issues()) == []
 
 
@@ -297,6 +306,64 @@ def test_required_reindex_edge_rejects_missing_blocker_endpoint() -> None:
         and finding.bead_id == blocker
         and "missing blocker" in finding.detail
         for finding in findings
+    )
+
+
+@pytest.mark.parametrize(
+    "edge_pair",
+    sorted(EXPECTED_REINDEX_PHASE_BINDINGS),
+    ids=lambda edge_pair: f"{edge_pair[0]}->{edge_pair[1]}",
+)
+def test_each_required_phase_binding_fails_closed_when_removed(edge_pair: tuple[str, str]) -> None:
+    issues = deepcopy(_exported_issues())
+    dependent, blocker = edge_pair
+    dependent_issue = next(issue for issue in issues if issue["id"] == dependent)
+    dependencies = dependent_issue["dependencies"]
+    assert isinstance(dependencies, list)
+    dependent_issue["dependencies"] = [
+        dependency
+        for dependency in dependencies
+        if not (
+            isinstance(dependency, dict)
+            and dependency.get("type") == "blocks"
+            and dependency.get("depends_on_id") == blocker
+        )
+    ]
+
+    findings = verify_bead_graph.reindex_proof_edge_findings(issues)
+
+    assert any(
+        finding.kind == "missing-reindex-proof-edge-guard-binding"
+        and finding.bead_id == dependent
+        and blocker in finding.detail
+        for finding in findings
+    )
+
+
+def test_main_enforces_reindex_edge_policy(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    issues = deepcopy(_exported_issues())
+    dependent, blocker = next(iter(EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES))
+    dependent_issue = next(issue for issue in issues if issue["id"] == dependent)
+    dependencies = dependent_issue["dependencies"]
+    assert isinstance(dependencies, list)
+    dependent_issue["dependencies"] = [
+        dependency
+        for dependency in dependencies
+        if not (
+            isinstance(dependency, dict)
+            and dependency.get("type") == "blocks"
+            and dependency.get("depends_on_id") == blocker
+        )
+    ]
+    monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (True, "cycles clean"))
+    monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: issues)
+    monkeypatch.setattr(verify_bead_graph, "REQUIRED_CONTRACT_IDS", frozenset())
+
+    assert verify_bead_graph.main(["--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert any(
+        finding["kind"] == "missing-required-reindex-proof-edge" and finding["id"] == dependent
+        for finding in payload["findings"]
     )
 
 
