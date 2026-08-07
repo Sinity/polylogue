@@ -1119,7 +1119,7 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     evidence_captures = 0
     schema_inventories = 0
     canonical_inventories = 0
-    real_capture = durable_change_train_module.capture_durable_database_evidence
+    real_capture = migration_runner.capture_durable_database_evidence
     real_schema_inventory = migration_runner.capture_durable_schema_inventory
     real_canonical_inventory = durable_change_train_module._canonical_schema_inventory
 
