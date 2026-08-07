@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import json
 import subprocess
+from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
 from devtools import verify_bead_graph
+
+EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES = frozenset(
+    {(edge.dependent_id, edge.blocker_id) for edge in verify_bead_graph.REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES}
+)
 
 
 def _issue(
@@ -28,6 +34,11 @@ def _issue(
         "priority": priority,
         "metadata": metadata if metadata is not None else {},
     }
+
+
+def _exported_issues() -> list[dict[str, object]]:
+    export_path = Path(__file__).parents[3] / ".beads" / "issues.jsonl"
+    return [json.loads(line) for line in export_path.read_text(encoding="utf-8").splitlines() if line]
 
 
 def test_clean_graph_has_no_findings() -> None:
@@ -235,6 +246,46 @@ def test_parent_child_validation_rejects_duplicate_edge_records() -> None:
 
     assert verify_bead_graph.canonical_parent_map(issues)["polylogue-child"] is None
     assert ("multiple-parents", "polylogue-child") in {(finding.kind, finding.bead_id) for finding in findings}
+
+
+def test_current_export_satisfies_reindex_live_proof_edge_policy() -> None:
+    """The current Beads export carries every edge required by the policy."""
+    assert {
+        (edge.dependent_id, edge.blocker_id) for edge in verify_bead_graph.REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES
+    } == EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES
+    assert verify_bead_graph.reindex_proof_edge_findings(_exported_issues()) == []
+
+
+@pytest.mark.parametrize(
+    "edge",
+    verify_bead_graph.REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES,
+    ids=lambda edge: f"{edge.dependent_id}->{edge.blocker_id}",
+)
+def test_each_required_reindex_live_proof_edge_fails_closed_when_removed(
+    edge: verify_bead_graph.RequiredBlockingEdge,
+) -> None:
+    """Removing one required edge must fail the graph policy."""
+    issues = deepcopy(_exported_issues())
+    dependent = next(issue for issue in issues if issue["id"] == edge.dependent_id)
+    dependencies = dependent["dependencies"]
+    assert isinstance(dependencies, list)
+    dependent["dependencies"] = [
+        dependency
+        for dependency in dependencies
+        if not (
+            isinstance(dependency, dict)
+            and dependency.get("type") == "blocks"
+            and dependency.get("depends_on_id") == edge.blocker_id
+        )
+    ]
+
+    findings = verify_bead_graph.reindex_proof_edge_findings(issues)
+    assert any(
+        finding.kind == "missing-required-reindex-proof-edge"
+        and finding.bead_id == edge.dependent_id
+        and edge.blocker_id in finding.detail
+        for finding in findings
+    )
 
 
 def test_parent_child_validation_rejects_malformed_targets() -> None:
