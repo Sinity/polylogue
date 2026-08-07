@@ -169,7 +169,7 @@ def test_planner_preserves_incomparable_population(monkeypatch: pytest.MonkeyPat
     watcher.stop()
 
 
-def test_disappeared_selected_row_is_typed_not_applicable_with_incomparable_population(
+def test_disappeared_selected_row_refuses_unavailable_projection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
@@ -234,13 +234,13 @@ def test_planner_refuses_unavailable_projection_with_unknown_sibling(
     _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
     projection = replace(
         reconcile._projection_for(tmp_path),
-        available=False,
+        available=True,
         overall_status="unknown",
         missing_source_raw_status="unknown",
     )
     monkeypatch.setattr(reconcile, "_projection_for", lambda root: projection)
 
-    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="unavailable"):
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="not healthy"):
         reconcile._build_plan(tmp_path, source_path)
     watcher.stop()
 
@@ -560,6 +560,17 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="absent from blob-inventory"):
         reconcile._validate_backup(backup, plan)
     extra_path.unlink()
+    real_sha256_file = reconcile._sha256_file
+
+    def fail_inventory_hash(path: Path) -> str:
+        if path.name == "blob-inventory.json":
+            return real_sha256_file(path.with_name("missing-inventory.json"))
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(reconcile, "_sha256_file", fail_inventory_hash)
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="blob inventory is unreadable"):
+        reconcile._validate_backup(backup, plan)
+    monkeypatch.setattr(reconcile, "_sha256_file", real_sha256_file)
     (backup / "audit.db").unlink()
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="tier is missing"):
         reconcile._validate_backup(backup, plan)

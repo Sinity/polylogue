@@ -56,9 +56,12 @@ def _canonical_digest(payload: object) -> str:
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise CursorAuthorityReconciliationError(f"backup blob inventory is unreadable: {path}") from exc
     return digest.hexdigest()
 
 
@@ -349,20 +352,6 @@ def _require_healthy_projection_siblings(projection: RawFrontierIntegrityProject
         raise CursorAuthorityReconciliationError("raw-frontier projection is unavailable")
     if projection.broken_head_status != "healthy" or projection.missing_source_raw_status != "healthy":
         raise CursorAuthorityReconciliationError("raw-frontier sibling projections are not healthy")
-
-
-def _is_disappeared_cursor_incomparable_projection(projection: RawFrontierIntegrityProjection) -> bool:
-    """Recognize the sole unavailable projection that proves a scoped no-op."""
-
-    return (
-        not projection.available
-        and projection.overall_status == "unknown"
-        and projection.broken_head_status == "healthy"
-        and projection.missing_source_raw_status == "healthy"
-        and projection.cursor_ahead_status == "unknown"
-        and projection.cursor_ahead_count == 0
-        and projection.cursor_authority_gap_count > 0
-    )
 
 
 def _build_plan(root: Path, source_path: Path, *, require_candidate: bool = True) -> dict[str, object]:
