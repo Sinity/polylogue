@@ -35,6 +35,40 @@ class Finding:
     detail: str
 
 
+@dataclass(frozen=True, slots=True)
+class RequiredBlockingEdge:
+    """One non-negotiable ``blocks`` relation in the reindex proof graph."""
+
+    dependent_id: str
+    blocker_id: str
+
+
+# These are the twelve live-proof records whose implementation/acceptance
+# blockers must remain explicit in the current graph. Keep this as structured
+# policy rather than deriving ordering from issue text or close reasons.
+REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES: tuple[RequiredBlockingEdge, ...] = (
+    RequiredBlockingEdge("polylogue-active-leaf-live-proof", "polylogue-2hwl"),
+    RequiredBlockingEdge("polylogue-hook-authority-conflict-proof", "polylogue-foee"),
+    RequiredBlockingEdge("polylogue-chatgpt-content-live-proof", "polylogue-xofj"),
+    RequiredBlockingEdge("polylogue-excluded-cursor-live-proof", "polylogue-ix5r"),
+    RequiredBlockingEdge("polylogue-byte-supersession-live-proof", "polylogue-6753s"),
+    RequiredBlockingEdge("polylogue-hook-reconciliation-apply-proof", "polylogue-nhbvf"),
+    RequiredBlockingEdge("polylogue-raw-dedupe-apply-proof", "polylogue-zm4w8"),
+    RequiredBlockingEdge("polylogue-claude-streaming-live-proof", "polylogue-4987i"),
+    RequiredBlockingEdge("polylogue-claude-vintage-live-proof", "polylogue-0qfy"),
+    RequiredBlockingEdge("polylogue-codex-804-live-proof", "polylogue-27522"),
+    RequiredBlockingEdge("polylogue-topology-live-proof", "polylogue-4ts.10"),
+    RequiredBlockingEdge("polylogue-stalled-cursor-live-proof", "polylogue-2qrx"),
+)
+
+# The edge guard is consumed by both phase boundaries. This binds the static
+# policy to the actual readiness graph without turning it into a live receipt.
+REINDEX_PROOF_EDGE_GUARD_PHASE_BINDINGS: tuple[RequiredBlockingEdge, ...] = (
+    RequiredBlockingEdge("polylogue-reindex-preflight-authorization", "polylogue-eqq02"),
+    RequiredBlockingEdge("polylogue-reindex-final-proof", "polylogue-eqq02"),
+)
+
+
 def _wave(issue: dict[str, Any]) -> tuple[int | None, Finding | None]:
     """Parse the issue's ``wave:`` label."""
     for label in issue.get("labels") or []:
@@ -178,11 +212,71 @@ def _parent_findings(issues: list[dict[str, Any]]) -> list[Finding]:
     return findings
 
 
+def _blocks_targets(issue: dict[str, Any]) -> set[str]:
+    """Return the structured blockers declared by one Bead record."""
+    dependencies = issue.get("dependencies")
+    if not isinstance(dependencies, list):
+        return set()
+    return {
+        target
+        for dependency in dependencies
+        if isinstance(dependency, dict)
+        and dependency.get("type") == "blocks"
+        and isinstance((target := dependency.get("depends_on_id")), str)
+        and target
+    }
+
+
+def _required_blocking_edge_findings(
+    issues: list[dict[str, Any]],
+    *,
+    required_edges: tuple[RequiredBlockingEdge, ...],
+    kind: str,
+) -> list[Finding]:
+    """Report missing structured edges without accepting another edge kind."""
+    by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
+    findings: list[Finding] = []
+    for edge in required_edges:
+        dependent = by_id.get(edge.dependent_id)
+        blocker = by_id.get(edge.blocker_id)
+        detail = f"required blocks dependency: {edge.dependent_id} -> {edge.blocker_id}"
+        if dependent is None and blocker is None:
+            findings.append(Finding(kind, edge.dependent_id, f"missing dependent and blocker; {detail}"))
+        elif dependent is None:
+            findings.append(Finding(kind, edge.dependent_id, f"missing dependent; {detail}"))
+        elif blocker is None:
+            findings.append(Finding(kind, edge.blocker_id, f"missing blocker; {detail}"))
+        elif edge.blocker_id not in _blocks_targets(dependent):
+            findings.append(Finding(kind, edge.dependent_id, f"missing {detail}"))
+    return findings
+
+
+def reindex_proof_edge_findings(issues: list[dict[str, Any]]) -> list[Finding]:
+    """Validate required reindex live-proof ownership and phase bindings."""
+    return [
+        *_required_blocking_edge_findings(
+            issues,
+            required_edges=REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES,
+            kind="missing-required-reindex-proof-edge",
+        ),
+        *_required_blocking_edge_findings(
+            issues,
+            required_edges=REINDEX_PROOF_EDGE_GUARD_PHASE_BINDINGS,
+            kind="missing-reindex-proof-edge-guard-binding",
+        ),
+    ]
+
+
 def collect_findings(
-    issues: list[dict[str, Any]], *, required_contract_ids: frozenset[str] | None = None
+    issues: list[dict[str, Any]],
+    *,
+    required_contract_ids: frozenset[str] | None = None,
+    enforce_reindex: bool = False,
 ) -> list[Finding]:
     by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
-    findings: list[Finding] = _parent_findings(issues)
+    findings: list[Finding] = [*_parent_findings(issues)]
+    if enforce_reindex:
+        findings.extend(reindex_proof_edge_findings(issues))
 
     for issue_id in sorted(required_contract_ids or ()):
         issue = by_id.get(issue_id)
@@ -308,8 +402,13 @@ def build_report(
     cycles_ok: bool,
     cycles_output: str,
     required_contract_ids: frozenset[str] | None = None,
+    enforce_reindex: bool = False,
 ) -> dict[str, Any]:
-    findings = collect_findings(issues, required_contract_ids=required_contract_ids)
+    findings = collect_findings(
+        issues,
+        required_contract_ids=required_contract_ids,
+        enforce_reindex=enforce_reindex,
+    )
     by_kind: dict[str, int] = defaultdict(int)
     for finding in findings:
         by_kind[finding.kind] += 1
@@ -379,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
         cycles_ok=cycles_ok,
         cycles_output=cycles_output,
         required_contract_ids=REQUIRED_CONTRACT_IDS,
+        enforce_reindex=True,
     )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
