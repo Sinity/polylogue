@@ -136,6 +136,28 @@ def test_execution_focus_excludes_unadmitted_ready_work_and_emits_full_ambition(
     ]
 
 
+def test_execution_focus_only_counts_executable_claimed_leaves() -> None:
+    issues = [
+        _issue("claimed-epic", status="in_progress", issue_type="epic", design="migration 008_program.sql"),
+        _issue("claimed-program", status="in_progress", issue_type="program", design="migration 009_program.sql"),
+        _issue("claimed-leaf", status="in_progress", design="migration 010_leaf.sql"),
+        _issue("candidate", design="migration 011_candidate.sql", metadata={"frontier": "active"}),
+    ]
+
+    report = frontier_report.build_report(issues, [issues[-1]], repo=Path("/repo"))
+
+    assert report["counts"]["claims"] == 1
+    assert report["execution_focus"]["occupied_claims"] == ["claimed-leaf"]
+    assert [item["id"] for item in report["execution_focus"]["deferred"]] == ["candidate"]
+    assert report["execution_focus"]["deferred"][0]["reason"] == "schema-lane occupied by claim(s): claimed-leaf"
+    assert [item["id"] for item in report["ambition"]] == [
+        "candidate",
+        "claimed-epic",
+        "claimed-leaf",
+        "claimed-program",
+    ]
+
+
 def test_execution_focus_defers_selected_footprints_and_respects_integer_resource_occupancy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

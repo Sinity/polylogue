@@ -124,6 +124,11 @@ def _is_open(issue: dict[str, Any]) -> bool:
     return issue.get("status") in {"open", "in_progress"}
 
 
+def _is_executable_leaf(issue: dict[str, Any]) -> bool:
+    """Whether a record represents work that can occupy an execution lane."""
+    return issue.get("issue_type") not in {"epic", "program"}
+
+
 def _resource_classes(issue: dict[str, Any], footprint: bead_cluster.Footprint) -> tuple[str, ...]:
     labels = _labels(issue)
     text = " ".join(
@@ -146,7 +151,7 @@ def _active_set(issues: list[dict[str, Any]]) -> list[str]:
     return sorted(
         str(issue["id"])
         for issue in issues
-        if _is_open(issue) and _metadata(issue).get("frontier") == "active" and issue.get("issue_type") != "epic"
+        if _is_open(issue) and _is_executable_leaf(issue) and _metadata(issue).get("frontier") == "active"
     )
 
 
@@ -249,7 +254,8 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
         issue_id: footprint.overlap_keys() | footprint.contention_keys() for issue_id, footprint in footprints.items()
     }
     claims = sorted(
-        (issue for issue in open_issues if issue.get("status") == "in_progress"), key=lambda item: item["id"]
+        (issue for issue in open_issues if issue.get("status") == "in_progress" and _is_executable_leaf(issue)),
+        key=lambda item: item["id"],
     )
     claim_ids = [issue["id"] for issue in claims]
     leverage = _critical_path_leverage(issues)
@@ -336,7 +342,11 @@ def build_report(issues: list[Any], ready: list[Any], *, repo: Path) -> dict[str
     ready_ids = {issue["id"] for issue in ready}
     execution_focus = derive_execution_focus(issues, ready_ids)
     ambition = _full_ambition(issues)
-    claims = [issue for issue in issues if _is_open(issue) and issue.get("status") == "in_progress"]
+    claims = [
+        issue
+        for issue in issues
+        if _is_open(issue) and issue.get("status") == "in_progress" and _is_executable_leaf(issue)
+    ]
     return {
         "report_version": 3,
         "command": "devtools workspace frontier",

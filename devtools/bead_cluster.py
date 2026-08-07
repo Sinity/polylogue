@@ -528,6 +528,25 @@ def _weighted_clusters(
     return clusters
 
 
+def _defer_unknown_footprint_clusters(
+    clusters: list[WeightedCluster], footprints: dict[str, Footprint]
+) -> tuple[list[WeightedCluster], list[str]]:
+    """Keep candidates without footprint evidence out of scheduling advice."""
+    schedulable: list[WeightedCluster] = []
+    deferred: list[str] = []
+    for cluster in clusters:
+        unknown = sorted(
+            bead_id
+            for bead_id in cluster.beads
+            if not (footprints[bead_id].overlap_keys() | footprints[bead_id].contention_keys())
+        )
+        if unknown:
+            deferred.extend(unknown)
+        else:
+            schedulable.append(cluster)
+    return schedulable, sorted(deferred)
+
+
 # ---------------------------------------------------------------------------
 # Output rendering
 # ---------------------------------------------------------------------------
@@ -541,6 +560,7 @@ def _render_human(
     all_beads: list[BeadDict],
     footprints: dict[str, Footprint],
     frontier_clusters: list[WeightedCluster],
+    deferred_unknown_footprints: list[str],
     contention: list[dict[str, Any]],
     design_horizon: list[BeadDict],
     blocked: list[BeadDict],
@@ -585,8 +605,7 @@ def _render_human(
         for bid in members:
             b = id_to_bead[bid]
             fp = footprints[bid]
-            needsconf = "  [NEEDS-CONFIRM: no footprint]" if fp.is_empty else ""
-            print(f"    {bid:30s} P{b['priority']}  {_short(b['title'], 55)}{needsconf}")
+            print(f"    {bid:30s} P{b['priority']}  {_short(b['title'], 55)}")
             if fp.packages:
                 pkgs = ", ".join(fp.packages[:4])
                 if len(fp.packages) > 4:
@@ -600,6 +619,14 @@ def _render_human(
         if len(cluster.beads) > 1:
             print("    -> Execute as one branch/PR sweep (shared file footprint)")
     print()
+
+    if deferred_unknown_footprints:
+        print(f"-- DEFERRED: UNKNOWN FOOTPRINT ({len(deferred_unknown_footprints)}) ------------------------")
+        for bid in deferred_unknown_footprints:
+            bead = id_to_bead[bid]
+            print(f"  {bid:25s} P{bead['priority']}  {_short(bead['title'])}")
+        print("  -> Confirm a concrete ownership footprint before scheduling a lane.")
+        print()
 
     # Contention warnings
     if contention:
@@ -645,6 +672,7 @@ def _render_json(
     all_beads: list[BeadDict],
     footprints: dict[str, Footprint],
     frontier_clusters: list[WeightedCluster],
+    deferred_unknown_footprints: list[str],
     contention: list[dict[str, Any]],
     design_horizon: list[BeadDict],
     blocked: list[BeadDict],
@@ -683,6 +711,15 @@ def _render_json(
 
     out = {
         "frontier_clusters": clusters_out,
+        "deferred_unknown_footprints": [
+            {
+                "id": bid,
+                "priority": id_to_bead[bid].get("priority"),
+                "title": id_to_bead[bid].get("title"),
+                "reason": "footprint is unknown; confirm ownership before scheduling a lane",
+            }
+            for bid in deferred_unknown_footprints
+        ],
         "contention": contention,
         "blocked": [
             {
@@ -829,6 +866,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_similarity=args.min_similarity,
         max_cluster_size=args.max_cluster_size,
     )
+    frontier_clusters, deferred_unknown_footprints = _defer_unknown_footprint_clusters(frontier_clusters, footprints)
 
     # Contention (migration slots / generated surfaces) across ALL frontier beads
     contention = _find_contention(frontier_beads, footprints)
@@ -838,12 +876,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         _validate_roster(all_beads, footprints)
 
     if args.json_out:
-        _render_json(all_beads, footprints, frontier_clusters, contention, design_horizon, blocked, in_progress)
+        _render_json(
+            all_beads,
+            footprints,
+            frontier_clusters,
+            deferred_unknown_footprints,
+            contention,
+            design_horizon,
+            blocked,
+            in_progress,
+        )
     else:
         _render_human(
             all_beads,
             footprints,
             frontier_clusters,
+            deferred_unknown_footprints,
             contention,
             design_horizon,
             blocked,
