@@ -1163,6 +1163,19 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     with pytest.raises(DurableChangeTrainError, match="immutable archive identity differs"):
         reconcile_durable_change_train_startup(unrelated_root)
 
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE base_items")
+        conn.commit()
+        tampered = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+        with pytest.raises(DurableChangeTrainError, match="historical schema objects changed"):
+            durable_change_train_module._verify_released_train_live_tier(
+                tmp_path,
+                conn,
+                historical_train,
+                current_target_version=3,
+                actual_evidence=tampered,
+            )
+
 
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

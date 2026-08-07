@@ -12,6 +12,7 @@ import re
 import sqlite3
 import tempfile
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
@@ -1422,6 +1423,23 @@ def _historical_schema_evidence(train: DurableChangeTrain) -> DurableFreshDDLPar
     return historical
 
 
+def _historical_schema_inventory(train: DurableChangeTrain) -> _migration_runner.DurableSchemaInventory:
+    """Reconstruct the exact canonical object set owned by a released train."""
+    historical = _historical_schema_evidence(train)
+    with closing(sqlite3.connect(":memory:")) as fresh:
+        fresh.execute("PRAGMA foreign_keys = ON")
+        fresh.executescript(_migration_runner.ARCHIVE_DDL_BY_TIER[train.tier])
+        fresh.execute(f"PRAGMA user_version = {train.target_version}")
+        _migration_runner._prepare_fresh_connection_for_target(fresh, train.tier, train.target_version)
+        fresh.commit()
+        inventory = _migration_runner.capture_durable_schema_inventory(fresh)
+    if inventory.sha256 != historical.fresh_inventory_sha256:
+        raise DurableChangeTrainError(
+            "released train canonical schema inventory no longer matches its historical fresh-DDL proof"
+        )
+    return inventory
+
+
 def _verify_released_train_live_tier(
     archive_root: Path,
     conn: sqlite3.Connection,
@@ -1451,6 +1469,7 @@ def _verify_released_train_live_tier(
             _verify_persisted_live_tier_continuity(conn, train, actual=actual)
         return None
     historical = _historical_schema_evidence(train)
+    expected_inventory = _historical_schema_inventory(train)
     expected_identity = train.apply_evidence.post.archive_identity_digest
     if actual.archive_identity_digest != expected_identity:
         raise DurableChangeTrainError(
@@ -1460,6 +1479,24 @@ def _verify_released_train_live_tier(
     if actual.quick_check != ("ok",):
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier integrity check failed after later train advancement"
+        )
+    live_inventory = _migration_runner.capture_durable_schema_inventory(conn)
+    if live_inventory.sha256 != actual.schema_inventory_sha256:
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier schema inventory changed during forward admission"
+        )
+    expected_by_ref = {item.object_ref: item for item in expected_inventory.objects}
+    live_by_ref = {item.object_ref: item for item in live_inventory.objects}
+    missing = sorted(set(expected_by_ref) - set(live_by_ref))
+    changed = sorted(
+        object_ref
+        for object_ref in set(expected_by_ref) & set(live_by_ref)
+        if expected_by_ref[object_ref].definition_sha256 != live_by_ref[object_ref].definition_sha256
+    )
+    if missing or changed:
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier historical schema objects changed after later train advancement: "
+            f"missing={missing}, changed={changed}"
         )
     runtime_target = (
         cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[train.tier]
