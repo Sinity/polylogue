@@ -121,6 +121,7 @@ def migrate_tier_command(
         raise SystemExit(1) from exc
 
     result = execution.migration_result if execution is not None else None
+    receipt = execution.forward_version_receipt if execution is not None else None
     payload = {
         "ok": True,
         "tier": tier,
@@ -140,15 +141,15 @@ def migrate_tier_command(
         "applied_versions": list(result.applied_versions) if result is not None else [],
         "forward_version_receipt": (
             {
-                "tier": execution.forward_version_receipt.tier.value,
-                "historical_train_id": execution.forward_version_receipt.historical_train_id,
-                "historical_target_version": execution.forward_version_receipt.historical_target_version,
-                "current_target_version": execution.forward_version_receipt.current_target_version,
-                "observed_live_version": execution.forward_version_receipt.observed_live_version,
-                "historical_schema_inventory_sha256": execution.forward_version_receipt.historical_schema_inventory_sha256,
-                "archive_identity_digest": execution.forward_version_receipt.archive_identity_digest,
+                "tier": receipt.tier.value,
+                "historical_train_id": receipt.historical_train_id,
+                "historical_target_version": receipt.historical_target_version,
+                "current_target_version": receipt.current_target_version,
+                "observed_live_version": receipt.observed_live_version,
+                "historical_schema_inventory_sha256": receipt.historical_schema_inventory_sha256,
+                "archive_identity_digest": receipt.archive_identity_digest,
             }
-            if execution is not None and execution.forward_version_receipt is not None
+            if receipt is not None
             else None
         ),
     }
@@ -160,8 +161,7 @@ def migrate_tier_command(
         click.echo(f"Initialized missing {tier} tier at schema version {initialized_version}.")
         return
     if result is None:
-        if execution is not None and execution.forward_version_receipt is not None:
-            receipt = execution.forward_version_receipt
+        if receipt is not None:
             click.echo(
                 f"No pending durable migration for {tier}; historical train {receipt.historical_train_id} "
                 f"is admitted at live schema v{receipt.observed_live_version} "

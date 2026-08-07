@@ -1596,6 +1596,7 @@ def test_migrate_tier_cli_exposes_forward_version_receipt(
     )
     assert plain.exit_code == 0, plain.output
     assert "historical train train:source:v2 is admitted at live schema v3" in plain.output
+    assert "(target v3)" in plain.output
 
 
 def test_migrate_tier_cli_refuses_live_daemon_before_sql(

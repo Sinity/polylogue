@@ -794,7 +794,7 @@ def _refresh_released_source_train_continuity_locked(
     backup bytes to a separate current-evidence record. The original migration
     evidence remains immutable in ``apply_evidence``.
     """
-    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+    from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation, OwnedArchiveLocation
 
     archive_root = archive_root.resolve()
     mutation_receipt = mutation_receipt.resolve()
@@ -997,7 +997,11 @@ def _refresh_released_source_train_continuity_locked(
         if train.proof is None:
             raise DurableChangeTrainError("source continuity refresh requires train proof")
         retained_apply_evidence = train.apply_evidence
-        if current.archive_identity_digest != retained_apply_evidence.post.archive_identity_digest:
+        legacy_archive_identity_digest = ArchiveIdentity.resolve(archive_root).authority_identity_digest
+        if (
+            retained_apply_evidence.post.archive_identity_digest == legacy_archive_identity_digest
+            and current.archive_identity_digest != retained_apply_evidence.post.archive_identity_digest
+        ):
             retained_apply_evidence = replace(
                 retained_apply_evidence,
                 post=replace(
@@ -1588,13 +1592,14 @@ def _forward_version_receipt_for_current_tier(
         for train in manifests_by_target.values()
         if train.state is DurableChangeTrainState.RELEASED and train.target_version < current_version
     ]
+    if current_version > DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:
+        _require_released_train_chain(
+            tier,
+            manifests_by_target,
+            current_version=current_version,
+        )
     if not historical:
         return None
-    _require_released_train_chain(
-        tier,
-        manifests_by_target,
-        current_version=current_version,
-    )
     if evidence is None:
         actual = capture_durable_database_evidence(conn, tier)
         evidence = _DurableForwardVersionEvidence(
@@ -1726,7 +1731,11 @@ def execute_durable_change_train(
     runtime_consumer_results: Sequence[DurableRuntimeConsumerResult] | None = None,
     release_archive_ownership: Callable[[], None],
 ) -> DurableChangeTrainExecution:
-    """Execute the real maintenance route through every persisted train state."""
+    """Execute every persisted train state while the caller holds archive ownership.
+
+    The caller-held lease must cover startup reconciliation and receipt creation so
+    reused forward-version evidence cannot become stale between those operations.
+    """
     forward_version_evidence: dict[ArchiveTier, _DurableForwardVersionEvidence] = {}
     reconcile_durable_change_train_startup(archive_root, live_evidence_cache=forward_version_evidence)
     tier_path = archive_root / f"{tier.value}.db"
@@ -1899,7 +1908,10 @@ def reconcile_durable_change_train_startup(
     *,
     live_evidence_cache: dict[ArchiveTier, _DurableForwardVersionEvidence] | None = None,
 ) -> tuple[Path, ...]:
-    """Reconcile backup-authorized trains left by a crashed maintenance process."""
+    """Reconcile interrupted trains while the caller holds archive ownership.
+
+    The caller-held lease must cover any subsequent use of ``live_evidence_cache``.
+    """
     from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 
     with OwnedArchiveLocation.acquire(
@@ -1928,6 +1940,7 @@ def _reconcile_durable_change_train_startup_locked(
     live_integrity_by_tier: dict[ArchiveTier, tuple[str, ...]] = {}
     live_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
+    manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
     manifest_paths = tuple(sorted(manifest_root.glob("*.json")))
 
     def record_reconciled(path: Path) -> None:
@@ -1968,6 +1981,7 @@ def _reconcile_durable_change_train_startup_locked(
                 _persist_train_transition(manifest_path, exc.failed_train, expected_revision=train.revision)
                 raise
             train = _persist_train_transition(manifest_path, recovered, expected_revision=train.revision)
+            record_reconciled(manifest_path)
 
         if train.state in {
             DurableChangeTrainState.APPLIED,
@@ -1986,9 +2000,11 @@ def _reconcile_durable_change_train_startup_locked(
                 actual = capture_durable_database_evidence(live, train.tier)
                 live_evidence_by_tier[train.tier] = actual
             if actual.user_version > train.target_version:
+                if train.tier not in manifests_by_tier:
+                    manifests_by_tier[train.tier] = _released_train_manifests_by_target(manifest_root, train.tier)
                 _require_released_train_chain(
                     train.tier,
-                    _released_train_manifests_by_target(manifest_root, train.tier),
+                    manifests_by_tier[train.tier],
                     current_version=actual.user_version,
                 )
                 if train.tier not in live_integrity_by_tier:

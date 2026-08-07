@@ -605,11 +605,53 @@ class TestRawFailureInfoProducesTypedSamples:
         assert snapshot.parse_failures == snapshot.unexplained == 200
         assert len(snapshot.samples) == 3
         summary_queries = [statement for statement in statements if "GROUP BY f.origin" in statement]
-        sample_queries = [statement for statement in statements if "FROM sampled AS f" in statement]
+        sample_queries = [statement for statement in statements if "FROM sampled" in statement]
         assert len(summary_queries) == 1
         assert len(sample_queries) == 1
         assert "ROW_NUMBER()" not in sample_queries[0]
         assert "NOT EXISTS" in sample_queries[0]
+        assert "LIMIT 3" in sample_queries[0]
+
+    def test_lifecycle_samples_are_sql_bounded_without_artifact_table(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        with sqlite3.connect(source_db) as conn:
+            conn.executemany(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms, parse_error
+                ) VALUES (?, 'codex-session', ?, '/data/no-artifacts.jsonl', ?, ?, 0, ?, 'bad input')
+                """,
+                [
+                    (f"raw-{index}", f"native-{index}", index, bytes(32), 1_770_000_000_000 + index)
+                    for index in range(5)
+                ],
+            )
+            conn.execute("DROP TABLE raw_artifacts")
+            conn.commit()
+
+        statements: list[str] = []
+
+        def open_traced_readonly(path: Path) -> sqlite3.Connection:
+            connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        monkeypatch.setattr("polylogue.storage.raw_failure_lifecycle.open_readonly_connection", open_traced_readonly)
+        snapshot = read_raw_failure_lifecycle(source_db, sample_limit=3)
+
+        assert snapshot.parse_failures == snapshot.unexplained == 5
+        assert snapshot.deferred == snapshot.terminal == 0
+        assert len(snapshot.samples) == 3
+        assert all(sample["artifact_kind"] is None and sample["support_status"] is None for sample in snapshot.samples)
+        sample_queries = [statement for statement in statements if "ORDER BY acquired_at_ms DESC" in statement]
+        assert len(sample_queries) == 1
+        assert "LIMIT 3" in sample_queries[0]
 
     @pytest.mark.parametrize("source_state", ["missing", "malformed"])
     def test_status_fails_closed_when_source_lifecycle_is_unavailable(

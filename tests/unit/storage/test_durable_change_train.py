@@ -475,6 +475,10 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert released.apply_evidence is not None
     assert refreshed.apply_evidence.pre == released.apply_evidence.pre
     assert refreshed.apply_evidence.post.archive_identity_digest != released.apply_evidence.post.archive_identity_digest
+    assert (
+        refreshed.apply_evidence.post.archive_identity_digest
+        == refreshed.source_continuity_evidence.archive_identity_digest
+    )
     assert refreshed.proof == released.proof
     assert refreshed.revision == released.revision + 1
     assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
@@ -1190,8 +1194,9 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     assert third.forward_version_receipt.historical_target_version == 2
     assert third.forward_version_receipt.observed_live_version == 3
     assert evidence_captures == 1
-    # One live inventory plus the canonical inventory built from the fresh DDL.
-    # The no-op receipt reuses both instead of constructing a second pair.
+    # Three inventories: one nested inside the single evidence capture, one
+    # live inventory read during startup reconciliation, and one canonical
+    # inventory built from the fresh DDL. The no-op receipt reuses all of them.
     assert schema_inventories == 3
     assert canonical_inventories == 1
 
@@ -1308,6 +1313,38 @@ def test_released_train_chain_is_anchored_at_adoption_floor() -> None:
                 floor + 3: released,
             },
             current_version=floor + 3,
+        )
+
+
+def test_forward_receipt_checks_missing_chain_before_empty_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
+    current_version = floor + 2
+    current_train = cast(
+        DurableChangeTrain,
+        SimpleNamespace(target_version=current_version, state=DurableChangeTrainState.RELEASED),
+    )
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_released_train_manifests_by_target",
+        lambda _manifest_root, _tier: {current_version: current_train},
+    )
+
+    with (
+        sqlite3.connect(":memory:") as conn,
+        pytest.raises(
+            DurableChangeTrainError,
+            match=rf"versions \[{floor + 1}\]",
+        ),
+    ):
+        durable_change_train_module._forward_version_receipt_for_current_tier(
+            tmp_path,
+            conn,
+            ArchiveTier.SOURCE,
+            current_version=current_version,
+            current_target_version=current_version,
         )
 
 

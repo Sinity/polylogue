@@ -176,15 +176,27 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                 failed_cte
                 + """
                 , sampled AS (
-                    SELECT *
-                    FROM failed
-                    ORDER BY acquired_at_ms DESC, raw_id DESC
+                    SELECT f.raw_id, f.origin, f.validation_status, f.acquired_at_ms,
+                           a.artifact_kind, a.support_status
+                    FROM failed AS f
+                    """
+                + latest_artifact_join
+                + """
+                    ORDER BY CASE
+                        WHEN f.validation_status = 'failed' THEN 0
+                        WHEN (a.artifact_kind, a.support_status) IN (
+                            ('deferred_hot_jsonl_capture', 'partial_decode'),
+                            ('terminal_corrupt_input', 'decode_failed'),
+                            ('terminal_unsupported_shape', 'unsupported_parseable')
+                        ) THEN 1
+                        ELSE 0
+                    END,
+                    f.acquired_at_ms DESC, f.raw_id DESC
                     LIMIT ?
                 )
-                SELECT f.raw_id, f.origin, f.validation_status, a.artifact_kind, a.support_status
-                FROM sampled AS f
+                SELECT raw_id, origin, validation_status, artifact_kind, support_status
+                FROM sampled
                 """
-                + latest_artifact_join
             )
         else:
             summary_sql = (
