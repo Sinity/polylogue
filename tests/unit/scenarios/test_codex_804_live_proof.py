@@ -611,14 +611,16 @@ else:
         tuple(json.loads(line)) for line in replay_trace_path.read_text(encoding="utf-8").splitlines()
     )
     assert resumed_raw_pages, "restart observed no production replay selections for the suffix"
-    resumed_raw_ids = {raw_id for page in resumed_raw_pages for raw_id in page}
+    resumed_raw_sequence = tuple(raw_id for page in resumed_raw_pages for raw_id in page)
     with sqlite3.connect(root / "source.db") as conn:
-        all_raw_ids = {
+        all_raw_sequence = tuple(
             str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY blob_hash, raw_id")
-        }
+        )
     assert all(isinstance(raw_id, str) for page in resumed_raw_pages for raw_id in page)
-    assert set(committed_page_raw_ids).isdisjoint(resumed_raw_ids)
-    assert resumed_raw_ids == all_raw_ids - set(committed_page_raw_ids)
+    assert len(resumed_raw_sequence) == len(set(resumed_raw_sequence)), "restart replayed a raw more than once"
+    assert len(all_raw_sequence) == len(set(all_raw_sequence))
+    assert set(committed_page_raw_ids).isdisjoint(set(resumed_raw_sequence))
+    assert resumed_raw_sequence == all_raw_sequence[len(committed_page_raw_ids) :]
     phases.append(
         _phase(
             "postflight",
