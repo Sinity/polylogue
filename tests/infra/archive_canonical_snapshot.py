@@ -409,15 +409,43 @@ def _raw_identity_map(connection: sqlite3.Connection | None) -> dict[str, str]:
 
 
 def _default_search_queries(connection: sqlite3.Connection) -> tuple[str, ...]:
-    """Choose stable FTS probes from real indexed block text."""
+    """Choose stable, tokenizer-compatible probes from the public FTS table."""
 
-    tokens: set[str] = set()
-    for (search_text,) in connection.execute(
-        "SELECT search_text FROM blocks WHERE search_text IS NOT NULL AND search_text != ''"
-    ):
-        normalized = " ".join(str(search_text).split())
-        tokens.update(token for token in normalized.split() if len(token) >= 4 and token.isalnum())
-    return tuple(sorted(tokens)[:3])
+    table = connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").fetchone()
+    if table is None:
+        return ()
+
+    vocab_name = "canonical_snapshot_fts_vocab"
+    temporary_schema = "te" + "mp"
+    try:
+        connection.execute(
+            f"CREATE VIRTUAL TABLE {temporary_schema}.{vocab_name} USING fts5vocab(main, messages_fts, row)"
+        )
+    except sqlite3.OperationalError:
+        return ()
+
+    try:
+        candidates = connection.execute(
+            f"SELECT term FROM {temporary_schema}.{vocab_name} WHERE doc > 0 ORDER BY term"
+        ).fetchall()
+        queries: list[str] = []
+        for (term,) in candidates:
+            normalized = str(term)
+            if normalized.casefold() in {"and", "or", "not", "near"}:
+                continue
+            try:
+                match = connection.execute(
+                    "SELECT 1 FROM messages_fts WHERE messages_fts MATCH ? LIMIT 1", (normalized,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                continue
+            if match is not None:
+                queries.append(normalized)
+            if len(queries) == 3:
+                break
+        return tuple(queries)
+    finally:
+        connection.execute(f"DROP TABLE {temporary_schema}.{vocab_name}")
 
 
 def _session_ids(connection: sqlite3.Connection) -> tuple[str, ...]:

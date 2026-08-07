@@ -17,6 +17,7 @@ from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.archive_canonical_snapshot import (
     RUN_LOCAL_NORMALIZATION_ALLOWLIST,
     RelationSnapshot,
+    _default_search_queries,
     assert_canonical_snapshots_equal,
     capture_canonical_snapshot,
 )
@@ -172,6 +173,26 @@ def test_default_fts_projection_detects_real_posting_deletion(tmp_path: Path) ->
     before_search = dict(before.public_projections)[f"search:{query}"]
     after_search = dict(after.public_projections)[f"search:{query}"]
     assert before_search != after_search
+
+
+def test_default_fts_queries_follow_tokenizer_for_short_punctuation_terms() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute(
+            "CREATE VIRTUAL TABLE messages_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2')"
+        )
+        connection.execute("INSERT INTO messages_fts(text) VALUES (?)", ("a/b x-y",))
+
+        queries = _default_search_queries(connection)
+
+        assert queries == ("a", "b", "x")
+        assert all(
+            connection.execute("SELECT 1 FROM messages_fts WHERE messages_fts MATCH ? LIMIT 1", (query,)).fetchone()
+            is not None
+            for query in queries
+        )
+    finally:
+        connection.close()
 
 
 @pytest.mark.parametrize("table", ("assertions", "context_deliveries"))
