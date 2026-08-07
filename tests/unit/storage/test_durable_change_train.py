@@ -11,10 +11,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
+import polylogue.storage.sqlite.durable_change_train as durable_change_train_module
 from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -652,6 +654,38 @@ def test_startup_consumes_an_already_recovered_rollback_intent(tmp_path: Path) -
 
     assert reconcile_durable_change_train_startup(tmp_path) == ()
     assert not pending_path.exists()
+
+
+def test_postcondition_recovery_rejects_remaining_orphans(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        before = migration_runner.capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    receipt = tmp_path / "postcondition-failed.jsonl"
+    receipt.write_text('{"phase": "postcondition_failed"}\n', encoding="utf-8")
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    pending_path = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="postcondition-failed-operation",
+        evidence_ref="proof:postcondition-failed-operation",
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation._recover_prepared_receipt",
+        lambda *_args, **_kwargs: "recovered_committed",
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.blob_ref_liveness.classify_blob_ref_liveness",
+        lambda _connection: SimpleNamespace(safe_to_apply=True, orphaned_count=1),
+    )
+
+    with pytest.raises(DurableChangeTrainError, match="postcondition remains unsafe"):
+        durable_change_train_module._recover_pending_source_continuity_intents(tmp_path)
+
+    assert pending_path.exists()
 
 
 @pytest.mark.parametrize("tier", (ArchiveTier.SOURCE, ArchiveTier.USER))

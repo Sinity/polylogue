@@ -523,7 +523,8 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
 
             with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as connection:
-                if not classify_blob_ref_liveness(connection).safe_to_apply:
+                classification = classify_blob_ref_liveness(connection)
+                if not classification.safe_to_apply or classification.orphaned_count != 0:
                     raise DurableChangeTrainError(
                         f"source continuity pending intent postcondition remains unsafe: {path}"
                     )
