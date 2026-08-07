@@ -10,6 +10,10 @@ import click
 from polylogue.paths import archive_root
 
 
+def _is_under_any(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
+
+
 @click.command("live-proof")
 @click.option("--proof-id", required=True, help="One registered live-proof id.")
 @click.option("--candidate-generation", type=str, help="Inactive generation id for the candidate proof route only.")
@@ -32,17 +36,19 @@ def live_proof_command(
 ) -> None:
     """Collect one registered proof without mutating archive or daemon state."""
 
-    from polylogue.maintenance.live_proof import LiveProofError, collect_live_proof, write_live_proof_receipt
+    from polylogue.maintenance.live_proof import (
+        LiveProofError,
+        archive_owned_storage_roots,
+        collect_live_proof,
+        write_live_proof_receipt,
+    )
 
     root = archive_root().resolve()
     target = output.expanduser().resolve()
     try:
-        target.relative_to(root)
-    except ValueError:
-        pass
-    else:
-        raise click.BadParameter("receipt output must be outside the archive root", param_hint="--output")
-    try:
+        owned_roots = archive_owned_storage_roots(root)
+        if _is_under_any(target, owned_roots):
+            raise click.BadParameter("receipt output must be outside archive-owned storage", param_hint="--output")
         receipt = collect_live_proof(
             proof_id,
             root,

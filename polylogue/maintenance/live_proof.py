@@ -330,6 +330,22 @@ def _require_uri_safe_location(location: object) -> None:
     _require_quiescent_sqlite(paths[1:])
 
 
+def archive_owned_storage_roots(archive_root: Path) -> tuple[Path, ...]:
+    """Return every resolved root whose files belong to archive lifecycle state."""
+
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    location = ArchiveLocation.resolve(archive_root)
+    bases = {location.configured_root.resolve(), location.active_index_path.parent.resolve()}
+    if location.active_pointer is not None:
+        bases.add(location.active_pointer.parent.resolve())
+    roots = set(bases)
+    for base in bases:
+        roots.add((base / ".index-generations").resolve())
+        roots.add((base / ".index-rebuild-transactions").resolve())
+    return tuple(sorted(roots))
+
+
 def _sqlite_file_state(path: Path, *, allow_symlink: bool) -> JSONDocument:
     try:
         metadata = path.lstat()

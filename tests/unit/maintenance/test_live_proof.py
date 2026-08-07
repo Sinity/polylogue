@@ -78,7 +78,10 @@ def test_fixed_registry_has_exactly_the_three_supported_modes() -> None:
 
     assert {spec.mode for spec in LIVE_PROOF_SPECS} == set(LiveProofMode)
     assert {spec.proof_id for spec in LIVE_PROOF_SPECS} == set(LiveProofId)
-    assert all(not callable(spec.producer) for spec in LIVE_PROOF_SPECS)
+    assert {spec.producer for spec in LIVE_PROOF_SPECS} == {
+        "archive_verification",
+        "existing_apply_receipt",
+    }
 
 
 def test_read_only_receipt_preserves_full_redacted_canonical_evidence(archive_root: Path) -> None:
@@ -258,8 +261,8 @@ def test_candidate_receipt_binds_canonical_generation_and_all_profiles(archive_r
     assert isinstance(profiles, dict)
     assert set(profiles) == {"candidate-index", "candidate-cross-tier"}
     candidate_path = Path(IndexGenerationStore(ArchiveLocation.resolve(archive_root)).load(generation_id).index_path)
-    with candidate_path.open("ab") as stream:
-        stream.write(b"binding mutation")
+    with sqlite3.connect(candidate_path) as connection:
+        connection.execute("CREATE TABLE proof_binding_mutation (marker TEXT NOT NULL)")
     with pytest.raises(LiveProofError, match="bindings are stale"):
         validate_candidate_proof_receipts((receipt.to_document(),), archive_root, candidate_generation_id=generation_id)
 
