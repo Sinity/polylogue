@@ -99,6 +99,20 @@ class DurableChangeTrainExecution:
     train: DurableChangeTrain | None
     manifest_path: Path | None
     migration_result: MigrationResult | None
+    forward_version_receipt: DurableForwardVersionReceipt | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DurableForwardVersionReceipt:
+    """Evidence that a historical released train admits a later live tier."""
+
+    tier: ArchiveTier
+    historical_train_id: str
+    historical_target_version: int
+    current_target_version: int
+    observed_live_version: int
+    historical_schema_inventory_sha256: str
+    archive_identity_digest: str
 
 
 def durable_migration_sidecar_name(slot: int) -> str:
@@ -1362,11 +1376,16 @@ def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
         raise DurableChangeTrainError("durable tier could not be opened without initialization") from exc
 
 
-def _verify_persisted_live_tier_continuity(conn: sqlite3.Connection, train: DurableChangeTrain) -> None:
+def _verify_persisted_live_tier_continuity(
+    conn: sqlite3.Connection,
+    train: DurableChangeTrain,
+    *,
+    actual: DurableDatabaseEvidence | None = None,
+) -> None:
     """Prove the exact reopened connection still names the persisted durable tier."""
     if train.apply_evidence is None:
         raise DurableChangeTrainError(f"{train.state.value} train lacks post-apply continuity evidence")
-    actual = capture_durable_database_evidence(conn, train.tier)
+    actual = actual or capture_durable_database_evidence(conn, train.tier)
     expected = train.apply_evidence.post
     if actual.user_version != train.target_version:
         raise DurableChangeTrainError(
@@ -1380,11 +1399,41 @@ def _verify_persisted_live_tier_continuity(conn: sqlite3.Connection, train: Dura
         ) from exc
 
 
-def _verify_released_train_live_tier(archive_root: Path, conn: sqlite3.Connection, train: DurableChangeTrain) -> None:
+def _historical_schema_evidence(train: DurableChangeTrain) -> DurableFreshDDLParityProof:
+    """Return the immutable historical schema proof a forward admission needs."""
+    if train.apply_evidence is None or train.proof is None or train.fresh_ddl_parity is None:
+        raise DurableChangeTrainError("released train lacks historical schema evidence for forward-version admission")
+    historical = train.proof.fresh_ddl_parity
+    if (
+        historical.tier is not train.tier
+        or historical.target_version != train.target_version
+        or historical.migrated_version != train.target_version
+        or historical.fresh_version != train.target_version
+        or not historical.matches
+        or historical.missing_objects
+        or historical.unexpected_objects
+        or historical.changed_objects
+        or historical.migrated_inventory_sha256 != train.apply_evidence.post.schema_inventory_sha256
+        or historical.fresh_inventory_sha256 != train.fresh_ddl_parity.fresh_inventory_sha256
+    ):
+        raise DurableChangeTrainError(
+            "released train lacks exact historical schema evidence for forward-version admission"
+        )
+    return historical
+
+
+def _verify_released_train_live_tier(
+    archive_root: Path,
+    conn: sqlite3.Connection,
+    train: DurableChangeTrain,
+    *,
+    current_target_version: int | None = None,
+    actual_evidence: DurableDatabaseEvidence | None = None,
+) -> DurableForwardVersionReceipt | None:
     """Verify a released train remains represented after later trains advance it."""
     if train.apply_evidence is None:
         raise DurableChangeTrainError(f"{train.state.value} train lacks post-apply continuity evidence")
-    actual = capture_durable_database_evidence(conn, train.tier)
+    actual = actual_evidence or capture_durable_database_evidence(conn, train.tier)
     if actual.user_version < train.target_version:
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier continuity proof failed: live version regressed below released train "
@@ -1399,13 +1448,38 @@ def _verify_released_train_live_tier(archive_root: Path, conn: sqlite3.Connectio
                 label="source continuity refresh",
             )
         else:
-            _verify_persisted_live_tier_continuity(conn, train)
-        return
-    integrity = conn.execute("PRAGMA integrity_check").fetchone()
-    if integrity != ("ok",):
+            _verify_persisted_live_tier_continuity(conn, train, actual=actual)
+        return None
+    historical = _historical_schema_evidence(train)
+    expected_identity = train.apply_evidence.post.archive_identity_digest
+    if actual.archive_identity_digest != expected_identity:
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier immutable archive identity differs from historical train "
+            f"v{train.target_version} after later train advancement"
+        )
+    if actual.quick_check != ("ok",):
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier integrity check failed after later train advancement"
         )
+    runtime_target = (
+        cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[train.tier]
+        if current_target_version is None
+        else current_target_version
+    )
+    if actual.user_version > runtime_target:
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier version {actual.user_version} is newer than current target "
+            f"v{runtime_target}; historical train v{train.target_version} cannot admit it"
+        )
+    return DurableForwardVersionReceipt(
+        tier=train.tier,
+        historical_train_id=train.train_id,
+        historical_target_version=train.target_version,
+        current_target_version=runtime_target,
+        observed_live_version=actual.user_version,
+        historical_schema_inventory_sha256=historical.migrated_inventory_sha256,
+        archive_identity_digest=actual.archive_identity_digest,
+    )
 
 
 def _prove_and_release_persisted_train(
@@ -1536,8 +1610,18 @@ def execute_durable_change_train(
                     f"released {tier.value} train {train.train_id} expects live v{runtime_target_version}, "
                     f"found v{live_version}; authorize a new execution"
                 )
-            _verify_released_train_live_tier(archive_root, live, train)
-        return DurableChangeTrainExecution(train=train, manifest_path=manifest_path, migration_result=None)
+            forward_version_receipt = _verify_released_train_live_tier(
+                archive_root,
+                live,
+                train,
+                current_target_version=runtime_target_version,
+            )
+        return DurableChangeTrainExecution(
+            train=train,
+            manifest_path=manifest_path,
+            migration_result=None,
+            forward_version_receipt=forward_version_receipt,
+        )
 
     if train.state is DurableChangeTrainState.DECLARED:
         previous_revision = train.revision
@@ -1636,6 +1720,7 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
     if not manifest_root.is_dir():
         return ()
     reconciled: list[Path] = []
+    live_evidence_by_tier: dict[ArchiveTier, DurableDatabaseEvidence] = {}
     for manifest_path in sorted(manifest_root.glob("*.json")):
         train = load_durable_change_train_manifest(manifest_path)
         if train.state is DurableChangeTrainState.FAILED:
@@ -1667,7 +1752,16 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
             train = _persist_train_transition(manifest_path, recovered, expected_revision=train.revision)
         if train.state is DurableChangeTrainState.RELEASED:
             with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
-                _verify_released_train_live_tier(archive_root, live, train)
+                actual = live_evidence_by_tier.get(train.tier)
+                if actual is None:
+                    actual = capture_durable_database_evidence(live, train.tier)
+                    live_evidence_by_tier[train.tier] = actual
+                _verify_released_train_live_tier(
+                    archive_root,
+                    live,
+                    train,
+                    actual_evidence=actual,
+                )
             reconciled.append(manifest_path)
             continue
         if train.state not in {
@@ -1697,6 +1791,7 @@ __all__ = [
     "DurableChangeTrainManifest",
     "DurableMigrationSidecar",
     "DurableChangeTrainExecution",
+    "DurableForwardVersionReceipt",
     "durable_migration_sidecar_name",
     "validate_durable_migration_sidecars",
     "durable_change_train_policy_report",

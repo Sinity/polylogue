@@ -570,6 +570,45 @@ class TestRawFailureInfoProducesTypedSamples:
         assert info["terminal_rejections"] == snapshot.terminal == 1
         assert info["unexplained_failures"] == snapshot.unexplained == 0
 
+    def test_lifecycle_samples_are_sql_bounded_for_large_file_backed_failure_sets(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        with sqlite3.connect(source_db) as conn:
+            conn.executemany(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms, parse_error
+                ) VALUES (?, 'codex-session', ?, '/data/large-failures.jsonl', ?, ?, 0, ?, 'bad input')
+                """,
+                [
+                    (f"raw-{index}", f"native-{index}", index, bytes(32), 1_770_000_000_000 + index)
+                    for index in range(200)
+                ],
+            )
+            conn.commit()
+
+        statements: list[str] = []
+
+        def open_traced_readonly(path: Path) -> sqlite3.Connection:
+            connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        monkeypatch.setattr("polylogue.storage.raw_failure_lifecycle.open_readonly_connection", open_traced_readonly)
+        snapshot = read_raw_failure_lifecycle(source_db, sample_limit=3)
+
+        assert snapshot.parse_failures == snapshot.unexplained == 200
+        assert len(snapshot.samples) == 3
+        bounded_sample_queries = [
+            statement for statement in statements if "FROM failed" in statement and "LIMIT 3" in statement
+        ]
+        assert len(bounded_sample_queries) == 1
+
     @pytest.mark.parametrize("source_state", ["missing", "malformed"])
     def test_status_fails_closed_when_source_lifecycle_is_unavailable(
         self,

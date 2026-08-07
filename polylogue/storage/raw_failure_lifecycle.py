@@ -165,7 +165,23 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                OR r.validation_status = 'failed'
             ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
             """
-        failed_rows = conn.execute(failure_query).fetchall()
+        summary_rows = conn.execute(
+            f"""
+            WITH failed AS ({failure_query})
+            SELECT origin, validation_status, artifact_kind, support_status, COUNT(*)
+            FROM failed
+            GROUP BY origin, validation_status, artifact_kind, support_status
+            """
+        ).fetchall()
+        sample_rows = conn.execute(
+            f"""
+            WITH failed AS ({failure_query})
+            SELECT raw_id, origin, validation_status, artifact_kind, support_status
+            FROM failed
+            LIMIT ?
+            """,
+            (max(0, sample_limit),),
+        ).fetchall()
     except sqlite3.Error as exc:
         logger.warning("could not read raw failure lifecycle", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not read raw failure lifecycle: {exc}")
@@ -176,25 +192,33 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
     by_artifact_kind: Counter[str] = Counter()
     counts: Counter[str] = Counter()
     samples: list[dict[str, str | None]] = []
-    for row in failed_rows:
+    for row in summary_rows:
+        origin = str(row[0] or "unknown")
+        artifact_kind = str(row[2]) if row[2] is not None else None
+        support_status = str(row[3]) if row[3] is not None else None
+        validation_failed = str(row[1] or "") == "failed"
+        lifecycle = _lifecycle(artifact_kind, support_status, validation_failed=validation_failed)
+        count = int(row[4])
+        counts[lifecycle] += count
+        by_origin[origin] += count
+        by_artifact_kind[artifact_kind or "<none>"] += count
+    for row in sample_rows:
         origin = str(row[1] or "unknown")
         artifact_kind = str(row[3]) if row[3] is not None else None
         support_status = str(row[4]) if row[4] is not None else None
-        validation_failed = str(row[2] or "") == "failed"
-        lifecycle = _lifecycle(artifact_kind, support_status, validation_failed=validation_failed)
-        counts[lifecycle] += 1
-        by_origin[origin] += 1
-        by_artifact_kind[artifact_kind or "<none>"] += 1
-        if len(samples) < max(0, sample_limit):
-            samples.append(
-                {
-                    "raw_id": str(row[0]),
-                    "origin": origin,
-                    "artifact_kind": artifact_kind,
-                    "support_status": support_status,
-                    "lifecycle": lifecycle,
-                }
-            )
+        samples.append(
+            {
+                "raw_id": str(row[0]),
+                "origin": origin,
+                "artifact_kind": artifact_kind,
+                "support_status": support_status,
+                "lifecycle": _lifecycle(
+                    artifact_kind,
+                    support_status,
+                    validation_failed=str(row[2] or "") == "failed",
+                ),
+            }
+        )
     return RawFailureLifecycleSnapshot(
         available=True,
         parse_failures=parse_failures,

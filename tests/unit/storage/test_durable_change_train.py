@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from collections.abc import Callable, Iterator
@@ -1115,6 +1116,52 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         assert conn.execute("PRAGMA user_version").fetchone() == (3,)
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='later_items'").fetchone() == ("later_items",)
     assert released == [True, True]
+
+    historical_manifest = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
+    historical_train = load_durable_change_train_manifest(historical_manifest)
+    with sqlite3.connect(db_path) as conn:
+        actual = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+        receipt = durable_change_train_module._verify_released_train_live_tier(
+            tmp_path,
+            conn,
+            historical_train,
+            current_target_version=3,
+            actual_evidence=actual,
+        )
+    assert receipt is not None
+    assert receipt.historical_target_version == 2
+    assert receipt.current_target_version == 3
+    assert receipt.observed_live_version == 3
+    assert historical_train.proof is not None
+    assert (
+        receipt.historical_schema_inventory_sha256 == historical_train.proof.fresh_ddl_parity.migrated_inventory_sha256
+    )
+
+    captures = 0
+    real_capture = migration_runner.capture_durable_database_evidence
+
+    def count_captures(connection: sqlite3.Connection, tier: ArchiveTier) -> migration_runner.DurableDatabaseEvidence:
+        nonlocal captures
+        captures += 1
+        return real_capture(connection, tier)
+
+    monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", count_captures)
+    assert reconcile_durable_change_train_startup(tmp_path) == (
+        durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2),
+        durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 3),
+    )
+    assert captures == 1
+
+    unrelated_root = tmp_path / "unrelated-archive"
+    unrelated_root.mkdir()
+    shutil.copy2(db_path, unrelated_root / "source.db")
+    unrelated_manifest = durable_change_train_manifest_path(unrelated_root, ArchiveTier.SOURCE, 2)
+    unrelated_manifest.parent.mkdir(parents=True)
+    shutil.copy2(historical_manifest, unrelated_manifest)
+    with sqlite3.connect(unrelated_root / "source.db") as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(DurableChangeTrainError, match="immutable archive identity differs"):
+        reconcile_durable_change_train_startup(unrelated_root)
 
 
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(
