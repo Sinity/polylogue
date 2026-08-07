@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 MODULE_PATH = Path(__file__).parents[3] / "devtools" / "beads_acceptance_contracts.py"
 spec = importlib.util.spec_from_file_location("beads_acceptance_contracts", MODULE_PATH)
@@ -10,7 +11,7 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 
-def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict:
+def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, Any]:
     contract = {
         "schema_version": 1,
         "bead_id": "polylogue-test",
