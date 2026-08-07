@@ -1521,6 +1521,77 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -
     initialize_active_archive_root(tmp_path)
 
 
+def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    real_initialize_archive_database = bootstrap.initialize_archive_database
+    failed = False
+
+    def fail_embeddings_once(
+        path: Path,
+        tier: ArchiveTier,
+        *,
+        allow_create: bool = True,
+        expected_version: int | None = None,
+    ) -> None:
+        nonlocal failed
+        if tier is ArchiveTier.EMBEDDINGS and not failed:
+            failed = True
+            raise RuntimeError("simulated late fresh-bootstrap failure")
+        real_initialize_archive_database(path, tier, allow_create=allow_create, expected_version=expected_version)
+
+    monkeypatch.setattr(bootstrap, "initialize_archive_database", fail_embeddings_once)
+    with pytest.raises(RuntimeError, match="simulated late fresh-bootstrap failure"):
+        bootstrap.initialize_active_archive_root(tmp_path)
+
+    marker_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    assert (marker_root / ".bootstrap.pending").is_file()
+    assert not (marker_root / ".bootstrap").exists()
+    assert (tmp_path / "source.db").is_file()
+
+    monkeypatch.setattr(bootstrap, "initialize_archive_database", real_initialize_archive_database)
+    bootstrap.initialize_active_archive_root(tmp_path)
+
+    assert (marker_root / ".bootstrap").is_file()
+    assert not (marker_root / ".bootstrap.pending").exists()
+    assert reconcile_durable_change_train_startup(tmp_path) == ()
+
+
+def test_fresh_bootstrap_intent_rejects_tampering_before_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    real_initialize_archive_database = bootstrap.initialize_archive_database
+
+    def fail_embeddings(
+        path: Path,
+        tier: ArchiveTier,
+        *,
+        allow_create: bool = True,
+        expected_version: int | None = None,
+    ) -> None:
+        if tier is ArchiveTier.EMBEDDINGS:
+            raise RuntimeError("simulated late fresh-bootstrap failure")
+        real_initialize_archive_database(path, tier, allow_create=allow_create, expected_version=expected_version)
+
+    monkeypatch.setattr(bootstrap, "initialize_archive_database", fail_embeddings)
+    with pytest.raises(RuntimeError, match="simulated late fresh-bootstrap failure"):
+        bootstrap.initialize_active_archive_root(tmp_path)
+
+    pending = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap.pending"
+    payload = json.loads(pending.read_text(encoding="utf-8"))
+    payload["durable_identity_digest"] = "0" * 64
+    pending.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DurableChangeTrainError, match="intent durable identity mismatch"):
+        bootstrap.initialize_active_archive_root(tmp_path)
+
+
 def test_pre_marker_current_archive_is_adopted_once(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 

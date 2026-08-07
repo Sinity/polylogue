@@ -76,6 +76,7 @@ _DROP_SQL_RE = re.compile(r"(?is)\bDROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)\b")
 _SOURCE_CONTINUITY_PENDING_FORMAT = "polylogue.source-continuity-pending.v1"
 _FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
 _FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
+_FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER = ".bootstrap.pending"
 
 
 class DurableSourceTrainMissingError(DurableChangeTrainError):
@@ -326,8 +327,12 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
 
     archive_root = archive_root.resolve()
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
-    if (marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER).exists() or any(marker_root.glob("*.json")):
+    marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
+    pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
+    if marker_path.exists() or any(marker_root.glob("*.json")):
         raise DurableChangeTrainError(f"cannot record fresh durable bootstrap over existing train state: {marker_root}")
+    if pending_path.is_file():
+        _validate_fresh_durable_bootstrap_intent(archive_root)
     marker_root.mkdir(parents=True, exist_ok=True)
     versions: dict[str, int] = {}
     for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
@@ -339,13 +344,83 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
         "versions": versions,
     }
     payload["marker_digest"] = _bootstrap_marker_digest(payload)
+    _write_bootstrap_receipt(marker_path, payload)
+    pending_path.unlink(missing_ok=True)
+
+
+def _record_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
+    """Record an authenticated intent before creating the first tier file.
+
+    Fresh archive initialization creates several independent SQLite files. A
+    failure in a later tier can therefore leave a partial fresh archive. The
+    intent distinguishes that recoverable state from an established archive
+    whose durable train evidence has been lost.
+    """
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    archive_root = archive_root.resolve()
+    marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
+    pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
+    if marker_path.exists() or any(marker_root.glob("*.json")):
+        raise DurableChangeTrainError(
+            f"cannot record fresh durable bootstrap intent over existing train state: {marker_root}"
+        )
+    if pending_path.is_file():
+        _validate_fresh_durable_bootstrap_intent(archive_root)
+        return
+    versions = {tier.value: ARCHIVE_VERSION_BY_TIER[tier] for tier in DURABLE_MIGRATION_ADOPTION_FLOORS}
+    payload: dict[str, object] = {
+        "format": _FRESH_DURABLE_BOOTSTRAP_FORMAT,
+        "state": "pending",
+        "durable_identity_digest": _fresh_bootstrap_intent_identity_digest(archive_root),
+        "versions": versions,
+    }
+    payload["marker_digest"] = _bootstrap_marker_digest(payload)
+    _write_bootstrap_receipt(pending_path, payload)
+
+
+def _validate_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
+    """Validate the authenticated intent for a recoverable fresh bootstrap."""
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    archive_root = archive_root.resolve()
+    marker_path = (
+        archive_root / ".maintenance-state" / "durable-change-trains" / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
+    )
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DurableChangeTrainError(f"invalid fresh durable bootstrap intent: {marker_path}") from exc
+    if not isinstance(payload, dict) or payload.get("format") != _FRESH_DURABLE_BOOTSTRAP_FORMAT:
+        raise DurableChangeTrainError(f"fresh durable bootstrap intent format mismatch: {marker_path}")
+    if payload.get("state") != "pending":
+        raise DurableChangeTrainError(f"fresh durable bootstrap intent state is invalid: {marker_path}")
+    if payload.get("durable_identity_digest") != _fresh_bootstrap_intent_identity_digest(archive_root):
+        raise DurableChangeTrainError("fresh durable bootstrap intent durable identity mismatch")
+    marker_digest = payload.get("marker_digest")
+    unsigned_payload = dict(payload)
+    unsigned_payload.pop("marker_digest", None)
+    if not isinstance(marker_digest, str) or marker_digest != _bootstrap_marker_digest(unsigned_payload):
+        raise DurableChangeTrainError("fresh durable bootstrap intent digest mismatch")
+    raw_versions = payload.get("versions")
+    if not isinstance(raw_versions, dict):
+        raise DurableChangeTrainError(f"fresh durable bootstrap intent versions are invalid: {marker_path}")
+    for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
+        if raw_versions.get(tier.value) != ARCHIVE_VERSION_BY_TIER[tier]:
+            raise DurableChangeTrainError(f"fresh durable bootstrap intent target version is stale: {marker_path}")
+
+
+def _write_bootstrap_receipt(marker_path: Path, payload: dict[str, object]) -> None:
+    """Atomically publish one bootstrap receipt and fsync its directory."""
+    marker_root = marker_path.parent
+    marker_root.mkdir(parents=True, exist_ok=True)
     encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             dir=marker_root,
-            prefix=f".{_FRESH_DURABLE_BOOTSTRAP_MARKER}.",
+            prefix=f".{marker_path.name}.",
             suffix=".tmp",
             delete=False,
         ) as stream:
@@ -359,6 +434,16 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def _fresh_bootstrap_intent_identity_digest(archive_root: Path) -> str:
+    """Bind a pre-file bootstrap intent to its root without inode identity."""
+    return _canonical_json_sha256(
+        {
+            "configured_root": str(archive_root.resolve().absolute()),
+            "purpose": "fresh-durable-bootstrap",
+        }
+    )
 
 
 def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> dict[ArchiveTier, int]:
