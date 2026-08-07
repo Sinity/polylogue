@@ -18,6 +18,7 @@ import json
 import subprocess
 import sys
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ _CANONICAL_TIER_DDL_SUFFIXES = (
     "storage/sqlite/archive_tiers/source.py",
     "storage/sqlite/archive_tiers/user.py",
 )
+_STALE_CLAIM_DAYS = 7
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -118,6 +120,10 @@ def _metadata(issue: dict[str, Any]) -> dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
+def _is_active_program(issue: dict[str, Any]) -> bool:
+    return _metadata(issue).get("frontier_program") == "active"
+
+
 def _priority(issue: dict[str, Any]) -> int:
     try:
         return int(issue.get("priority", 2))
@@ -134,11 +140,43 @@ def _is_executable_leaf(issue: dict[str, Any]) -> bool:
     return issue.get("issue_type") not in {"epic", "program"}
 
 
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _claim_is_live(issue: dict[str, Any], *, now: datetime, stale_claim_days: int) -> bool:
+    updated = _parse_timestamp(issue.get("updated_at"))
+    if updated is None:
+        # Keep legacy records schedulable until the backlog hygiene check can
+        # supply a structured activity timestamp. A known stale timestamp is
+        # enough to reject ownership; an absent timestamp is not evidence of
+        # staleness by itself.
+        return True
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return (now - updated).total_seconds() <= stale_claim_days * 86400
+
+
+def _valid_active_leaf_ids(issues: list[dict[str, Any]]) -> set[str]:
+    by_id = {str(issue["id"]): issue for issue in issues}
+    valid: set[str] = set()
+    for issue in issues:
+        if not (_is_open(issue) and _is_executable_leaf(issue) and _metadata(issue).get("frontier") == "active"):
+            continue
+        program_ref = _metadata(issue).get("frontier_program_ref")
+        if isinstance(program_ref, str) and program_ref and _is_active_program(by_id.get(program_ref, {})):
+            valid.add(str(issue["id"]))
+    return valid
+
+
 def _resource_classes(issue: dict[str, Any], footprint: bead_cluster.Footprint) -> tuple[str, ...]:
     labels = _labels(issue)
-    text = " ".join(
-        str(issue.get(field, "")) for field in ("design", "notes", "acceptance_criteria", "description")
-    ).lower()
+    text = " ".join(str(issue.get(field, "")) for field in ("design", "acceptance_criteria", "description")).lower()
     resources: list[str] = []
     if (
         footprint.migration_slots
@@ -294,14 +332,21 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
     footprint_keys = {
         issue_id: footprint.overlap_keys() | footprint.contention_keys() for issue_id, footprint in footprints.items()
     }
+    now = datetime.now(timezone.utc)
     claims = sorted(
-        (issue for issue in open_issues if issue.get("status") == "in_progress" and _is_executable_leaf(issue)),
+        (
+            issue
+            for issue in open_issues
+            if issue.get("status") == "in_progress"
+            and _is_executable_leaf(issue)
+            and _claim_is_live(issue, now=now, stale_claim_days=_STALE_CLAIM_DAYS)
+        ),
         key=lambda item: item["id"],
     )
     claim_ids = [issue["id"] for issue in claims]
     ambiguous_claim_ids = sorted(issue_id for issue_id in claim_ids if not footprint_keys[issue_id])
     leverage = _critical_path_leverage(issues)
-    active_ids = set(_active_set(issues))
+    active_ids = _valid_active_leaf_ids(issues)
     candidates = [
         _candidate_row(
             issue,
@@ -400,7 +445,10 @@ def build_report(issues: list[Any], ready: list[Any], *, repo: Path) -> dict[str
     claims = [
         issue
         for issue in issues
-        if _is_open(issue) and issue.get("status") == "in_progress" and _is_executable_leaf(issue)
+        if _is_open(issue)
+        and issue.get("status") == "in_progress"
+        and _is_executable_leaf(issue)
+        and _claim_is_live(issue, now=datetime.now(timezone.utc), stale_claim_days=_STALE_CLAIM_DAYS)
     ]
     return {
         "report_version": 3,
