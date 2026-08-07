@@ -131,6 +131,19 @@ def test_render_markdown_includes_all_mandatory_sections() -> None:
     assert "<!-- DISPATCHER MUST FILL -->" in md
 
 
+def test_planner_review_contract_blocks_dispatch() -> None:
+    record = lane_brief.BeadRecord(
+        id="polylogue-a",
+        found=True,
+        priority=1,
+        issue_type="task",
+        title="Planner review",
+        contract_confidence="planner-review",
+    )
+    md = lane_brief._render_markdown(["polylogue-a"], [record], [], [])
+    assert "DISPATCH BLOCKED" in md
+
+
 def test_render_markdown_reports_not_found_bead() -> None:
     record = lane_brief.BeadRecord(id="polylogue-missing", found=False, error="not found")
     md = lane_brief._render_markdown(["polylogue-missing"], [record], [], [])

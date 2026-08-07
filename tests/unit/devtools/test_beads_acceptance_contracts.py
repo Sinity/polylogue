@@ -35,17 +35,29 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
     }
     return {
         "id": "polylogue-test",
+        "title": "Test contract",
+        "description": "A test contract source.",
+        "design": "The test design is explicit.",
+        "notes": "The source snapshot is stable.",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "task",
+        "updated_at": "2026-08-07T00:00:00Z",
         "metadata": {"acceptance_contract_v1": contract},
         "acceptance_criteria": mod.render(contract),
     }
 
 
 def test_valid_contract_round_trips() -> None:
-    assert mod.validate(_issue()) == []
+    issue = _issue()
+    issue["metadata"]["acceptance_contract_v1"]["source_digest"] = mod.source_digest(issue)
+    issue["acceptance_criteria"] = mod.render(issue["metadata"]["acceptance_contract_v1"])
+    assert mod.validate(issue) == []
 
 
 def test_durable_mutation_requires_safety() -> None:
     issue = _issue(risk="durable-mutation")
+    issue["metadata"]["acceptance_contract_v1"]["source_digest"] = mod.source_digest(issue)
     issue["metadata"]["acceptance_contract_v1"]["safety"] = []
     issue["acceptance_criteria"] = mod.render(issue["metadata"]["acceptance_contract_v1"])
     assert "durable-mutation requires safety clauses" in mod.validate(issue)
@@ -53,6 +65,7 @@ def test_durable_mutation_requires_safety() -> None:
 
 def test_placeholder_is_rejected() -> None:
     issue = _issue()
+    issue["metadata"]["acceptance_contract_v1"]["source_digest"] = mod.source_digest(issue)
     issue["metadata"]["acceptance_contract_v1"]["outcome"] = "Figure out the route ..."
     issue["acceptance_criteria"] = mod.render(issue["metadata"]["acceptance_contract_v1"])
     assert any("placeholder" in error for error in mod.validate(issue))
@@ -60,5 +73,19 @@ def test_placeholder_is_rejected() -> None:
 
 def test_render_drift_is_rejected() -> None:
     issue = _issue()
+    issue["metadata"]["acceptance_contract_v1"]["source_digest"] = mod.source_digest(issue)
     issue["acceptance_criteria"] = "weaker prose"
     assert "acceptance_criteria drifted from structured contract" in mod.validate(issue)
+
+
+def test_scalar_clause_and_stale_digest_are_rejected() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["routes"] = "a route"
+    assert "routes must be a non-empty list of strings" in mod.validate(issue)
+
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["source_digest"] = "0" * 64
+    issue["acceptance_criteria"] = mod.render(contract)
+    assert "source_digest does not match the Bead source snapshot" in mod.validate(issue)

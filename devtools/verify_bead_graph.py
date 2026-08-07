@@ -21,6 +21,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
+from devtools.beads_acceptance_contracts import validate as validate_acceptance_contract
+
 
 @dataclass(frozen=True, slots=True)
 class Finding:
@@ -73,7 +75,15 @@ def _run_bd_list_all() -> list[dict[str, Any]]:
 
 def _metadata(issue: dict[str, Any]) -> dict[str, Any]:
     value = issue.get("metadata")
-    return value if isinstance(value, dict) else {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
 
 
 def _labels(issue: dict[str, Any]) -> list[str]:
@@ -167,6 +177,12 @@ def _parent_findings(issues: list[dict[str, Any]]) -> list[Finding]:
 def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
     by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
     findings: list[Finding] = _parent_findings(issues)
+
+    for issue_id, issue in sorted(by_id.items()):
+        if "acceptance_contract_v1" not in _metadata(issue):
+            continue
+        for error in validate_acceptance_contract(issue):
+            findings.append(Finding("invalid-acceptance-contract", issue_id, error))
 
     waves: dict[str, int | None] = {}
     for issue_id, issue in sorted(by_id.items()):
@@ -293,6 +309,7 @@ def _format_report(report: dict[str, Any]) -> str:
         f"dup_labels={counts.get('duplicate-wave', 0)} "
         f"inversions={counts.get('wave-inversion', 0)} "
         f"missing_ac={counts.get('missing-ac', 0)} "
+        f"invalid_contracts={counts.get('invalid-acceptance-contract', 0)} "
         f"malformed_wave={counts.get('malformed-wave', 0)} "
         f"parent_integrity={sum(value for key, value in counts.items() if key.startswith('parent-') or key in {'multiple-parents', 'missing-parent'})}"
     )
