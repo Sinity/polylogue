@@ -89,8 +89,8 @@ def _priority(issue: dict[str, Any]) -> int:
         return 2
 
 
-def _parent_targets(issue: dict[str, Any]) -> set[str]:
-    targets: set[str] = set()
+def _parent_targets(issue: dict[str, Any]) -> list[str]:
+    targets: list[str] = []
     dependencies = issue.get("dependencies")
     if not isinstance(dependencies, list):
         return targets
@@ -99,7 +99,7 @@ def _parent_targets(issue: dict[str, Any]) -> set[str]:
             continue
         target = dependency.get("depends_on_id")
         if isinstance(target, str) and target:
-            targets.add(target)
+            targets.append(target)
     return targets
 
 
@@ -114,7 +114,7 @@ def canonical_parent_map(issues: list[dict[str, Any]]) -> dict[str, str | None]:
     for issue in issues:
         bead_id = str(issue.get("id", ""))
         targets = _parent_targets(issue)
-        parents[bead_id] = next(iter(targets)) if len(targets) == 1 else None
+        parents[bead_id] = targets[0] if len(targets) == 1 else None
     return parents
 
 

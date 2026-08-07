@@ -201,6 +201,24 @@ def test_parent_child_validation_rejects_multiple_missing_and_cyclic_parents() -
     }
 
 
+def test_parent_child_validation_rejects_duplicate_edge_records() -> None:
+    issues = [
+        _issue("polylogue-parent"),
+        _issue(
+            "polylogue-child",
+            dependencies=[
+                {"type": "parent-child", "depends_on_id": "polylogue-parent"},
+                {"type": "parent-child", "depends_on_id": "polylogue-parent"},
+            ],
+        ),
+    ]
+
+    findings = verify_bead_graph.collect_findings(issues)
+
+    assert verify_bead_graph.canonical_parent_map(issues)["polylogue-child"] is None
+    assert ("multiple-parents", "polylogue-child") in {(finding.kind, finding.bead_id) for finding in findings}
+
+
 @pytest.mark.parametrize("payload", [["not-an-issue"], [{"id": ""}], [{"id": 42}]])
 def test_bd_list_rejects_each_malformed_issue_record(monkeypatch: pytest.MonkeyPatch, payload: list[object]) -> None:
     class Completed:

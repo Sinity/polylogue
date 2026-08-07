@@ -124,21 +124,22 @@ def _is_open(issue: dict[str, Any]) -> bool:
     return issue.get("status") in {"open", "in_progress"}
 
 
-def _resource_class(issue: dict[str, Any], footprint: bead_cluster.Footprint) -> str:
+def _resource_classes(issue: dict[str, Any], footprint: bead_cluster.Footprint) -> tuple[str, ...]:
     labels = _labels(issue)
     text = " ".join(
         str(issue.get(field, "")) for field in ("design", "notes", "acceptance_criteria", "description")
     ).lower()
+    resources: list[str] = []
     if (
         footprint.migration_slots
         or "area:schema" in labels
         or any(marker in text for marker in _SCHEMA_TEXT_MARKERS)
         or any("schema" in path.lower() and "storage" in path.lower() for path in footprint.files)
     ):
-        return "schema-lane"
+        resources.append("schema-lane")
     if "resource:live-state" in labels or "risk:live-state" in labels:
-        return "live-state"
-    return "ordinary"
+        resources.append("live-state")
+    return tuple(resources) or ("ordinary",)
 
 
 def _active_set(issues: list[dict[str, Any]]) -> list[str]:
@@ -150,30 +151,36 @@ def _active_set(issues: list[dict[str, Any]]) -> list[str]:
 
 
 def _critical_path_leverage(issues: list[dict[str, Any]]) -> dict[str, int]:
-    """Count every open downstream Bead a candidate can unblock via blocks edges."""
+    """Count downstream work unblocked through exclusively single-blocker paths."""
     blocked_by: dict[str, set[str]] = defaultdict(set)
     known = {issue["id"]: issue for issue in issues}
-    for issue in known.values():
+    for child_id, issue in known.items():
         if not _is_open(issue):
             continue
         dependencies = issue.get("dependencies")
+        remaining_blockers: set[str] = set()
         for dependency in dependencies if isinstance(dependencies, list) else []:
             if not isinstance(dependency, dict) or dependency.get("type") != "blocks":
                 continue
             target = dependency.get("depends_on_id")
-            if isinstance(target, str) and target in known and _is_open(known[target]):
-                blocked_by[target].add(issue["id"])
+            if not isinstance(target, str) or not target:
+                continue
+            blocker = known.get(target)
+            if blocker is None or blocker.get("status") != "closed":
+                remaining_blockers.add(target)
+        if len(remaining_blockers) == 1:
+            blocked_by[next(iter(remaining_blockers))].add(child_id)
     leverage: dict[str, int] = {}
-    for blocker in blocked_by:
+    for blocker_id in blocked_by:
         reachable: set[str] = set()
-        pending = list(blocked_by[blocker])
+        pending = list(blocked_by[blocker_id])
         while pending:
             child = pending.pop()
             if child in reachable:
                 continue
             reachable.add(child)
             pending.extend(blocked_by.get(child, ()))
-        leverage[blocker] = len(reachable)
+        leverage[blocker_id] = len(reachable)
     return leverage
 
 
@@ -192,7 +199,7 @@ def _candidate_row(
     ready_ids: set[str],
 ) -> dict[str, Any]:
     issue_id = issue["id"]
-    resource_class = _resource_class(issue, footprint)
+    resource_classes = _resource_classes(issue, footprint)
     return {
         "id": issue_id,
         "title": str(issue.get("title", "")),
@@ -200,7 +207,8 @@ def _candidate_row(
         "priority": _priority(issue),
         "dependency_ready": issue_id in ready_ids,
         "critical_path_leverage": leverage,
-        "resource_class": resource_class,
+        "resource_class": resource_classes[0],
+        "resource_classes": list(resource_classes),
         "conflicts_with_claims": _footprint_conflicts(issue_id, occupied_ids, footprint_keys),
         "frontier_program_ref": _metadata(issue).get("frontier_program_ref"),
     }
@@ -239,18 +247,31 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
 
     occupied_by_resource: dict[str, list[str]] = defaultdict(list)
     for claim in claims:
-        occupied_by_resource[_resource_class(claim, footprints[claim["id"]])].append(claim["id"])
+        for resource_class in _resource_classes(claim, footprints[claim["id"]]):
+            occupied_by_resource[resource_class].append(claim["id"])
     selected: list[dict[str, Any]] = []
     deferred: list[dict[str, Any]] = []
     selected_by_resource: dict[str, list[str]] = defaultdict(list)
     for candidate in candidates:
-        resource_class = str(candidate["resource_class"])
-        policy = RESOURCE_POLICY[resource_class]
-        occupied_ids = sorted(occupied_by_resource[resource_class])
+        resource_classes = [str(value) for value in candidate["resource_classes"]]
         conflicts = list(candidate["conflicts_with_claims"])
         selected_conflicts = _footprint_conflicts(candidate["id"], selected_by_resource["all"], footprint_keys)
-        resource_occupancy = [*occupied_ids, *selected_by_resource[resource_class]]
-        if conflicts:
+        saturated_resources = [
+            required_resource
+            for required_resource in resource_classes
+            if (
+                (max_parallel := RESOURCE_POLICY[required_resource]["max_parallel"]) is not None
+                and (
+                    len(occupied_by_resource[required_resource]) + len(selected_by_resource[required_resource])
+                    >= max_parallel
+                )
+            )
+        ]
+        if not footprint_keys[candidate["id"]]:
+            candidate["focus_state"] = "deferred"
+            candidate["reason"] = "footprint is ambiguous; confirm ownership before parallel focus"
+            deferred.append(candidate)
+        elif conflicts:
             candidate["focus_state"] = "deferred"
             candidate["reason"] = f"footprint conflict with active claim(s): {', '.join(conflicts)}"
             deferred.append(candidate)
@@ -258,20 +279,24 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
             candidate["focus_state"] = "deferred"
             candidate["reason"] = f"footprint conflict with selected focus: {', '.join(selected_conflicts)}"
             deferred.append(candidate)
-        elif policy["max_parallel"] is not None and len(resource_occupancy) >= policy["max_parallel"]:
+        elif saturated_resources:
+            saturated_resource = saturated_resources[0]
+            saturated_occupied_ids = sorted(occupied_by_resource[saturated_resource])
             candidate["focus_state"] = "deferred"
-            if occupied_ids:
-                candidate["reason"] = f"{resource_class} occupied by claim(s): {', '.join(occupied_ids)}"
+            if saturated_occupied_ids:
+                candidate["reason"] = f"{saturated_resource} occupied by claim(s): {', '.join(saturated_occupied_ids)}"
             else:
                 candidate["reason"] = (
-                    f"{resource_class} occupied by selected focus: {', '.join(selected_by_resource[resource_class])}"
+                    f"{saturated_resource} occupied by selected focus: "
+                    f"{', '.join(selected_by_resource[saturated_resource])}"
                 )
             deferred.append(candidate)
         else:
             candidate["focus_state"] = "focus"
             candidate["reason"] = "ready, unclaimed, and permitted by declared resource policy"
             selected.append(candidate)
-            selected_by_resource[resource_class].append(candidate["id"])
+            for required_resource in resource_classes:
+                selected_by_resource[required_resource].append(candidate["id"])
             selected_by_resource["all"].append(candidate["id"])
     return {
         "resource_policy": RESOURCE_POLICY,
