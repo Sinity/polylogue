@@ -10,5 +10,5 @@ rationale = "The single-process coverage gate needs a bounded diagnostic budget 
 
 [[exception]]
 path = "tests/unit/scenarios/test_codex_804_live_proof.py"
-value = 300
-rationale = "The sanitized 804-revision production replay includes an approximately 90 MiB terminal wire artifact and needs a bounded incident-scale replay budget."
+value = 420
+rationale = "The sanitized 804-revision proof runs source remediation plus an interrupted and resumed production replay; the measured replay takes about 311 seconds and needs a bounded incident-scale budget."
