@@ -1428,7 +1428,8 @@ def _historical_schema_inventory(train: DurableChangeTrain) -> _migration_runner
     historical = _historical_schema_evidence(train)
     with closing(sqlite3.connect(":memory:")) as fresh:
         fresh.execute("PRAGMA foreign_keys = ON")
-        fresh.executescript(_migration_runner.ARCHIVE_DDL_BY_TIER[train.tier])
+        archive_ddl = cast(dict[ArchiveTier, str], vars(_migration_runner)["ARCHIVE_DDL_BY_TIER"])
+        fresh.executescript(archive_ddl[train.tier])
         fresh.execute(f"PRAGMA user_version = {train.target_version}")
         _migration_runner._prepare_fresh_connection_for_target(fresh, train.tier, train.target_version)
         fresh.commit()
