@@ -181,11 +181,12 @@ def test_default_fts_queries_follow_tokenizer_for_short_punctuation_terms() -> N
         connection.execute(
             "CREATE VIRTUAL TABLE messages_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2')"
         )
-        connection.execute("INSERT INTO messages_fts(text) VALUES (?)", ("a/b x-y",))
+        connection.execute("INSERT INTO messages_fts(text) VALUES (?)", ("a/b x-y and",))
 
         queries = _default_search_queries(connection)
 
         assert queries == ("a", "b", "x")
+        assert "and" not in queries
         assert all(
             connection.execute("SELECT 1 FROM messages_fts WHERE messages_fts MATCH ? LIMIT 1", (query,)).fetchone()
             is not None
