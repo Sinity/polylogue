@@ -480,6 +480,22 @@ Exit code is non-zero when any check reports `error` (or, with `--strict`,
 temporarily busy under a concurrent rebuild — never aborts the rest; each
 check independently reports its own outcome.
 
+### `polylogue ops maintenance live-proof` — immutable campaign evidence
+
+Read-only evidence collection for the reindex campaign. The command accepts a fixed registered proof id and writes one new self-hashed JSON receipt outside the archive. It has no command-execution option and cannot apply a mutation, control the daemon, migrate a tier, or promote a generation.
+
+```bash
+polylogue ops maintenance live-proof \
+  --proof-id archive-verification \
+  --output /path/to/new/live-proof.json
+```
+
+The registry currently has exactly three routes: `archive-verification` for a fixed read-only archive-check profile, `candidate-archive-verification` for that profile against one named inactive generation, and `existing-apply-receipt` for a pre-existing `polylogue.apply-receipt.v1` input. Candidate mode requires `--candidate-generation`; existing-apply mode requires `--apply-receipt` and the registered `known-source-remediation` operation id; every other combination is rejected. An arbitrary nonempty operation id is not accepted.
+
+Each `polylogue.live-proof-receipt.v1` binds the proof and Bead id, exact code SHA, archive identity, source snapshot, all six active archive-tier schema versions, parser and lowering fingerprints, the active SQLite file set, and the candidate generation, schema, and SQLite file set where applicable. SQLite bindings include the database and WAL/journal sidecars and refuse a file set that changes while it is captured. Candidate metadata must name the canonical inactive generation and the same source snapshot. Archives whose configured paths contain SQLite URI query characters are rejected before proof dependencies open them. Private local paths are represented only as a SHA-256 digest plus basename.
+
+The receipt keeps complete structured archive-verification evidence after redacting archive paths and any absolute paths emitted by checks. `archive-verification` runs the entire live archive profile. `candidate-archive-verification` runs both canonical candidate acceptance profiles: the index-candidate checks against the inactive generation and the cross-tier checks against that generation plus the durable archive. Existing-apply evidence embeds the validated input receipt, so consumers revalidate its self-hash, bindings, registered operation id, and match to the recorded input digest. Verification consumers validate the fixed profile membership, check outcomes, typed status/residue relationship, bindings, and input hashes again. Aggregate validation binds pre-promotion candidate evidence to the inactive generation. After promotion, it validates the retained generation and candidate file set directly while recapturing the current active binding for post-promotion receipts. Final proof consumption requires every registered route exactly once; `not_applicable` is accepted only with its typed residue. Output creation is exclusive and failure-atomic: a failed write removes its partial file and syncs the destination directory.
+
 ### `--operation-id` and `--resume`: worked example
 
 Replay execution writes a small JSON state file under

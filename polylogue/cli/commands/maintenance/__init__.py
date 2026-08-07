@@ -190,6 +190,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Prove the archive is coherent after a rebuild, restore, or promotion. Read-only.",
     ),
     (
+        "live-proof",
+        "_live_proof",
+        "live_proof_command",
+        "Collect one fixed, immutable live-proof receipt. Read-only.",
+    ),
+    (
         "cursor-authority-reconcile",
         "_cursor_authority",
         "cursor_authority_reconcile_command",

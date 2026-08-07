@@ -1,0 +1,139 @@
+"""Real Click dispatch tests for the fixed maintenance live-proof command."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+from click.testing import CliRunner
+
+from polylogue.cli.click_app import cli
+from polylogue.maintenance import live_proof
+
+
+@pytest.fixture(autouse=True)
+def clean_git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        live_proof,
+        "_run_git",
+        lambda repository, *arguments: subprocess.CompletedProcess(
+            args=("git", str(repository), *arguments),
+            returncode=0,
+            stdout="" if arguments[0] == "status" else "a" * 40,
+            stderr="",
+        ),
+    )
+
+
+def test_live_proof_cli_dispatches_registered_read_only_proof(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_CODE_SHA", "b" * 40)
+    output = cli_workspace["archive_root"].parent / "live-proof.json"
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "live-proof",
+            "--proof-id",
+            "archive-verification",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    receipt = json.loads(output.read_text(encoding="utf-8"))
+    assert receipt["proof_id"] == "archive-verification"
+    assert receipt["mode"] == "read_only"
+    assert str(cli_workspace["archive_root"]) not in output.read_text(encoding="utf-8")
+
+
+def test_live_proof_cli_rejects_unknown_route_without_creating_output(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    output = cli_workspace["archive_root"].parent / "unknown-live-proof.json"
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "live-proof",
+            "--proof-id",
+            "arbitrary-shell-command",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "unknown live-proof id" in result.output
+    assert not output.exists()
+
+
+def test_live_proof_cli_rejects_output_under_external_active_generation(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_CODE_SHA", "d" * 40)
+    archive_root = cli_workspace["archive_root"]
+    external_root = archive_root.parent / "external-active-generation"
+    external_root.mkdir()
+    external_index = external_root / "index.db"
+    os.link(archive_root / "index.db", external_index)
+    (archive_root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
+    output = external_root / "live-proof.json"
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "live-proof",
+            "--proof-id",
+            "archive-verification",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "archive-owned storage" in result.output
+    assert not output.exists()
+
+
+def test_live_proof_cli_translates_output_os_error(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_CODE_SHA", "c" * 40)
+    output = cli_workspace["archive_root"].parent / "live-proof-output-error.json"
+
+    def fail_write(_path: Path, _receipt: object) -> None:
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(live_proof, "write_live_proof_receipt", fail_write)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "live-proof",
+            "--proof-id",
+            "archive-verification",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "live-proof receipt output could not be written" in result.output
+    assert not output.exists()
