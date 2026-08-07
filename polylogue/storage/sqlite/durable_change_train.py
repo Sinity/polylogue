@@ -23,7 +23,6 @@ from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidateDigest,
 )
 from polylogue.storage.sqlite import migration_runner as _migration_runner
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import (
     DURABLE_CHANGE_TRAIN_FORMAT,
@@ -1443,10 +1442,10 @@ def _canonical_schema_inventory(tier: ArchiveTier, target_version: int) -> _migr
         raise DurableChangeTrainError("canonical schema inventory target version must be an integer") from exc
     if isinstance(target_version, bool):
         raise DurableChangeTrainError("canonical schema inventory target version must be an integer")
-    try:
-        archive_ddl = ARCHIVE_DDL_BY_TIER[tier]
-    except KeyError as exc:
-        raise DurableChangeTrainError(f"no canonical archive DDL is registered for {tier.value}") from exc
+    registry = getattr(_migration_runner, "ARCHIVE_DDL_BY_TIER", None)
+    archive_ddl = registry.get(tier) if isinstance(registry, dict) else None
+    if not isinstance(archive_ddl, str):
+        raise DurableChangeTrainError(f"no canonical archive DDL is registered for {tier.value}")
     with closing(sqlite3.connect(":memory:")) as fresh:
         fresh.execute("PRAGMA foreign_keys = ON")
         fresh.executescript(archive_ddl)
@@ -1863,24 +1862,25 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
                 if actual is None:
                     actual = capture_durable_database_evidence(live, train.tier)
                     live_evidence_by_tier[train.tier] = actual
-                if train.tier not in live_integrity_by_tier:
-                    live_integrity_by_tier[train.tier] = tuple(
-                        str(row[0]) for row in live.execute("PRAGMA integrity_check")
-                    )
-                if train.tier not in live_inventory_by_tier:
-                    live_inventory_by_tier[train.tier] = _migration_runner.capture_durable_schema_inventory(live)
-                if train.tier not in canonical_inventory_by_tier:
-                    canonical_inventory_by_tier[train.tier] = _canonical_schema_inventory(
-                        train.tier, actual.user_version
-                    )
+                if actual.user_version > train.target_version:
+                    if train.tier not in live_integrity_by_tier:
+                        live_integrity_by_tier[train.tier] = tuple(
+                            str(row[0]) for row in live.execute("PRAGMA integrity_check")
+                        )
+                    if train.tier not in live_inventory_by_tier:
+                        live_inventory_by_tier[train.tier] = _migration_runner.capture_durable_schema_inventory(live)
+                    if train.tier not in canonical_inventory_by_tier:
+                        canonical_inventory_by_tier[train.tier] = _canonical_schema_inventory(
+                            train.tier, actual.user_version
+                        )
                 _verify_released_train_live_tier(
                     archive_root,
                     live,
                     train,
                     actual_evidence=actual,
-                    integrity_check=live_integrity_by_tier[train.tier],
-                    live_inventory=live_inventory_by_tier[train.tier],
-                    canonical_inventory=canonical_inventory_by_tier[train.tier],
+                    integrity_check=live_integrity_by_tier.get(train.tier),
+                    live_inventory=live_inventory_by_tier.get(train.tier),
+                    canonical_inventory=canonical_inventory_by_tier.get(train.tier),
                 )
             reconciled.append(manifest_path)
             continue
