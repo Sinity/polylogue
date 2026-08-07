@@ -321,7 +321,10 @@ def write_source_continuity_pending_intent(
     mutation_receipt = mutation_receipt.resolve()
     backup_manifest = backup_manifest.resolve()
     pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
+    pending_root_existed = pending_root.is_dir()
     pending_root.mkdir(parents=True, exist_ok=True)
+    if not pending_root_existed:
+        _migration_runner._fsync_manifest_directory(pending_root.parent)
     payload: dict[str, object] = {
         "format": _SOURCE_CONTINUITY_PENDING_FORMAT,
         "mutation_receipt": str(mutation_receipt),

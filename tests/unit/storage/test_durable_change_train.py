@@ -480,6 +480,13 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     operator_cwd = tmp_path / "operator-cwd"
     operator_cwd.mkdir()
     monkeypatch.chdir(tmp_path)
+    fsync_calls: list[Path] = []
+    real_fsync_manifest_directory = migration_runner._fsync_manifest_directory
+    monkeypatch.setattr(
+        migration_runner,
+        "_fsync_manifest_directory",
+        lambda path: (fsync_calls.append(path), real_fsync_manifest_directory(path))[1],
+    )
     pending_path = write_source_continuity_pending_intent(
         tmp_path,
         mutation_receipt=Path("mutation-receipt.jsonl"),
@@ -489,6 +496,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         evidence_ref="proof:mutation-1",
     )
     assert pending_path.is_file()
+    assert tmp_path / ".maintenance-state" in fsync_calls
     pending_payload = json.loads(pending_path.read_text(encoding="utf-8"))
     assert pending_payload["mutation_receipt"] == str(mutation_receipt)
     assert pending_payload["backup_manifest"] == str(backup_manifest)
