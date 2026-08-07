@@ -33,6 +33,7 @@ module reports.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -78,6 +79,155 @@ _HOOK_EVIDENCE_TABLE = "hook_payload_ref_reconciliation_hook_evidence"
 _HOOK_TABLE = "hook_payload_ref_reconciliation_hooks"
 _IDENTITY_TABLE = "hook_payload_ref_reconciliation_identity_matches"
 _AMBIGUOUS_TABLE = "hook_payload_ref_reconciliation_ambiguous"
+_READINESS_TABLE = "hook_payload_ref_reconciliation_stage_ready"
+_STAGE_TABLES = (
+    _MATCH_TABLE,
+    _ORPHAN_TABLE,
+    _HOOK_EVIDENCE_TABLE,
+    _HOOK_TABLE,
+    _IDENTITY_TABLE,
+    _AMBIGUOUS_TABLE,
+    _READINESS_TABLE,
+)
+_STAGE_VERSION = 1
+_StageFailureInjector = Callable[[str], None]
+
+
+def _temporary_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _clear_match_stage(conn: sqlite3.Connection) -> None:
+    """Remove every temporary artifact for the legacy hook matcher."""
+
+    for table in reversed(_STAGE_TABLES):
+        conn.execute(f"DROP TABLE IF EXISTS temp.{table}")
+
+
+def _stage_columns(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    return tuple(str(row[1]) for row in conn.execute(f"PRAGMA temp.table_info({table})"))
+
+
+def _match_stage_readiness(conn: sqlite3.Connection) -> tuple[int, int, int, int] | None:
+    """Return attested stage totals only when every staged relation is intact."""
+
+    expected_columns = {
+        _ORPHAN_TABLE: ("blob_hash", "ref_id", "source_path", "size_bytes", "acquired_at_ms"),
+        _HOOK_EVIDENCE_TABLE: ("hook_event_id", "origin", "native_id", "source_path", "blob_hash"),
+        _HOOK_TABLE: ("hook_event_id", "origin", "native_id", "source_path", "blob_hash"),
+        _IDENTITY_TABLE: ("blob_hash", "ref_id", "hook_event_id", "hook_blob_hash"),
+        _AMBIGUOUS_TABLE: ("blob_hash", "orphaned_ref_id"),
+        _MATCH_TABLE: ("blob_hash", "orphaned_ref_id", "source_path", "size_bytes", "acquired_at_ms", "hook_event_id"),
+        _READINESS_TABLE: (
+            "stage_version",
+            "scanned_count",
+            "hook_evidence_count",
+            "hook_count",
+            "identity_count",
+            "matched_count",
+            "matched_bytes",
+            "ambiguous_count",
+        ),
+    }
+    if any(not _temporary_table_exists(conn, table) for table in _STAGE_TABLES):
+        return None
+    if any(_stage_columns(conn, table) != columns for table, columns in expected_columns.items()):
+        return None
+    rows = conn.execute(
+        f"""
+        SELECT stage_version, scanned_count, hook_evidence_count, hook_count,
+               identity_count, matched_count, matched_bytes, ambiguous_count
+        FROM temp.{_READINESS_TABLE}
+        """
+    ).fetchall()
+    if len(rows) != 1 or tuple(int(value) for value in rows[0])[:1] != (_STAGE_VERSION,):
+        return None
+    (
+        _version,
+        scanned_count,
+        hook_evidence_count,
+        hook_count,
+        identity_count,
+        matched_count,
+        matched_bytes,
+        ambiguous_count,
+    ) = (int(value) for value in rows[0])
+    actual_scanned_count = int(conn.execute(f"SELECT COUNT(*) FROM temp.{_ORPHAN_TABLE}").fetchone()[0])
+    actual_hook_evidence_count = int(conn.execute(f"SELECT COUNT(*) FROM temp.{_HOOK_EVIDENCE_TABLE}").fetchone()[0])
+    actual_hook_count = int(conn.execute(f"SELECT COUNT(*) FROM temp.{_HOOK_TABLE}").fetchone()[0])
+    actual_identity_count = int(conn.execute(f"SELECT COUNT(*) FROM temp.{_IDENTITY_TABLE}").fetchone()[0])
+    actual_matched_count, actual_matched_bytes = (
+        int(value)
+        for value in conn.execute(f"SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM temp.{_MATCH_TABLE}").fetchone()
+    )
+    actual_ambiguous_count = int(conn.execute(f"SELECT COUNT(*) FROM temp.{_AMBIGUOUS_TABLE}").fetchone()[0])
+    source_scanned_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM blob_refs AS b
+            WHERE b.ref_type = 'raw_payload'
+              AND NOT EXISTS (SELECT 1 FROM raw_sessions AS r WHERE r.raw_id = b.ref_id)
+            """
+        ).fetchone()[0]
+    )
+    invalid_match_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM temp.{_MATCH_TABLE} AS m
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM temp.{_ORPHAN_TABLE} AS o
+                WHERE o.blob_hash = m.blob_hash AND o.ref_id = m.orphaned_ref_id
+            )
+            """
+        ).fetchone()[0]
+    )
+    invalid_ambiguous_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM temp.{_AMBIGUOUS_TABLE} AS a
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM temp.{_ORPHAN_TABLE} AS o
+                WHERE o.blob_hash = a.blob_hash AND o.ref_id = a.orphaned_ref_id
+            )
+            """
+        ).fetchone()[0]
+    )
+    if (
+        (
+            actual_scanned_count,
+            actual_hook_evidence_count,
+            actual_hook_count,
+            actual_identity_count,
+            actual_matched_count,
+            actual_matched_bytes,
+            actual_ambiguous_count,
+        )
+        != (
+            scanned_count,
+            hook_evidence_count,
+            hook_count,
+            identity_count,
+            matched_count,
+            matched_bytes,
+            ambiguous_count,
+        )
+        or source_scanned_count != scanned_count
+        or invalid_match_count
+        or invalid_ambiguous_count
+    ):
+        return None
+    return scanned_count, matched_count, matched_bytes, ambiguous_count
 
 
 def _deterministic_raw_session_id_udf(
@@ -99,12 +249,14 @@ def _deterministic_raw_session_id_udf(
         return None
 
 
-def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
-    """Stage exact hook matches in SQLite, avoiding a Python cross-product."""
+def _build_match_stage(
+    conn: sqlite3.Connection, *, failure_injector: _StageFailureInjector | None = None
+) -> tuple[int, int, int, int]:
+    def checkpoint(name: str) -> None:
+        if failure_injector is not None:
+            failure_injector(name)
 
     conn.create_function("polylogue_deterministic_raw_session_id", 5, _deterministic_raw_session_id_udf)
-    for table in (_MATCH_TABLE, _ORPHAN_TABLE, _HOOK_EVIDENCE_TABLE, _HOOK_TABLE, _IDENTITY_TABLE, _AMBIGUOUS_TABLE):
-        conn.execute(f"DROP TABLE IF EXISTS temp.{table}")
     conn.execute(
         f"""
         CREATE TEMP TABLE {_ORPHAN_TABLE} AS
@@ -114,6 +266,8 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
           AND NOT EXISTS (SELECT 1 FROM raw_sessions AS r WHERE r.raw_id = b.ref_id)
         """
     )
+    checkpoint(f"created:{_ORPHAN_TABLE}")
+    checkpoint("population_began")
     conn.execute(f"CREATE INDEX {_ORPHAN_TABLE}_source_path ON {_ORPHAN_TABLE}(source_path, blob_hash)")
     conn.execute(
         f"""
@@ -142,6 +296,7 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         ) AS h
         """
     )
+    checkpoint(f"created:{_HOOK_EVIDENCE_TABLE}")
     conn.execute(f"CREATE INDEX {_HOOK_EVIDENCE_TABLE}_source_hash ON {_HOOK_EVIDENCE_TABLE}(source_path, blob_hash)")
     conn.execute(
         f"""
@@ -155,6 +310,7 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         )
         """
     )
+    checkpoint(f"created:{_HOOK_TABLE}")
     conn.execute(f"CREATE INDEX {_HOOK_TABLE}_source_path ON {_HOOK_TABLE}(source_path, blob_hash)")
     conn.execute(
         f"""
@@ -193,6 +349,7 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
              ) = o.ref_id
         """
     )
+    checkpoint(f"created:{_IDENTITY_TABLE}")
     conn.execute(f"CREATE INDEX {_IDENTITY_TABLE}_candidate ON {_IDENTITY_TABLE}(blob_hash, ref_id)")
     conn.execute(
         f"""
@@ -203,6 +360,7 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         ) STRICT
         """
     )
+    checkpoint(f"created:{_AMBIGUOUS_TABLE}")
     conn.execute(
         f"""
         INSERT OR IGNORE INTO {_AMBIGUOUS_TABLE} (blob_hash, orphaned_ref_id)
@@ -242,6 +400,7 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         ) STRICT
         """
     )
+    checkpoint(f"created:{_MATCH_TABLE}")
     conn.execute(
         f"""
         INSERT INTO {_MATCH_TABLE} (
@@ -286,10 +445,90 @@ def _create_match_stage(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         """
     )
     scanned_count = int(conn.execute(f"SELECT COUNT(*) FROM {_ORPHAN_TABLE}").fetchone()[0])
+    hook_evidence_count = int(conn.execute(f"SELECT COUNT(*) FROM {_HOOK_EVIDENCE_TABLE}").fetchone()[0])
+    hook_count = int(conn.execute(f"SELECT COUNT(*) FROM {_HOOK_TABLE}").fetchone()[0])
+    identity_count = int(conn.execute(f"SELECT COUNT(*) FROM {_IDENTITY_TABLE}").fetchone()[0])
     matched_count = int(conn.execute(f"SELECT COUNT(*) FROM {_MATCH_TABLE}").fetchone()[0])
     matched_bytes = int(conn.execute(f"SELECT COALESCE(SUM(size_bytes), 0) FROM {_MATCH_TABLE}").fetchone()[0])
     ambiguous_count = int(conn.execute(f"SELECT COUNT(*) FROM {_AMBIGUOUS_TABLE}").fetchone()[0])
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE {_READINESS_TABLE} (
+            stage_version INTEGER PRIMARY KEY,
+            scanned_count INTEGER NOT NULL,
+            hook_evidence_count INTEGER NOT NULL,
+            hook_count INTEGER NOT NULL,
+            identity_count INTEGER NOT NULL,
+            matched_count INTEGER NOT NULL,
+            matched_bytes INTEGER NOT NULL,
+            ambiguous_count INTEGER NOT NULL,
+            CHECK (stage_version = {_STAGE_VERSION})
+        ) STRICT
+        """
+    )
+    checkpoint(f"created:{_READINESS_TABLE}")
+    conn.execute(
+        f"""
+        INSERT INTO {_READINESS_TABLE} (
+            stage_version, scanned_count, hook_evidence_count, hook_count,
+            identity_count, matched_count, matched_bytes, ambiguous_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            _STAGE_VERSION,
+            scanned_count,
+            hook_evidence_count,
+            hook_count,
+            identity_count,
+            matched_count,
+            matched_bytes,
+            ambiguous_count,
+        ),
+    )
     return scanned_count, matched_count, matched_bytes, ambiguous_count
+
+
+def _create_match_stage(
+    conn: sqlite3.Connection, *, failure_injector: _StageFailureInjector | None = None
+) -> tuple[int, int, int, int]:
+    """Build or verify the complete legacy hook-match stage.
+
+    The temp tables are an all-or-nothing read model. A readiness attestation
+    is published only after every relation, population statement, and
+    integrity check succeeds. Any failure clears every table from this build,
+    so downstream liveness checks cannot mistake a partial relation for a
+    usable stage.
+    """
+
+    try:
+        ready = _match_stage_readiness(conn)
+    except sqlite3.Error:
+        _clear_match_stage(conn)
+        raise
+    if ready is not None:
+        return ready
+
+    _clear_match_stage(conn)
+    savepoint = "hook_payload_ref_reconciliation_stage"
+    savepoint_open = False
+    try:
+        conn.execute(f"SAVEPOINT {savepoint}")
+        savepoint_open = True
+        _build_match_stage(conn, failure_injector=failure_injector)
+        attested = _match_stage_readiness(conn)
+        if attested is None:
+            raise RuntimeError("hook payload reconciliation stage integrity check failed")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        savepoint_open = False
+        return attested
+    except BaseException:
+        try:
+            if savepoint_open:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        finally:
+            _clear_match_stage(conn)
+        raise
 
 
 def plan_hook_payload_ref_reconciliation(conn: sqlite3.Connection) -> HookPayloadRefReconciliationPlan:

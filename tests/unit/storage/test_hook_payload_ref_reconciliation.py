@@ -14,6 +14,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+import polylogue.storage.hook_payload_ref_reconciliation as reconciliation
 from polylogue.storage.hook_payload_ref_reconciliation import plan_hook_payload_ref_reconciliation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -169,3 +172,43 @@ def test_plan_ignores_raw_payload_refs_with_a_real_raw_sessions_row(tmp_path: Pa
 
     assert plan.scanned_count == 0
     assert plan.matched == ()
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    (
+        *(f"created:{table}" for table in reconciliation._STAGE_TABLES),
+        "population_began",
+    ),
+)
+def test_match_stage_failure_clears_every_temp_table_then_rebuilds(tmp_path: Path, checkpoint: str) -> None:
+    """No build checkpoint may leave a reusable partial reconciliation stage."""
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        _seed_pre_v22_hook_ref(
+            conn,
+            hook_event_id="hook-1",
+            origin="codex-session",
+            source_path="/hooks/a.jsonl",
+            native_id="native-1",
+            payload=b'{"event":"PostToolUse"}',
+        )
+
+        def fail_at_current_checkpoint(event: str) -> None:
+            if event == checkpoint:
+                raise RuntimeError(f"injected failure at {event}")
+
+        with pytest.raises(RuntimeError, match="injected failure"):
+            reconciliation._create_match_stage(conn, failure_injector=fail_at_current_checkpoint)
+
+        remaining = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_temp_master WHERE type = 'table'")}
+        assert not remaining.intersection(reconciliation._STAGE_TABLES)
+        assert reconciliation._match_stage_readiness(conn) is None
+
+        rebuilt = plan_hook_payload_ref_reconciliation(conn)
+
+    assert rebuilt.scanned_count == 1
+    assert rebuilt.unmatched_count == 0
+    assert tuple(candidate.hook_event_id for candidate in rebuilt.matched) == ("hook-1",)

@@ -205,22 +205,8 @@ def _table_has_blob_hash_column(conn: sqlite3.Connection, table: str) -> bool:
     return any(str(row[1]) == "blob_hash" for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
-def _temporary_table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _prepare_legacy_hook_liveness(conn: sqlite3.Connection) -> str:
     """Prepare the canonical legacy-hook reconciliation stage for this connection."""
-    if _temporary_table_exists(conn, "hook_payload_ref_reconciliation_matches") and _temporary_table_exists(
-        conn, "hook_payload_ref_reconciliation_ambiguous"
-    ):
-        return "ready"
     if not _table_exists(conn, "raw_hook_events"):
         return "not_applicable"
     hook_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_hook_events)")}
@@ -233,13 +219,27 @@ def _prepare_legacy_hook_liveness(conn: sqlite3.Connection) -> str:
         from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
 
         _create_match_stage(conn)
-    except sqlite3.Error:
+    except Exception:
         logger.warning("Could not stage legacy hook evidence for blob GC; retaining candidate blobs")
         return "unavailable"
     return "ready"
 
 
-def _blob_refs_still_live(conn: sqlite3.Connection, blob_bytes: bytes) -> bool:
+def _legacy_hook_liveness_status(conn: sqlite3.Connection) -> str:
+    """Prepare legacy-hook evidence once when this connection needs it."""
+    if not _table_exists(conn, "blob_refs") or not _blob_refs_has_ref_type_column(conn):
+        return "not_applicable"
+    if conn.execute("SELECT 1 FROM blob_refs WHERE ref_type = 'raw_payload' LIMIT 1").fetchone() is None:
+        return "not_applicable"
+    return _prepare_legacy_hook_liveness(conn)
+
+
+def _blob_refs_still_live(
+    conn: sqlite3.Connection,
+    blob_bytes: bytes,
+    *,
+    legacy_hook_status: str | None = None,
+) -> bool:
     """Return True if some ``blob_refs`` row for this hash has a live referent.
 
     Replaces a prior membership test that only checked whether ANY row in
@@ -272,7 +272,9 @@ def _blob_refs_still_live(conn: sqlite3.Connection, blob_bytes: bytes) -> bool:
         # the same fail-closed rule instead of deleting unclassified evidence.
         return True
     if "raw_payload" in ref_types:
-        legacy_hook_status = _prepare_legacy_hook_liveness(conn)
+        legacy_hook_status = (
+            legacy_hook_status if legacy_hook_status is not None else _prepare_legacy_hook_liveness(conn)
+        )
         if legacy_hook_status == "unavailable":
             return True
         if legacy_hook_status == "ready":
@@ -321,6 +323,7 @@ def _archive_reference_surfaces(
     blob_hash: str,
     *,
     surface_prefix: str,
+    legacy_hook_status: str | None = None,
 ) -> list[str]:
     blob_bytes = _blob_hash_bytes(blob_hash)
     if blob_bytes is None:
@@ -333,7 +336,7 @@ def _archive_reference_surfaces(
         row = conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_bytes,)).fetchone()
         if row is not None:
             surfaces.append(f"{surface_prefix}.{table}")
-    if _blob_refs_still_live(conn, blob_bytes):
+    if _blob_refs_still_live(conn, blob_bytes, legacy_hook_status=legacy_hook_status):
         surfaces.append(f"{surface_prefix}.blob_refs")
     return surfaces
 
@@ -345,24 +348,53 @@ def _reference_surfaces(
     source_db_path: Path | None = None,
     source_conn: sqlite3.Connection | None = None,
     index_conn: sqlite3.Connection | None = None,
+    legacy_hook_status: str | None = None,
+    source_legacy_hook_status: str | None = None,
+    index_legacy_hook_status: str | None = None,
 ) -> list[str]:
-    surfaces = _archive_reference_surfaces(conn, blob_hash, surface_prefix="current")
+    surfaces = _archive_reference_surfaces(
+        conn,
+        blob_hash,
+        surface_prefix="current",
+        legacy_hook_status=legacy_hook_status,
+    )
 
     if source_conn is not None:
         source_prefix = source_db_path.name if source_db_path is not None else "source"
-        surfaces.extend(_archive_reference_surfaces(source_conn, blob_hash, surface_prefix=source_prefix))
+        surfaces.extend(
+            _archive_reference_surfaces(
+                source_conn,
+                blob_hash,
+                surface_prefix=source_prefix,
+                legacy_hook_status=source_legacy_hook_status,
+            )
+        )
     elif source_db_path is not None and source_db_path.exists():
         try:
             source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
             try:
-                surfaces.extend(_archive_reference_surfaces(source_conn, blob_hash, surface_prefix=source_db_path.name))
+                surfaces.extend(
+                    _archive_reference_surfaces(
+                        source_conn,
+                        blob_hash,
+                        surface_prefix=source_db_path.name,
+                        legacy_hook_status=source_legacy_hook_status,
+                    )
+                )
             finally:
                 source_conn.close()
         except sqlite3.Error as exc:
             logger.warning("Could not inspect archive source blob references in %s: %s", source_db_path, exc)
 
     if index_conn is not None:
-        surfaces.extend(_archive_reference_surfaces(index_conn, blob_hash, surface_prefix="index.db"))
+        surfaces.extend(
+            _archive_reference_surfaces(
+                index_conn,
+                blob_hash,
+                surface_prefix="index.db",
+                legacy_hook_status=index_legacy_hook_status,
+            )
+        )
 
     if _table_exists(conn, "raw_sessions"):
         row = conn.execute(
@@ -557,11 +589,19 @@ def run_blob_gc_report(
     planning_conn.row_factory = sqlite3.Row
     planning_source_conn: sqlite3.Connection | None = None
     planning_index_conn: sqlite3.Connection | None = None
+    planning_legacy_hook_status = "not_applicable"
+    planning_source_legacy_hook_status = "not_applicable"
+    planning_index_legacy_hook_status = "not_applicable"
     try:
         if control_db_path != sibling_source_db and sibling_source_db.exists():
             planning_source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
         if control_db_path != sibling_index_db and sibling_index_db.exists():
             planning_index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
+        planning_legacy_hook_status = _legacy_hook_liveness_status(planning_conn)
+        if planning_source_conn is not None:
+            planning_source_legacy_hook_status = _legacy_hook_liveness_status(planning_source_conn)
+        if planning_index_conn is not None:
+            planning_index_legacy_hook_status = _legacy_hook_liveness_status(planning_index_conn)
         for blob_hash, mtime in candidates:
             if len(shortlist) >= max_batch:
                 break
@@ -572,6 +612,9 @@ def run_blob_gc_report(
                 source_db_path=(sibling_source_db if planning_source_conn is not None else None),
                 source_conn=planning_source_conn,
                 index_conn=planning_index_conn,
+                legacy_hook_status=planning_legacy_hook_status,
+                source_legacy_hook_status=planning_source_legacy_hook_status,
+                index_legacy_hook_status=planning_index_legacy_hook_status,
             ):
                 evidence.skipped_referenced += 1
                 continue
@@ -586,11 +629,38 @@ def run_blob_gc_report(
             planning_index_conn.close()
         planning_conn.close()
 
+    if not shortlist:
+        report.inspected_count = evidence.inspected
+        report.skipped_referenced = evidence.skipped_referenced
+        report.skipped_reserved = evidence.skipped_reserved
+        if dry_run:
+            report.would_delete_count = 0
+            return report
+        history_conn = sqlite3.connect(str(control_db_path))
+        try:
+            now_ms = int(time.time() * 1000)
+            generation_id = f"gc-{uuid4().hex}"
+            history_conn.execute(
+                "INSERT INTO gc_generations "
+                "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
+                "VALUES (?, ?, ?, 0, 0)",
+                (generation_id, now_ms, now_ms),
+            )
+            history_conn.commit()
+            report.generation_id = generation_id
+            report.generation_written = True
+        finally:
+            history_conn.close()
+        return report
+
     connection_uri = f"file:{control_db_path}?mode=ro" if dry_run else str(control_db_path)
     conn = sqlite3.connect(connection_uri, uri=dry_run)
     conn.row_factory = sqlite3.Row
     source_conn: sqlite3.Connection | None = None
     index_conn: sqlite3.Connection | None = None
+    legacy_hook_status = "not_applicable"
+    source_legacy_hook_status = "not_applicable"
+    index_legacy_hook_status = "not_applicable"
     affected = 0
     reclaimed_bytes = 0
     started_at_ms = int(time.time() * 1000)
@@ -601,6 +671,11 @@ def run_blob_gc_report(
             source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
         if control_db_path != sibling_index_db and sibling_index_db.exists():
             index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
+        legacy_hook_status = _legacy_hook_liveness_status(conn)
+        if source_conn is not None:
+            source_legacy_hook_status = _legacy_hook_liveness_status(source_conn)
+        if index_conn is not None:
+            index_legacy_hook_status = _legacy_hook_liveness_status(index_conn)
 
         for blob_hash, _mtime in shortlist:
             if _reference_surfaces(
@@ -609,6 +684,9 @@ def run_blob_gc_report(
                 source_db_path=(sibling_source_db if source_conn is not None else None),
                 source_conn=source_conn,
                 index_conn=index_conn,
+                legacy_hook_status=legacy_hook_status,
+                source_legacy_hook_status=source_legacy_hook_status,
+                index_legacy_hook_status=index_legacy_hook_status,
             ):
                 evidence.skipped_referenced += 1
                 continue
