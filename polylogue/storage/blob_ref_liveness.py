@@ -198,6 +198,8 @@ def stage_blob_ref_liveness(conn: sqlite3.Connection, *, sample_limit: int = 30)
     than materializing the same population in several Python lists.
     """
 
+    candidate_table = "blob_ref_liveness_candidates"
+    conn.execute(f"DROP TABLE IF EXISTS temp.{candidate_table}")
     known_joins = validated_blob_ref_liveness_joins()
     if not table_exists(conn, "blob_refs"):
         return BlobRefLivenessStagedPlan(
@@ -239,36 +241,26 @@ def stage_blob_ref_liveness(conn: sqlite3.Connection, *, sample_limit: int = 30)
         ref_type_joins.append((ref_type, table, column))
 
     rekeyable_hook_payload_count = 0
+    hook_exclusions = ""
     if table_exists(conn, "raw_hook_events"):
         _scanned_hook_refs, rekeyable_hook_payload_count, _matched_bytes, ambiguous_count = _create_match_stage(conn)
         rekeyable_hook_payload_count += ambiguous_count
-    else:
-        conn.execute("DROP TABLE IF EXISTS temp.hook_payload_ref_reconciliation_matches")
-        conn.execute(
-            """
-            CREATE TEMP TABLE hook_payload_ref_reconciliation_matches (
-                blob_hash BLOB NOT NULL,
-                orphaned_ref_id TEXT NOT NULL,
-                source_path TEXT,
-                size_bytes INTEGER NOT NULL,
-                acquired_at_ms INTEGER NOT NULL,
-                hook_event_id TEXT NOT NULL,
-                PRIMARY KEY (blob_hash, orphaned_ref_id)
-            ) STRICT
-            """
-        )
-        conn.execute(
-            """
-            CREATE TEMP TABLE hook_payload_ref_reconciliation_ambiguous (
-                blob_hash BLOB NOT NULL,
-                orphaned_ref_id TEXT NOT NULL,
-                PRIMARY KEY (blob_hash, orphaned_ref_id)
-            ) STRICT
-            """
-        )
-
-    candidate_table = "blob_ref_liveness_candidates"
-    conn.execute(f"DROP TABLE IF EXISTS temp.{candidate_table}")
+        hook_exclusions = """
+          AND NOT EXISTS (
+              SELECT 1
+              FROM temp.hook_payload_ref_reconciliation_matches AS hook_match
+              WHERE candidate.ref_type = 'raw_payload'
+                AND hook_match.blob_hash = candidate.blob_hash
+                AND hook_match.orphaned_ref_id = candidate.ref_id
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM temp.hook_payload_ref_reconciliation_ambiguous AS ambiguous_hook
+              WHERE candidate.ref_type = 'raw_payload'
+                AND ambiguous_hook.blob_hash = candidate.blob_hash
+                AND ambiguous_hook.orphaned_ref_id = candidate.ref_id
+          )
+        """
     conn.execute(
         f"""
         CREATE TEMP TABLE {candidate_table} (
@@ -296,20 +288,8 @@ def stage_blob_ref_liveness(conn: sqlite3.Connection, *, sample_limit: int = 30)
                    candidate.source_path, candidate.size_bytes, candidate.acquired_at_ms,
                    candidate.referent_table, candidate.referent_column
             FROM ({query}) AS candidate
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM temp.hook_payload_ref_reconciliation_matches AS hook_match
-                WHERE candidate.ref_type = 'raw_payload'
-                  AND hook_match.blob_hash = candidate.blob_hash
-                  AND hook_match.orphaned_ref_id = candidate.ref_id
-            )
-              AND NOT EXISTS (
-                SELECT 1
-                FROM temp.hook_payload_ref_reconciliation_ambiguous AS ambiguous_hook
-                WHERE candidate.ref_type = 'raw_payload'
-                  AND ambiguous_hook.blob_hash = candidate.blob_hash
-                  AND ambiguous_hook.orphaned_ref_id = candidate.ref_id
-            )
+            WHERE 1 = 1
+            {hook_exclusions}
             """,
             tuple(params),
         )

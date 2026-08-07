@@ -205,22 +205,8 @@ def _table_has_blob_hash_column(conn: sqlite3.Connection, table: str) -> bool:
     return any(str(row[1]) == "blob_hash" for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
-def _temporary_table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _prepare_legacy_hook_liveness(conn: sqlite3.Connection) -> str:
     """Prepare the canonical legacy-hook reconciliation stage for this connection."""
-    if _temporary_table_exists(conn, "hook_payload_ref_reconciliation_matches") and _temporary_table_exists(
-        conn, "hook_payload_ref_reconciliation_ambiguous"
-    ):
-        return "ready"
     if not _table_exists(conn, "raw_hook_events"):
         return "not_applicable"
     hook_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_hook_events)")}
@@ -233,7 +219,7 @@ def _prepare_legacy_hook_liveness(conn: sqlite3.Connection) -> str:
         from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
 
         _create_match_stage(conn)
-    except sqlite3.Error:
+    except Exception:
         logger.warning("Could not stage legacy hook evidence for blob GC; retaining candidate blobs")
         return "unavailable"
     return "ready"
