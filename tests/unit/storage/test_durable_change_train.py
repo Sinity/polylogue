@@ -23,6 +23,7 @@ from polylogue.storage.sqlite.durable_change_train import (
     DurableSourceContinuitySemanticError,
     DurableSourceTrainMissingError,
     _runtime_consumer_results,
+    assert_source_continuity_apply_allowed,
     durable_change_train_manifest_path,
     durable_change_train_policy_report,
     durable_migration_sidecar_for_slot,
@@ -508,6 +509,8 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     refreshed_path.unlink()
     with pytest.raises(DurableChangeTrainError, match="refresh receipt"):
         reconcile_durable_change_train_startup(tmp_path)
+    with pytest.raises(DurableChangeTrainError, match="refresh receipt"):
+        assert_source_continuity_apply_allowed(tmp_path)
 
     mutation_receipt.write_text(
         json.dumps(

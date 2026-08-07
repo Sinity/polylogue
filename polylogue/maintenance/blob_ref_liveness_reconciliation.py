@@ -37,6 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainError,
     DurableSourceContinuitySemanticError,
+    DurableSourceTrainMissingError,
     assert_source_continuity_apply_allowed,
     clear_source_continuity_pending_intent,
     mark_source_continuity_pending_intent_terminal,
@@ -204,6 +205,7 @@ def _write_prepared_receipt(
     *,
     candidates: Iterable[BlobRefLivenessCandidate] | None = None,
     candidate_digest: str | None = None,
+    backup_manifest_sha256: str | None = None,
 ) -> None:
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
     header: dict[str, object] = {
@@ -222,8 +224,10 @@ def _write_prepared_receipt(
             for ref_type, table, column in classification.ref_type_joins
         ],
     }
-    if backup_manifest.is_file():
-        header["backup_manifest_sha256"] = hashlib.sha256(backup_manifest.read_bytes()).hexdigest()
+    if backup_manifest_sha256 is None and backup_manifest.is_file():
+        backup_manifest_sha256 = hashlib.sha256(backup_manifest.read_bytes()).hexdigest()
+    if backup_manifest_sha256 is not None:
+        header["backup_manifest_sha256"] = backup_manifest_sha256
     try:
         with receipt_path.open("x", encoding="utf-8") as handle:
             handle.write(json.dumps(header, sort_keys=True, separators=(",", ":")))
@@ -274,7 +278,12 @@ def _receipt_candidate(row: dict[str, object]) -> tuple[bytes, str, str]:
         raise BlobRefLivenessReconciliationError("prepared receipt contains an invalid candidate") from exc
 
 
-def _stage_receipt_candidates(conn: sqlite3.Connection, receipt_path: Path) -> tuple[int, str, dict[str, object]]:
+def _stage_receipt_candidates(
+    conn: sqlite3.Connection,
+    receipt_path: Path,
+    *,
+    allow_postcondition_failed: bool = False,
+) -> tuple[int, str, dict[str, object]]:
     table_name = "blob_ref_liveness_receipt_candidates"
     conn.execute(f"DROP TABLE IF EXISTS temp.{table_name}")
     conn.execute(
@@ -331,7 +340,7 @@ def _stage_receipt_candidates(conn: sqlite3.Connection, receipt_path: Path) -> t
                 candidate_count += 1
     if header is None or header.get("phase") != "prepared":
         raise BlobRefLivenessReconciliationError(f"receipt does not contain a prepared plan: {receipt_path}")
-    if terminal_phases:
+    if terminal_phases and not (allow_postcondition_failed and terminal_phases == ["postcondition_failed"]):
         raise BlobRefLivenessReconciliationError(f"receipt is already terminal: {receipt_path}")
     receipt_candidate_count = header.get("candidate_count")
     if not isinstance(receipt_candidate_count, int) or receipt_candidate_count != candidate_count:
@@ -341,7 +350,12 @@ def _stage_receipt_candidates(conn: sqlite3.Connection, receipt_path: Path) -> t
     return candidate_count, table_name, header
 
 
-def _recover_prepared_receipt(source_db: Path, receipt_path: Path) -> str:
+def _recover_prepared_receipt(
+    source_db: Path,
+    receipt_path: Path,
+    *,
+    allow_postcondition_failed: bool = False,
+) -> str:
     """Resolve crashes between bounded batch commits and receipt progress.
 
     Each batch is one SQLite transaction. Exact receipt keys therefore show a
@@ -350,7 +364,11 @@ def _recover_prepared_receipt(source_db: Path, receipt_path: Path) -> str:
     """
 
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
-        candidate_count, table_name, _header = _stage_receipt_candidates(conn, receipt_path)
+        candidate_count, table_name, _header = _stage_receipt_candidates(
+            conn,
+            receipt_path,
+            allow_postcondition_failed=allow_postcondition_failed,
+        )
         present_count = int(
             conn.execute(
                 f"""
@@ -754,6 +772,7 @@ def reconcile_blob_ref_liveness(
     after ``BEGIN IMMEDIATE`` before bounded deletes start.
     """
 
+    archive_root = archive_root.resolve()
     source_db = archive_root / "source.db"
     if not source_db.exists():
         raise FileNotFoundError(f"no source.db at {source_db}")
@@ -796,7 +815,15 @@ def reconcile_blob_ref_liveness(
     staged_data_version: int | None = None
     try:
         _checkpoint_source_db(pre_conn)
+        validated_backup_digest = (
+            hashlib.sha256(backup_manifest.read_bytes()).hexdigest() if backup_manifest.is_file() else None
+        )
         validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=pre_conn)
+        if (
+            validated_backup_digest is not None
+            and hashlib.sha256(backup_manifest.read_bytes()).hexdigest() != validated_backup_digest
+        ):
+            raise BlobRefLivenessReconciliationError("backup manifest changed during validation")
         pre_mutation_evidence = capture_durable_database_evidence(pre_conn, ArchiveTier.SOURCE)
         staged_plan = stage_blob_ref_liveness(pre_conn)
         classification = staged_plan.classification
@@ -817,6 +844,7 @@ def reconcile_blob_ref_liveness(
             backup_manifest,
             candidates=candidates,
             candidate_digest=candidate_digest,
+            backup_manifest_sha256=validated_backup_digest,
         )
         pending_intent = write_source_continuity_pending_intent(
             archive_root,
@@ -961,6 +989,9 @@ def reconcile_blob_ref_liveness(
             evidence_ref=f"proof:blob-ref-liveness:{candidate_digest}",
         )
         clear_source_continuity_pending_intent(pending_intent)
+    except DurableSourceTrainMissingError as exc:
+        clear_source_continuity_pending_intent(pending_intent)
+        continuity_refresh_error = str(exc)
     except DurableSourceContinuitySemanticError as exc:
         # Semantic continuity rejection cannot become valid by retrying the
         # same committed source mutation. Preserve it durably for startup to

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import inspect
+import io
 import json
 import os
 import re
@@ -16,7 +17,10 @@ from importlib import resources
 from pathlib import Path
 from typing import Final, cast
 
-from polylogue.storage.blob_ref_liveness import BlobRefLivenessCandidate, digest_blob_ref_liveness_candidates
+from polylogue.storage.blob_ref_liveness import (
+    BlobRefLivenessCandidate,
+    BlobRefLivenessCandidateDigest,
+)
 from polylogue.storage.sqlite import migration_runner as _migration_runner
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import (
@@ -416,6 +420,7 @@ def clear_source_continuity_pending_intent(path: Path) -> None:
 
 def assert_source_continuity_apply_allowed(archive_root: Path) -> None:
     """Reject a new source mutation that could invalidate continuity recovery."""
+    archive_root = archive_root.resolve()
     pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
     pending_intents = tuple(sorted(pending_root.glob("*.json"))) if pending_root.is_dir() else ()
     if pending_intents:
@@ -427,16 +432,27 @@ def assert_source_continuity_apply_allowed(archive_root: Path) -> None:
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     if not manifest_root.is_dir():
         return
-    unreleased = tuple(
-        candidate
-        for candidate in sorted(manifest_root.glob("source-*.json"))
-        if (train := load_durable_change_train_manifest(candidate)).target_version == current_version
-        and train.state is not DurableChangeTrainState.RELEASED
-    )
+    unreleased: list[Path] = []
+    released: list[DurableChangeTrain] = []
+    for candidate in sorted(manifest_root.glob("source-*.json")):
+        train = load_durable_change_train_manifest(candidate)
+        if train.target_version != current_version:
+            continue
+        if train.state is DurableChangeTrainState.RELEASED:
+            released.append(train)
+        else:
+            unreleased.append(candidate)
     if unreleased:
         raise DurableChangeTrainError(
             "source liveness apply is blocked by an unreleased source train for the live schema"
         )
+    if len(released) > 1:
+        raise DurableChangeTrainError(
+            "source liveness apply requires exactly one released source train for the live schema"
+        )
+    if released:
+        with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+            _verify_released_train_live_tier(archive_root, connection, released[0])
 
 
 def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
@@ -489,6 +505,27 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             if outcome == "recovered_partial":
                 raise DurableChangeTrainError(f"source continuity pending intent has a partial source mutation: {path}")
             receipt_phase = outcome
+        if receipt_phase == "postcondition_failed":
+            from polylogue.maintenance.blob_ref_liveness_reconciliation import _recover_prepared_receipt
+
+            outcome = _recover_prepared_receipt(
+                archive_root / "source.db",
+                receipt,
+                allow_postcondition_failed=True,
+            )
+            if outcome == "recovered_rolled_back":
+                clear_source_continuity_pending_intent(path)
+                continue
+            if outcome == "recovered_partial":
+                raise DurableChangeTrainError(f"source continuity pending intent has a partial source mutation: {path}")
+            from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
+
+            with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as connection:
+                if not classify_blob_ref_liveness(connection).safe_to_apply:
+                    raise DurableChangeTrainError(
+                        f"source continuity pending intent postcondition remains unsafe: {path}"
+                    )
+            receipt_phase = outcome
         if receipt_phase not in {"committed", "recovered_committed"}:
             raise DurableChangeTrainError(f"source continuity pending intent has no committed receipt: {path}")
         try:
@@ -500,6 +537,8 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
                 operation_id=operation_id,
                 evidence_ref=evidence_ref,
             )
+        except DurableSourceTrainMissingError:
+            clear_source_continuity_pending_intent(path)
         except DurableSourceContinuitySemanticError as exc:
             mark_source_continuity_pending_intent_terminal(path, error=exc)
         else:
@@ -509,12 +548,16 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
 def _liveness_receipt_phase(receipt_path: Path) -> str:
     """Read the last liveness phase before deciding how a pending intent recovers."""
     try:
-        records = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        last_record: object | None = None
+        with receipt_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    last_record = json.loads(line)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DurableChangeTrainError(f"source continuity pending receipt is unreadable: {receipt_path}") from exc
-    if not records or not isinstance(records[-1], dict):
+    if not isinstance(last_record, dict):
         raise DurableChangeTrainError(f"source continuity pending receipt is incomplete: {receipt_path}")
-    phase = records[-1].get("phase")
+    phase = last_record.get("phase")
     if not isinstance(phase, str):
         raise DurableChangeTrainError(f"source continuity pending receipt has no phase: {receipt_path}")
     return phase
@@ -528,14 +571,59 @@ def _validate_liveness_receipt_bytes(
     operation_id: str,
 ) -> dict[str, object]:
     """Validate the exact candidate stream and terminal footer of a liveness receipt."""
+    header: dict[str, object] | None = None
+    footer: dict[str, object] | None = None
+    candidate_digest = BlobRefLivenessCandidateDigest()
+    candidate_count = 0
     try:
-        records = [json.loads(line) for line in receipt_bytes.decode("utf-8").splitlines() if line.strip()]
+        for raw_line in io.BytesIO(receipt_bytes):
+            if not raw_line.strip():
+                continue
+            record = json.loads(raw_line)
+            if not isinstance(record, dict):
+                raise DurableChangeTrainError("source mutation receipt contains a non-object record")
+            if header is None:
+                header = cast(dict[str, object], record)
+                continue
+            if footer is not None:
+                row = footer
+                if row.get("kind") == "blob_ref_liveness_reconciliation":
+                    if row.get("phase") != "batch_committed":
+                        raise DurableChangeTrainError(
+                            "source mutation receipt contains an unexpected intermediate footer"
+                        )
+                elif row.get("kind") == "candidate":
+                    try:
+                        blob_hash = str(row["blob_hash"])
+                        bytes.fromhex(blob_hash)
+                        size_bytes = row["size_bytes"]
+                        acquired_at_ms = row["acquired_at_ms"]
+                        if not isinstance(size_bytes, int) or isinstance(size_bytes, bool):
+                            raise TypeError("candidate size_bytes is not an integer")
+                        if not isinstance(acquired_at_ms, int) or isinstance(acquired_at_ms, bool):
+                            raise TypeError("candidate acquired_at_ms is not an integer")
+                        candidate_digest.update(
+                            BlobRefLivenessCandidate(
+                                blob_hash=blob_hash,
+                                ref_type=str(row["ref_type"]),
+                                ref_id=str(row["ref_id"]),
+                                source_path=str(row["source_path"]) if row.get("source_path") is not None else None,
+                                size_bytes=size_bytes,
+                                acquired_at_ms=acquired_at_ms,
+                                referent_table=str(row["referent_table"]),
+                                referent_column=str(row["referent_column"]),
+                            )
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise DurableChangeTrainError("source mutation receipt contains an invalid candidate") from exc
+                    candidate_count += 1
+                else:
+                    raise DurableChangeTrainError("source mutation receipt contains an unexpected record")
+            footer = cast(dict[str, object], record)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DurableChangeTrainError("source mutation receipt is not valid JSONL") from exc
-    if len(records) < 2 or not all(isinstance(record, dict) for record in records):
+    if header is None or footer is None:
         raise DurableChangeTrainError("source mutation receipt is incomplete")
-    header = cast(dict[str, object], records[0])
-    footer = cast(dict[str, object], records[-1])
     if (
         header.get("kind") != "blob_ref_liveness_reconciliation"
         or header.get("phase") != "prepared"
@@ -549,42 +637,10 @@ def _validate_liveness_receipt_bytes(
     ):
         raise DurableChangeTrainError("source mutation receipt does not bind the named liveness operation")
 
-    candidates: list[BlobRefLivenessCandidate] = []
-    candidate_count = 0
-    for record in records[1:-1]:
-        row = cast(dict[str, object], record)
-        if row.get("kind") == "blob_ref_liveness_reconciliation":
-            if row.get("phase") != "batch_committed":
-                raise DurableChangeTrainError("source mutation receipt contains an unexpected intermediate footer")
-            continue
-        if row.get("kind") != "candidate":
-            raise DurableChangeTrainError("source mutation receipt contains an unexpected record")
-        try:
-            blob_hash = str(row["blob_hash"])
-            bytes.fromhex(blob_hash)
-            size_bytes = row["size_bytes"]
-            acquired_at_ms = row["acquired_at_ms"]
-            if not isinstance(size_bytes, int) or isinstance(size_bytes, bool):
-                raise TypeError("candidate size_bytes is not an integer")
-            if not isinstance(acquired_at_ms, int) or isinstance(acquired_at_ms, bool):
-                raise TypeError("candidate acquired_at_ms is not an integer")
-            candidate = BlobRefLivenessCandidate(
-                blob_hash=blob_hash,
-                ref_type=str(row["ref_type"]),
-                ref_id=str(row["ref_id"]),
-                source_path=str(row["source_path"]) if row.get("source_path") is not None else None,
-                size_bytes=size_bytes,
-                acquired_at_ms=acquired_at_ms,
-                referent_table=str(row["referent_table"]),
-                referent_column=str(row["referent_column"]),
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise DurableChangeTrainError("source mutation receipt contains an invalid candidate") from exc
-        candidates.append(candidate)
-        candidate_count += 1
-    if header.get("candidate_count") != candidate_count or header.get(
-        "candidate_digest"
-    ) != digest_blob_ref_liveness_candidates(candidates):
+    if (
+        header.get("candidate_count") != candidate_count
+        or header.get("candidate_digest") != candidate_digest.hexdigest()
+    ):
         raise DurableChangeTrainError("source mutation receipt candidate digest or count mismatch")
     return header
 
@@ -687,6 +743,10 @@ def _refresh_released_source_train_continuity_locked(
     """
     from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 
+    archive_root = archive_root.resolve()
+    mutation_receipt = mutation_receipt.resolve()
+    backup_manifest = backup_manifest.resolve()
+
     _require_nonempty(operation_id, label="source mutation operation id")
     _require_nonempty(evidence_ref, label="source continuity evidence ref")
     if not mutation_receipt.is_file() or mutation_receipt.is_symlink():
@@ -766,12 +826,17 @@ def _refresh_released_source_train_continuity_locked(
             _migration_runner._manifest_json_value(retained_current) if retained_current is not None else None
         )
         retained_refreshes: list[tuple[Path, dict[str, object]]] = []
+        retained_refs = {
+            ref.removeprefix("proof:source-continuity-refresh:")
+            for ref in train.proof_refs
+            if ref.startswith("proof:source-continuity-refresh:")
+        }
         for existing_path in sorted(refresh_root.glob("*.json")) if refresh_root.is_dir() else ():
             digest = existing_path.stem
+            if digest not in retained_refs:
+                continue
             existing = _read_source_continuity_refresh_receipt(existing_path, digest=digest, train=train)
-            if existing.get("mutation_receipt_sha256") == mutation_digest and digest in {
-                ref.removeprefix("proof:source-continuity-refresh:") for ref in train.proof_refs
-            }:
+            if existing.get("mutation_receipt_sha256") == mutation_digest:
                 retained_refreshes.append((existing_path, existing))
         for existing_path, existing in retained_refreshes:
             # A crash after manifest persistence can leave its pending intent
