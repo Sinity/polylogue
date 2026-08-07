@@ -111,6 +111,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
         logger.warning("could not open source.db read-only", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not open source.db read-only: {exc}")
     try:
+        conn.execute("BEGIN")
         raw_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'"
         ).fetchone()
@@ -129,43 +130,95 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
             conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_artifacts'").fetchone()
             is not None
         )
+        sample_limit = max(0, sample_limit)
+        failed_cte = """
+        WITH failed AS (
+            SELECT r.raw_id, r.origin, r.source_path, r.source_index,
+                   r.validation_status, r.acquired_at_ms
+            FROM raw_sessions AS r
+            WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
+               OR r.validation_status = 'failed'
+        )
+        """
+        latest_artifact_join = """
+        LEFT JOIN raw_artifacts AS a
+          ON a.raw_id = f.raw_id
+         AND a.origin = f.origin
+         AND a.source_path = f.source_path
+         AND a.source_index = f.source_index
+         AND NOT EXISTS (
+             SELECT 1
+             FROM raw_artifacts AS newer
+             WHERE newer.raw_id = a.raw_id
+               AND newer.origin = a.origin
+               AND newer.source_path = a.source_path
+               AND newer.source_index = a.source_index
+               AND (newer.last_observed_at_ms > a.last_observed_at_ms
+                    OR (newer.last_observed_at_ms = a.last_observed_at_ms
+                        AND newer.artifact_id > a.artifact_id))
+         )
+        """
         if has_artifacts:
-            failure_query = """
-            SELECT r.raw_id, r.origin, r.validation_status,
-                   (
-                       SELECT a.artifact_kind
-                       FROM raw_artifacts AS a
-                       WHERE a.raw_id = r.raw_id
-                         AND a.origin = r.origin
-                         AND a.source_path = r.source_path
-                         AND a.source_index = r.source_index
-                       ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
-                       LIMIT 1
-                   ) AS artifact_kind
-                   ,(
-                       SELECT a.support_status
-                       FROM raw_artifacts AS a
-                       WHERE a.raw_id = r.raw_id
-                         AND a.origin = r.origin
-                         AND a.source_path = r.source_path
-                         AND a.source_index = r.source_index
-                       ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
-                       LIMIT 1
-                   ) AS support_status
-            FROM raw_sessions AS r
-            WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
-               OR r.validation_status = 'failed'
-            ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
-            """
+            summary_sql = (
+                failed_cte
+                + """
+                SELECT f.origin, f.validation_status, a.artifact_kind, a.support_status,
+                       COUNT(*) AS failure_count
+                FROM failed AS f
+                """
+                + latest_artifact_join
+                + """
+                GROUP BY f.origin, f.validation_status, a.artifact_kind, a.support_status
+                ORDER BY f.origin, f.validation_status, a.artifact_kind, a.support_status
+                """
+            )
+            sample_sql = (
+                failed_cte
+                + """
+                , sampled AS (
+                    SELECT f.raw_id, f.origin, f.validation_status, f.acquired_at_ms,
+                           a.artifact_kind, a.support_status
+                    FROM failed AS f
+                    """
+                + latest_artifact_join
+                + """
+                    ORDER BY CASE
+                        WHEN f.validation_status = 'failed' THEN 0
+                        WHEN (a.artifact_kind, a.support_status) IN (
+                            ('deferred_hot_jsonl_capture', 'partial_decode'),
+                            ('terminal_corrupt_input', 'decode_failed'),
+                            ('terminal_unsupported_shape', 'unsupported_parseable')
+                        ) THEN 1
+                        ELSE 2
+                    END,
+                    f.acquired_at_ms DESC, f.raw_id DESC
+                    LIMIT ?
+                )
+                SELECT raw_id, origin, validation_status, artifact_kind, support_status
+                FROM sampled
+                """
+            )
         else:
-            failure_query = """
-            SELECT r.raw_id, r.origin, r.validation_status, NULL AS artifact_kind, NULL AS support_status
-            FROM raw_sessions AS r
-            WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
-               OR r.validation_status = 'failed'
-            ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
-            """
-        failed_rows = conn.execute(failure_query).fetchall()
+            summary_sql = (
+                failed_cte
+                + """
+                SELECT f.origin, f.validation_status, NULL, NULL, COUNT(*) AS failure_count
+                FROM failed AS f
+                GROUP BY f.origin, f.validation_status
+                ORDER BY f.origin, f.validation_status
+                """
+            )
+            sample_sql = (
+                failed_cte
+                + """
+                SELECT raw_id, origin, validation_status, NULL, NULL
+                FROM failed
+                ORDER BY acquired_at_ms DESC, raw_id DESC
+                LIMIT ?
+                """
+            )
+        summary_rows = conn.execute(summary_sql).fetchall()
+        sample_rows = conn.execute(sample_sql, (sample_limit,)).fetchall()
     except sqlite3.Error as exc:
         logger.warning("could not read raw failure lifecycle", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not read raw failure lifecycle: {exc}")
@@ -176,25 +229,33 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
     by_artifact_kind: Counter[str] = Counter()
     counts: Counter[str] = Counter()
     samples: list[dict[str, str | None]] = []
-    for row in failed_rows:
+    for row in summary_rows:
+        origin = str(row[0] or "unknown")
+        artifact_kind = str(row[2]) if row[2] is not None else None
+        support_status = str(row[3]) if row[3] is not None else None
+        validation_failed = str(row[1] or "") == "failed"
+        lifecycle = _lifecycle(artifact_kind, support_status, validation_failed=validation_failed)
+        count = int(row[4])
+        counts[lifecycle] += count
+        by_origin[origin] += count
+        by_artifact_kind[artifact_kind or "<none>"] += count
+    for row in sample_rows:
         origin = str(row[1] or "unknown")
         artifact_kind = str(row[3]) if row[3] is not None else None
         support_status = str(row[4]) if row[4] is not None else None
-        validation_failed = str(row[2] or "") == "failed"
-        lifecycle = _lifecycle(artifact_kind, support_status, validation_failed=validation_failed)
-        counts[lifecycle] += 1
-        by_origin[origin] += 1
-        by_artifact_kind[artifact_kind or "<none>"] += 1
-        if len(samples) < max(0, sample_limit):
-            samples.append(
-                {
-                    "raw_id": str(row[0]),
-                    "origin": origin,
-                    "artifact_kind": artifact_kind,
-                    "support_status": support_status,
-                    "lifecycle": lifecycle,
-                }
-            )
+        samples.append(
+            {
+                "raw_id": str(row[0]),
+                "origin": origin,
+                "artifact_kind": artifact_kind,
+                "support_status": support_status,
+                "lifecycle": _lifecycle(
+                    artifact_kind,
+                    support_status,
+                    validation_failed=str(row[2] or "") == "failed",
+                ),
+            }
+        )
     return RawFailureLifecycleSnapshot(
         available=True,
         parse_failures=parse_failures,

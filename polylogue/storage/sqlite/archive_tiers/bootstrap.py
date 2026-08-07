@@ -312,15 +312,69 @@ def initialize_archive_database(
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
     from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+    from polylogue.storage.sqlite.durable_change_train import (
+        _record_fresh_durable_bootstrap,
+        _record_fresh_durable_bootstrap_intent,
+        _validate_fresh_durable_bootstrap_intent,
+    )
 
     with OwnedArchiveLocation.acquire(
         ArchiveLocation.resolve(root),
         owner_id=f"bootstrap:{os.getpid()}",
         allow_reentrant=True,
     ):
-        reconcile_durable_change_trains_on_startup(root)
+        # Classify the archive after acquiring ownership. Another process may
+        # publish a marker or durable train while the probe is in flight.
+        durable_tier_exists = any(
+            (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
+        )
+        manifest_root = root / ".maintenance-state" / "durable-change-trains"
+        has_durable_train_state = any(manifest_root.glob("*.json"))
+        has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
+        pending_bootstrap_path = manifest_root / ".bootstrap.pending"
+        has_pending_bootstrap = pending_bootstrap_path.is_file()
+        if has_pending_bootstrap:
+            _validate_fresh_durable_bootstrap_intent(root)
+            if has_durable_train_state:
+                raise RuntimeError(
+                    "fresh durable bootstrap intent conflicts with durable train state; "
+                    "refusing to guess which authority is current"
+                )
+        fresh_durable_bootstrap = (
+            not durable_tier_exists
+            and not has_durable_train_state
+            and not has_bootstrap_marker
+            and not has_pending_bootstrap
+        )
+        recovering_fresh_durable_bootstrap = fresh_durable_bootstrap or (
+            has_pending_bootstrap and not has_bootstrap_marker
+        )
+        pre_marker_adoption = (
+            (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
+            and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
+            and manifest_root.is_dir()
+            and not has_durable_train_state
+            and not has_bootstrap_marker
+            and not has_pending_bootstrap
+        )
+        if fresh_durable_bootstrap:
+            _record_fresh_durable_bootstrap_intent(root)
+        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
+            reconcile_durable_change_trains_on_startup(root)
         for spec in ARCHIVE_TIER_SPECS.values():
             initialize_archive_database(root / spec.filename, spec.tier)
+        if recovering_fresh_durable_bootstrap:
+            _record_fresh_durable_bootstrap(root)
+        elif pre_marker_adoption:
+            from polylogue.storage.sqlite.durable_change_train import _adopt_pre_marker_durable_bootstrap
+
+            _adopt_pre_marker_durable_bootstrap(root)
+            reconcile_durable_change_trains_on_startup(root)
+        elif has_pending_bootstrap:
+            # A crash after publishing the completed marker but before
+            # removing the intent is harmless. Keep the intent until the
+            # completed marker has passed normal startup reconciliation.
+            pending_bootstrap_path.unlink(missing_ok=True)
 
 
 def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from collections.abc import Callable, Iterator
@@ -376,6 +377,8 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
     _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
@@ -399,6 +402,17 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         restart_convergence=restart,
     )
     train = release_durable_change_train(train, evidence_ref="proof:release")
+    assert train.apply_evidence is not None
+    train = replace(
+        train,
+        apply_evidence=replace(
+            train.apply_evidence,
+            post=replace(
+                train.apply_evidence.post,
+                archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
+            ),
+        ),
+    )
     manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
     manifest.parent.mkdir(parents=True)
     write_durable_change_train_manifest(manifest, train, expected_revision=-1)
@@ -457,7 +471,14 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert refreshed.state is DurableChangeTrainState.RELEASED
     assert refreshed.source_continuity_evidence is not None
     assert released.apply_evidence is not None
-    assert refreshed.apply_evidence == released.apply_evidence
+    assert refreshed.apply_evidence is not None
+    assert released.apply_evidence is not None
+    assert refreshed.apply_evidence.pre == released.apply_evidence.pre
+    assert refreshed.apply_evidence.post.archive_identity_digest != released.apply_evidence.post.archive_identity_digest
+    assert (
+        refreshed.apply_evidence.post.archive_identity_digest
+        == refreshed.source_continuity_evidence.archive_identity_digest
+    )
     assert refreshed.proof == released.proof
     assert refreshed.revision == released.revision + 1
     assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
@@ -1115,6 +1136,545 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         assert conn.execute("PRAGMA user_version").fetchone() == (3,)
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='later_items'").fetchone() == ("later_items",)
     assert released == [True, True]
+    historical_manifest = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
+    manifest_v3 = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 3)
+    manifest_v3_bytes = manifest_v3.read_bytes()
+    manifest_v3.unlink()
+    with pytest.raises(DurableChangeTrainError, match=r"versions \[3\]"):
+        durable_change_train_module.reconcile_durable_change_train_startup(tmp_path)
+    assert released == [True, True]
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        execute_durable_change_train(
+            tmp_path,
+            ArchiveTier.SOURCE,
+            backup_manifest=None,
+            daemon_stopped_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+            release_archive_ownership=lambda: pytest.fail("missing intervening train was admitted"),
+        )
+    manifest_v3.write_bytes(manifest_v3_bytes)
+    evidence_captures = 0
+    schema_inventories = 0
+    canonical_inventories = 0
+    real_capture = migration_runner.capture_durable_database_evidence
+    real_schema_inventory = migration_runner.capture_durable_schema_inventory
+    real_canonical_inventory = durable_change_train_module._canonical_schema_inventory
+
+    def count_evidence_captures(
+        connection: sqlite3.Connection, tier: ArchiveTier
+    ) -> migration_runner.DurableDatabaseEvidence:
+        nonlocal evidence_captures
+        evidence_captures += 1
+        return real_capture(connection, tier)
+
+    def count_schema_inventories(
+        connection: sqlite3.Connection,
+    ) -> migration_runner.DurableSchemaInventory:
+        nonlocal schema_inventories
+        schema_inventories += 1
+        return real_schema_inventory(connection)
+
+    def count_canonical_inventories(tier: ArchiveTier, target_version: int) -> migration_runner.DurableSchemaInventory:
+        nonlocal canonical_inventories
+        canonical_inventories += 1
+        return real_canonical_inventory(tier, target_version)
+
+    monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", count_evidence_captures)
+    monkeypatch.setattr(migration_runner, "capture_durable_schema_inventory", count_schema_inventories)
+    monkeypatch.setattr(durable_change_train_module, "_canonical_schema_inventory", count_canonical_inventories)
+    third = execute_durable_change_train(
+        tmp_path,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: released.append(True),
+    )
+    assert third.forward_version_receipt is not None
+    assert third.forward_version_receipt.historical_target_version == 2
+    assert third.forward_version_receipt.observed_live_version == 3
+    assert evidence_captures == 1
+    # Three inventories: one nested inside the single evidence capture, one
+    # live inventory read during startup reconciliation, and one canonical
+    # inventory built from the fresh DDL. The no-op receipt reuses all of them.
+    assert schema_inventories == 3
+    assert canonical_inventories == 1
+
+    historical_train = load_durable_change_train_manifest(historical_manifest)
+    with sqlite3.connect(db_path) as conn:
+        actual = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+        receipt = durable_change_train_module._verify_released_train_live_tier(
+            tmp_path,
+            conn,
+            historical_train,
+            current_target_version=3,
+            actual_evidence=actual,
+        )
+    assert receipt is not None
+    assert receipt.historical_target_version == 2
+    assert receipt.current_target_version == 3
+    assert receipt.observed_live_version == 3
+    assert historical_train.proof is not None
+    assert (
+        receipt.historical_schema_inventory_sha256 == historical_train.proof.fresh_ddl_parity.migrated_inventory_sha256
+    )
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(DurableChangeTrainError, match="is newer than current target"):
+            durable_change_train_module._verify_released_train_live_tier(
+                tmp_path,
+                conn,
+                historical_train,
+                current_target_version=2,
+                actual_evidence=actual,
+            )
+
+    captures = 0
+    real_capture = migration_runner.capture_durable_database_evidence
+
+    def count_captures(connection: sqlite3.Connection, tier: ArchiveTier) -> migration_runner.DurableDatabaseEvidence:
+        nonlocal captures
+        captures += 1
+        return real_capture(connection, tier)
+
+    monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", count_captures)
+    assert reconcile_durable_change_train_startup(tmp_path) == (
+        durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2),
+        durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 3),
+    )
+    assert captures == 1
+
+    unrelated_root = tmp_path / "unrelated-archive"
+    unrelated_root.mkdir()
+    shutil.copy2(db_path, unrelated_root / "source.db")
+    unrelated_manifest = durable_change_train_manifest_path(unrelated_root, ArchiveTier.SOURCE, 2)
+    unrelated_manifest.parent.mkdir(parents=True)
+    shutil.copy2(historical_manifest, unrelated_manifest)
+    shutil.copy2(manifest_v3, durable_change_train_manifest_path(unrelated_root, ArchiveTier.SOURCE, 3))
+    with sqlite3.connect(unrelated_root / "source.db") as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(DurableChangeTrainError, match="immutable archive identity differs"):
+        reconcile_durable_change_train_startup(unrelated_root)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE base_items")
+        conn.commit()
+        tampered = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+        with pytest.raises(DurableChangeTrainError, match="canonical live version"):
+            durable_change_train_module._verify_released_train_live_tier(
+                tmp_path,
+                conn,
+                historical_train,
+                current_target_version=3,
+                actual_evidence=tampered,
+            )
+
+
+def test_continuity_admits_legacy_full_archive_identity_digest(tmp_path: Path) -> None:
+    from polylogue.storage.archive_identity import ArchiveIdentity
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        current = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+        legacy = replace(
+            current,
+            archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
+        )
+        migration_runner._assert_durable_database_continuity(
+            current,
+            legacy,
+            label="legacy identity compatibility",
+            connection=conn,
+        )
+        with pytest.raises(DurableChangeTrainError, match="continuity proof failed"):
+            migration_runner._assert_durable_database_continuity(
+                current,
+                replace(current, archive_identity_digest="a" * 64),
+                label="foreign identity",
+                connection=conn,
+            )
+        with pytest.raises(DurableChangeTrainError, match="continuity proof failed"):
+            migration_runner._assert_durable_database_continuity(
+                current,
+                legacy,
+                label="legacy identity without connection",
+            )
+
+
+def test_released_train_chain_is_anchored_at_adoption_floor() -> None:
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
+    released = cast(DurableChangeTrain, SimpleNamespace(state=DurableChangeTrainState.RELEASED))
+
+    with pytest.raises(DurableChangeTrainError, match=rf"versions \[{floor + 1}\]"):
+        durable_change_train_module._require_released_train_chain(
+            ArchiveTier.SOURCE,
+            {
+                floor + 2: released,
+                floor + 3: released,
+            },
+            current_version=floor + 3,
+        )
+
+
+def test_released_train_chain_can_start_at_bootstrap_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
+    current_version = floor + 1
+    released = cast(DurableChangeTrain, SimpleNamespace(state=DurableChangeTrainState.RELEASED))
+    monkeypatch.setattr(durable_change_train_module, "_historical_schema_evidence", lambda _train: None)
+
+    durable_change_train_module._require_released_train_chain(
+        ArchiveTier.SOURCE,
+        {current_version: released},
+        current_version=current_version,
+        floor=floor,
+    )
+
+
+def test_forward_receipt_checks_missing_chain_before_empty_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
+    current_version = floor + 2
+    current_train = cast(
+        DurableChangeTrain,
+        SimpleNamespace(target_version=current_version, state=DurableChangeTrainState.RELEASED),
+    )
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_released_train_manifests_by_target",
+        lambda _manifest_root, _tier: {current_version: current_train},
+    )
+
+    with (
+        sqlite3.connect(":memory:") as conn,
+        pytest.raises(
+            DurableChangeTrainError,
+            match=rf"versions \[{floor + 1}\]",
+        ),
+    ):
+        durable_change_train_module._forward_version_receipt_for_current_tier(
+            tmp_path,
+            conn,
+            ArchiveTier.SOURCE,
+            current_version=current_version,
+            current_target_version=current_version,
+        )
+
+
+def test_forward_receipt_skips_non_train_audit_tier(tmp_path: Path) -> None:
+    with sqlite3.connect(":memory:") as conn:
+        assert (
+            durable_change_train_module._forward_version_receipt_for_current_tier(
+                tmp_path,
+                conn,
+                ArchiveTier.AUDIT,
+                current_version=1,
+                current_target_version=1,
+            )
+            is None
+        )
+
+
+def test_startup_recovers_later_train_before_released_chain_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    manifest_root.mkdir(parents=True)
+    first_path = manifest_root / "source-027.json"
+    later_path = manifest_root / "source-028.json"
+    first_path.touch()
+    later_path.touch()
+    released = cast(
+        DurableChangeTrain,
+        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=27),
+    )
+    later_released = cast(
+        DurableChangeTrain,
+        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=28),
+    )
+    backup_authorized = cast(
+        DurableChangeTrain,
+        SimpleNamespace(
+            state=DurableChangeTrainState.BACKUP_AUTHORIZED,
+            tier=ArchiveTier.SOURCE,
+            target_version=28,
+            train_id="train:source:v28",
+            revision=0,
+        ),
+    )
+    states = {first_path: released, later_path: backup_authorized}
+    events: list[tuple[str, int]] = []
+
+    @contextmanager
+    def fake_open_tier(_path: Path) -> Iterator[sqlite3.Connection]:
+        with sqlite3.connect(":memory:") as connection:
+            yield connection
+
+    def fake_load(path: Path) -> DurableChangeTrain:
+        return states[path]
+
+    def fake_persist(path: Path, train: DurableChangeTrain, *, expected_revision: int) -> DurableChangeTrain:
+        states[path] = train
+        return train
+
+    def fake_recover(*_args: object, **_kwargs: object) -> DurableChangeTrain:
+        events.append(("recover", 28))
+        return later_released
+
+    def fake_capture(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(user_version=28)
+
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_recover_pending_source_continuity_intents",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
+    monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", fake_load)
+    monkeypatch.setattr(durable_change_train_module, "_persist_train_transition", fake_persist)
+    monkeypatch.setattr(durable_change_train_module, "reconcile_interrupted_durable_change_train", fake_recover)
+    monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", fake_capture)
+    monkeypatch.setattr(durable_change_train_module, "_historical_schema_evidence", lambda _train: None)
+    monkeypatch.setattr(
+        migration_runner,
+        "capture_durable_schema_inventory",
+        lambda _connection: SimpleNamespace(sha256="inventory"),
+    )
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_canonical_schema_inventory",
+        lambda _tier, _version: SimpleNamespace(sha256="canonical"),
+    )
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_verify_released_train_live_tier",
+        lambda _root, _connection, train, **_kwargs: events.append(("verify", train.target_version)),
+    )
+
+    durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
+
+    assert events == [("recover", 28), ("verify", 27), ("verify", 28)]
+
+
+def test_startup_checks_chain_when_only_current_train_remains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    manifest_root.mkdir(parents=True)
+    manifest_path = manifest_root / "source-028.json"
+    manifest_path.touch()
+    current = cast(
+        DurableChangeTrain,
+        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=28),
+    )
+
+    @contextmanager
+    def fake_open_tier(_path: Path) -> Iterator[sqlite3.Connection]:
+        with sqlite3.connect(":memory:") as connection:
+            yield connection
+
+    monkeypatch.setattr(durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: None)
+    monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
+    monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", lambda _path: current)
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "capture_durable_database_evidence",
+        lambda _connection, _tier: SimpleNamespace(user_version=28),
+    )
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_released_train_manifests_by_target",
+        lambda _root, _tier: {28: current},
+    )
+
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
+
+
+def test_startup_checks_chain_when_manifest_directory_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "source.db").touch()
+
+    @contextmanager
+    def fake_open_tier(_path: Path) -> Iterator[sqlite3.Connection]:
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("PRAGMA user_version = 28")
+            yield connection
+
+    monkeypatch.setattr(durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: None)
+    monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
+
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
+
+
+def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    assert reconcile_durable_change_train_startup(tmp_path) == ()
+    initialize_active_archive_root(tmp_path)
+
+
+def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    real_initialize_archive_database = bootstrap.initialize_archive_database
+    failed = False
+
+    def fail_embeddings_once(
+        path: Path,
+        tier: ArchiveTier,
+        *,
+        allow_create: bool = True,
+        expected_version: int | None = None,
+    ) -> None:
+        nonlocal failed
+        if tier is ArchiveTier.EMBEDDINGS and not failed:
+            failed = True
+            raise RuntimeError("simulated late fresh-bootstrap failure")
+        real_initialize_archive_database(path, tier, allow_create=allow_create, expected_version=expected_version)
+
+    monkeypatch.setattr(bootstrap, "initialize_archive_database", fail_embeddings_once)
+    with pytest.raises(RuntimeError, match="simulated late fresh-bootstrap failure"):
+        bootstrap.initialize_active_archive_root(tmp_path)
+
+    marker_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    assert (marker_root / ".bootstrap.pending").is_file()
+    assert not (marker_root / ".bootstrap").exists()
+    assert (tmp_path / "source.db").is_file()
+
+    monkeypatch.setattr(bootstrap, "initialize_archive_database", real_initialize_archive_database)
+    bootstrap.initialize_active_archive_root(tmp_path)
+
+    assert (marker_root / ".bootstrap").is_file()
+    assert not (marker_root / ".bootstrap.pending").exists()
+    assert reconcile_durable_change_train_startup(tmp_path) == ()
+
+
+def test_fresh_bootstrap_intent_rejects_tampering_before_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    real_initialize_archive_database = bootstrap.initialize_archive_database
+
+    def fail_embeddings(
+        path: Path,
+        tier: ArchiveTier,
+        *,
+        allow_create: bool = True,
+        expected_version: int | None = None,
+    ) -> None:
+        if tier is ArchiveTier.EMBEDDINGS:
+            raise RuntimeError("simulated late fresh-bootstrap failure")
+        real_initialize_archive_database(path, tier, allow_create=allow_create, expected_version=expected_version)
+
+    monkeypatch.setattr(bootstrap, "initialize_archive_database", fail_embeddings)
+    with pytest.raises(RuntimeError, match="simulated late fresh-bootstrap failure"):
+        bootstrap.initialize_active_archive_root(tmp_path)
+
+    pending = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap.pending"
+    payload = json.loads(pending.read_text(encoding="utf-8"))
+    payload["durable_identity_digest"] = "0" * 64
+    pending.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DurableChangeTrainError, match="intent durable identity mismatch"):
+        bootstrap.initialize_active_archive_root(tmp_path)
+
+
+def test_pre_marker_current_archive_is_adopted_once(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    marker.unlink()
+
+    initialize_active_archive_root(tmp_path)
+    assert marker.is_file()
+
+
+def test_pre_marker_adoption_refuses_missing_train_directory(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    marker_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    (marker_root / ".bootstrap").unlink()
+    marker_root.rmdir()
+
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        initialize_active_archive_root(tmp_path)
+
+
+def test_pre_marker_adoption_requires_all_durable_tiers(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    (tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap").unlink()
+    (tmp_path / "user.db").unlink()
+
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        initialize_active_archive_root(tmp_path)
+    assert not (tmp_path / "user.db").exists()
+
+
+def test_bootstrap_marker_survives_index_generation_replacement(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    (tmp_path / "index.db").unlink()
+
+    initialize_active_archive_root(tmp_path)
+
+
+def test_fresh_bootstrap_receipt_rejects_archive_identity_mismatch(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["durable_identity_digest"] = "0" * 64
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DurableChangeTrainError, match="durable identity mismatch"):
+        reconcile_durable_change_train_startup(tmp_path)
+
+
+def test_fresh_bootstrap_receipt_rejects_recorded_version_tampering(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    cast(dict[str, int], payload["versions"])["source"] += 1
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DurableChangeTrainError, match="marker digest mismatch"):
+        reconcile_durable_change_train_startup(tmp_path)
+
+
+def test_source_train_identity_survives_late_user_tier_initialization(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    source_path = tmp_path / "source.db"
+    initialize_archive_database(source_path, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_path) as conn:
+        before = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with sqlite3.connect(source_path) as conn:
+        after = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+
+    assert after.archive_identity_digest == before.archive_identity_digest
 
 
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(

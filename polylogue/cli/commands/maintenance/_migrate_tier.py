@@ -121,6 +121,7 @@ def migrate_tier_command(
         raise SystemExit(1) from exc
 
     result = execution.migration_result if execution is not None else None
+    receipt = execution.forward_version_receipt if execution is not None else None
     payload = {
         "ok": True,
         "tier": tier,
@@ -138,6 +139,19 @@ def migrate_tier_command(
         "from_version": result.from_version if result is not None else 0 if initialized else None,
         "to_version": result.to_version if result is not None else initialized_version,
         "applied_versions": list(result.applied_versions) if result is not None else [],
+        "forward_version_receipt": (
+            {
+                "tier": receipt.tier.value,
+                "historical_train_id": receipt.historical_train_id,
+                "historical_target_version": receipt.historical_target_version,
+                "current_target_version": receipt.current_target_version,
+                "observed_live_version": receipt.observed_live_version,
+                "historical_schema_inventory_sha256": receipt.historical_schema_inventory_sha256,
+                "archive_identity_digest": receipt.archive_identity_digest,
+            }
+            if receipt is not None
+            else None
+        ),
     }
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
@@ -147,6 +161,13 @@ def migrate_tier_command(
         click.echo(f"Initialized missing {tier} tier at schema version {initialized_version}.")
         return
     if result is None:
+        if receipt is not None:
+            click.echo(
+                f"No pending durable migration for {tier}; historical train {receipt.historical_train_id} "
+                f"is admitted at live schema v{receipt.observed_live_version} "
+                f"(target v{receipt.current_target_version})."
+            )
+            return
         click.echo(f"No pending durable migration for {tier}.")
         return
     applied = ", ".join(str(version) for version in result.applied_versions) or "none"

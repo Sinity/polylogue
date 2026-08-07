@@ -925,21 +925,32 @@ def _archive_raw_failure_info(
                 ).fetchone()[0]
                 or 0
             )
+            sample_ids = [
+                str(sample["raw_id"]) for sample in lifecycle_snapshot.samples if sample.get("raw_id") is not None
+            ]
             lifecycle_by_raw_id = {
                 str(sample["raw_id"]): str(sample["lifecycle"])
                 for sample in lifecycle_snapshot.samples
                 if sample.get("raw_id") is not None and sample.get("lifecycle") is not None
             }
             samples: list[RawFailureSample] = []
-            for row in conn.execute(
-                """
-                SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error
-                FROM raw_sessions AS r
-                WHERE (parse_error IS NOT NULL AND TRIM(parse_error) != '') OR validation_status = 'failed'
-                ORDER BY acquired_at_ms DESC, raw_id DESC
-                LIMIT 50
-                """
-            ):
+            rows_by_raw_id: dict[str, sqlite3.Row | tuple[object, ...]] = {}
+            if sample_ids:
+                placeholders = ",".join("?" for _ in sample_ids)
+                rows = conn.execute(
+                    f"""
+                    SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error
+                    FROM raw_sessions AS r
+                    WHERE r.raw_id IN ({placeholders})
+                      AND ((r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '') OR r.validation_status = 'failed')
+                    """,
+                    sample_ids,
+                )
+                rows_by_raw_id = {str(row[0]): row for row in rows}
+            for raw_id in sample_ids:
+                row = rows_by_raw_id.get(raw_id)
+                if row is None:
+                    continue
                 parse_err = str(row[2] or "") if row[2] else ""
                 val_status = str(row[3] or "") if row[3] else ""
                 val_err = str(row[4] or "") if row[4] else ""
@@ -959,7 +970,7 @@ def _archive_raw_failure_info(
                         redacted_error=parse_err or val_err,
                         lifecycle=cast(
                             Literal["deferred", "terminal", "unexplained"],
-                            lifecycle_by_raw_id.get(str(row[0]), "unexplained"),
+                            lifecycle_by_raw_id.get(raw_id, "unexplained"),
                         ),
                     )
                 )
