@@ -591,7 +591,15 @@ def _validate_liveness_receipt_bytes(
             if footer is not None:
                 row = footer
                 if row.get("kind") == "blob_ref_liveness_reconciliation":
-                    if row.get("phase") != "batch_committed":
+                    previous_phase = row.get("phase")
+                    current_phase = (
+                        record.get("phase") if record.get("kind") == "blob_ref_liveness_reconciliation" else None
+                    )
+                    if not (
+                        previous_phase == "batch_committed"
+                        or previous_phase == "postcondition_failed"
+                        and current_phase == "recovered_committed"
+                    ):
                         raise DurableChangeTrainError(
                             "source mutation receipt contains an unexpected intermediate footer"
                         )

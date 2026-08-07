@@ -1408,6 +1408,7 @@ def _normalize_schema_sql(sql: str | None) -> str:
     if sql is None:
         return ""
     unquoted: list[str] = []
+    string_literals: list[str] = []
     index = 0
     while index < len(sql):
         character = sql[index]
@@ -1424,7 +1425,8 @@ def _normalize_schema_sql(sql: str | None) -> str:
                     continue
                 index += 1
                 break
-            unquoted.append(sql[start:index])
+            string_literals.append(sql[start:index])
+            unquoted.append(f"\x00{len(string_literals) - 1}\x00")
             continue
         if character in {'"', "`", "["}:
             closing = "]" if character == "[" else character
@@ -1464,6 +1466,8 @@ def _normalize_schema_sql(sql: str | None) -> str:
         r"CHECK(\g<column> IN(\g<values>))",
         collapsed,
     )
+    for index, literal in enumerate(string_literals):
+        collapsed = collapsed.replace(f"\x00{index}\x00", literal)
     return collapsed
 
 

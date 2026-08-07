@@ -107,6 +107,7 @@ class BlobRefLivenessReconciliationReport:
     post_classification: BlobRefLivenessClassification | None = None
     continuity_refresh_receipt: Path | None = None
     continuity_refresh_error: str | None = None
+    continuity_refresh_pending: bool = False
 
     def to_dict(self, *, sample_limit: int = 30) -> dict[str, object]:
         return {
@@ -120,6 +121,7 @@ class BlobRefLivenessReconciliationReport:
                 str(self.continuity_refresh_receipt) if self.continuity_refresh_receipt is not None else None
             ),
             "continuity_refresh_error": self.continuity_refresh_error,
+            "continuity_refresh_pending": self.continuity_refresh_pending,
             "post_classification": self.post_classification.to_dict() if self.post_classification is not None else None,
             **self.classification.to_dict(sample_limit=sample_limit),
         }
@@ -979,6 +981,7 @@ def reconcile_blob_ref_liveness(
 
     continuity_refresh_receipt: Path | None = None
     continuity_refresh_error: str | None = None
+    continuity_refresh_pending = False
     try:
         continuity_refresh_receipt = refresh_released_source_train_continuity(
             archive_root,
@@ -994,20 +997,30 @@ def reconcile_blob_ref_liveness(
             clear_source_continuity_pending_intent(pending_intent)
         except Exception as cleanup_exc:
             continuity_refresh_error = f"{exc}; pending intent cleanup failed: {cleanup_exc}"
+            continuity_refresh_pending = True
         else:
-            continuity_refresh_error = str(exc)
+            # A fresh archive has no released source train to refresh. The
+            # committed source mutation is complete and there is no pending
+            # continuity recovery obligation in this case.
+            continuity_refresh_error = None
     except DurableSourceContinuitySemanticError as exc:
         # Semantic continuity rejection cannot become valid by retrying the
         # same committed source mutation. Preserve it durably for startup to
         # consume without hiding the fail-closed train mismatch.
-        mark_source_continuity_pending_intent_terminal(pending_intent, error=exc)
-        continuity_refresh_error = str(exc)
+        try:
+            mark_source_continuity_pending_intent_terminal(pending_intent, error=exc)
+        except Exception as terminalization_exc:
+            continuity_refresh_error = f"{exc}; pending intent terminalization failed: {terminalization_exc}"
+        else:
+            continuity_refresh_error = str(exc)
+        continuity_refresh_pending = True
     except Exception as exc:
         # The source deletion and its committed receipt are already durable.
         # Keep the report truthful while leaving the train fail-closed until a
         # separate continuity refresh succeeds. This boundary also normalizes
         # filesystem and SQLite failures after the irreversible commit.
         continuity_refresh_error = str(exc)
+        continuity_refresh_pending = True
 
     assert staged_plan is not None
     return BlobRefLivenessReconciliationReport(
@@ -1021,6 +1034,7 @@ def reconcile_blob_ref_liveness(
         post_classification=post_classification,
         continuity_refresh_receipt=continuity_refresh_receipt,
         continuity_refresh_error=continuity_refresh_error,
+        continuity_refresh_pending=continuity_refresh_pending,
     )
 
 
