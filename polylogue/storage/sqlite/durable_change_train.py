@@ -870,7 +870,7 @@ def _refresh_released_source_train_continuity_locked(
                     current,
                     retained_current,
                     label="source continuity retained refresh",
-                    connection=connection,
+                    archive_root=archive_root,
                 )
             except DurableChangeTrainError:
                 pass
@@ -915,7 +915,7 @@ def _refresh_released_source_train_continuity_locked(
                 pre_mutation_evidence,
                 baseline,
                 label="source continuity pre-mutation",
-                connection=connection,
+                archive_root=archive_root,
             )
         except DurableChangeTrainError as exc:
             raise DurableSourceContinuitySemanticError(

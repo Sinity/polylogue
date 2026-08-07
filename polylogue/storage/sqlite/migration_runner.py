@@ -1653,16 +1653,17 @@ def _assert_durable_database_continuity(
     expected: DurableDatabaseEvidence,
     *,
     label: str,
+    archive_root: Path | None = None,
     connection: sqlite3.Connection | None = None,
 ) -> None:
     """Require the live durable file to retain its authenticated evidence."""
     identity_continuous = actual.archive_identity_digest == expected.archive_identity_digest
-    if not identity_continuous and connection is not None:
-        archive_root = _connection_main_path(connection).parent
+    if not identity_continuous and (archive_root is not None or connection is not None):
+        resolved_archive_root = archive_root or _connection_main_path(cast(sqlite3.Connection, connection)).parent
         identity_continuous = _archive_identity_continuity_matches(
             actual.archive_identity_digest,
             expected.archive_identity_digest,
-            archive_root,
+            resolved_archive_root,
         )
     if (
         actual.quick_check != expected.quick_check

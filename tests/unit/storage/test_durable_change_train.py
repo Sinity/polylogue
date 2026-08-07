@@ -1194,6 +1194,15 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     assert (
         receipt.historical_schema_inventory_sha256 == historical_train.proof.fresh_ddl_parity.migrated_inventory_sha256
     )
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(DurableChangeTrainError, match="is newer than current target"):
+            durable_change_train_module._verify_released_train_live_tier(
+                tmp_path,
+                conn,
+                historical_train,
+                current_target_version=2,
+                actual_evidence=actual,
+            )
 
     captures = 0
     real_capture = migration_runner.capture_durable_database_evidence
@@ -1252,6 +1261,19 @@ def test_continuity_admits_legacy_full_archive_identity_digest(tmp_path: Path) -
             label="legacy identity compatibility",
             connection=conn,
         )
+        with pytest.raises(DurableChangeTrainError, match="continuity proof failed"):
+            migration_runner._assert_durable_database_continuity(
+                current,
+                replace(current, archive_identity_digest="a" * 64),
+                label="foreign identity",
+                connection=conn,
+            )
+        with pytest.raises(DurableChangeTrainError, match="continuity proof failed"):
+            migration_runner._assert_durable_database_continuity(
+                current,
+                legacy,
+                label="legacy identity without connection",
+            )
 
 
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(
