@@ -245,7 +245,7 @@ def test_planner_refuses_unavailable_projection_with_unknown_sibling(
     watcher.stop()
 
 
-def test_planner_classifies_bound_current_cursor_as_not_applicable(
+def test_planner_rejects_healthy_input_without_a_prior_candidate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
@@ -260,10 +260,8 @@ def test_planner_classifies_bound_current_cursor_as_not_applicable(
     )
     monkeypatch.setattr(reconcile, "_projection_for", lambda root: projection)
 
-    plan = reconcile._build_plan(tmp_path, source_path)
-
-    assert plan["status"] == "not_applicable"
-    assert plan["not_applicable_reason"] == "selected cursor-ahead violation is no longer present"
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="no selected violation"):
+        reconcile._build_plan(tmp_path, source_path)
     watcher.stop()
 
 

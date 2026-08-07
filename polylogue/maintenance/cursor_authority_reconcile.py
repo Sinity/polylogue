@@ -356,43 +356,13 @@ def _require_healthy_projection_siblings(projection: RawFrontierIntegrityProject
         raise CursorAuthorityReconciliationError("raw-frontier sibling projections are not healthy")
 
 
-def _build_plan(root: Path, source_path: Path, *, require_candidate: bool = True) -> dict[str, object]:
+def _build_plan(root: Path, source_path: Path) -> dict[str, object]:
     tiers = _tier_snapshots(root)
     projection = _projection_for(root)
     path_digest = cursor_authority_path_digest(source_path)
-    not_applicable_reason: str | None = None
     _require_healthy_projection_siblings(projection)
-    if projection.cursor_ahead_count == 0 and not_applicable_reason is None:
-        current_cursor_paths = {Path(path).resolve() for path, _offset in _cursor_rows(root)}
-        if (
-            require_candidate
-            and projection.overall_status == "healthy"
-            and source_path.resolve() in current_cursor_paths
-        ):
-            not_applicable_reason = "selected cursor-ahead violation is no longer present"
-        else:
-            raise CursorAuthorityReconciliationError("cursor authority is incomparable or has no selected violation")
-    if not_applicable_reason is not None:
-        not_applicable_plan: dict[str, object] = {
-            "format": PLAN_FORMAT,
-            "archive_identity": _path_identity(root),
-            "active_index": _active_index_binding(root),
-            "code_sha": _code_sha(),
-            "deployed_package_sha": _deployed_package_sha(),
-            "tier_fingerprints": tiers,
-            "source_schema_versions": {tier: tiers[tier]["user_version"] for tier in _REQUIRED_TIERS},
-            "selected_path_digest": path_digest,
-            "observed_at_ms": int(time.time() * 1000),
-            "status": "not_applicable",
-            "not_applicable_reason": not_applicable_reason,
-            "cursor_byte_offset": None,
-            "accepted_frontier": None,
-            "accepted_raw_id_digest": None,
-            "source_prefix_digest": None,
-            "before_projection": _private_projection(projection),
-        }
-        not_applicable_plan["plan_digest"] = _canonical_digest(not_applicable_plan)
-        return not_applicable_plan
+    if projection.cursor_ahead_count == 0:
+        raise CursorAuthorityReconciliationError("cursor authority is incomparable or has no selected violation")
     if projection.cursor_ahead_count != 1:
         raise CursorAuthorityReconciliationError("refusing to guess among multiple cursor-ahead rows")
     if projection.broken_head_count or projection.missing_source_raw_count:
