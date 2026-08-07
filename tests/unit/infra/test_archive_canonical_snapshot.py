@@ -196,6 +196,14 @@ def test_default_fts_queries_follow_tokenizer_for_short_punctuation_terms() -> N
         connection.close()
 
 
+def test_default_fts_queries_are_empty_without_public_relation() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        assert _default_search_queries(connection) == ()
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize("table", ("assertions", "context_deliveries"))
 def test_user_state_mutations_are_red(tmp_path: Path, table: str) -> None:
     canonical = _build_archive(tmp_path / "canonical", rich_convergence_pathology())
