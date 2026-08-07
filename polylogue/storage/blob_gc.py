@@ -629,6 +629,30 @@ def run_blob_gc_report(
             planning_index_conn.close()
         planning_conn.close()
 
+    if not shortlist:
+        report.inspected_count = evidence.inspected
+        report.skipped_referenced = evidence.skipped_referenced
+        report.skipped_reserved = evidence.skipped_reserved
+        if dry_run:
+            report.would_delete_count = 0
+            return report
+        history_conn = sqlite3.connect(str(control_db_path))
+        try:
+            now_ms = int(time.time() * 1000)
+            generation_id = f"gc-{uuid4().hex}"
+            history_conn.execute(
+                "INSERT INTO gc_generations "
+                "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
+                "VALUES (?, ?, ?, 0, 0)",
+                (generation_id, now_ms, now_ms),
+            )
+            history_conn.commit()
+            report.generation_id = generation_id
+            report.generation_written = True
+        finally:
+            history_conn.close()
+        return report
+
     connection_uri = f"file:{control_db_path}?mode=ro" if dry_run else str(control_db_path)
     conn = sqlite3.connect(connection_uri, uri=dry_run)
     conn.row_factory = sqlite3.Row

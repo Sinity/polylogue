@@ -361,6 +361,44 @@ def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
     assert not store.exists(orphan_hash)
 
 
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
+def test_run_blob_gc_does_not_stage_again_when_all_candidates_are_referenced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage import blob_gc
+
+    db_path = tmp_path / "source.db"
+    blob_root = tmp_path / "blobs"
+    store = BlobStore(blob_root)
+    conn = _make_db(db_path)
+    blob_hash, size = store.write_from_bytes(b"referenced")
+    _backdate(store, blob_hash)
+    conn.execute(
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "VALUES (?, 'codex', 'referenced.json', ?, '2026-01-01')",
+        (blob_hash, size),
+    )
+    conn.commit()
+    conn.close()
+
+    stage_calls = 0
+    original = blob_gc._legacy_hook_liveness_status
+
+    def count_stage_calls(connection: sqlite3.Connection) -> str:
+        nonlocal stage_calls
+        stage_calls += 1
+        return original(connection)
+
+    monkeypatch.setattr(blob_gc, "_legacy_hook_liveness_status", count_stage_calls)
+    report = run_blob_gc_report(db_path, blob_root, max_batch=10)
+
+    assert report.deleted_count == 0
+    assert report.skipped_referenced == 1
+    assert stage_calls == 1
+
+
 def test_run_blob_gc_nonexistent_blob_dir(tmp_path: Path) -> None:
     """GC on nonexistent directory should return 0 without crash."""
     db_path = tmp_path / "archive.db"
