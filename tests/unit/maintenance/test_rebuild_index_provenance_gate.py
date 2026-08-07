@@ -1127,6 +1127,11 @@ def test_active_generation_reconciliation_requires_transaction_owner_match(
     )
     monkeypatch.setattr(store, "load", lambda _generation_id: generation)
 
+    # Pin the non-owner short circuits so the owner mismatch is the only
+    # reason reconciliation can return the unchanged transaction.
+    assert generation.state == "active"
+    assert store.active_pointer.resolve(strict=True) == Path(generation.index_path).resolve(strict=True)
+
     def fail_checkpoint(*args: object, **kwargs: object) -> object:
         raise AssertionError("owner-mismatched transaction must not checkpoint")
 
