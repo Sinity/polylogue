@@ -38,6 +38,39 @@ def test_fetch_bead_parses_show_output(monkeypatch: pytest.MonkeyPatch) -> None:
     assert record.title == "Example bead"
 
 
+def test_fetch_bead_parses_serialized_contract_confidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    record = _bd_show_record(
+        metadata=json.dumps({"acceptance_contract_v1": {"confidence": "planner-review"}}),
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: MagicMock(returncode=0, stdout=json.dumps([record]), stderr=""),
+    )
+
+    assert lane_brief._fetch_bead("polylogue-a").contract_confidence == "planner-review"
+
+
+@pytest.mark.parametrize("confidence, expected_rc", [("planner-review", 2), ("high", 0), ("medium", 0)])
+def test_main_dispatches_only_non_planner_contracts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, confidence: str, expected_rc: int
+) -> None:
+    monkeypatch.setattr(lane_brief, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        lane_brief,
+        "_fetch_bead",
+        lambda bead_id: lane_brief.BeadRecord(id=bead_id, found=True, contract_confidence=confidence),
+    )
+    monkeypatch.setattr(lane_brief, "_load_bd_export", lambda repo_root, tmpdir: [])
+    monkeypatch.setattr(lane_brief, "_verify_footprint", lambda repo_root, paths: [])
+    monkeypatch.setattr(lane_brief, "_find_prior_art", lambda records, paths, exclude_ids: [])
+    monkeypatch.setattr(lane_brief, "_recent_master_commits", lambda repo_root, paths, days: [])
+
+    assert (
+        lane_brief.main(["polylogue-a", "--out", str(tmp_path / "brief.md"), "--tmpdir", str(tmp_path)]) == expected_rc
+    )
+
+
 def test_fetch_bead_reports_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         subprocess,

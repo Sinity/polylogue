@@ -281,6 +281,23 @@ def test_bd_list_rejects_each_malformed_issue_record(monkeypatch: pytest.MonkeyP
         verify_bead_graph._run_bd_list_all()
 
 
+def test_metadata_acceptance_contract_parses_serialized_json() -> None:
+    contract = {"acceptance_contract_v1": {"confidence": "high"}}
+
+    assert verify_bead_graph._metadata({"metadata": contract}) == contract
+    assert verify_bead_graph._metadata({"metadata": json.dumps(contract)}) == contract
+    assert verify_bead_graph._metadata({"metadata": "{"}) == {}
+    assert verify_bead_graph._metadata({"metadata": "[]"}) == {}
+
+
+def test_required_contract_absence_is_reported() -> None:
+    findings = verify_bead_graph.collect_findings([], required_contract_ids=frozenset({"polylogue-a"}))
+
+    assert len(findings) == 1
+    assert findings[0].kind == "missing-required-acceptance-contract"
+    assert findings[0].detail == "manifest Bead is absent"
+
+
 def test_main_reports_bd_cycle_launch_failure_as_json(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
