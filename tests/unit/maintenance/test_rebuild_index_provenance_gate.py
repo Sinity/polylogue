@@ -256,6 +256,66 @@ def test_nonresumable_rebuild_reuses_refreshed_inventory_token_after_detector_ch
     )
 
 
+def test_resumable_checkpoint_and_pass_receipt_reuse_refreshed_inventory_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One refreshed token remains authoritative through a resumable pass receipt.
+
+    Anti-vacuity: this uses the transaction page selection, checkpoint, and
+    pass-receipt paths. Replacing the shared provenance context in either
+    helper makes a second full inventory scan observable after the refresh.
+    """
+    root = tmp_path / "archive"
+    _seed(root, count=2)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    origin = receipt["ground_truth_inputs"]["origins"]["codex-session"]
+    external_path = Path(origin["declared_roots"][0]) / origin["external_inventory"][0]["relative_path"]
+
+    full_inventory_calls = 0
+    original_inventory = schema_gate_module._external_inventory
+
+    def counted_inventory(roots: object) -> object:
+        nonlocal full_inventory_calls
+        full_inventory_calls += 1
+        return original_inventory(roots)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(schema_gate_module, "_external_inventory", counted_inventory)
+    original_next_raw_page = IndexGenerationStore.next_raw_page
+    inventory_calls_before_refresh: int | None = None
+
+    def select_then_touch(self: IndexGenerationStore, *args: object, **kwargs: object) -> object:
+        nonlocal inventory_calls_before_refresh
+        page = original_next_raw_page(self, *args, **kwargs)  # type: ignore[arg-type]
+        if inventory_calls_before_refresh is None:
+            stat = external_path.stat()
+            os.utime(external_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+            inventory_calls_before_refresh = full_inventory_calls
+        return page
+
+    monkeypatch.setattr(IndexGenerationStore, "next_raw_page", select_then_touch)
+    result = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            schema_inference_receipt_path=receipt_path,
+            raw_batch_size=1,
+            promote=False,
+        )
+    )
+
+    assert result.status == "paused"
+    assert result.transaction is not None
+    assert inventory_calls_before_refresh is not None
+    assert full_inventory_calls == inventory_calls_before_refresh + 1
+    operation_id = str(result.transaction["operation_id"])
+    pass_receipt_path = next((root / ".index-rebuild-transactions" / f"{operation_id}.receipts").glob("pass-*.json"))
+    persisted_receipt = json.loads(pass_receipt_path.read_text(encoding="utf-8"))
+    assert (
+        persisted_receipt["consumed_evidence"]["external_ground_truth_inventory_token"]
+        == result.consumed_evidence["external_ground_truth_inventory_token"]
+    )
+
+
 @pytest.mark.parametrize("transaction_payload", [None, "{"], ids=["missing", "malformed"])
 def test_invalid_receipt_preserves_provenance_error_when_recovery_state_is_unreadable(
     tmp_path: Path, transaction_payload: str | None
@@ -935,23 +995,6 @@ def test_daemon_reconciles_active_generation_after_both_attestation_checkpoints_
     assert store.load(transaction.generation_id).state == "active"
 
     monkeypatch.undo()
-    with pytest.raises(RuntimeError, match="promoted-attestation-failed; start a new operation"):
-        rebuild_index_from_source_sync(
-            RebuildIndexRequest(
-                archive_root=root,
-                schema_inference_receipt_path=receipt_path,
-                operation_id=bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID,
-                promote=True,
-            )
-        )
-
-    offline_terminal = store.load_transaction(bulk_rebuild_module.DAEMON_BULK_REBUILD_OPERATION_ID)
-    assert offline_terminal.status == "promoted-attestation-failed"
-    assert store.load(offline_terminal.generation_id).state == "active"
-
-    # Recreate the interrupted pre-attestation state so this assertion reaches
-    # the daemon resolver's recovery branch rather than its terminal fast path.
-    ready_transaction = store.checkpoint_transaction(offline_terminal, status="ready")
     reconciled = bulk_rebuild_module.resolve_or_start_daemon_bulk_rebuild_transaction(
         root,
         schema_inference_receipt_path=receipt_path,
@@ -960,9 +1003,39 @@ def test_daemon_reconciles_active_generation_after_both_attestation_checkpoints_
     assert reconciled.status == "promoted-attestation-failed"
     assert reconciled.post_promotion_attestation == {
         "status": "reconciled-after-restart",
-        "generation_id": ready_transaction.generation_id,
+        "generation_id": transaction.generation_id,
         "generation_state": "active",
     }
+
+
+def test_provenance_failure_reconciles_active_generation_before_stale_retirement(tmp_path: Path) -> None:
+    """Receipt rejection preserves an already-promoted owned generation's lifecycle fact."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    store = IndexGenerationStore.for_archive_root(root)
+    transaction = store.create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root), operation_id="active-before-stale-retirement"
+    )
+    active_generation = store.promote(store.load(transaction.generation_id))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["generated_at"] = "2000-01-01T00:00:00Z"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(rebuild_index_module.RebuildProvenanceError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=transaction.operation_id,
+                promote=True,
+            )
+        )
+
+    reconciled = store.load_transaction(transaction.operation_id)
+    assert reconciled.status == "promoted-attestation-failed"
+    assert reconciled.generation_id == active_generation.generation_id
+    assert store.load(reconciled.generation_id).state == "active"
 
 
 def test_active_generation_reconciliation_requires_transaction_owner_match(
