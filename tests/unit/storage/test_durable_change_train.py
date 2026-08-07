@@ -2,29 +2,39 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
+import polylogue.storage.sqlite.durable_change_train as durable_change_train_module
 from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
+    DurableSourceContinuitySemanticError,
+    DurableSourceTrainMissingError,
     _runtime_consumer_results,
+    assert_source_continuity_apply_allowed,
     durable_change_train_manifest_path,
     durable_change_train_policy_report,
     durable_migration_sidecar_for_slot,
     execute_durable_change_train,
+    mark_source_continuity_pending_intent_terminal,
+    reconcile_durable_change_train_startup,
+    refresh_released_source_train_continuity,
     validate_durable_migration_sidecars,
+    write_source_continuity_pending_intent,
 )
 from polylogue.storage.sqlite.migration_runner import (
     DurableChangeRider,
@@ -60,6 +70,7 @@ from polylogue.storage.sqlite.migration_runner import (
 
 _CURRENT_VERSION = 1
 _TARGET_VERSION = 2
+_EMPTY_LIVENESS_DIGEST = hashlib.sha256(b"[]").hexdigest()
 _ADDITIVE_SQL = """-- migration-safety: additive-no-backup
 CREATE TABLE durable_items (
     item_id TEXT PRIMARY KEY,
@@ -354,10 +365,344 @@ def test_applied_train_release_requires_the_source_hook_event_writer_probe(
 
     assert released.state is DurableChangeTrainState.RELEASED
     assert released.proof is not None
+    assert released.apply_evidence is not None
     hook_writer = next(
         result for result in released.proof.runtime_consumers if result.consumer_id == "source-hook-event-writer"
     )
     assert hook_writer.passed is True
+
+
+def test_released_source_train_can_record_an_authorized_mutation_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
+    train = _admitted(ArchiveTier.SOURCE)
+    with sqlite3.connect(db_path) as conn:
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        train = apply_durable_change_train(conn, train)
+    train = record_durable_writer_release(train, evidence_ref="proof:writer-release")
+    with sqlite3.connect(db_path) as conn:
+        runtime_results = _runtime_results()
+        restart = capture_durable_restart_convergence(
+            conn,
+            train,
+            runtime_consumers=runtime_results,
+            evidence_ref="proof:restart",
+        )
+    train = prove_durable_change_train(
+        train,
+        fresh_ddl_parity=_parity(ArchiveTier.SOURCE),
+        runtime_consumers=runtime_results,
+        restart_convergence=restart,
+    )
+    train = release_durable_change_train(train, evidence_ref="proof:release")
+    manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
+    manifest.parent.mkdir(parents=True)
+    write_durable_change_train_manifest(manifest, train, expected_revision=-1)
+    released = load_durable_change_train_manifest(manifest)
+    with sqlite3.connect(db_path) as conn:
+        before = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+        conn.execute("INSERT INTO base_items VALUES ('mutation-1', 'authorized')")
+        conn.commit()
+
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    mutation_receipt = tmp_path / "mutation-receipt.jsonl"
+    mutation_receipt.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(db_path),
+                "backup_manifest": str(backup_manifest),
+                "candidate_count": 0,
+                "candidate_digest": _EMPTY_LIVENESS_DIGEST,
+                "backup_manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "committed",
+                "deleted_count": 0,
+                "post_orphaned_count": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    refresh_fsync_calls: list[Path] = []
+    real_fsync_manifest_directory = migration_runner._fsync_manifest_directory
+
+    def record_refresh_fsync(path: Path) -> None:
+        refresh_fsync_calls.append(path)
+        real_fsync_manifest_directory(path)
+
+    monkeypatch.setattr(migration_runner, "_fsync_manifest_directory", record_refresh_fsync)
+    refreshed_path = refresh_released_source_train_continuity(
+        tmp_path,
+        mutation_receipt=mutation_receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id=_EMPTY_LIVENESS_DIGEST,
+        evidence_ref="proof:mutation-1",
+    )
+    assert tmp_path / ".maintenance-state" in refresh_fsync_calls
+
+    refreshed = load_durable_change_train_manifest(manifest)
+    assert refreshed.state is DurableChangeTrainState.RELEASED
+    assert refreshed.source_continuity_evidence is not None
+    assert released.apply_evidence is not None
+    assert refreshed.apply_evidence == released.apply_evidence
+    assert refreshed.proof == released.proof
+    assert refreshed.revision == released.revision + 1
+    assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
+    assert refreshed.source_continuity_evidence.content_sha256 != released.apply_evidence.post.content_sha256
+    assert refreshed_path.is_file()
+    # A pending-intent retry after manifest persistence accepts only the
+    # receipt's exact pre/post evidence, rather than bypassing pre-state
+    # authentication because the receipt digest already exists.
+    assert (
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-1",
+        )
+        == refreshed_path
+    )
+    with pytest.raises(DurableSourceContinuitySemanticError, match="unreceipted content drift"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=replace(before, content_sha256="f" * 64),
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-1",
+        )
+    operator_cwd = tmp_path / "operator-cwd"
+    operator_cwd.mkdir()
+    monkeypatch.chdir(tmp_path)
+    pending_fsync_start = len(refresh_fsync_calls)
+    pending_path = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=Path("mutation-receipt.jsonl"),
+        backup_manifest=Path("backup-manifest.json"),
+        pre_mutation_evidence=before,
+        operation_id=_EMPTY_LIVENESS_DIGEST,
+        evidence_ref="proof:mutation-1",
+    )
+    assert pending_path.is_file()
+    assert tmp_path / ".maintenance-state" in refresh_fsync_calls[pending_fsync_start:]
+    pending_payload = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert pending_payload["mutation_receipt"] == str(mutation_receipt)
+    assert pending_payload["backup_manifest"] == str(backup_manifest)
+    monkeypatch.chdir(operator_cwd)
+    assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
+    assert not pending_path.exists()
+    terminal_pending_path = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=mutation_receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id=_EMPTY_LIVENESS_DIGEST,
+        evidence_ref="proof:mutation-1",
+    )
+    mark_source_continuity_pending_intent_terminal(
+        terminal_pending_path,
+        error=DurableSourceContinuitySemanticError("continuity precondition rejected"),
+    )
+    assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
+    assert not terminal_pending_path.exists()
+    refreshed_path.unlink()
+    with pytest.raises(DurableChangeTrainError, match="refresh receipt"):
+        reconcile_durable_change_train_startup(tmp_path)
+    with pytest.raises(DurableChangeTrainError, match="refresh receipt"):
+        assert_source_continuity_apply_allowed(tmp_path)
+
+    mutation_receipt.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(db_path),
+                "backup_manifest": str(backup_manifest),
+                "candidate_count": 0,
+                "candidate_digest": _EMPTY_LIVENESS_DIGEST,
+                "backup_manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
+            }
+        )
+        + "\n"
+        + json.dumps({"kind": "blob_ref_liveness_reconciliation", "phase": "prepared"})
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DurableChangeTrainError, match="does not bind"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-invalid-footer",
+        )
+
+    mutation_receipt.write_text('{"kind": "blob_ref_liveness_reconciliation"}\n', encoding="utf-8")
+    with pytest.raises(DurableChangeTrainError, match="incomplete"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-incomplete",
+        )
+
+    mutation_receipt.write_text("not-json\n", encoding="utf-8")
+    with pytest.raises(DurableChangeTrainError, match="valid JSONL"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-malformed",
+        )
+
+    mutation_receipt.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(db_path),
+                "backup_manifest": str(backup_manifest),
+                "candidate_count": 0,
+                "candidate_digest": "b" * 64,
+                "backup_manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "committed",
+                "deleted_count": 0,
+                "post_orphaned_count": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DurableChangeTrainError, match="does not bind"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-wrong-operation",
+        )
+
+    manifest.unlink()
+    mutation_receipt.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(db_path),
+                "backup_manifest": str(backup_manifest),
+                "candidate_count": 0,
+                "candidate_digest": _EMPTY_LIVENESS_DIGEST,
+                "backup_manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "committed",
+                "deleted_count": 0,
+                "post_orphaned_count": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DurableSourceTrainMissingError, match="no released source train"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-no-train",
+        )
+
+
+def test_startup_consumes_an_already_recovered_rollback_intent(tmp_path: Path) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        before = migration_runner.capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    receipt = tmp_path / "rolled-back.jsonl"
+    receipt.write_text('{"phase": "recovered_rolled_back"}\n', encoding="utf-8")
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    pending_path = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="rolled-back-operation",
+        evidence_ref="proof:rolled-back-operation",
+    )
+
+    assert reconcile_durable_change_train_startup(tmp_path) == ()
+    assert not pending_path.exists()
+
+
+def test_postcondition_recovery_rejects_remaining_orphans(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        before = migration_runner.capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    receipt = tmp_path / "postcondition-failed.jsonl"
+    receipt.write_text('{"phase": "postcondition_failed"}\n', encoding="utf-8")
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    pending_path = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="postcondition-failed-operation",
+        evidence_ref="proof:postcondition-failed-operation",
+    )
+
+    def recover_with_postcondition_check(*_args: object, **kwargs: object) -> str:
+        postcondition_check = cast(Callable[[], None], kwargs["postcondition_check"])
+        postcondition_check()
+        return "recovered_committed"
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation._recover_prepared_receipt",
+        recover_with_postcondition_check,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.blob_ref_liveness.classify_blob_ref_liveness",
+        lambda _connection: SimpleNamespace(safe_to_apply=True, orphaned_count=1),
+    )
+
+    with pytest.raises(DurableChangeTrainError, match="postcondition remains unsafe"):
+        durable_change_train_module._recover_pending_source_continuity_intents(tmp_path)
+
+    assert pending_path.exists()
 
 
 @pytest.mark.parametrize("tier", (ArchiveTier.SOURCE, ArchiveTier.USER))
@@ -1178,6 +1523,12 @@ INSERT INTO table_that_does_not_exist VALUES (1);
         failure_manifest = tmp_path / "source-failed-train.json"
         write_durable_change_train_manifest(failure_manifest, failed, expected_revision=-1)
         failed = load_durable_change_train_manifest(failure_manifest)
+        released_failed = record_durable_writer_release(failed, evidence_ref="proof:failed-writer-release")
+        released_manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
+        released_manifest.parent.mkdir(parents=True)
+        write_durable_change_train_manifest(released_manifest, released_failed, expected_revision=-1)
+        with pytest.raises(DurableChangeTrainError, match="unreleased source train"):
+            assert_source_continuity_apply_allowed(tmp_path)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == _CURRENT_VERSION
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='durable_items'").fetchone() is None
         recovered = recover_durable_change_train(

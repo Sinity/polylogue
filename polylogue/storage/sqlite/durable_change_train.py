@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
+import io
 import json
 import os
 import re
 import sqlite3
 import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
 from typing import Final, cast
 
+from polylogue.storage.blob_ref_liveness import (
+    BlobRefLivenessCandidate,
+    BlobRefLivenessCandidateDigest,
+)
 from polylogue.storage.sqlite import migration_runner as _migration_runner
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import (
@@ -24,11 +30,15 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainError,
     DurableChangeTrainRecoveryError,
     DurableChangeTrainState,
+    DurableDatabaseEvidence,
+    DurableFailureClassification,
     DurableFreshDDLParityProof,
     DurableMigrationClaim,
     DurableRuntimeConsumerResult,
     MigrationResult,
     _assert_durable_database_continuity,
+    _canonical_json_sha256,
+    _require_nonempty,
     _validate_riders,
     add_durable_change_train_rider,
     admit_durable_change_train,
@@ -61,6 +71,15 @@ DURABLE_MIGRATION_ADOPTION_FLOORS: Final[dict[ArchiveTier, int]] = {
 _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")
 _DROP_SQL_RE = re.compile(r"(?is)\bDROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)\b")
+_SOURCE_CONTINUITY_PENDING_FORMAT = "polylogue.source-continuity-pending.v1"
+
+
+class DurableSourceTrainMissingError(DurableChangeTrainError):
+    """Raised when an archive has no released source train to refresh."""
+
+
+class DurableSourceContinuitySemanticError(DurableChangeTrainError):
+    """A committed source mutation cannot satisfy immutable train evidence."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +307,665 @@ def durable_migration_sidecar_for_slot(tier: ArchiveTier, slot: int) -> DurableM
 def _persist_train_transition(path: Path, train: DurableChangeTrain, *, expected_revision: int) -> DurableChangeTrain:
     write_durable_change_train_manifest(path, train, expected_revision=expected_revision)
     return load_durable_change_train_manifest(path)
+
+
+def write_source_continuity_pending_intent(
+    archive_root: Path,
+    *,
+    mutation_receipt: Path,
+    backup_manifest: Path,
+    pre_mutation_evidence: DurableDatabaseEvidence,
+    operation_id: str,
+    evidence_ref: str,
+) -> Path:
+    """Persist the recovery input before a source mutation can commit."""
+    mutation_receipt = mutation_receipt.resolve()
+    backup_manifest = backup_manifest.resolve()
+    pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
+    pending_root_existed = pending_root.is_dir()
+    pending_root.mkdir(parents=True, exist_ok=True)
+    if not pending_root_existed:
+        _migration_runner._fsync_manifest_directory(pending_root.parent)
+    payload: dict[str, object] = {
+        "format": _SOURCE_CONTINUITY_PENDING_FORMAT,
+        "mutation_receipt": str(mutation_receipt),
+        "backup_manifest": str(backup_manifest),
+        "operation_id": operation_id,
+        "evidence_ref": evidence_ref,
+        "source_before": _migration_runner._manifest_json_value(pre_mutation_evidence),
+    }
+    pending_digest = _canonical_json_sha256(payload)
+    path = pending_root / f"{pending_digest}.json"
+    encoded = (json.dumps({**payload, "pending_sha256": pending_digest}, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DurableChangeTrainError(f"source continuity pending intent is unreadable: {path}") from exc
+        if existing != {**payload, "pending_sha256": pending_digest}:
+            raise DurableChangeTrainError("source continuity pending intent collision")
+        return path
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=pending_root, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        _migration_runner._fsync_manifest_directory(pending_root)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return path
+
+
+def _load_source_continuity_pending_intent(path: Path) -> dict[str, object]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DurableChangeTrainError(f"source continuity pending intent is unreadable: {path}") from exc
+    if not isinstance(raw, dict):
+        raise DurableChangeTrainError(f"source continuity pending intent is not an object: {path}")
+    pending_digest = raw.pop("pending_sha256", None)
+    if not isinstance(pending_digest, str) or pending_digest != _canonical_json_sha256(raw):
+        raise DurableChangeTrainError(f"source continuity pending intent checksum mismatch: {path}")
+    if raw.get("format") != _SOURCE_CONTINUITY_PENDING_FORMAT:
+        raise DurableChangeTrainError(f"unsupported source continuity pending intent: {path}")
+    return cast(dict[str, object], raw)
+
+
+def _replace_source_continuity_pending_intent(path: Path, payload: dict[str, object]) -> None:
+    encoded = (
+        json.dumps({**payload, "pending_sha256": _canonical_json_sha256(payload)}, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        _migration_runner._fsync_manifest_directory(path.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def mark_source_continuity_pending_intent_terminal(path: Path, *, error: DurableSourceContinuitySemanticError) -> None:
+    """Persist a semantic refresh rejection so startup does not retry it forever."""
+    payload = _load_source_continuity_pending_intent(path)
+    terminal = {"kind": "continuity_refresh_rejected", "error": str(error)}
+    existing = payload.get("terminal_outcome")
+    if existing == terminal:
+        return
+    if existing is not None:
+        raise DurableChangeTrainError(f"source continuity pending intent has an unknown terminal outcome: {path}")
+    _replace_source_continuity_pending_intent(path, {**payload, "terminal_outcome": terminal})
+
+
+def clear_source_continuity_pending_intent(path: Path) -> None:
+    """Remove a consumed pending intent only after manifest refresh succeeds."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    _migration_runner._fsync_manifest_directory(path.parent)
+
+
+def assert_source_continuity_apply_allowed(archive_root: Path) -> None:
+    """Reject a new source mutation that could invalidate continuity recovery."""
+    archive_root = archive_root.resolve()
+    pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
+    pending_intents = tuple(sorted(pending_root.glob("*.json"))) if pending_root.is_dir() else ()
+    if pending_intents:
+        raise DurableChangeTrainError("source liveness apply is blocked while source continuity recovery is pending")
+
+    source_path = archive_root / "source.db"
+    with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+        current_version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    if not manifest_root.is_dir():
+        return
+    unreleased: list[Path] = []
+    released: list[DurableChangeTrain] = []
+    for candidate in sorted(manifest_root.glob("source-*.json")):
+        train = load_durable_change_train_manifest(candidate)
+        rollback_failed_train = (
+            train.state is DurableChangeTrainState.FAILED
+            and train.failure is not None
+            and train.failure.classification is DurableFailureClassification.ROLLED_BACK_TO_CURRENT
+            and train.current_version == current_version
+        )
+        if (
+            train.target_version != current_version
+            and not (
+                train.reservation is not None and train.reservation.active and train.current_version == current_version
+            )
+            and not rollback_failed_train
+        ):
+            continue
+        if train.state is DurableChangeTrainState.RELEASED:
+            released.append(train)
+        else:
+            unreleased.append(candidate)
+    if unreleased:
+        raise DurableChangeTrainError(
+            "source liveness apply is blocked by an unreleased source train for the live schema"
+        )
+    if len(released) > 1:
+        raise DurableChangeTrainError(
+            "source liveness apply requires exactly one released source train for the live schema"
+        )
+    if released:
+        with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+            _verify_released_train_live_tier(archive_root, connection, released[0])
+
+
+def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
+    """Finish committed source mutations whose manifest refresh was interrupted."""
+    pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
+    if not pending_root.is_dir():
+        return
+    for path in sorted(pending_root.glob("*.json")):
+        raw = _load_source_continuity_pending_intent(path)
+        terminal = raw.get("terminal_outcome")
+        if terminal is not None:
+            if not (
+                isinstance(terminal, dict)
+                and terminal.get("kind") == "continuity_refresh_rejected"
+                and isinstance(terminal.get("error"), str)
+            ):
+                raise DurableChangeTrainError(
+                    f"source continuity pending intent has an invalid terminal outcome: {path}"
+                )
+            clear_source_continuity_pending_intent(path)
+            continue
+        try:
+            evidence_raw = raw["source_before"]
+            if not isinstance(evidence_raw, dict):
+                raise TypeError("source_before is not an object")
+            pre_mutation_evidence = _migration_runner._decode_manifest_value(
+                DurableDatabaseEvidence,
+                evidence_raw,
+                label=f"{path}.source_before",
+            )
+            if not isinstance(pre_mutation_evidence, DurableDatabaseEvidence):
+                raise TypeError("source_before decoded to the wrong type")
+            receipt = Path(str(raw["mutation_receipt"]))
+            backup = Path(str(raw["backup_manifest"]))
+            operation_id = str(raw["operation_id"])
+            evidence_ref = str(raw["evidence_ref"])
+        except (DurableChangeTrainError, KeyError, TypeError, ValueError) as exc:
+            raise DurableChangeTrainError(f"source continuity pending intent is malformed: {path}") from exc
+        receipt_phase = _liveness_receipt_phase(receipt)
+        if receipt_phase == "recovered_rolled_back":
+            clear_source_continuity_pending_intent(path)
+            continue
+        if receipt_phase in {"prepared", "batch_committed"}:
+            from polylogue.maintenance.blob_ref_liveness_reconciliation import _recover_prepared_receipt
+
+            outcome = _recover_prepared_receipt(archive_root / "source.db", receipt)
+            if outcome == "recovered_rolled_back":
+                clear_source_continuity_pending_intent(path)
+                continue
+            if outcome == "recovered_partial":
+                raise DurableChangeTrainError(f"source continuity pending intent has a partial source mutation: {path}")
+            receipt_phase = outcome
+        if receipt_phase == "postcondition_failed":
+            from polylogue.maintenance.blob_ref_liveness_reconciliation import _recover_prepared_receipt
+            from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
+
+            def validate_recovered_postcondition(pending_path: Path = path) -> None:
+                with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as connection:
+                    classification = classify_blob_ref_liveness(connection)
+                    if not classification.safe_to_apply or classification.orphaned_count != 0:
+                        raise DurableChangeTrainError(
+                            f"source continuity pending intent postcondition remains unsafe: {pending_path}"
+                        )
+
+            outcome = _recover_prepared_receipt(
+                archive_root / "source.db",
+                receipt,
+                allow_postcondition_failed=True,
+                postcondition_check=validate_recovered_postcondition,
+            )
+            if outcome == "recovered_rolled_back":
+                clear_source_continuity_pending_intent(path)
+                continue
+            if outcome == "recovered_partial":
+                raise DurableChangeTrainError(f"source continuity pending intent has a partial source mutation: {path}")
+            receipt_phase = outcome
+        if receipt_phase not in {"committed", "recovered_committed"}:
+            raise DurableChangeTrainError(f"source continuity pending intent has no committed receipt: {path}")
+        try:
+            refresh_released_source_train_continuity(
+                archive_root,
+                mutation_receipt=receipt,
+                backup_manifest=backup,
+                pre_mutation_evidence=pre_mutation_evidence,
+                operation_id=operation_id,
+                evidence_ref=evidence_ref,
+            )
+        except DurableSourceTrainMissingError:
+            clear_source_continuity_pending_intent(path)
+        except DurableSourceContinuitySemanticError as exc:
+            mark_source_continuity_pending_intent_terminal(path, error=exc)
+        else:
+            clear_source_continuity_pending_intent(path)
+
+
+def _liveness_receipt_phase(receipt_path: Path) -> str:
+    """Read the last liveness phase before deciding how a pending intent recovers."""
+    try:
+        last_record: object | None = None
+        with receipt_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    last_record = json.loads(line)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DurableChangeTrainError(f"source continuity pending receipt is unreadable: {receipt_path}") from exc
+    if not isinstance(last_record, dict):
+        raise DurableChangeTrainError(f"source continuity pending receipt is incomplete: {receipt_path}")
+    phase = last_record.get("phase")
+    if not isinstance(phase, str):
+        raise DurableChangeTrainError(f"source continuity pending receipt has no phase: {receipt_path}")
+    return phase
+
+
+def _validate_liveness_receipt_bytes(
+    receipt_bytes: bytes,
+    *,
+    source_path: Path,
+    backup_manifest: Path,
+    operation_id: str,
+) -> dict[str, object]:
+    """Validate the exact candidate stream and terminal footer of a liveness receipt."""
+    header: dict[str, object] | None = None
+    footer: dict[str, object] | None = None
+    candidate_digest = BlobRefLivenessCandidateDigest()
+    candidate_count = 0
+    try:
+        for raw_line in io.BytesIO(receipt_bytes):
+            if not raw_line.strip():
+                continue
+            record = json.loads(raw_line)
+            if not isinstance(record, dict):
+                raise DurableChangeTrainError("source mutation receipt contains a non-object record")
+            if header is None:
+                header = cast(dict[str, object], record)
+                continue
+            if footer is not None:
+                row = footer
+                if row.get("kind") == "blob_ref_liveness_reconciliation":
+                    previous_phase = row.get("phase")
+                    current_phase = (
+                        record.get("phase") if record.get("kind") == "blob_ref_liveness_reconciliation" else None
+                    )
+                    if not (
+                        previous_phase == "batch_committed"
+                        or previous_phase == "postcondition_failed"
+                        and current_phase == "recovered_committed"
+                    ):
+                        raise DurableChangeTrainError(
+                            "source mutation receipt contains an unexpected intermediate footer"
+                        )
+                elif row.get("kind") == "candidate":
+                    try:
+                        blob_hash = str(row["blob_hash"])
+                        bytes.fromhex(blob_hash)
+                        size_bytes = row["size_bytes"]
+                        acquired_at_ms = row["acquired_at_ms"]
+                        if not isinstance(size_bytes, int) or isinstance(size_bytes, bool):
+                            raise TypeError("candidate size_bytes is not an integer")
+                        if not isinstance(acquired_at_ms, int) or isinstance(acquired_at_ms, bool):
+                            raise TypeError("candidate acquired_at_ms is not an integer")
+                        candidate_digest.update(
+                            BlobRefLivenessCandidate(
+                                blob_hash=blob_hash,
+                                ref_type=str(row["ref_type"]),
+                                ref_id=str(row["ref_id"]),
+                                source_path=str(row["source_path"]) if row.get("source_path") is not None else None,
+                                size_bytes=size_bytes,
+                                acquired_at_ms=acquired_at_ms,
+                                referent_table=str(row["referent_table"]),
+                                referent_column=str(row["referent_column"]),
+                            )
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise DurableChangeTrainError("source mutation receipt contains an invalid candidate") from exc
+                    candidate_count += 1
+                else:
+                    raise DurableChangeTrainError("source mutation receipt contains an unexpected record")
+            footer = cast(dict[str, object], record)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DurableChangeTrainError("source mutation receipt is not valid JSONL") from exc
+    if header is None or footer is None:
+        raise DurableChangeTrainError("source mutation receipt is incomplete")
+    if (
+        header.get("kind") != "blob_ref_liveness_reconciliation"
+        or header.get("phase") != "prepared"
+        or header.get("source_db") != str(source_path)
+        or header.get("backup_manifest") != str(backup_manifest)
+        or header.get("candidate_digest") != operation_id
+        or footer.get("kind") != "blob_ref_liveness_reconciliation"
+        or footer.get("phase") not in {"committed", "recovered_committed"}
+        or footer.get("deleted_count") != header.get("candidate_count")
+        or (footer.get("phase") == "committed" and footer.get("post_orphaned_count") != 0)
+    ):
+        raise DurableChangeTrainError("source mutation receipt does not bind the named liveness operation")
+
+    if (
+        header.get("candidate_count") != candidate_count
+        or header.get("candidate_digest") != candidate_digest.hexdigest()
+    ):
+        raise DurableChangeTrainError("source mutation receipt candidate digest or count mismatch")
+    return header
+
+
+def _validate_source_continuity_refresh_receipt(
+    archive_root: Path,
+    train: DurableChangeTrain,
+) -> None:
+    """Require the latest source continuity evidence to retain its receipt."""
+    if train.source_continuity_evidence is None:
+        return
+    expected_after = _migration_runner._manifest_json_value(train.source_continuity_evidence)
+    refresh_root = archive_root / ".maintenance-state" / "source-continuity-refreshes"
+    refresh_refs = [
+        ref.removeprefix("proof:source-continuity-refresh:")
+        for ref in train.proof_refs
+        if ref.startswith("proof:source-continuity-refresh:")
+    ]
+    if not refresh_refs:
+        raise DurableChangeTrainError("source continuity evidence has no retained refresh receipt")
+    matches = 0
+    for digest in refresh_refs:
+        receipt_path = refresh_root / f"{digest}.json"
+        payload = _read_source_continuity_refresh_receipt(receipt_path, digest=digest, train=train)
+        if payload.get("source_after") == expected_after:
+            matches += 1
+    if matches != 1:
+        raise DurableChangeTrainError(
+            "source continuity evidence does not identify exactly one matching refresh receipt"
+        )
+
+
+def _read_source_continuity_refresh_receipt(
+    receipt_path: Path,
+    *,
+    digest: str,
+    train: DurableChangeTrain,
+) -> dict[str, object]:
+    """Load one train-retained refresh artifact and authenticate its identity."""
+    try:
+        raw = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DurableChangeTrainError(f"source continuity refresh receipt is unreadable: {receipt_path}") from exc
+    if not isinstance(raw, dict):
+        raise DurableChangeTrainError(f"source continuity refresh receipt is not an object: {receipt_path}")
+    payload = cast(dict[str, object], raw)
+    refresh_sha256 = payload.pop("refresh_sha256", None)
+    if refresh_sha256 != digest or _canonical_json_sha256(payload) != digest:
+        raise DurableChangeTrainError(f"source continuity refresh receipt checksum mismatch: {receipt_path}")
+    if payload.get("format") != "polylogue.source-continuity-refresh.v1":
+        raise DurableChangeTrainError(f"source continuity refresh receipt format mismatch: {receipt_path}")
+    if payload.get("train_id") != train.train_id:
+        raise DurableChangeTrainError(f"source continuity refresh receipt train mismatch: {receipt_path}")
+    return payload
+
+
+def refresh_released_source_train_continuity(
+    archive_root: Path,
+    *,
+    mutation_receipt: Path,
+    backup_manifest: Path,
+    pre_mutation_evidence: DurableDatabaseEvidence,
+    operation_id: str,
+    evidence_ref: str,
+) -> Path:
+    """Refresh released source-train continuity while retaining archive ownership."""
+    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+
+    with OwnedArchiveLocation.acquire(
+        ArchiveLocation.resolve(archive_root),
+        owner_id=f"source-continuity-refresh:{os.getpid()}",
+        allow_reentrant=True,
+    ):
+        return _refresh_released_source_train_continuity_locked(
+            archive_root,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=pre_mutation_evidence,
+            operation_id=operation_id,
+            evidence_ref=evidence_ref,
+        )
+
+
+def _refresh_released_source_train_continuity_locked(
+    archive_root: Path,
+    *,
+    mutation_receipt: Path,
+    backup_manifest: Path,
+    pre_mutation_evidence: DurableDatabaseEvidence,
+    operation_id: str,
+    evidence_ref: str,
+) -> Path:
+    """Record an authorized source mutation without weakening train checks.
+
+    Source maintenance may change rows after a schema train is released. The
+    caller must first validate the named operation and backup against the
+    pre-mutation live tier. This helper then binds those exact receipt and
+    backup bytes to a separate current-evidence record. The original migration
+    evidence remains immutable in ``apply_evidence``.
+    """
+    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+
+    archive_root = archive_root.resolve()
+    mutation_receipt = mutation_receipt.resolve()
+    backup_manifest = backup_manifest.resolve()
+
+    _require_nonempty(operation_id, label="source mutation operation id")
+    _require_nonempty(evidence_ref, label="source continuity evidence ref")
+    if not mutation_receipt.is_file() or mutation_receipt.is_symlink():
+        raise DurableChangeTrainError("source mutation receipt is not a real file")
+    if not backup_manifest.is_file() or backup_manifest.is_symlink():
+        raise DurableChangeTrainError("source mutation backup manifest is not a real file")
+
+    source_path = archive_root / "source.db"
+    try:
+        receipt_bytes = mutation_receipt.read_bytes()
+    except OSError as exc:
+        raise DurableChangeTrainError("source mutation receipt is not readable") from exc
+    header = _validate_liveness_receipt_bytes(
+        receipt_bytes,
+        source_path=source_path,
+        backup_manifest=backup_manifest,
+        operation_id=operation_id,
+    )
+
+    mutation_digest = hashlib.sha256(receipt_bytes).hexdigest()
+    backup_digest = hashlib.sha256(backup_manifest.read_bytes()).hexdigest()
+    receipt_backup_digest = header.get("backup_manifest_sha256")
+    if not isinstance(receipt_backup_digest, str) or receipt_backup_digest != backup_digest:
+        raise DurableChangeTrainError("source mutation receipt backup manifest digest mismatch")
+    with OwnedArchiveLocation.acquire(
+        ArchiveLocation.resolve(archive_root),
+        owner_id=f"source-continuity-refresh:{os.getpid()}",
+        allow_reentrant=True,
+    ):
+        with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+            current = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+
+        manifest_candidates = sorted(
+            (archive_root / ".maintenance-state" / "durable-change-trains").glob("source-*.json")
+        )
+        if not manifest_candidates:
+            raise DurableSourceTrainMissingError("source continuity refresh found no released source train")
+        matching: list[tuple[Path, DurableChangeTrain]] = []
+        for candidate in manifest_candidates:
+            candidate_train = load_durable_change_train_manifest(candidate)
+            if (
+                candidate_train.state is DurableChangeTrainState.RELEASED
+                and candidate_train.tier is ArchiveTier.SOURCE
+                and candidate_train.target_version == current.user_version
+            ):
+                matching.append((candidate, candidate_train))
+        if not matching:
+            raise DurableSourceTrainMissingError("source continuity refresh found no released source train")
+        if len(matching) != 1:
+            raise DurableChangeTrainError(
+                "source continuity refresh requires exactly one released source train for the live schema"
+            )
+        manifest_path, train = matching[0]
+        if train.state is not DurableChangeTrainState.RELEASED:
+            raise DurableChangeTrainError("source continuity refresh requires a released source train")
+        if train.tier is not ArchiveTier.SOURCE:
+            raise DurableChangeTrainError("source continuity refresh selected a non-source train")
+        if train.apply_evidence is None:
+            raise DurableChangeTrainError("source continuity refresh requires apply evidence")
+        refresh_root = archive_root / ".maintenance-state" / "source-continuity-refreshes"
+        serialized_before = _migration_runner._manifest_json_value(pre_mutation_evidence)
+        serialized_current = _migration_runner._manifest_json_value(current)
+        retained_current = train.source_continuity_evidence
+        current_matches_retained = False
+        if retained_current is not None:
+            try:
+                _migration_runner._assert_durable_database_continuity(
+                    current,
+                    retained_current,
+                    label="source continuity retained refresh",
+                )
+            except DurableChangeTrainError:
+                pass
+            else:
+                current_matches_retained = True
+        serialized_retained_current = (
+            _migration_runner._manifest_json_value(retained_current) if retained_current is not None else None
+        )
+        retained_refreshes: list[tuple[Path, dict[str, object]]] = []
+        retained_refs = {
+            ref.removeprefix("proof:source-continuity-refresh:")
+            for ref in train.proof_refs
+            if ref.startswith("proof:source-continuity-refresh:")
+        }
+        for existing_path in sorted(refresh_root.glob("*.json")) if refresh_root.is_dir() else ():
+            digest = existing_path.stem
+            if digest not in retained_refs:
+                continue
+            existing = _read_source_continuity_refresh_receipt(existing_path, digest=digest, train=train)
+            if existing.get("mutation_receipt_sha256") == mutation_digest:
+                retained_refreshes.append((existing_path, existing))
+        for existing_path, existing in retained_refreshes:
+            # A crash after manifest persistence can leave its pending intent
+            # behind. The exact retained artifact, including its before/after
+            # evidence, authenticates this idempotent completion.
+            if (
+                current_matches_retained
+                and existing.get("source_before") == serialized_before
+                and existing.get("source_after") == serialized_retained_current
+            ):
+                _validate_source_continuity_refresh_receipt(archive_root, train)
+                return existing_path
+        if pre_mutation_evidence.user_version != train.target_version:
+            raise DurableSourceContinuitySemanticError(
+                "source continuity refresh pre-state has the wrong schema version"
+            )
+        if current.user_version != train.target_version:
+            raise DurableSourceContinuitySemanticError("source continuity refresh changed the schema version")
+        baseline = train.source_continuity_evidence or train.apply_evidence.post
+        try:
+            _migration_runner._assert_durable_database_continuity(
+                pre_mutation_evidence,
+                baseline,
+                label="source continuity pre-mutation",
+            )
+        except DurableChangeTrainError as exc:
+            raise DurableSourceContinuitySemanticError(
+                "source continuity refresh pre-state contains unreceipted content drift"
+            ) from exc
+        if pre_mutation_evidence.archive_identity_digest != train.apply_evidence.post.archive_identity_digest:
+            raise DurableSourceContinuitySemanticError(
+                "source continuity refresh pre-state has the wrong archive identity"
+            )
+        if current.archive_identity_digest != train.apply_evidence.post.archive_identity_digest:
+            raise DurableSourceContinuitySemanticError("source continuity refresh changed archive identity")
+        if pre_mutation_evidence.quick_check != ("ok",) or current.quick_check != ("ok",):
+            raise DurableSourceContinuitySemanticError(
+                "source continuity refresh requires successful quick_check evidence"
+            )
+
+        payload = {
+            "format": "polylogue.source-continuity-refresh.v1",
+            "operation_id": operation_id,
+            "evidence_ref": evidence_ref,
+            "backup_manifest": str(backup_manifest),
+            "backup_manifest_sha256": backup_digest,
+            "mutation_receipt": str(mutation_receipt),
+            "mutation_receipt_sha256": mutation_digest,
+            "train_id": train.train_id,
+            "source_before": serialized_before,
+            "source_after": serialized_current,
+            "refreshed_at_ms": current.observed_at_ms,
+        }
+        refresh_digest = _canonical_json_sha256(payload)
+        refresh_root_existed = refresh_root.is_dir()
+        refresh_root.mkdir(parents=True, exist_ok=True)
+        if not refresh_root_existed:
+            _migration_runner._fsync_manifest_directory(refresh_root.parent)
+        refresh_path = refresh_root / f"{refresh_digest}.json"
+        if refresh_path.exists():
+            try:
+                existing = json.loads(refresh_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise DurableChangeTrainError(
+                    f"source continuity refresh receipt is unreadable: {refresh_path}"
+                ) from exc
+            if existing != {**payload, "refresh_sha256": refresh_digest}:
+                raise DurableChangeTrainError("source continuity refresh receipt collision")
+        else:
+            encoded = (
+                json.dumps({**payload, "refresh_sha256": refresh_digest}, indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=refresh_root,
+                    prefix=f".{refresh_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as stream:
+                    temporary = Path(stream.name)
+                    stream.write(encoded)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, refresh_path)
+                temporary = None
+                _migration_runner._fsync_manifest_directory(refresh_root)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+        refresh_ref = f"proof:source-continuity-refresh:{refresh_digest}"
+        references = _migration_runner._append_proof_refs(train.proof_refs, evidence_ref, refresh_ref)
+        if train.proof is None:
+            raise DurableChangeTrainError("source continuity refresh requires train proof")
+        updated = replace(
+            train,
+            revision=train.revision + 1,
+            source_continuity_evidence=current,
+            proof_refs=references,
+        )
+        write_durable_change_train_manifest(manifest_path, updated, expected_revision=train.revision)
+    return refresh_path
 
 
 def _fresh_ddl_parity_for_train(
@@ -702,7 +1380,7 @@ def _verify_persisted_live_tier_continuity(conn: sqlite3.Connection, train: Dura
         ) from exc
 
 
-def _verify_released_train_live_tier(conn: sqlite3.Connection, train: DurableChangeTrain) -> None:
+def _verify_released_train_live_tier(archive_root: Path, conn: sqlite3.Connection, train: DurableChangeTrain) -> None:
     """Verify a released train remains represented after later trains advance it."""
     if train.apply_evidence is None:
         raise DurableChangeTrainError(f"{train.state.value} train lacks post-apply continuity evidence")
@@ -713,7 +1391,15 @@ def _verify_released_train_live_tier(conn: sqlite3.Connection, train: DurableCha
             "target; refusing startup initialization"
         )
     if actual.user_version == train.target_version:
-        _verify_persisted_live_tier_continuity(conn, train)
+        if train.source_continuity_evidence is not None:
+            _validate_source_continuity_refresh_receipt(archive_root, train)
+            _assert_durable_database_continuity(
+                actual,
+                train.source_continuity_evidence,
+                label="source continuity refresh",
+            )
+        else:
+            _verify_persisted_live_tier_continuity(conn, train)
         return
     integrity = conn.execute("PRAGMA integrity_check").fetchone()
     if integrity != ("ok",):
@@ -850,7 +1536,7 @@ def execute_durable_change_train(
                     f"released {tier.value} train {train.train_id} expects live v{runtime_target_version}, "
                     f"found v{live_version}; authorize a new execution"
                 )
-            _verify_persisted_live_tier_continuity(live, train)
+            _verify_released_train_live_tier(archive_root, live, train)
         return DurableChangeTrainExecution(train=train, manifest_path=manifest_path, migration_result=None)
 
     if train.state is DurableChangeTrainState.DECLARED:
@@ -945,6 +1631,7 @@ def reconcile_durable_change_train_startup(archive_root: Path) -> tuple[Path, ..
 
 def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[Path, ...]:
     """Reconcile persisted trains while the caller holds archive ownership."""
+    _recover_pending_source_continuity_intents(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     if not manifest_root.is_dir():
         return ()
@@ -980,7 +1667,7 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
             train = _persist_train_transition(manifest_path, recovered, expected_revision=train.revision)
         if train.state is DurableChangeTrainState.RELEASED:
             with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
-                _verify_released_train_live_tier(live, train)
+                _verify_released_train_live_tier(archive_root, live, train)
             reconciled.append(manifest_path)
             continue
         if train.state not in {
@@ -1020,6 +1707,8 @@ __all__ = [
     "DurableChangeTrain",
     "DurableChangeTrainState",
     "DurableChangeTrainError",
+    "DurableSourceTrainMissingError",
+    "DurableSourceContinuitySemanticError",
     "DurableChangeTrainApplyError",
     "DurableChangeTrainRecoveryError",
     "DurableMigrationClaim",
@@ -1040,6 +1729,11 @@ __all__ = [
     "record_durable_writer_release",
     "prove_durable_change_train",
     "release_durable_change_train",
+    "assert_source_continuity_apply_allowed",
+    "write_source_continuity_pending_intent",
+    "mark_source_continuity_pending_intent_terminal",
+    "clear_source_continuity_pending_intent",
+    "refresh_released_source_train_continuity",
     "write_durable_change_train_manifest",
     "load_durable_change_train_manifest",
 ]

@@ -1367,6 +1367,7 @@ class DurableChangeTrain:
     released_at_ms: int | None
     release_evidence_ref: str | None
     proof_refs: tuple[str, ...]
+    source_continuity_evidence: DurableDatabaseEvidence | None = None
 
     @property
     def contention_key(self) -> tuple[str, int, int]:
@@ -1407,6 +1408,7 @@ def _normalize_schema_sql(sql: str | None) -> str:
     if sql is None:
         return ""
     unquoted: list[str] = []
+    string_literals: list[str] = []
     index = 0
     while index < len(sql):
         character = sql[index]
@@ -1423,7 +1425,8 @@ def _normalize_schema_sql(sql: str | None) -> str:
                     continue
                 index += 1
                 break
-            unquoted.append(sql[start:index])
+            string_literals.append(sql[start:index])
+            unquoted.append(f"\x00{len(string_literals) - 1}\x00")
             continue
         if character in {'"', "`", "["}:
             closing = "]" if character == "[" else character
@@ -1463,6 +1466,8 @@ def _normalize_schema_sql(sql: str | None) -> str:
         r"CHECK(\g<column> IN(\g<values>))",
         collapsed,
     )
+    for index, literal in enumerate(string_literals):
+        collapsed = collapsed.replace(f"\x00{index}\x00", literal)
     return collapsed
 
 
@@ -2900,6 +2905,10 @@ def validate_durable_change_train_manifest(train: DurableChangeTrain) -> None:
     """Validate cross-field lifecycle invariants for loaded and transitioned manifests."""
     if train.manifest_format != DURABLE_CHANGE_TRAIN_FORMAT:
         raise DurableChangeTrainError(f"unsupported durable change train format: {train.manifest_format}")
+    if train.source_continuity_evidence is not None and (
+        train.tier is not ArchiveTier.SOURCE or train.state is not DurableChangeTrainState.RELEASED
+    ):
+        raise DurableChangeTrainError("source continuity evidence is only valid on a released source train")
     if train.tier not in DURABLE_MIGRATION_TIERS:
         raise DurableChangeTrainError(f"manifest tier is not durable: {train.tier.value}")
     if train.current_version < 1 or train.target_version != train.current_version + 1:
@@ -3006,6 +3015,7 @@ def validate_durable_change_train_manifest(train: DurableChangeTrain) -> None:
             raise DurableChangeTrainError("backup-authorized manifest contains invalid later evidence")
         return
     _validate_apply_evidence(train)
+    apply_evidence = train.apply_evidence
     if train.state is DurableChangeTrainState.APPLIED:
         if train.proof is not None or train.released_at_ms is not None or train.release_evidence_ref is not None:
             raise DurableChangeTrainError("applied manifest contains proof/release evidence")
@@ -3030,6 +3040,26 @@ def validate_durable_change_train_manifest(train: DurableChangeTrain) -> None:
             raise DurableChangeTrainError("train release timestamp predates proof")
         if release_ref not in train.proof_refs:
             raise DurableChangeTrainError("train release evidence is not retained by the manifest")
+        if apply_evidence is None:
+            raise DurableChangeTrainError("released manifest lacks apply evidence")
+        if train.source_continuity_evidence is not None:
+            _validate_database_evidence(
+                train.source_continuity_evidence,
+                train,
+                expected_version=train.target_version,
+                label="source continuity evidence",
+            )
+            apply_post = apply_evidence.post
+            refreshed = train.source_continuity_evidence
+            if (
+                refreshed.schema_inventory_sha256 != apply_post.schema_inventory_sha256
+                or refreshed.archive_identity_digest != apply_post.archive_identity_digest
+            ):
+                raise DurableChangeTrainError("source continuity evidence changed schema or archive identity")
+            if refreshed.observed_at_ms < train.released_at_ms:
+                raise DurableChangeTrainError("source continuity evidence predates train release")
+            if not any(ref.startswith("proof:source-continuity-refresh:") for ref in train.proof_refs):
+                raise DurableChangeTrainError("source continuity evidence is not retained by the train")
         return
     raise DurableChangeTrainError(f"unknown durable change train state: {train.state}")
 
@@ -3197,6 +3227,9 @@ def durable_change_train_from_payload(payload: Mapping[str, object]) -> DurableC
     checksum = mutable.pop("manifest_sha256", None)
     if not isinstance(checksum, str) or checksum != _canonical_json_sha256(mutable):
         raise DurableChangeTrainError("durable change train manifest checksum mismatch")
+    # v1 manifests written before source continuity refreshes omitted this
+    # optional field. Preserve their checksum and decode them as no refresh.
+    mutable.setdefault("source_continuity_evidence", None)
     decoded = _decode_manifest_value(DurableChangeTrain, mutable, label="train")
     if not isinstance(decoded, DurableChangeTrain):
         raise DurableChangeTrainError("durable change train payload decoded to the wrong type")

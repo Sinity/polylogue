@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,9 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash, deterministic_raw_session_id
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.durable_change_train import DurableSourceContinuitySemanticError
 from polylogue.storage.sqlite.migration_runner import (
+    DurableChangeTrainError,
     MigrationError,
     validate_migration_backup_live_fingerprint,
     validate_migration_backup_manifest,
@@ -152,6 +155,21 @@ def test_dry_run_is_read_only_and_reports_attachment_parent_join(tmp_path: Path)
     assert after == before
 
 
+def test_default_dry_run_does_not_acquire_the_archive_writer_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _source_archive(tmp_path)
+
+    def unexpected_lease(*args: object, **kwargs: object) -> object:
+        raise AssertionError("default dry-run must not acquire the archive writer lease")
+
+    monkeypatch.setattr("polylogue.storage.archive_identity.OwnedArchiveLocation.acquire", unexpected_lease)
+
+    report = reconcile_blob_ref_liveness(archive_root)
+
+    assert report.dry_run is True
+
+
 def test_legacy_hook_payload_ref_is_rekeyable_not_a_delete_candidate(tmp_path: Path) -> None:
     archive_root = _source_archive(tmp_path)
     blob_hash = b"h" * 32
@@ -185,6 +203,51 @@ def test_apply_requires_backup_and_receipt_before_mutation(tmp_path: Path) -> No
     archive_root = _source_archive(tmp_path)
     with pytest.raises(BlobRefLivenessReconciliationError, match="backup manifest"):
         reconcile_blob_ref_liveness(archive_root, dry_run=False, receipt_path=tmp_path / "receipt.jsonl")
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
+
+
+def test_apply_refuses_a_fresh_mutation_while_continuity_recovery_is_pending(tmp_path: Path) -> None:
+    archive_root = _source_archive(tmp_path)
+    pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
+    pending_root.mkdir(parents=True)
+    (pending_root / "pending.json").write_text("{}\n", encoding="utf-8")
+    receipt = tmp_path / "receipts" / "fresh.jsonl"
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="continuity recovery is pending"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    assert not receipt.exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
+
+
+def test_apply_refuses_an_unreleased_source_train_before_writing_a_receipt(tmp_path: Path) -> None:
+    archive_root = _source_archive(tmp_path)
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    manifest_root.mkdir(parents=True)
+    manifest_root.joinpath("source-029.json").write_text(
+        resources.files("polylogue.storage.sqlite.migrations.source")
+        .joinpath("029.train.json")
+        .read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    receipt = tmp_path / "receipts" / "blocked-by-train.jsonl"
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="unreleased source train"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    assert not receipt.exists()
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
 
@@ -258,6 +321,27 @@ def test_restart_recovers_prepared_receipt_after_committed_delete(tmp_path: Path
         )
     rows = [json.loads(line) for line in receipt.read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["phase"] == "recovered_committed"
+
+
+def test_prepared_receipt_persists_new_receipt_parent_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _source_archive(tmp_path)
+    receipt = tmp_path / "receipts" / "fresh.jsonl"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        classification = classify_blob_ref_liveness(conn)
+    fsync_calls: list[Path] = []
+    real_fsync_directory = liveness_reconciliation._fsync_directory
+
+    def record_fsync_directory(path: Path) -> None:
+        fsync_calls.append(path)
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(liveness_reconciliation, "_fsync_directory", record_fsync_directory)
+    liveness_reconciliation._write_prepared_receipt(
+        receipt, archive_root / "source.db", classification, tmp_path / "backup.json"
+    )
+
+    assert receipt.parent in fsync_calls
+    assert receipt.parent.parent in fsync_calls
 
 
 def test_restart_recovers_prepared_receipt_after_rollback(tmp_path: Path) -> None:
@@ -981,6 +1065,86 @@ def test_failure_before_prepared_receipt_rolls_back_without_receipt_or_mutation(
     assert not receipt.exists()
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
+
+
+def test_committed_delete_retains_pending_intent_for_retryable_refresh_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _source_archive(tmp_path)
+
+    def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        return path
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_manifest",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_live_fingerprint",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid", lambda _config: None
+    )
+    monkeypatch.setattr(
+        liveness_reconciliation,
+        "refresh_released_source_train_continuity",
+        lambda *args, **kwargs: (_ for _ in ()).throw(DurableChangeTrainError("continuity unavailable")),
+    )
+
+    backup_manifest = tmp_path / "backup" / "manifest.json"
+    backup_manifest.parent.mkdir()
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    receipt = tmp_path / "receipts" / "continuity-failed.jsonl"
+    report = reconcile_blob_ref_liveness(
+        archive_root,
+        backup_manifest=backup_manifest,
+        receipt_path=receipt,
+        dry_run=False,
+    )
+
+    assert report.applied is True
+    assert report.deleted_count == 4
+    assert report.continuity_refresh_receipt is None
+    assert report.continuity_refresh_error == "continuity unavailable"
+    assert json.loads(receipt.read_text(encoding="utf-8").splitlines()[-1])["phase"] == "committed"
+    pending = next((archive_root / ".maintenance-state" / "source-continuity-pending").glob("*.json"))
+    assert "terminal_outcome" not in json.loads(pending.read_text(encoding="utf-8"))
+
+
+def test_committed_delete_terminalizes_an_immutable_continuity_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _source_archive(tmp_path)
+
+    def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        return path
+
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_manifest", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_live_fingerprint", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "running_daemon_pid", lambda _config: None)
+    monkeypatch.setattr(
+        liveness_reconciliation,
+        "refresh_released_source_train_continuity",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            DurableSourceContinuitySemanticError("continuity baseline rejected")
+        ),
+    )
+    backup_manifest = tmp_path / "backup" / "manifest.json"
+    backup_manifest.parent.mkdir()
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    reconcile_blob_ref_liveness(
+        archive_root,
+        backup_manifest=backup_manifest,
+        receipt_path=tmp_path / "receipts" / "continuity-semantic.jsonl",
+        dry_run=False,
+    )
+
+    pending = next((archive_root / ".maintenance-state" / "source-continuity-pending").glob("*.json"))
+    assert json.loads(pending.read_text(encoding="utf-8"))["terminal_outcome"] == {
+        "kind": "continuity_refresh_rejected",
+        "error": "continuity baseline rejected",
+    }
 
 
 def test_shared_legacy_hook_path_fails_closed_without_cross_product(

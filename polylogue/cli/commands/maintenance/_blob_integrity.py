@@ -93,8 +93,10 @@ def blob_reference_liveness_command(
     }
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    _render_blob_reference_liveness_plain(report, sample_limit=sample_limit)
+    else:
+        _render_blob_reference_liveness_plain(report, sample_limit=sample_limit)
+    if report.continuity_refresh_pending:
+        raise click.exceptions.Exit(1)
 
 
 def _render_blob_reference_liveness_plain(report: BlobRefLivenessReconciliationReport, *, sample_limit: int) -> None:
@@ -120,6 +122,10 @@ def _render_blob_reference_liveness_plain(report: BlobRefLivenessReconciliationR
         )
     if report.receipt_path is not None:
         click.echo(f"Receipt:      {report.receipt_path}")
+    if report.continuity_refresh_receipt is not None:
+        click.echo(f"Train proof:  {report.continuity_refresh_receipt}")
+    if report.continuity_refresh_error is not None:
+        click.echo(f"Train proof refresh failed: {report.continuity_refresh_error}")
     for candidate in report.classification.candidates[: max(0, sample_limit)]:
         click.echo(
             f"  orphan {candidate.ref_type} ref_id={candidate.ref_id} "
