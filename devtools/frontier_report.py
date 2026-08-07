@@ -2,10 +2,10 @@
 
 The report keeps three deliberately separate sets:
 
-* active ambition: every open or in-progress Bead;
+* full ambition: every open or in-progress Bead;
 * active set: Beads explicitly admitted through structured frontier metadata;
-* execution focus: ready, unclaimed work selected after declared resource and
-  footprint-conflict constraints.
+* execution focus: ready, unclaimed admitted active leaves selected after
+  declared resource and footprint-conflict constraints.
 
 It only reports those derivations.  It never claims, releases, truncates, or
 otherwise mutates Beads admission state.
@@ -150,6 +150,28 @@ def _active_set(issues: list[dict[str, Any]]) -> list[str]:
     )
 
 
+def _full_ambition(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return every open Bead with the fields needed to audit its admission."""
+    rows: list[dict[str, Any]] = []
+    for issue in issues:
+        if not _is_open(issue):
+            continue
+        metadata = _metadata(issue)
+        rows.append(
+            {
+                "id": str(issue["id"]),
+                "title": str(issue.get("title", "")),
+                "status": str(issue.get("status", "unknown")),
+                "priority": _priority(issue),
+                "issue_type": str(issue.get("issue_type", "unknown")),
+                "frontier": metadata.get("frontier"),
+                "frontier_program_ref": metadata.get("frontier_program_ref"),
+                "horizons": sorted(label for label in _labels(issue) if label.startswith("horizon:")),
+            }
+        )
+    return sorted(rows, key=lambda row: str(row["id"]))
+
+
 def _critical_path_leverage(issues: list[dict[str, Any]]) -> dict[str, int]:
     """Count downstream work unblocked through exclusively single-blocker paths."""
     blocked_by: dict[str, set[str]] = defaultdict(set)
@@ -231,6 +253,7 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
     )
     claim_ids = [issue["id"] for issue in claims]
     leverage = _critical_path_leverage(issues)
+    active_ids = set(_active_set(issues))
     candidates = [
         _candidate_row(
             issue,
@@ -241,7 +264,7 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
             ready_ids=ready_ids,
         )
         for issue in open_issues
-        if issue.get("status") == "open" and issue["id"] in ready_ids and issue.get("issue_type") != "epic"
+        if issue.get("status") == "open" and issue["id"] in ready_ids and issue["id"] in active_ids
     ]
     candidates.sort(key=lambda row: (row["priority"], -row["critical_path_leverage"], row["id"]))
 
@@ -312,20 +335,21 @@ def build_report(issues: list[Any], ready: list[Any], *, repo: Path) -> dict[str
     ready = _normalize_issues(ready, source="bd ready")
     ready_ids = {issue["id"] for issue in ready}
     execution_focus = derive_execution_focus(issues, ready_ids)
-    open_issues = [issue for issue in issues if _is_open(issue)]
-    claims = [issue for issue in open_issues if issue.get("status") == "in_progress"]
+    ambition = _full_ambition(issues)
+    claims = [issue for issue in issues if _is_open(issue) and issue.get("status") == "in_progress"]
     return {
-        "report_version": 2,
+        "report_version": 3,
         "command": "devtools workspace frontier",
         "repo": str(repo),
         "counts": {
-            "ambition": len(open_issues),
+            "ambition": len(ambition),
             "active_set": len(_active_set(issues)),
             "claims": len(claims),
             "dependency_ready": len(ready_ids),
             "execution_focus": len(execution_focus["focus"]),
             "deferred": len(execution_focus["deferred"]),
         },
+        "ambition": ambition,
         "active_set": _active_set(issues),
         "execution_focus": execution_focus,
     }
@@ -352,6 +376,14 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.extend(["", "## Deferred", ""])
     for item in report["execution_focus"]["deferred"]:
         lines.append(f"- `{item['id']}` P{item['priority']} {item['reason']}")
+    lines.extend(["", "## Full Ambition", ""])
+    for item in report["ambition"]:
+        horizons = ", ".join(item["horizons"]) or "no horizon"
+        program = item["frontier_program_ref"] or "no program"
+        lines.append(
+            f"- `{item['id']}` P{item['priority']} {item['status']} {item['issue_type']} "
+            f"program={program} horizons={horizons} {item['title']}"
+        )
     return "\n".join(lines)
 
 

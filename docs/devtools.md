@@ -27,7 +27,7 @@ Routine command placement:
 
 ## Beads execution sets
 
-Treat the Beads population as four distinct, derived sets. Full ambition is every open or in-progress Bead. The active set is the explicitly admitted non-epic work with `metadata.frontier=active`. Execution focus is the ready, unclaimed subset that the report can schedule after existing claims, direct blocking leverage, footprint conflicts, and its declared schema/live-state resource policy. Dependency-ready means that `bd ready` currently reports no unmet hard dependency; it does not imply that the item belongs in the active set or is safe to run alongside another lane.
+Treat the Beads population as four distinct, derived sets. Full ambition is every open or in-progress Bead. The active set is the explicitly admitted non-epic work with `metadata.frontier=active`. Execution focus is the ready, unclaimed subset of admitted active leaves that the report can schedule after existing claims, direct blocking leverage, footprint conflicts, and its declared schema/live-state resource policy. Dependency-ready means that `bd ready` currently reports no unmet hard dependency; it does not imply that the item belongs in the active set or is safe to run alongside another lane.
 
 Use the complete structured surfaces, never an output page, to make that distinction:
 
@@ -37,7 +37,7 @@ devtools lab policy bead-graph --json
 devtools lab policy backlog-hygiene --json
 ```
 
-`workspace frontier --json` reports every selected and deferred execution-focus candidate, the occupied claims, and the policy that caused each deferral. It never changes claims or admission metadata. `lab policy bead-graph --json` stays fail-closed for empty `acceptance_criteria`, validates parent-child integrity from dependency records, and includes every missing-AC ID with deterministic partitions by status, priority, program-or-parent, and declared campaign relevance. `backlog-hygiene --json` remains the bounded exported-snapshot structure gate for the active-set metadata itself.
+`workspace frontier --json` emits the complete auditable full-ambition set plus every selected and deferred execution-focus candidate, the occupied claims, and the policy that caused each deferral. It never changes claims or admission metadata. `lab policy bead-graph --json` stays fail-closed for empty `acceptance_criteria`, validates parent-child integrity from dependency records, and includes every missing-AC ID with deterministic partitions by status, priority, program-or-parent, and declared campaign relevance. `backlog-hygiene --json` remains the bounded exported-snapshot structure gate for the active-set metadata itself.
 
 <!-- BEGIN GENERATED: devtools-command-catalog -->
 ## Command Catalog

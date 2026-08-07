@@ -18,13 +18,14 @@ def _issue(
     design: str = "",
     labels: list[str] | None = None,
     metadata: dict[str, object] | None = None,
+    issue_type: str = "task",
 ) -> dict[str, object]:
     return {
         "id": bead_id,
         "title": f"title for {bead_id}",
         "status": status,
         "priority": priority,
-        "issue_type": "task",
+        "issue_type": issue_type,
         "dependencies": dependencies or [],
         "design": design,
         "labels": labels or [],
@@ -36,10 +37,10 @@ def test_execution_focus_derives_ready_priority_leverage_claim_and_resource_cons
     issues = [
         _issue("claim-schema", status="in_progress", design="migration 008_add_column.sql"),
         _issue("claim-overlap", status="in_progress", design="polylogue/mcp/server.py"),
-        _issue("schema-candidate", priority=0, design="migration 009_add_other.sql"),
-        _issue("overlap-candidate", priority=1, design="polylogue/mcp/server.py"),
-        _issue("leverage", priority=1, design="polylogue/core/leverage.py"),
-        _issue("ordinary", priority=1, design="devtools/ordinary.py"),
+        _issue("schema-candidate", priority=0, design="migration 009_add_other.sql", metadata={"frontier": "active"}),
+        _issue("overlap-candidate", priority=1, design="polylogue/mcp/server.py", metadata={"frontier": "active"}),
+        _issue("leverage", priority=1, design="polylogue/core/leverage.py", metadata={"frontier": "active"}),
+        _issue("ordinary", priority=1, design="devtools/ordinary.py", metadata={"frontier": "active"}),
         _issue("blocked", dependencies=[{"type": "blocks", "depends_on_id": "leverage"}]),
     ]
     report = frontier_report.build_report(
@@ -57,7 +58,7 @@ def test_execution_focus_derives_ready_priority_leverage_claim_and_resource_cons
     assert deferred["overlap-candidate"]["conflicts_with_claims"] == ["claim-overlap"]
     assert report["counts"] == {
         "ambition": 7,
-        "active_set": 0,
+        "active_set": 4,
         "claims": 2,
         "dependency_ready": 4,
         "execution_focus": 2,
@@ -68,7 +69,7 @@ def test_execution_focus_derives_ready_priority_leverage_claim_and_resource_cons
 def test_execution_focus_reports_active_set_without_mutating_admission() -> None:
     issue = _issue(
         "active",
-        design="polylogue/core/active.py",
+        design="devtools/frontier_report.py",
         metadata={"frontier": "active", "frontier_program_ref": "program"},
     )
     report = frontier_report.build_report([issue], [issue], repo=Path("/repo"))
@@ -78,17 +79,79 @@ def test_execution_focus_reports_active_set_without_mutating_admission() -> None
     assert report["execution_focus"]["focus"][0]["id"] == "active"
 
 
+def test_execution_focus_excludes_unadmitted_ready_work_and_emits_full_ambition() -> None:
+    issues = [
+        _issue("active", design="devtools/frontier_report.py", metadata={"frontier": "active"}),
+        _issue("unadmitted", design="polylogue/core/unadmitted.py"),
+        _issue("claimed", status="in_progress", design="polylogue/core/claimed.py"),
+        _issue("program", issue_type="epic"),
+    ]
+
+    report = frontier_report.build_report(issues, [issues[0], issues[1], issues[3]], repo=Path("/repo"))
+
+    assert [item["id"] for item in report["execution_focus"]["candidates"]] == ["active"]
+    assert [item["id"] for item in report["execution_focus"]["focus"]] == ["active"]
+    assert report["counts"]["ambition"] == 4
+    assert report["ambition"] == [
+        {
+            "id": "active",
+            "title": "title for active",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "task",
+            "frontier": "active",
+            "frontier_program_ref": None,
+            "horizons": [],
+        },
+        {
+            "id": "claimed",
+            "title": "title for claimed",
+            "status": "in_progress",
+            "priority": 2,
+            "issue_type": "task",
+            "frontier": None,
+            "frontier_program_ref": None,
+            "horizons": [],
+        },
+        {
+            "id": "program",
+            "title": "title for program",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "epic",
+            "frontier": None,
+            "frontier_program_ref": None,
+            "horizons": [],
+        },
+        {
+            "id": "unadmitted",
+            "title": "title for unadmitted",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "task",
+            "frontier": None,
+            "frontier_program_ref": None,
+            "horizons": [],
+        },
+    ]
+
+
 def test_execution_focus_defers_selected_footprints_and_respects_integer_resource_occupancy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setitem(frontier_report.RESOURCE_POLICY["schema-lane"], "max_parallel", 2)
     issues = [
-        _issue("devtools-first", priority=0, design="devtools/frontier_report.py"),
-        _issue("devtools-second", priority=1, design="devtools/frontier_report.py"),
-        _issue("schema-first", priority=2, design="migration 010_first.sql"),
-        _issue("schema-second", priority=3, design="migration 011_second.sql"),
-        _issue("schema-third", priority=4, design="migration 012_third.sql"),
-        _issue("schema-unnumbered", priority=5, design="edit canonical index DDL and bump INDEX_SCHEMA_VERSION"),
+        _issue("devtools-first", priority=0, design="devtools/frontier_report.py", metadata={"frontier": "active"}),
+        _issue("devtools-second", priority=1, design="devtools/frontier_report.py", metadata={"frontier": "active"}),
+        _issue("schema-first", priority=2, design="migration 010_first.sql", metadata={"frontier": "active"}),
+        _issue("schema-second", priority=3, design="migration 011_second.sql", metadata={"frontier": "active"}),
+        _issue("schema-third", priority=4, design="migration 012_third.sql", metadata={"frontier": "active"}),
+        _issue(
+            "schema-unnumbered",
+            priority=5,
+            design="edit canonical index DDL and bump INDEX_SCHEMA_VERSION",
+            metadata={"frontier": "active"},
+        ),
     ]
 
     report = frontier_report.build_report(issues, issues, repo=Path("/repo"))
@@ -108,8 +171,9 @@ def test_execution_focus_defers_ambiguous_footprints_and_mixed_resource_work() -
             "mixed-candidate",
             design="migration 010_mixed.sql",
             labels=["resource:live-state"],
+            metadata={"frontier": "active"},
         ),
-        _issue("ambiguous-candidate"),
+        _issue("ambiguous-candidate", metadata={"frontier": "active"}),
     ]
 
     report = frontier_report.build_report(
@@ -128,8 +192,8 @@ def test_execution_focus_defers_ambiguous_footprints_and_mixed_resource_work() -
 
 def test_execution_focus_counts_only_dependents_the_candidate_unblocks() -> None:
     issues = [
-        _issue("blocker-a", design="polylogue/core/a.py"),
-        _issue("blocker-b", design="polylogue/core/b.py"),
+        _issue("blocker-a", design="devtools/frontier_report.py", metadata={"frontier": "active"}),
+        _issue("blocker-b", design="devtools/verify_bead_graph.py", metadata={"frontier": "active"}),
         _issue(
             "single-dependent",
             dependencies=[{"type": "blocks", "depends_on_id": "blocker-a"}],
@@ -180,6 +244,17 @@ def test_render_markdown_includes_counts_focus_and_deferrals() -> None:
                 "focus": [{"id": "focus", "priority": 1, "critical_path_leverage": 2, "title": "Focus title"}],
                 "deferred": [{"id": "wait", "priority": 2, "reason": "schema-lane occupied by claim(s): claim"}],
             },
+            "ambition": [
+                {
+                    "id": "ambition",
+                    "priority": 3,
+                    "status": "open",
+                    "issue_type": "task",
+                    "frontier_program_ref": "program",
+                    "horizons": ["horizon:frontier"],
+                    "title": "Ambition title",
+                }
+            ],
         }
     )
 
@@ -190,7 +265,9 @@ def test_render_markdown_includes_counts_focus_and_deferrals() -> None:
         "## Focus\n\n"
         "- `focus` P1 leverage=2 Focus title\n\n"
         "## Deferred\n\n"
-        "- `wait` P2 schema-lane occupied by claim(s): claim"
+        "- `wait` P2 schema-lane occupied by claim(s): claim\n\n"
+        "## Full Ambition\n\n"
+        "- `ambition` P3 open task program=program horizons=horizon:frontier Ambition title"
     )
 
 
@@ -198,7 +275,10 @@ def test_main_uses_unbounded_live_surfaces_and_emits_complete_json(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     calls: list[list[str]] = []
-    issues: list[Any] = [_issue("a", design="polylogue/core/a.py"), _issue("b", design="polylogue/core/b.py")]
+    issues: list[Any] = [
+        _issue("a", design="polylogue/core/a.py", metadata={"frontier": "active"}),
+        _issue("b", design="polylogue/core/b.py"),
+    ]
     ready: list[Any] = [_issue("a", design="polylogue/core/a.py")]
 
     def fake_run(_repo: Path, args: list[str]) -> list[object]:
@@ -216,5 +296,6 @@ def test_main_uses_unbounded_live_surfaces_and_emits_complete_json(
 
     assert calls == [["list", "--all"], ["ready"]]
     assert [item["id"] for item in payload["execution_focus"]["candidates"]] == ["a"]
+    assert [item["id"] for item in payload["ambition"]] == ["a", "b"]
     assert payload["counts"]["dependency_ready"] == 1
     assert payload["execution_focus"]["resource_policy"] == frontier_report.RESOURCE_POLICY
