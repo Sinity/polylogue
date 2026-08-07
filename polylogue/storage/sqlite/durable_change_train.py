@@ -512,25 +512,27 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             receipt_phase = outcome
         if receipt_phase == "postcondition_failed":
             from polylogue.maintenance.blob_ref_liveness_reconciliation import _recover_prepared_receipt
+            from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
+
+            def validate_recovered_postcondition(pending_path: Path = path) -> None:
+                with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as connection:
+                    classification = classify_blob_ref_liveness(connection)
+                    if not classification.safe_to_apply or classification.orphaned_count != 0:
+                        raise DurableChangeTrainError(
+                            f"source continuity pending intent postcondition remains unsafe: {pending_path}"
+                        )
 
             outcome = _recover_prepared_receipt(
                 archive_root / "source.db",
                 receipt,
                 allow_postcondition_failed=True,
+                postcondition_check=validate_recovered_postcondition,
             )
             if outcome == "recovered_rolled_back":
                 clear_source_continuity_pending_intent(path)
                 continue
             if outcome == "recovered_partial":
                 raise DurableChangeTrainError(f"source continuity pending intent has a partial source mutation: {path}")
-            from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
-
-            with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as connection:
-                classification = classify_blob_ref_liveness(connection)
-                if not classification.safe_to_apply or classification.orphaned_count != 0:
-                    raise DurableChangeTrainError(
-                        f"source continuity pending intent postcondition remains unsafe: {path}"
-                    )
             receipt_phase = outcome
         if receipt_phase not in {"committed", "recovered_committed"}:
             raise DurableChangeTrainError(f"source continuity pending intent has no committed receipt: {path}")
@@ -905,7 +907,10 @@ def _refresh_released_source_train_continuity_locked(
             "refreshed_at_ms": current.observed_at_ms,
         }
         refresh_digest = _canonical_json_sha256(payload)
+        refresh_root_existed = refresh_root.is_dir()
         refresh_root.mkdir(parents=True, exist_ok=True)
+        if not refresh_root_existed:
+            _migration_runner._fsync_manifest_directory(refresh_root.parent)
         refresh_path = refresh_root / f"{refresh_digest}.json"
         if refresh_path.exists():
             try:

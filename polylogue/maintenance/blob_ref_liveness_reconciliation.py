@@ -357,6 +357,7 @@ def _recover_prepared_receipt(
     receipt_path: Path,
     *,
     allow_postcondition_failed: bool = False,
+    postcondition_check: Callable[[], None] | None = None,
 ) -> str:
     """Resolve crashes between bounded batch commits and receipt progress.
 
@@ -389,6 +390,8 @@ def _recover_prepared_receipt(
         outcome = "recovered_committed"
     else:
         outcome = "recovered_partial"
+    if outcome == "recovered_committed" and postcondition_check is not None:
+        postcondition_check()
     _append_receipt_footer(
         receipt_path,
         phase=outcome,
@@ -991,7 +994,14 @@ def reconcile_blob_ref_liveness(
             operation_id=candidate_digest,
             evidence_ref=f"proof:blob-ref-liveness:{candidate_digest}",
         )
-        clear_source_continuity_pending_intent(pending_intent)
+        try:
+            clear_source_continuity_pending_intent(pending_intent)
+        except Exception as cleanup_exc:
+            # The refresh is durable. Startup can consume the remaining
+            # intent idempotently, so preserve the committed report and mark
+            # only the cleanup residual as pending.
+            continuity_refresh_error = f"pending intent cleanup failed: {cleanup_exc}"
+            continuity_refresh_pending = True
     except DurableSourceTrainMissingError as exc:
         try:
             clear_source_continuity_pending_intent(pending_intent)

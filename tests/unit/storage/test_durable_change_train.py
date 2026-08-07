@@ -7,7 +7,7 @@ import json
 import os
 import sqlite3
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -435,6 +435,14 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         + "\n",
         encoding="utf-8",
     )
+    refresh_fsync_calls: list[Path] = []
+    real_fsync_manifest_directory = migration_runner._fsync_manifest_directory
+
+    def record_refresh_fsync(path: Path) -> None:
+        refresh_fsync_calls.append(path)
+        real_fsync_manifest_directory(path)
+
+    monkeypatch.setattr(migration_runner, "_fsync_manifest_directory", record_refresh_fsync)
     refreshed_path = refresh_released_source_train_continuity(
         tmp_path,
         mutation_receipt=mutation_receipt,
@@ -443,6 +451,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         operation_id=_EMPTY_LIVENESS_DIGEST,
         evidence_ref="proof:mutation-1",
     )
+    assert tmp_path / ".maintenance-state" in refresh_fsync_calls
 
     refreshed = load_durable_change_train_manifest(manifest)
     assert refreshed.state is DurableChangeTrainState.RELEASED
@@ -480,18 +489,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     operator_cwd = tmp_path / "operator-cwd"
     operator_cwd.mkdir()
     monkeypatch.chdir(tmp_path)
-    fsync_calls: list[Path] = []
-    real_fsync_manifest_directory = migration_runner._fsync_manifest_directory
-
-    def record_fsync_manifest_directory(path: Path) -> None:
-        fsync_calls.append(path)
-        real_fsync_manifest_directory(path)
-
-    monkeypatch.setattr(
-        migration_runner,
-        "_fsync_manifest_directory",
-        record_fsync_manifest_directory,
-    )
+    pending_fsync_start = len(refresh_fsync_calls)
     pending_path = write_source_continuity_pending_intent(
         tmp_path,
         mutation_receipt=Path("mutation-receipt.jsonl"),
@@ -501,7 +499,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         evidence_ref="proof:mutation-1",
     )
     assert pending_path.is_file()
-    assert tmp_path / ".maintenance-state" in fsync_calls
+    assert tmp_path / ".maintenance-state" in refresh_fsync_calls[pending_fsync_start:]
     pending_payload = json.loads(pending_path.read_text(encoding="utf-8"))
     assert pending_payload["mutation_receipt"] == str(mutation_receipt)
     assert pending_payload["backup_manifest"] == str(backup_manifest)
@@ -686,9 +684,15 @@ def test_postcondition_recovery_rejects_remaining_orphans(tmp_path: Path, monkey
         operation_id="postcondition-failed-operation",
         evidence_ref="proof:postcondition-failed-operation",
     )
+
+    def recover_with_postcondition_check(*_args: object, **kwargs: object) -> str:
+        postcondition_check = cast(Callable[[], None], kwargs["postcondition_check"])
+        postcondition_check()
+        return "recovered_committed"
+
     monkeypatch.setattr(
         "polylogue.maintenance.blob_ref_liveness_reconciliation._recover_prepared_receipt",
-        lambda *_args, **_kwargs: "recovered_committed",
+        recover_with_postcondition_check,
     )
     monkeypatch.setattr(
         "polylogue.storage.blob_ref_liveness.classify_blob_ref_liveness",
