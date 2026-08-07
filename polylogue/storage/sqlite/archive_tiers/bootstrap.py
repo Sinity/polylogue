@@ -329,7 +329,8 @@ def initialize_active_archive_root(root: Path) -> None:
         fresh_durable_bootstrap = not durable_tier_exists and not has_durable_train_state and not has_bootstrap_marker
         pre_marker_adoption = (
             (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
-            and durable_tier_exists
+            and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
+            and manifest_root.is_dir()
             and not has_durable_train_state
             and not has_bootstrap_marker
         )

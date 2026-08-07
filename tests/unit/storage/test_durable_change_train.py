@@ -1532,6 +1532,30 @@ def test_pre_marker_current_archive_is_adopted_once(tmp_path: Path) -> None:
     assert marker.is_file()
 
 
+def test_pre_marker_adoption_refuses_missing_train_directory(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    marker_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    (marker_root / ".bootstrap").unlink()
+    marker_root.rmdir()
+
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        initialize_active_archive_root(tmp_path)
+
+
+def test_pre_marker_adoption_requires_all_durable_tiers(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    (tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap").unlink()
+    (tmp_path / "user.db").unlink()
+
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        initialize_active_archive_root(tmp_path)
+    assert not (tmp_path / "user.db").exists()
+
+
 def test_bootstrap_marker_survives_index_generation_replacement(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
