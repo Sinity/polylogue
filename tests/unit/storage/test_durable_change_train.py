@@ -1493,6 +1493,19 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -
     initialize_active_archive_root(tmp_path)
 
 
+def test_fresh_bootstrap_receipt_rejects_archive_identity_mismatch(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["archive_identity_digest"] = "0" * 64
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DurableChangeTrainError, match="archive identity mismatch"):
+        reconcile_durable_change_train_startup(tmp_path)
+
+
 def test_source_train_identity_survives_late_user_tier_initialization(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 
