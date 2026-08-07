@@ -1590,11 +1590,9 @@ def _forward_version_receipt_for_current_tier(
     ]
     if not historical:
         return None
-    historical_train = max(historical, key=lambda item: item.target_version)
     _require_released_train_chain(
         tier,
         manifests_by_target,
-        historical_target_version=historical_train.target_version,
         current_version=current_version,
     )
     if evidence is None:
@@ -1643,7 +1641,6 @@ def _require_released_train_chain(
     tier: ArchiveTier,
     manifests_by_target: dict[int, DurableChangeTrain],
     *,
-    historical_target_version: int,
     current_version: int,
 ) -> None:
     """Require released, schema-proven evidence for every later version."""
@@ -1992,7 +1989,6 @@ def _reconcile_durable_change_train_startup_locked(
                 _require_released_train_chain(
                     train.tier,
                     _released_train_manifests_by_target(manifest_root, train.tier),
-                    historical_target_version=train.target_version,
                     current_version=actual.user_version,
                 )
                 if train.tier not in live_integrity_by_tier:

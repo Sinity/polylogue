@@ -1307,7 +1307,6 @@ def test_released_train_chain_is_anchored_at_adoption_floor() -> None:
                 floor + 2: released,
                 floor + 3: released,
             },
-            historical_target_version=floor + 2,
             current_version=floor + 3,
         )
 
