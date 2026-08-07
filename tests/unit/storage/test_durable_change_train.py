@@ -1316,6 +1316,18 @@ def test_released_train_chain_is_anchored_at_adoption_floor() -> None:
         )
 
 
+def test_released_train_chain_can_start_at_bootstrap_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    released = cast(DurableChangeTrain, SimpleNamespace(state=DurableChangeTrainState.RELEASED))
+    monkeypatch.setattr(durable_change_train_module, "_historical_schema_evidence", lambda _train: None)
+
+    durable_change_train_module._require_released_train_chain(
+        ArchiveTier.SOURCE,
+        {30: released},
+        current_version=30,
+        floor=29,
+    )
+
+
 def test_forward_receipt_checks_missing_chain_before_empty_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1493,16 +1505,36 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -
     initialize_active_archive_root(tmp_path)
 
 
+def test_pre_marker_current_archive_is_adopted_once(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    marker.unlink()
+
+    initialize_active_archive_root(tmp_path)
+    assert marker.is_file()
+
+
+def test_bootstrap_marker_survives_index_generation_replacement(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    (tmp_path / "index.db").unlink()
+
+    initialize_active_archive_root(tmp_path)
+
+
 def test_fresh_bootstrap_receipt_rejects_archive_identity_mismatch(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
     marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
     payload = json.loads(marker.read_text(encoding="utf-8"))
-    payload["archive_identity_digest"] = "0" * 64
+    payload["durable_identity_digest"] = "0" * 64
     marker.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(DurableChangeTrainError, match="archive identity mismatch"):
+    with pytest.raises(DurableChangeTrainError, match="durable identity mismatch"):
         reconcile_durable_change_train_startup(tmp_path)
 
 

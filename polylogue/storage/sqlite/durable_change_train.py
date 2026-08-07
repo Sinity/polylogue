@@ -333,7 +333,7 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
             versions[tier.value] = int(connection.execute("PRAGMA user_version").fetchone()[0])
     payload = {
         "format": _FRESH_DURABLE_BOOTSTRAP_FORMAT,
-        "archive_identity_digest": ArchiveIdentity.resolve(archive_root).authority_identity_digest,
+        "durable_identity_digest": _durable_identity_digest(ArchiveIdentity.resolve(archive_root)),
         "versions": versions,
     }
     marker_root.joinpath(_FRESH_DURABLE_BOOTSTRAP_MARKER).write_text(
@@ -355,8 +355,8 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
         raise DurableChangeTrainError(f"invalid fresh durable bootstrap marker: {marker_path}") from exc
     if not isinstance(payload, dict) or payload.get("format") != _FRESH_DURABLE_BOOTSTRAP_FORMAT:
         raise DurableChangeTrainError(f"fresh durable bootstrap marker format mismatch: {marker_path}")
-    if payload.get("archive_identity_digest") != ArchiveIdentity.resolve(archive_root).authority_identity_digest:
-        raise DurableChangeTrainError("fresh durable bootstrap marker archive identity mismatch")
+    if payload.get("durable_identity_digest") != _durable_identity_digest(ArchiveIdentity.resolve(archive_root)):
+        raise DurableChangeTrainError("fresh durable bootstrap marker durable identity mismatch")
     raw_versions = payload.get("versions")
     if not isinstance(raw_versions, dict):
         raise DurableChangeTrainError(f"fresh durable bootstrap marker versions are invalid: {marker_path}")
@@ -367,6 +367,49 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
             raise DurableChangeTrainError(f"fresh durable bootstrap marker version is invalid: {marker_path}")
         versions[tier] = raw_version
     return versions
+
+
+def _durable_identity_digest(identity: object) -> str:
+    """Digest only the durable source/user identity for bootstrap receipts."""
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
+    if not isinstance(identity, ArchiveIdentity):
+        raise TypeError("durable identity digest requires an ArchiveIdentity")
+    payload = {
+        "configured_root": str(identity.configured_root.absolute()),
+        "durable_id": identity.durable_id,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _adopt_pre_marker_durable_bootstrap(archive_root: Path) -> None:
+    """Authenticate a current-schema archive created before bootstrap receipts."""
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    archive_root = archive_root.resolve()
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    if (manifest_root / _FRESH_DURABLE_BOOTSTRAP_MARKER).is_file():
+        return
+    if any(manifest_root.glob("*.json")):
+        return
+    for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
+        tier_path = archive_root / f"{tier.value}.db"
+        if not tier_path.is_file():
+            continue
+        with _open_existing_tier(tier_path) as connection:
+            current_version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
+            expected_version = ARCHIVE_VERSION_BY_TIER[tier]
+            if current_version != expected_version:
+                raise DurableChangeTrainError(
+                    f"pre-marker {tier.value} durable tier is v{current_version}, expected current v{expected_version}"
+                )
+            actual_inventory = _migration_runner.capture_durable_schema_inventory(connection)
+            expected_inventory = _canonical_schema_inventory(tier, expected_version)
+            if actual_inventory.sha256 != expected_inventory.sha256:
+                raise DurableChangeTrainError(
+                    f"pre-marker {tier.value} durable tier schema does not match current canonical DDL"
+                )
+    _record_fresh_durable_bootstrap(archive_root)
 
 
 def durable_migration_sidecar_for_slot(tier: ArchiveTier, slot: int) -> DurableMigrationSidecar | None:
@@ -1648,6 +1691,12 @@ def _forward_version_receipt_for_current_tier(
             tier,
             manifests_by_target,
             current_version=current_version,
+            floor=max(
+                DURABLE_MIGRATION_ADOPTION_FLOORS[tier],
+                _fresh_durable_bootstrap_versions(archive_root, manifest_root).get(
+                    tier, DURABLE_MIGRATION_ADOPTION_FLOORS[tier]
+                ),
+            ),
         )
     if not historical:
         return None
@@ -1698,21 +1747,27 @@ def _require_released_train_chain(
     manifests_by_target: dict[int, DurableChangeTrain],
     *,
     current_version: int,
+    floor: int | None = None,
 ) -> None:
     """Require released, schema-proven evidence for every later version."""
+    chain_floor = DURABLE_MIGRATION_ADOPTION_FLOORS[tier] if floor is None else floor
+    if chain_floor < DURABLE_MIGRATION_ADOPTION_FLOORS[tier] or chain_floor > current_version:
+        raise DurableChangeTrainError(
+            f"invalid {tier.value} durable train chain floor v{chain_floor} for live v{current_version}"
+        )
     missing_targets = [
         version
-        for version in range(DURABLE_MIGRATION_ADOPTION_FLOORS[tier] + 1, current_version + 1)
+        for version in range(chain_floor + 1, current_version + 1)
         if manifests_by_target.get(version) is None
         or manifests_by_target[version].state is not DurableChangeTrainState.RELEASED
     ]
     if missing_targets:
         raise DurableChangeTrainError(
             f"{tier.value} durable forward admission lacks released train evidence for versions "
-            f"{missing_targets} from adoption floor v{DURABLE_MIGRATION_ADOPTION_FLOORS[tier]} "
+            f"{missing_targets} from chain floor v{chain_floor} "
             f"through live v{current_version}"
         )
-    for version in range(DURABLE_MIGRATION_ADOPTION_FLOORS[tier] + 1, current_version + 1):
+    for version in range(chain_floor + 1, current_version + 1):
         _historical_schema_evidence(manifests_by_target[version])
 
 
@@ -2055,12 +2110,18 @@ def _reconcile_durable_change_train_startup_locked(
             continue
         manifests_by_tier[tier] = _released_train_manifests_by_target(manifest_root, tier)
         tier_manifest_paths = tuple(manifest_root.glob(f"{tier.value}-*.json"))
-        if fresh_bootstrap_versions.get(tier) == current_version and not tier_manifest_paths:
+        bootstrap_version = fresh_bootstrap_versions.get(tier)
+        if bootstrap_version is not None and current_version < bootstrap_version:
+            raise DurableChangeTrainError(
+                f"{tier.value} durable tier regressed below fresh bootstrap v{bootstrap_version}"
+            )
+        if bootstrap_version == current_version and not tier_manifest_paths:
             continue
         _require_released_train_chain(
             tier,
             manifests_by_tier[tier],
             current_version=current_version,
+            floor=max(adoption_floor, bootstrap_version or adoption_floor),
         )
 
     for manifest_path in manifest_paths:
@@ -2079,6 +2140,10 @@ def _reconcile_durable_change_train_startup_locked(
                     train.tier,
                     manifests_by_tier[train.tier],
                     current_version=actual.user_version,
+                    floor=max(
+                        DURABLE_MIGRATION_ADOPTION_FLOORS[train.tier],
+                        fresh_bootstrap_versions.get(train.tier, DURABLE_MIGRATION_ADOPTION_FLOORS[train.tier]),
+                    ),
                 )
             if actual.user_version > train.target_version:
                 if train.tier not in live_integrity_by_tier:
