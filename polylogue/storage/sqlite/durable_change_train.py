@@ -1436,12 +1436,21 @@ def _historical_schema_evidence(train: DurableChangeTrain) -> DurableFreshDDLPar
 
 def _canonical_schema_inventory(tier: ArchiveTier, target_version: int) -> _migration_runner.DurableSchemaInventory:
     """Construct the canonical object set for one live durable schema version."""
+    try:
+        normalized_target_version = int(target_version)
+    except (TypeError, ValueError) as exc:
+        raise DurableChangeTrainError("canonical schema inventory target version must be an integer") from exc
+    if isinstance(target_version, bool):
+        raise DurableChangeTrainError("canonical schema inventory target version must be an integer")
+    try:
+        archive_ddl = _migration_runner.ARCHIVE_DDL_BY_TIER[tier]
+    except KeyError as exc:
+        raise DurableChangeTrainError(f"no canonical archive DDL is registered for {tier.value}") from exc
     with closing(sqlite3.connect(":memory:")) as fresh:
         fresh.execute("PRAGMA foreign_keys = ON")
-        archive_ddl = cast(dict[ArchiveTier, str], vars(_migration_runner)["ARCHIVE_DDL_BY_TIER"])
-        fresh.executescript(archive_ddl[tier])
-        fresh.execute(f"PRAGMA user_version = {target_version}")
-        _migration_runner._prepare_fresh_connection_for_target(fresh, tier, target_version)
+        fresh.executescript(archive_ddl)
+        fresh.execute(f"PRAGMA user_version = {normalized_target_version}")
+        _migration_runner._prepare_fresh_connection_for_target(fresh, tier, normalized_target_version)
         fresh.commit()
         return _migration_runner.capture_durable_schema_inventory(fresh)
 
@@ -1453,6 +1462,9 @@ def _verify_released_train_live_tier(
     *,
     current_target_version: int | None = None,
     actual_evidence: DurableDatabaseEvidence | None = None,
+    integrity_check: tuple[str, ...] | None = None,
+    live_inventory: _migration_runner.DurableSchemaInventory | None = None,
+    canonical_inventory: _migration_runner.DurableSchemaInventory | None = None,
 ) -> DurableForwardVersionReceipt | None:
     """Verify a released train remains represented after later trains advance it."""
     if train.apply_evidence is None:
@@ -1486,17 +1498,17 @@ def _verify_released_train_live_tier(
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier integrity check failed after later train advancement"
         )
-    integrity_check = tuple(str(row[0]) for row in conn.execute("PRAGMA integrity_check"))
-    if integrity_check != ("ok",):
+    observed_integrity = integrity_check or tuple(str(row[0]) for row in conn.execute("PRAGMA integrity_check"))
+    if observed_integrity != ("ok",):
         raise DurableChangeTrainError(
-            f"{train.tier.value} durable tier integrity check failed after later train advancement: {integrity_check}"
+            f"{train.tier.value} durable tier integrity check failed after later train advancement: {observed_integrity}"
         )
-    live_inventory = _migration_runner.capture_durable_schema_inventory(conn)
+    live_inventory = live_inventory or _migration_runner.capture_durable_schema_inventory(conn)
     if live_inventory.sha256 != actual.schema_inventory_sha256:
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier schema inventory changed during forward admission"
         )
-    expected_inventory = _canonical_schema_inventory(train.tier, actual.user_version)
+    expected_inventory = canonical_inventory or _canonical_schema_inventory(train.tier, actual.user_version)
     expected_by_ref = {item.object_ref: item for item in expected_inventory.objects}
     live_by_ref = {item.object_ref: item for item in live_inventory.objects}
     missing = sorted(set(expected_by_ref) - set(live_by_ref))
@@ -1812,6 +1824,9 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
         return ()
     reconciled: list[Path] = []
     live_evidence_by_tier: dict[ArchiveTier, DurableDatabaseEvidence] = {}
+    live_integrity_by_tier: dict[ArchiveTier, tuple[str, ...]] = {}
+    live_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
+    canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     for manifest_path in sorted(manifest_root.glob("*.json")):
         train = load_durable_change_train_manifest(manifest_path)
         if train.state is DurableChangeTrainState.FAILED:
@@ -1847,11 +1862,24 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
                 if actual is None:
                     actual = capture_durable_database_evidence(live, train.tier)
                     live_evidence_by_tier[train.tier] = actual
+                if train.tier not in live_integrity_by_tier:
+                    live_integrity_by_tier[train.tier] = tuple(
+                        str(row[0]) for row in live.execute("PRAGMA integrity_check")
+                    )
+                if train.tier not in live_inventory_by_tier:
+                    live_inventory_by_tier[train.tier] = _migration_runner.capture_durable_schema_inventory(live)
+                if train.tier not in canonical_inventory_by_tier:
+                    canonical_inventory_by_tier[train.tier] = _canonical_schema_inventory(
+                        train.tier, actual.user_version
+                    )
                 _verify_released_train_live_tier(
                     archive_root,
                     live,
                     train,
                     actual_evidence=actual,
+                    integrity_check=live_integrity_by_tier[train.tier],
+                    live_inventory=live_inventory_by_tier[train.tier],
+                    canonical_inventory=canonical_inventory_by_tier[train.tier],
                 )
             reconciled.append(manifest_path)
             continue
