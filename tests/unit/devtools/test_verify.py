@@ -103,6 +103,7 @@ def test_quick_verify_omits_pytest() -> None:
         "lab policy raw-authority-frontier-executability",
         "lab policy table-exists-duplication",
         "schema promotion audit",
+        "incident coverage ledger",
     ]
 
 

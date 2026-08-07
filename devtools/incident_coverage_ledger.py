@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import NoReturn, cast
 
 from jsonschema import Draft202012Validator
 
@@ -15,12 +17,20 @@ ROOT = repo_root()
 LEDGER_PATH = ROOT / "docs" / "plans" / "reindex-incident-coverage.json"
 SCHEMA_PATH = ROOT / "docs" / "plans" / "reindex-incident-coverage.schema.json"
 CAMPAIGN_GRAPH_PATH = ROOT / "tests" / "fixtures" / "reindex_incident_coverage" / "campaign_graph.json"
+BEADS_PATH = ROOT / ".beads" / "issues.jsonl"
 
 JsonObject = dict[str, object]
+DEPENDENCY_KINDS = frozenset({"blocks", "discovered-from", "parent-child", "relates-to", "supersedes"})
+GRAPH_KINDS = frozenset({"decision", "design", "implementation", "operation", "verification"})
+ROUTE_KINDS = frozenset({"campaign", "canary", "decision", "operation", "registry"})
 
 
 class IncidentCoverageLedgerError(ValueError):
     """Raised when the ledger or its campaign graph is incomplete."""
+
+    def __init__(self, message: str, *, diagnostic: JsonObject | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic or {"error": "incident_coverage_ledger", "message": message}
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,13 +44,17 @@ class CoverageResolution:
     successor_backed_ids: tuple[str, ...]
 
 
+def _fail(code: str, message: str, **fields: object) -> NoReturn:
+    raise IncidentCoverageLedgerError(message, diagnostic={"error": code, **fields})
+
+
 def _load_json(path: Path) -> JsonObject:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise IncidentCoverageLedgerError(f"cannot load structured artifact {path}: {exc}") from exc
+        _fail("artifact_load_failed", f"cannot load structured artifact {path}: {exc}", path=str(path))
     if not isinstance(value, dict):
-        raise IncidentCoverageLedgerError(f"structured artifact {path} must contain an object")
+        _fail("artifact_shape_invalid", f"structured artifact {path} must contain an object", path=str(path))
     return cast(JsonObject, value)
 
 
@@ -58,148 +72,423 @@ def load_ledger(
     if errors:
         first = errors[0]
         location = ".".join(str(part) for part in first.path) or "$"
-        raise IncidentCoverageLedgerError(f"ledger schema error at {location}: {first.message}")
+        _fail("ledger_schema_invalid", f"ledger schema error at {location}: {first.message}", location=location)
     return ledger
 
 
 def load_campaign_graph(path: Path = CAMPAIGN_GRAPH_PATH) -> JsonObject:
-    """Load the structured snapshot of the current 818fy forcing graph."""
+    """Load the committed normalized snapshot of the 818fy forcing graph."""
 
     return _load_json(path)
 
 
+def _parse_beads_jsonl(lines: list[str]) -> dict[str, JsonObject]:
+    """Parse only structured Beads records and dependency fields.
+
+    Descriptions, notes, close reasons, comments, and PR text are deliberately
+    never inspected here. The JSONL is the committed source of dependency
+    membership and status.
+    """
+
+    records: dict[str, JsonObject] = {}
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            _fail("beads_json_invalid", f"invalid Beads JSONL at line {line_number}: {exc}", line=line_number)
+        if not isinstance(value, dict):
+            _fail("beads_record_invalid", f"Beads record at line {line_number} must be an object", line=line_number)
+        record = cast(JsonObject, value)
+        bead_id = _string(record.get("id"), context=f"Beads record {line_number}.id")
+        if bead_id in records:
+            _fail("duplicate_bead_id", f"duplicate Bead record {bead_id}", bead_id=bead_id)
+        dependencies = record.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            _fail("bead_dependencies_invalid", f"Bead {bead_id}.dependencies must be a list", bead_id=bead_id)
+        for index, raw_dependency in enumerate(dependencies):
+            dependency = _object(raw_dependency, context=f"Bead {bead_id}.dependencies[{index}]")
+            dependency_kind = _string(dependency.get("type"), context=f"Bead {bead_id}.dependencies[{index}].type")
+            if dependency_kind not in DEPENDENCY_KINDS:
+                _fail(
+                    "unknown_dependency_kind",
+                    f"unknown dependency kind {dependency_kind!r} on {bead_id}",
+                    bead_id=bead_id,
+                    dependency_kind=dependency_kind,
+                    allowed_dependency_kinds=sorted(DEPENDENCY_KINDS),
+                )
+        records[bead_id] = record
+    return records
+
+
+def load_beads_jsonl(path: Path = BEADS_PATH) -> dict[str, JsonObject]:
+    """Load a supplied committed Beads export without invoking ``bd``."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        _fail("beads_load_failed", f"cannot load structured Beads JSONL {path}: {exc}", path=str(path))
+    return _parse_beads_jsonl(lines)
+
+
+def load_beads_forcing_export(graph: JsonObject) -> dict[str, JsonObject]:
+    """Load the committed current-set export named by the control-plane graph.
+
+    The graph's source commit is the immutable receipt for the Beads snapshot
+    that the reviewed ledger covers. This keeps quick verification independent
+    of a worktree's mutable Beads synchronization state while still allowing
+    tests and callers to provide a newer export explicitly.
+    """
+
+    source_commit = _string(graph.get("source_commit"), context="campaign graph source_commit")
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{source_commit}:.beads/issues.jsonl"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _fail(
+            "beads_export_unavailable",
+            f"cannot load committed Beads forcing-set export {source_commit}: {exc}",
+            source_commit=source_commit,
+        )
+    return _parse_beads_jsonl(result.stdout.splitlines())
+
+
 def _object(value: object, *, context: str) -> JsonObject:
     if not isinstance(value, dict):
-        raise IncidentCoverageLedgerError(f"{context} must be an object")
+        _fail("object_required", f"{context} must be an object", context=context)
     return cast(JsonObject, value)
 
 
 def _string(value: object, *, context: str) -> str:
     if not isinstance(value, str) or not value:
-        raise IncidentCoverageLedgerError(f"{context} must be a non-empty string")
+        _fail("string_required", f"{context} must be a non-empty string", context=context)
     return value
 
 
 def _strings(value: object, *, context: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-        raise IncidentCoverageLedgerError(f"{context} must be a list of non-empty strings")
+        _fail("strings_required", f"{context} must be a list of non-empty strings", context=context)
     return tuple(cast(str, item) for item in value)
 
 
 def _catalog(ledger: JsonObject, name: str) -> dict[str, JsonObject]:
     value = ledger.get(name)
     if not isinstance(value, dict):
-        raise IncidentCoverageLedgerError(f"ledger catalog {name!r} must be an object")
+        _fail("catalog_invalid", f"ledger catalog {name!r} must be an object", catalog=name)
     return {str(key): _object(item, context=f"ledger catalog {name}.{key}") for key, item in value.items()}
 
 
-def _graph_dependencies(graph: JsonObject) -> tuple[dict[str, object], ...]:
+def _derive_forcing_dependencies(records: dict[str, JsonObject], target: str) -> tuple[JsonObject, ...]:
+    target_record = records.get(target)
+    if target_record is None:
+        _fail("target_bead_missing", f"Beads JSONL has no target bead {target}", target_bead_id=target)
+    raw_dependencies = target_record.get("dependencies", [])
+    if not isinstance(raw_dependencies, list):
+        _fail("bead_dependencies_invalid", f"Bead {target}.dependencies must be a list", bead_id=target)
+    dependencies: list[JsonObject] = []
+    seen: set[str] = set()
+    for index, raw_dependency in enumerate(raw_dependencies):
+        dependency = _object(raw_dependency, context=f"Bead {target}.dependencies[{index}]")
+        issue_id = _string(dependency.get("issue_id"), context=f"Bead {target}.dependencies[{index}].issue_id")
+        if issue_id != target:
+            _fail(
+                "dependency_owner_mismatch",
+                f"dependency record {index} on {target} names issue {issue_id}",
+                target_bead_id=target,
+                dependency_index=index,
+                issue_id=issue_id,
+            )
+        dependency_kind = _string(dependency.get("type"), context=f"Bead {target}.dependencies[{index}].type")
+        if dependency_kind != "blocks":
+            continue
+        bead_id = _string(dependency.get("depends_on_id"), context=f"Bead {target}.dependencies[{index}].depends_on_id")
+        if bead_id in seen:
+            _fail(
+                "duplicate_forcing_dependency",
+                f"duplicate forcing dependency {bead_id}",
+                duplicate_ids=[bead_id],
+            )
+        seen.add(bead_id)
+        record = records.get(bead_id)
+        if record is None:
+            _fail("forcing_bead_missing", f"forcing dependency {bead_id} has no Beads record", bead_id=bead_id)
+        status = _string(record.get("status"), context=f"Beads record {bead_id}.status")
+        dependencies.append(
+            {
+                "bead_id": bead_id,
+                "status": status,
+                "dependency_kind": dependency_kind,
+                "priority": record.get("priority"),
+                "issue_type": record.get("issue_type"),
+            }
+        )
+    return tuple(dependencies)
+
+
+def _graph_dependencies(graph: JsonObject) -> tuple[JsonObject, ...]:
     target = _string(graph.get("target_bead_id"), context="campaign graph target_bead_id")
     if target != "polylogue-818fy":
-        raise IncidentCoverageLedgerError(f"campaign graph target {target!r} is not polylogue-818fy")
+        _fail("target_mismatch", f"campaign graph target {target!r} is not polylogue-818fy", target_bead_id=target)
     raw_dependencies = graph.get("forcing_dependencies")
     if not isinstance(raw_dependencies, list):
-        raise IncidentCoverageLedgerError("campaign graph forcing_dependencies must be a list")
-    dependencies: list[dict[str, object]] = []
+        _fail("graph_dependencies_invalid", "campaign graph forcing_dependencies must be a list")
+    known_children = _strings(graph.get("known_child_bead_ids"), context="campaign graph known_child_bead_ids")
+    dependencies: list[JsonObject] = []
     seen: set[str] = set()
     for index, raw_dependency in enumerate(raw_dependencies):
         dependency = _object(raw_dependency, context=f"campaign graph dependency {index}")
         bead_id = _string(dependency.get("bead_id"), context=f"campaign graph dependency {index}.bead_id")
         if bead_id in seen:
-            raise IncidentCoverageLedgerError(f"duplicate forcing dependency {bead_id}")
+            _fail("duplicate_graph_dependency", f"duplicate forcing dependency {bead_id}", duplicate_ids=[bead_id])
         seen.add(bead_id)
-        _string(dependency.get("status"), context=f"campaign graph dependency {bead_id}.status")
-        _string(dependency.get("kind"), context=f"campaign graph dependency {bead_id}.kind")
+        status = _string(dependency.get("status"), context=f"campaign graph dependency {bead_id}.status")
+        graph_kind = _string(dependency.get("kind"), context=f"campaign graph dependency {bead_id}.kind")
+        if graph_kind not in GRAPH_KINDS:
+            _fail(
+                "unknown_graph_kind",
+                f"unknown campaign graph kind {graph_kind!r} for {bead_id}",
+                bead_id=bead_id,
+                dependency_kind=graph_kind,
+                allowed_dependency_kinds=sorted(GRAPH_KINDS),
+            )
         child_ids = _strings(
             dependency.get("child_bead_ids"),
             context=f"campaign graph dependency {bead_id}.child_bead_ids",
         )
-        known_children = _strings(graph.get("known_child_bead_ids"), context="campaign graph known_child_bead_ids")
         unknown_children = sorted(set(child_ids) - set(known_children))
         if unknown_children:
-            raise IncidentCoverageLedgerError(
-                f"campaign graph dependency {bead_id} names unknown child beads {unknown_children}"
+            _fail(
+                "unknown_successor_id",
+                f"campaign graph dependency {bead_id} names unknown child beads {unknown_children}",
+                bead_id=bead_id,
+                unknown_ids=unknown_children,
             )
-        dependencies.append(dependency)
+        dependencies.append(
+            {
+                **dependency,
+                "status": status,
+                "dependency_kind": dependency.get("dependency_kind", "blocks"),
+            }
+        )
     return tuple(dependencies)
 
 
-def resolve_incident_coverage(ledger: JsonObject, graph: JsonObject) -> CoverageResolution:
+def _set_diagnostic(
+    *,
+    expected_ids: tuple[str, ...],
+    actual_ids: tuple[str, ...],
+    stale_ids: list[str] | None = None,
+    duplicate_ids: list[str] | None = None,
+) -> JsonObject:
+    expected = set(expected_ids)
+    actual = set(actual_ids)
+    return {
+        "error": "forcing_set_mismatch",
+        "missing_ids": sorted(expected - actual),
+        "extra_ids": sorted(actual - expected),
+        "stale_ids": sorted(stale_ids or []),
+        "duplicate_ids": sorted(duplicate_ids or []),
+        "expected_count": len(expected_ids),
+        "actual_count": len(actual_ids),
+    }
+
+
+def _assert_same_forcing_graph(derived: tuple[JsonObject, ...], fixture: tuple[JsonObject, ...]) -> None:
+    expected_ids = tuple(_string(item.get("bead_id"), context="derived forcing dependency bead_id") for item in derived)
+    fixture_ids = tuple(_string(item.get("bead_id"), context="campaign graph dependency bead_id") for item in fixture)
+    duplicate_ids = sorted({bead_id for bead_id in fixture_ids if fixture_ids.count(bead_id) > 1})
+    expected_by_id = {str(item["bead_id"]): item for item in derived}
+    fixture_by_id = {str(item["bead_id"]): item for item in fixture}
+    stale_ids = sorted(
+        bead_id
+        for bead_id in set(expected_by_id) & set(fixture_by_id)
+        if expected_by_id[bead_id].get("status") != fixture_by_id[bead_id].get("status")
+        or fixture_by_id[bead_id].get("dependency_kind", "blocks") != "blocks"
+    )
+    diagnostic = _set_diagnostic(
+        expected_ids=expected_ids,
+        actual_ids=fixture_ids,
+        stale_ids=stale_ids,
+        duplicate_ids=duplicate_ids,
+    )
+    if any(diagnostic[key] for key in ("missing_ids", "extra_ids", "stale_ids", "duplicate_ids")):
+        _fail(
+            "campaign_graph_mismatch",
+            "campaign graph does not match current Beads forcing dependencies",
+            **diagnostic,
+        )
+
+
+def _committed_paths() -> set[str]:
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _fail("git_files_unavailable", f"cannot inspect committed source files: {exc}")
+    return {raw.decode("utf-8") for raw in result.stdout.split(b"\0") if raw}
+
+
+def _validate_sources(
+    catalogs: dict[str, dict[str, JsonObject]],
+    *,
+    bead_records: dict[str, JsonObject],
+    named_receipt_beads: set[str],
+) -> None:
+    committed = _committed_paths()
+    for catalog_name, catalog in catalogs.items():
+        for item_id, entry in catalog.items():
+            source = _string(entry.get("source"), context=f"ledger catalog {catalog_name}.{item_id}.source")
+            if source in committed:
+                continue
+            if source.startswith("polylogue-") and source in bead_records and source in named_receipt_beads:
+                continue
+            _fail(
+                "unresolved_source_reference",
+                f"{catalog_name}.{item_id} source {source!r} is not a committed file or named receipt-producing Bead",
+                catalog=catalog_name,
+                item_id=item_id,
+                source=source,
+            )
+
+
+def resolve_incident_coverage(
+    ledger: JsonObject,
+    graph: JsonObject,
+    *,
+    beads_path: Path | None = None,
+) -> CoverageResolution:
     """Resolve row completeness and all structured references for one campaign graph."""
 
     target = _string(ledger.get("target_bead_id"), context="ledger target_bead_id")
-    dependencies = _graph_dependencies(graph)
     if target != "polylogue-818fy":
-        raise IncidentCoverageLedgerError(f"ledger target {target!r} is not polylogue-818fy")
+        _fail("target_mismatch", f"ledger target {target!r} is not polylogue-818fy", target_bead_id=target)
     if target != _string(graph.get("target_bead_id"), context="campaign graph target_bead_id"):
-        raise IncidentCoverageLedgerError("ledger and campaign graph target beads differ")
+        _fail("target_mismatch", "ledger and campaign graph target beads differ")
 
-    fixtures = _catalog(ledger, "fixtures")
-    checks = _catalog(ledger, "checks")
-    snapshots = _catalog(ledger, "snapshots")
-    receipts = _catalog(ledger, "receipts")
-    successors = _catalog(ledger, "successors")
+    bead_records = load_beads_jsonl(beads_path) if beads_path is not None else load_beads_forcing_export(graph)
+    derived_dependencies = _derive_forcing_dependencies(bead_records, target)
+    graph_dependencies = _graph_dependencies(graph)
+    _assert_same_forcing_graph(derived_dependencies, graph_dependencies)
+
+    catalogs = {name: _catalog(ledger, name) for name in ("fixtures", "checks", "snapshots", "receipts", "successors")}
+    receipts = catalogs["receipts"]
+    receipt_owners: set[str] = set()
+    for receipt_id, receipt in receipts.items():
+        owner = _string(receipt.get("owner_bead_id"), context=f"ledger receipt {receipt_id}.owner_bead_id")
+        if owner not in bead_records:
+            _fail("receipt_owner_missing", f"receipt {receipt_id} names unknown owner {owner}", receipt_id=receipt_id)
+        receipt_owners.add(owner)
+    named_receipt_beads = receipt_owners | set(
+        _strings(graph.get("known_child_bead_ids"), context="campaign graph known_child_bead_ids")
+    )
+    _validate_sources(catalogs, bead_records=bead_records, named_receipt_beads=named_receipt_beads)
 
     raw_rows = ledger.get("rows")
     if not isinstance(raw_rows, list):
-        raise IncidentCoverageLedgerError("ledger rows must be a list")
+        _fail("rows_invalid", "ledger rows must be a list")
     rows = tuple(_object(row, context=f"ledger row {index}") for index, row in enumerate(raw_rows))
     row_ids = tuple(_string(row.get("bead_id"), context="ledger row bead_id") for row in rows)
     duplicate_ids = sorted({bead_id for bead_id in row_ids if row_ids.count(bead_id) > 1})
+    dependency_ids = tuple(
+        _string(dep.get("bead_id"), context="forcing dependency bead_id") for dep in derived_dependencies
+    )
+    diagnostic = _set_diagnostic(
+        expected_ids=dependency_ids,
+        actual_ids=row_ids,
+        duplicate_ids=duplicate_ids,
+    )
     if duplicate_ids:
-        raise IncidentCoverageLedgerError(f"ledger has duplicate rows for {duplicate_ids}")
-
-    dependency_ids = tuple(_string(dep.get("bead_id"), context="forcing dependency bead_id") for dep in dependencies)
-    missing = sorted(set(dependency_ids) - set(row_ids))
-    extra = sorted(set(row_ids) - set(dependency_ids))
-    if missing or extra or len(rows) != len(dependencies):
-        raise IncidentCoverageLedgerError(
-            f"ledger rows do not match forcing dependencies: missing={missing}, extra={extra}, "
-            f"expected={len(dependencies)}, actual={len(rows)}"
+        _fail(
+            "duplicate_ledger_row",
+            f"ledger has duplicate rows for {duplicate_ids}",
+            **diagnostic,
+        )
+    if any(diagnostic[key] for key in ("missing_ids", "extra_ids", "duplicate_ids")) or len(rows) != len(
+        derived_dependencies
+    ):
+        _fail(
+            "forcing_set_mismatch",
+            f"ledger rows do not match forcing dependencies: missing={diagnostic['missing_ids']}, "
+            f"extra={diagnostic['extra_ids']}, expected={len(derived_dependencies)}, actual={len(rows)}",
+            **diagnostic,
         )
 
-    graph_by_id = {str(dep["bead_id"]): dep for dep in dependencies}
+    graph_by_id = {str(dep["bead_id"]): dep for dep in graph_dependencies}
+    derived_by_id = {str(dep["bead_id"]): dep for dep in derived_dependencies}
     closed_implementation_ids: list[str] = []
     successor_backed_ids: list[str] = []
     orders: list[int] = []
     for row in rows:
         bead_id = _string(row.get("bead_id"), context="ledger row bead_id")
         graph_entry = graph_by_id[bead_id]
-        if row.get("bead_status") != graph_entry.get("status"):
-            raise IncidentCoverageLedgerError(f"ledger status disagrees with graph for {bead_id}")
+        derived_entry = derived_by_id[bead_id]
+        if row.get("bead_status") != derived_entry.get("status") or row.get("bead_status") != graph_entry.get("status"):
+            _fail("stale_row", f"ledger status disagrees with current Beads for {bead_id}", stale_ids=[bead_id])
+        if row.get("dependency_kind", "blocks") != derived_entry.get("dependency_kind"):
+            _fail("stale_row", f"ledger dependency kind disagrees for {bead_id}", stale_ids=[bead_id])
 
         incident = _object(row.get("incident"), context=f"ledger row {bead_id}.incident")
         if _string(incident.get("bead_id"), context=f"ledger row {bead_id}.incident.bead_id") != bead_id:
-            raise IncidentCoverageLedgerError(f"incident bead reference disagrees for {bead_id}")
+            _fail("row_reference_mismatch", f"incident bead reference disagrees for {bead_id}")
+
+        route = _object(row.get("route"), context=f"ledger row {bead_id}.route")
+        route_kind = _string(route.get("kind"), context=f"ledger row {bead_id}.route.kind")
+        if route_kind not in ROUTE_KINDS:
+            _fail("unknown_route_kind", f"unknown route kind {route_kind!r} for {bead_id}", bead_id=bead_id)
 
         schedule = _object(row.get("schedule"), context=f"ledger row {bead_id}.schedule")
         order = schedule.get("order")
         if not isinstance(order, int) or isinstance(order, bool) or order < 1:
-            raise IncidentCoverageLedgerError(f"schedule order is invalid for {bead_id}")
+            _fail("schedule_invalid", f"schedule order is invalid for {bead_id}")
         orders.append(order)
 
         expected_snapshot = _object(row.get("expected_snapshot"), context=f"ledger row {bead_id}.expected_snapshot")
         snapshot_id = _string(
-            expected_snapshot.get("snapshot_id"),
-            context=f"ledger row {bead_id}.expected_snapshot.snapshot_id",
+            expected_snapshot.get("snapshot_id"), context=f"ledger row {bead_id}.expected_snapshot.snapshot_id"
         )
-        if snapshot_id not in snapshots:
-            raise IncidentCoverageLedgerError(f"unknown snapshot {snapshot_id} for {bead_id}")
+        if snapshot_id not in catalogs["snapshots"]:
+            _fail("unknown_snapshot", f"unknown snapshot {snapshot_id} for {bead_id}")
 
         red_mutation = _object(row.get("red_mutation"), context=f"ledger row {bead_id}.red_mutation")
         fixture_id = _string(red_mutation.get("fixture_id"), context=f"ledger row {bead_id}.red_mutation.fixture_id")
-        if fixture_id not in fixtures:
-            raise IncidentCoverageLedgerError(f"unknown fixture {fixture_id} for {bead_id}")
+        if fixture_id not in catalogs["fixtures"]:
+            _fail("unknown_fixture", f"unknown fixture {fixture_id} for {bead_id}")
 
         check_ids = _strings(row.get("registry_checks"), context=f"ledger row {bead_id}.registry_checks")
-        unknown_checks = sorted(set(check_ids) - set(checks))
+        unknown_checks = sorted(set(check_ids) - set(catalogs["checks"]))
         if unknown_checks:
-            raise IncidentCoverageLedgerError(f"unknown checks {unknown_checks} for {bead_id}")
+            _fail("unknown_checks", f"unknown checks {unknown_checks} for {bead_id}", unknown_ids=unknown_checks)
 
         receipt_ids = _strings(row.get("receipts"), context=f"ledger row {bead_id}.receipts")
         unknown_receipts = sorted(set(receipt_ids) - set(receipts))
         if unknown_receipts:
-            raise IncidentCoverageLedgerError(f"unknown receipts {unknown_receipts} for {bead_id}")
+            _fail(
+                "unknown_receipts", f"unknown receipts {unknown_receipts} for {bead_id}", unknown_ids=unknown_receipts
+            )
+        for receipt_id in receipt_ids:
+            owner = _string(
+                receipts[receipt_id].get("owner_bead_id"), context=f"ledger receipt {receipt_id}.owner_bead_id"
+            )
+            if owner != bead_id:
+                _fail(
+                    "receipt_owner_mismatch",
+                    f"receipt {receipt_id} is owned by {owner}, not {bead_id}",
+                    receipt_id=receipt_id,
+                    expected_owner=bead_id,
+                    actual_owner=owner,
+                )
 
         successor = row.get("residual_successor")
         successor_id: str | None = None
@@ -208,25 +497,26 @@ def resolve_incident_coverage(ledger: JsonObject, graph: JsonObject) -> Coverage
             successor_id = _string(
                 successor_object.get("bead_id"), context=f"ledger row {bead_id}.residual_successor.bead_id"
             )
-            if successor_id not in successors:
-                raise IncidentCoverageLedgerError(f"unknown successor {successor_id} for {bead_id}")
+            if successor_id not in catalogs["successors"]:
+                _fail("unknown_successor", f"unknown successor {successor_id} for {bead_id}")
             child_ids = _strings(
                 graph_entry.get("child_bead_ids"), context=f"campaign graph dependency {bead_id}.child_bead_ids"
             )
             if successor_id not in child_ids:
-                raise IncidentCoverageLedgerError(f"successor {successor_id} is not a named child of {bead_id}")
+                _fail("successor_parent_mismatch", f"successor {successor_id} is not a named child of {bead_id}")
             successor_backed_ids.append(bead_id)
 
         if graph_entry.get("status") == "closed" and graph_entry.get("kind") == "implementation":
             closed_implementation_ids.append(bead_id)
             live_proof = any(receipts[receipt_id].get("kind") == "live-proof" for receipt_id in receipt_ids)
             if not live_proof and successor_id is None:
-                raise IncidentCoverageLedgerError(
-                    f"closed implementation bead {bead_id} has no live proof or named child successor"
+                _fail(
+                    "closed_implementation_unproven",
+                    f"closed implementation bead {bead_id} has no live proof or named child successor",
                 )
 
     if len(set(orders)) != len(orders) or set(orders) != set(range(1, len(rows) + 1)):
-        raise IncidentCoverageLedgerError("ledger schedule orders must be a permutation of 1..row_count")
+        _fail("schedule_invalid", "ledger schedule orders must be a permutation of 1..row_count")
 
     return CoverageResolution(
         target_bead_id=target,
@@ -238,19 +528,50 @@ def resolve_incident_coverage(ledger: JsonObject, graph: JsonObject) -> Coverage
 
 
 def resolve_default_incident_coverage() -> CoverageResolution:
-    """Load and resolve the committed 818fy ledger and graph fixture."""
+    """Load and resolve the committed 818fy ledger, graph, and Beads records."""
 
     return resolve_incident_coverage(load_ledger(), load_campaign_graph())
 
 
+def main() -> int:
+    """Run the unconditional static verification entrypoint."""
+
+    try:
+        result = resolve_default_incident_coverage()
+    except IncidentCoverageLedgerError as exc:
+        print(json.dumps(exc.diagnostic, sort_keys=True))
+        return 1
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "target_bead_id": result.target_bead_id,
+                "forcing_dependency_count": len(result.forcing_dependency_ids),
+                "ledger_row_count": result.ledger_row_count,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 __all__ = [
+    "BEADS_PATH",
     "CAMPAIGN_GRAPH_PATH",
     "CoverageResolution",
+    "DEPENDENCY_KINDS",
     "IncidentCoverageLedgerError",
     "LEDGER_PATH",
+    "ROUTE_KINDS",
     "SCHEMA_PATH",
+    "load_beads_jsonl",
+    "load_beads_forcing_export",
     "load_campaign_graph",
     "load_ledger",
     "resolve_default_incident_coverage",
     "resolve_incident_coverage",
 ]
+
+
+if __name__ == "__main__":
+    sys.exit(main())

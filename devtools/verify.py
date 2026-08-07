@@ -1853,6 +1853,14 @@ def build_verify_steps(
                         str(PYTEST_REPORT_DIR / "schema-promotion-audit.json"),
                     ],
                 ),
+                # Static, archive-independent: the committed incident ledger
+                # must agree with the structured Beads dependency graph and
+                # every receipt/reference must resolve before quick verify is
+                # allowed to report green.
+                (
+                    "incident coverage ledger",
+                    [sys.executable, "-m", "devtools.incident_coverage_ledger"],
+                ),
             ]
         )
 
