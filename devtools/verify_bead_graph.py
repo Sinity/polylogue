@@ -19,9 +19,13 @@ import subprocess
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from devtools.beads_acceptance_contracts import validate as validate_acceptance_contract
+
+_CONTRACT_MANIFEST = Path(__file__).parents[1] / "docs" / "plans" / "beads-acceptance-contracts-2026-08-07.txt"
+REQUIRED_CONTRACT_IDS = frozenset(_CONTRACT_MANIFEST.read_text(encoding="utf-8").split())
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,9 +178,20 @@ def _parent_findings(issues: list[dict[str, Any]]) -> list[Finding]:
     return findings
 
 
-def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
+def collect_findings(
+    issues: list[dict[str, Any]], *, required_contract_ids: frozenset[str] | None = None
+) -> list[Finding]:
     by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
     findings: list[Finding] = _parent_findings(issues)
+
+    for issue_id in sorted(required_contract_ids or ()):
+        issue = by_id.get(issue_id)
+        if issue is None:
+            findings.append(Finding("missing-required-acceptance-contract", issue_id, "manifest Bead is absent"))
+        elif "acceptance_contract_v1" not in _metadata(issue):
+            findings.append(
+                Finding("missing-required-acceptance-contract", issue_id, "manifest Bead has no structured contract")
+            )
 
     for issue_id, issue in sorted(by_id.items()):
         if "acceptance_contract_v1" not in _metadata(issue):
@@ -245,10 +260,16 @@ def _partition(items: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any
     return {name: {"count": len(ids), "ids": sorted(ids)} for name, ids in sorted(groups.items())}
 
 
-def missing_ac_census(issues: list[dict[str, Any]]) -> dict[str, Any]:
+def missing_ac_census(
+    issues: list[dict[str, Any]], *, required_contract_ids: frozenset[str] | None = None
+) -> dict[str, Any]:
     """Produce a complete, deterministic census of fail-closed missing ACs."""
     parents = canonical_parent_map(issues)
-    missing_ids = {finding.bead_id for finding in collect_findings(issues) if finding.kind == "missing-ac"}
+    missing_ids = {
+        finding.bead_id
+        for finding in collect_findings(issues, required_contract_ids=required_contract_ids)
+        if finding.kind == "missing-ac"
+    }
     rows: list[dict[str, Any]] = []
     for issue in issues:
         bead_id = str(issue.get("id", ""))
@@ -281,8 +302,14 @@ def missing_ac_census(issues: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_report(issues: list[dict[str, Any]], *, cycles_ok: bool, cycles_output: str) -> dict[str, Any]:
-    findings = collect_findings(issues)
+def build_report(
+    issues: list[dict[str, Any]],
+    *,
+    cycles_ok: bool,
+    cycles_output: str,
+    required_contract_ids: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    findings = collect_findings(issues, required_contract_ids=required_contract_ids)
     by_kind: dict[str, int] = defaultdict(int)
     for finding in findings:
         by_kind[finding.kind] += 1
@@ -292,7 +319,7 @@ def build_report(issues: list[dict[str, Any]], *, cycles_ok: bool, cycles_output
         "issues_scanned": len(issues),
         "findings": [{"kind": f.kind, "id": f.bead_id, "detail": f.detail} for f in findings],
         "counts": dict(sorted(by_kind.items())),
-        "missing_ac_census": missing_ac_census(issues),
+        "missing_ac_census": missing_ac_census(issues, required_contract_ids=required_contract_ids),
     }
 
 
@@ -310,6 +337,7 @@ def _format_report(report: dict[str, Any]) -> str:
         f"inversions={counts.get('wave-inversion', 0)} "
         f"missing_ac={counts.get('missing-ac', 0)} "
         f"invalid_contracts={counts.get('invalid-acceptance-contract', 0)} "
+        f"missing_required_contracts={counts.get('missing-required-acceptance-contract', 0)} "
         f"malformed_wave={counts.get('malformed-wave', 0)} "
         f"parent_integrity={sum(value for key, value in counts.items() if key.startswith('parent-') or key in {'multiple-parents', 'missing-parent'})}"
     )
@@ -346,7 +374,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"bead-graph: failed to load live Beads state: {exc}", file=sys.stderr)
         return 1
-    report = build_report(issues, cycles_ok=cycles_ok, cycles_output=cycles_output)
+    report = build_report(
+        issues,
+        cycles_ok=cycles_ok,
+        cycles_output=cycles_output,
+        required_contract_ids=REQUIRED_CONTRACT_IDS,
+    )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

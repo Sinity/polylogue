@@ -14,6 +14,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab lanes",
     "lab policy backlog-hygiene",
     "lab policy bead-graph",
+    "lab policy acceptance-contracts",
     "lab policy campaign-archive-boundaries",
     "lab policy demo-packet-registry",
     "lab policy demo-tour-freshness",
@@ -1861,6 +1862,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools lab policy raw-authority-frontier-executability",
             "devtools lab policy raw-authority-frontier-executability --json",
+        ),
+    ),
+    CommandSpec(
+        "lab policy acceptance-contracts",
+        "verification lab",
+        "Validate structured Beads acceptance contracts and the committed contract manifest.",
+        "devtools.beads_acceptance_contracts",
+        use_when=(
+            "Run the source-digest-bound acceptance-contract gate before shipping Beads state. "
+            "It validates typed contract fields, rendered criteria equality, planner-review "
+            "dispatch markers, safety and receipt clauses, and the committed 218-Bead manifest."
+        ),
+        examples=(
+            "devtools lab policy acceptance-contracts",
+            "devtools lab policy acceptance-contracts --json",
         ),
     ),
     CommandSpec(

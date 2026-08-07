@@ -23,12 +23,14 @@ _ALLOWED_TYPES = {
     "documentation",
 }
 _ALLOWED_RISKS = {"ordinary", "read-only", "durable-mutation", "semantic-integrity", "resource-concurrency"}
+_ALLOWED_CONFIDENCE = {"high", "medium", "planner-review"}
 _PLACEHOLDER = re.compile(
     r"(?:<[^>]+>|\.{3}|\b(?:TBD|TODO|FIXME|as appropriate|where applicable|figure out|choose an approach|add suitable tests)\b)",
     re.I,
 )
-_SOURCE_FIELDS = ("id", "title", "description", "design", "notes", "status", "priority", "issue_type", "updated_at")
+_SOURCE_FIELDS = ("id", "title", "description", "design", "notes", "priority", "issue_type")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_DEFAULT_MANIFEST = Path(__file__).parents[1] / "docs" / "plans" / "beads-acceptance-contracts-2026-08-07.txt"
 
 
 def source_digest(issue: dict[str, Any]) -> str:
@@ -122,6 +124,8 @@ def validate(issue: dict[str, Any]) -> list[str]:
         errors.append("invalid contract_type")
     if contract.get("risk") not in _ALLOWED_RISKS:
         errors.append("invalid risk")
+    if contract.get("confidence") not in _ALLOWED_CONFIDENCE:
+        errors.append("confidence must be high, medium, or planner-review")
     _require_string(errors, contract.get("outcome"), "outcome")
     for key in ("routes", "evidence", "verification", "anti_vacuity"):
         _require_string_list(errors, contract, key)
@@ -141,6 +145,10 @@ def validate(issue: dict[str, Any]) -> list[str]:
         errors.append("source_digest does not match the Bead source snapshot")
     if contract.get("contract_type") == "live_operation" and not contract.get("safety"):
         errors.append("live_operation requires safety clauses")
+    if contract.get("contract_type") == "live_operation" and not any(
+        "receipt" in value.lower() for value in contract.get("verification", [])
+    ):
+        errors.append("live_operation requires typed receipt verification")
     if contract.get("risk") == "durable-mutation" and not contract.get("safety"):
         errors.append("durable-mutation requires safety clauses")
     for value in _strings(contract):
@@ -168,16 +176,19 @@ def load(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate structured Beads acceptance contracts without guessing from prose."
     )
     parser.add_argument("issues", type=Path, nargs="?", default=Path(".beads/issues.jsonl"))
     parser.add_argument(
-        "--manifest", type=Path, help="optional newline-separated Bead ids that must carry a valid contract"
+        "--manifest",
+        type=Path,
+        default=_DEFAULT_MANIFEST if _DEFAULT_MANIFEST.exists() else None,
+        help="newline-separated Bead ids that must carry a valid contract",
     )
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     required = set(args.manifest.read_text().split()) if args.manifest else None
     failures = {}
     seen = set()

@@ -17,6 +17,7 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         "bead_id": "polylogue-test",
         "contract_type": kind,
         "risk": risk,
+        "confidence": "high",
         "outcome": "The named behavior is observable through the production route.",
         "routes": ["Exercise the real production entry point."],
         "evidence": ["A red-before receipt records the defect."],
@@ -61,6 +62,37 @@ def test_durable_mutation_requires_safety() -> None:
     issue["metadata"]["acceptance_contract_v1"]["safety"] = []
     issue["acceptance_criteria"] = mod.render(issue["metadata"]["acceptance_contract_v1"])
     assert "durable-mutation requires safety clauses" in mod.validate(issue)
+
+
+def test_live_operation_requires_typed_receipt_verification() -> None:
+    issue = _issue(kind="live_operation")
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["source_digest"] = mod.source_digest(issue)
+    issue["acceptance_criteria"] = mod.render(contract)
+    assert "live_operation requires typed receipt verification" in mod.validate(issue)
+
+    contract["verification"].append("Record the immutable typed apply receipt and result status.")
+    issue["acceptance_criteria"] = mod.render(contract)
+    assert mod.validate(issue) == []
+
+
+def test_invalid_confidence_is_rejected() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["confidence"] = "planner_review"
+    contract["source_digest"] = mod.source_digest(issue)
+    issue["acceptance_criteria"] = mod.render(contract)
+    assert "confidence must be high, medium, or planner-review" in mod.validate(issue)
+
+
+def test_lifecycle_changes_do_not_invalidate_scope_digest() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["source_digest"] = mod.source_digest(issue)
+    issue["acceptance_criteria"] = mod.render(contract)
+    issue["status"] = "closed"
+    issue["updated_at"] = "2026-08-07T13:00:00Z"
+    assert mod.validate(issue) == []
 
 
 def test_read_only_audit_contract_does_not_require_mutation_safety() -> None:
