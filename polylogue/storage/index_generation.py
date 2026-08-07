@@ -13,7 +13,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
@@ -191,6 +191,10 @@ class IndexRebuildTransaction:
     # checks, so a post-flip observation failure cannot leave a resumable
     # transaction claiming that its candidate is merely ready.
     post_promotion_attestation: dict[str, object] | None = None
+    # The schema-inference evidence admitted for this checkpoint. This is
+    # distinct from ``source_snapshot``: it records the receipt-bound external
+    # inventory token that authorized the current replay state.
+    consumed_evidence: dict[str, object] = field(default_factory=dict)
 
     @property
     def cursor(self) -> str | None:
@@ -507,6 +511,7 @@ class IndexGenerationStore:
         operation_id: str | None = None,
         pass_byte_budget: int | None = None,
         pass_deadline_ms: int | None = None,
+        consumed_evidence: dict[str, object] | None = None,
     ) -> IndexRebuildTransaction:
         """Create an inactive candidate and its resumable transaction record."""
         op_id = operation_id or str(uuid.uuid4())
@@ -528,6 +533,7 @@ class IndexGenerationStore:
             owner_pid=os.getpid(),
             owner_host=socket.gethostname(),
             heartbeat_at_ms=now,
+            consumed_evidence=dict(consumed_evidence or {}),
         )
         self.save_transaction(transaction)
         return transaction
@@ -591,6 +597,7 @@ class IndexGenerationStore:
         error: str | None = None,
         derived_stores_cleared: bool | None = None,
         post_promotion_attestation: dict[str, object] | None = None,
+        consumed_evidence: dict[str, object] | None = None,
     ) -> IndexRebuildTransaction:
         """Persist one state transition without changing candidate ownership."""
         return self.save_transaction(
@@ -615,6 +622,9 @@ class IndexGenerationStore:
                     "post_promotion_attestation": post_promotion_attestation
                     if post_promotion_attestation is not None
                     else transaction.post_promotion_attestation,
+                    "consumed_evidence": (
+                        dict(consumed_evidence) if consumed_evidence is not None else transaction.consumed_evidence
+                    ),
                 }
             )
         )

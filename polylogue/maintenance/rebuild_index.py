@@ -16,7 +16,7 @@ import os
 import sqlite3
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
 from http import HTTPStatus
 from pathlib import Path
@@ -180,6 +180,10 @@ class RebuildProvenanceContext:
         if not self.consumed_evidence or not self.source_snapshot:
             raise RuntimeError("rebuild cleanup has no validated provenance context")
 
+    def receipt_evidence(self) -> dict[str, object]:
+        """Snapshot the latest receipt-bound evidence for a durable record."""
+        return dict(self.consumed_evidence)
+
 
 def _validate_rebuild_provenance_receipt(
     root: Path,
@@ -233,7 +237,7 @@ def _reconcile_active_generation_transaction(
         generation = store.load(transaction.generation_id)
         active_path = store.active_pointer.resolve(strict=True)
         generation_path = Path(generation.index_path).resolve(strict=True)
-    except (FileNotFoundError, OSError, ValueError):
+    except (FileNotFoundError, OSError, TypeError, ValueError):
         return transaction
     if (
         generation.owner_id != transaction.generation_owner_id
@@ -251,18 +255,6 @@ def _reconcile_active_generation_transaction(
             "generation_state": generation.state,
         },
     )
-
-
-def _reconcile_active_generation_before_stale_retirement(store: IndexGenerationStore, operation_id: str | None) -> bool:
-    """Record an already-active owned generation before retiring its transaction."""
-    if operation_id is None:
-        return False
-    try:
-        transaction = store.load_transaction(operation_id)
-    except Exception:
-        return False
-    transaction = _reconcile_active_generation_transaction(store, transaction)
-    return transaction.status in _REBUILD_TERMINAL_NOT_RESUMABLE
 
 
 def _mark_rebuild_transaction_stale_after_provenance_failure(
@@ -284,6 +276,7 @@ def _mark_rebuild_transaction_stale_after_provenance_failure(
     try:
         store = IndexGenerationStore.for_archive_root(root)
         transaction = store.load_transaction(operation_id)
+        transaction = _reconcile_active_generation_transaction(store, transaction)
     except Exception as load_error:
         error.add_note(f"could not load rebuild transaction to mark it stale: {load_error}")
         return
@@ -427,6 +420,7 @@ def _create_rebuild_transaction_after_receipt_validation(
         pass_deadline_ms=(
             int(request.pass_deadline_seconds * 1000) if request.pass_deadline_seconds is not None else None
         ),
+        consumed_evidence=provenance.receipt_evidence(),
     )
     try:
         provenance.validate()
@@ -474,6 +468,7 @@ def _checkpoint_rebuild_transaction_after_receipt_validation(
         error=error,
         derived_stores_cleared=derived_stores_cleared,
         post_promotion_attestation=post_promotion_attestation,
+        consumed_evidence=provenance.receipt_evidence(),
     )
 
 
@@ -482,10 +477,12 @@ def _save_rebuild_pass_receipt_after_receipt_validation(
     operation_id: str,
     pass_receipt: RebuildIndexReceipt,
     provenance: RebuildProvenanceContext,
-) -> None:
+) -> RebuildIndexReceipt:
     """Validate before publishing a pass receipt tied to rebuild state."""
     provenance.validate()
+    pass_receipt = replace(pass_receipt, consumed_evidence=provenance.receipt_evidence())
     generation_store.save_pass_receipt(operation_id, pass_receipt.to_dict())
+    return pass_receipt
 
 
 #: Passed through to ``CensusParseStage.warm_raw_ids``'s ``max_payload_bytes``
@@ -1298,7 +1295,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     the *location* it resolved, catching e.g. a concurrent devtools campaign
     or a foreign/rotated root before this rebuild can act on stale identity).
     """
-    from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
+    from polylogue.storage.index_generation import RebuildLease
     from polylogue.storage.sqlite.connection_profile import (
         check_mapped_bytes_budget_against_cgroup_limit,
         log_mapped_bytes_budget_check,
@@ -1378,9 +1375,6 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         # can create or mutate a candidate/transaction.
         with RebuildLease(root):
             if initial_provenance_error is not None:
-                recovery_store = IndexGenerationStore(owned.location)
-                if _reconcile_active_generation_before_stale_retirement(recovery_store, request.operation_id):
-                    raise initial_provenance_error
                 _mark_rebuild_transaction_stale_after_provenance_failure(
                     root, request.operation_id, initial_provenance_error
                 )
@@ -1394,9 +1388,6 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                     ),
                 )
             except RebuildProvenanceError as exc:
-                recovery_store = IndexGenerationStore(owned.location)
-                if _reconcile_active_generation_before_stale_retirement(recovery_store, request.operation_id):
-                    raise
                 _mark_rebuild_transaction_stale_after_provenance_failure(root, request.operation_id, exc)
                 raise
             return await _rebuild_index_from_source_owned(
@@ -1800,9 +1791,9 @@ async def _rebuild_index_from_source_owned(
                         ),
                         selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
-                        consumed_evidence=consumed_evidence,
+                        consumed_evidence=provenance.receipt_evidence(),
                     )
-                    _save_rebuild_pass_receipt_after_receipt_validation(
+                    pass_receipt = _save_rebuild_pass_receipt_after_receipt_validation(
                         generation_store,
                         transaction.operation_id,
                         pass_receipt,
@@ -1898,9 +1889,9 @@ async def _rebuild_index_from_source_owned(
                         ),
                         selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
-                        consumed_evidence=consumed_evidence,
+                        consumed_evidence=provenance.receipt_evidence(),
                     )
-                    _save_rebuild_pass_receipt_after_receipt_validation(
+                    pass_receipt = _save_rebuild_pass_receipt_after_receipt_validation(
                         generation_store,
                         transaction.operation_id,
                         pass_receipt,
@@ -2108,6 +2099,7 @@ async def _rebuild_index_from_source_owned(
                             transaction,
                             status="promoted",
                             post_promotion_attestation=attestation,
+                            consumed_evidence=provenance.receipt_evidence(),
                         )
                     except Exception as attestation_error:
                         source_drifted = True
@@ -2201,7 +2193,7 @@ async def _rebuild_index_from_source_owned(
                 replay=replay,
                 terminal_timings_s=terminal_timings_s,
             ),
-            consumed_evidence=consumed_evidence,
+            consumed_evidence=provenance.receipt_evidence(),
         )
         try:
             _persist_candidate_receipt(generation, final_receipt.to_dict())
@@ -2220,6 +2212,7 @@ async def _rebuild_index_from_source_owned(
                             "generation_state": "active",
                             "error": str(attestation_error),
                         },
+                        consumed_evidence=provenance.receipt_evidence(),
                     )
                 except BaseException as recovery_error:
                     attestation_error.add_note(
@@ -2249,6 +2242,7 @@ async def _rebuild_index_from_source_owned(
                                 "generation_state": "active",
                                 "error": str(attestation_error),
                             },
+                            consumed_evidence=provenance.receipt_evidence(),
                         )
                     except BaseException as recovery_error:
                         attestation_error.add_note(
@@ -2257,7 +2251,7 @@ async def _rebuild_index_from_source_owned(
                         )
                     raise
             else:
-                _save_rebuild_pass_receipt_after_receipt_validation(
+                final_receipt = _save_rebuild_pass_receipt_after_receipt_validation(
                     generation_store,
                     transaction.operation_id,
                     final_receipt,

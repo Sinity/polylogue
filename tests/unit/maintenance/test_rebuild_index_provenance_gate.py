@@ -201,8 +201,9 @@ def test_valid_receipt_allows_real_candidate_acceptance_and_promotion(tmp_path: 
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().exists()
 
 
-def test_nonresumable_rebuild_reuses_refreshed_inventory_token_after_detector_change(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("selection", ["raw-ids", "only-missing", "max-blob-mb"])
+def test_nonresumable_rebuild_persists_refreshed_inventory_evidence_after_detector_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selection: str
 ) -> None:
     """A nonresumable rebuild carries a metadata refresh to later validations.
 
@@ -240,19 +241,41 @@ def test_nonresumable_rebuild_reuses_refreshed_inventory_token_after_detector_ch
         return selected
 
     monkeypatch.setattr(rebuild_index_module, "select_rebuild_raw_ids", select_then_touch)
-    result = rebuild_index_from_source_sync(
-        RebuildIndexRequest(
+    if selection == "only-missing":
+        request = RebuildIndexRequest(
+            archive_root=root,
+            schema_inference_receipt_path=receipt_path,
+            only_missing=True,
+            promote=False,
+        )
+    elif selection == "max-blob-mb":
+        request = RebuildIndexRequest(
+            archive_root=root,
+            schema_inference_receipt_path=receipt_path,
+            raw_ids=tuple(_raw_ids(root)),
+            max_blob_mb=1.0,
+            promote=False,
+        )
+    else:
+        request = RebuildIndexRequest(
             archive_root=root,
             schema_inference_receipt_path=receipt_path,
             raw_ids=tuple(_raw_ids(root)),
             promote=False,
         )
-    )
+    result = rebuild_index_from_source_sync(request)
 
     assert result.status == "replayed"
     assert inventory_calls_before_refresh is not None
     assert full_inventory_calls == inventory_calls_before_refresh + 1, (
         "the refreshed pass token must prevent a second full inventory scan"
+    )
+    candidate_receipt = Path(cast(str, result.generation["index_path"])).parent / "rebuild-receipt.json"
+    persisted_receipt = json.loads(candidate_receipt.read_text(encoding="utf-8"))
+    assert persisted_receipt["consumed_evidence"] == result.consumed_evidence
+    assert (
+        persisted_receipt["consumed_evidence"]["external_ground_truth_inventory_token"]
+        == result.consumed_evidence["external_ground_truth_inventory_token"]
     )
 
 
@@ -308,6 +331,8 @@ def test_resumable_checkpoint_and_pass_receipt_reuse_refreshed_inventory_token(
     assert inventory_calls_before_refresh is not None
     assert full_inventory_calls == inventory_calls_before_refresh + 1
     operation_id = str(result.transaction["operation_id"])
+    checkpoint = IndexGenerationStore.for_archive_root(root).load_transaction(operation_id)
+    assert checkpoint.consumed_evidence == result.consumed_evidence
     pass_receipt_path = next((root / ".index-rebuild-transactions" / f"{operation_id}.receipts").glob("pass-*.json"))
     persisted_receipt = json.loads(pass_receipt_path.read_text(encoding="utf-8"))
     assert (
@@ -339,6 +364,42 @@ def test_invalid_receipt_preserves_provenance_error_when_recovery_state_is_unrea
                 archive_root=root,
                 schema_inference_receipt_path=receipt_path,
                 operation_id=operation_id,
+            )
+        )
+
+
+@pytest.mark.parametrize("metadata", ["transaction", "generation"])
+def test_invalid_receipt_preserves_provenance_error_when_recovery_metadata_is_readable_but_malformed(
+    tmp_path: Path, metadata: str
+) -> None:
+    """Metadata-shape failures during stale retirement cannot replace the gate error."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    store = IndexGenerationStore.for_archive_root(root)
+    transaction = store.create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root), operation_id=f"malformed-{metadata}"
+    )
+    if metadata == "transaction":
+        metadata_path = root / ".index-rebuild-transactions" / f"{transaction.operation_id}.json"
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload["generation_id"] = None
+        metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        metadata_path = Path(store.load(transaction.generation_id).index_path).parent / "generation.json"
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload["index_path"] = None
+        metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["generated_at"] = "2000-01-01T00:00:00Z"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(rebuild_index_module.RebuildProvenanceError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=transaction.operation_id,
             )
         )
 
@@ -551,6 +612,7 @@ def test_full_source_transaction_creation_cleans_candidate_after_post_create_val
         operation_id: str | None = None,
         pass_byte_budget: int | None = None,
         pass_deadline_ms: int | None = None,
+        consumed_evidence: dict[str, object] | None = None,
     ) -> IndexRebuildTransaction:
         transaction = original_create_transaction(
             store,
@@ -558,6 +620,7 @@ def test_full_source_transaction_creation_cleans_candidate_after_post_create_val
             operation_id=operation_id,
             pass_byte_budget=pass_byte_budget,
             pass_deadline_ms=pass_deadline_ms,
+            consumed_evidence=consumed_evidence,
         )
         assert store.load(transaction.generation_id).state == "inactive"
         assert store.load_transaction(transaction.operation_id).operation_id == transaction.operation_id
