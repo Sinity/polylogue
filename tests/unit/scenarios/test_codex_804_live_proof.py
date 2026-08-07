@@ -398,6 +398,10 @@ def test_sanitized_codex_804_revision_recovery_proof(
     # finalized durable source tier into this fresh-index candidate fixture.
     # This keeps the rebuild receipt frozen after remediation, so a candidate
     # replay cannot hide a source mutation behind its own provenance gate.
+    # The replay phase intentionally begins before source remediation and the
+    # crash boundary so its receipt covers the complete recovery envelope.
+    replay_before = _resource_sample(root)
+    replay_started = time.perf_counter()
     source_ready_root = tmp_path / "codex-804-source-ready"
     initialize_active_archive_root(source_ready_root)
     shutil.copy2(root / "source.db", source_ready_root / "source.db")
@@ -471,6 +475,9 @@ raise SystemExit("checkpoint seam was not reached")
     assert persisted_before_page.last_blob_hash_hex is None
     receipt_directory = store.transactions_root / f"{operation_id}.receipts"
     assert not tuple(receipt_directory.glob("pass-*.json")), "a pre-checkpoint kill emitted a false paused receipt"
+    precheckpoint_generation = store.load(persisted_before_page.generation_id)
+    with sqlite3.connect(precheckpoint_generation.index_path) as conn:
+        assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) > 0
     committed_page = store.next_raw_page(persisted_before_page, limit=8)
     committed_page_raw_ids = tuple(row[0] for row in committed_page.rows)
     assert len(committed_page_raw_ids) == 8
@@ -494,8 +501,6 @@ result = rebuild_index_from_source_sync(
 )
 print(result.status)
 """
-    replay_before = _resource_sample(root)
-    replay_started = time.perf_counter()
     replay_process = subprocess.Popen(
         [sys.executable, "-c", replay_script, str(root), operation_id, str(schema_inference_receipt_path)],
         cwd=Path.cwd(),
