@@ -238,9 +238,14 @@ def _required_blocking_edge_findings(
     findings: list[Finding] = []
     for edge in required_edges:
         dependent = by_id.get(edge.dependent_id)
+        blocker = by_id.get(edge.blocker_id)
         detail = f"required blocks dependency: {edge.dependent_id} -> {edge.blocker_id}"
-        if dependent is None:
+        if dependent is None and blocker is None:
+            findings.append(Finding(kind, edge.dependent_id, f"missing dependent and blocker; {detail}"))
+        elif dependent is None:
             findings.append(Finding(kind, edge.dependent_id, f"missing dependent; {detail}"))
+        elif blocker is None:
+            findings.append(Finding(kind, edge.blocker_id, f"missing blocker; {detail}"))
         elif edge.blocker_id not in _blocks_targets(dependent):
             findings.append(Finding(kind, edge.dependent_id, f"missing {detail}"))
     return findings
@@ -248,10 +253,6 @@ def _required_blocking_edge_findings(
 
 def reindex_proof_edge_findings(issues: list[dict[str, Any]]) -> list[Finding]:
     """Validate required reindex live-proof ownership and phase bindings."""
-    issue_ids = {str(issue["id"]) for issue in issues if isinstance(issue.get("id"), str)}
-    phase_consumer_ids = {edge.dependent_id for edge in REINDEX_PROOF_EDGE_GUARD_PHASE_BINDINGS}
-    if not issue_ids.intersection(phase_consumer_ids):
-        return []
     return [
         *_required_blocking_edge_findings(
             issues,
@@ -267,10 +268,15 @@ def reindex_proof_edge_findings(issues: list[dict[str, Any]]) -> list[Finding]:
 
 
 def collect_findings(
-    issues: list[dict[str, Any]], *, required_contract_ids: frozenset[str] | None = None
+    issues: list[dict[str, Any]],
+    *,
+    required_contract_ids: frozenset[str] | None = None,
+    enforce_reindex: bool = False,
 ) -> list[Finding]:
     by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
-    findings: list[Finding] = [*_parent_findings(issues), *reindex_proof_edge_findings(issues)]
+    findings: list[Finding] = [*_parent_findings(issues)]
+    if enforce_reindex:
+        findings.extend(reindex_proof_edge_findings(issues))
 
     for issue_id in sorted(required_contract_ids or ()):
         issue = by_id.get(issue_id)
@@ -396,8 +402,13 @@ def build_report(
     cycles_ok: bool,
     cycles_output: str,
     required_contract_ids: frozenset[str] | None = None,
+    enforce_reindex: bool = False,
 ) -> dict[str, Any]:
-    findings = collect_findings(issues, required_contract_ids=required_contract_ids)
+    findings = collect_findings(
+        issues,
+        required_contract_ids=required_contract_ids,
+        enforce_reindex=enforce_reindex,
+    )
     by_kind: dict[str, int] = defaultdict(int)
     for finding in findings:
         by_kind[finding.kind] += 1
@@ -467,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
         cycles_ok=cycles_ok,
         cycles_output=cycles_output,
         required_contract_ids=REQUIRED_CONTRACT_IDS,
+        enforce_reindex=True,
     )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

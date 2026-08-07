@@ -10,7 +10,20 @@ import pytest
 from devtools import verify_bead_graph
 
 EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES = frozenset(
-    {(edge.dependent_id, edge.blocker_id) for edge in verify_bead_graph.REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES}
+    {
+        ("polylogue-active-leaf-live-proof", "polylogue-2hwl"),
+        ("polylogue-hook-authority-conflict-proof", "polylogue-foee"),
+        ("polylogue-chatgpt-content-live-proof", "polylogue-xofj"),
+        ("polylogue-excluded-cursor-live-proof", "polylogue-ix5r"),
+        ("polylogue-byte-supersession-live-proof", "polylogue-6753s"),
+        ("polylogue-hook-reconciliation-apply-proof", "polylogue-nhbvf"),
+        ("polylogue-raw-dedupe-apply-proof", "polylogue-zm4w8"),
+        ("polylogue-claude-streaming-live-proof", "polylogue-4987i"),
+        ("polylogue-claude-vintage-live-proof", "polylogue-0qfy"),
+        ("polylogue-codex-804-live-proof", "polylogue-27522"),
+        ("polylogue-topology-live-proof", "polylogue-4ts.10"),
+        ("polylogue-stalled-cursor-live-proof", "polylogue-2qrx"),
+    }
 )
 
 
@@ -168,6 +181,8 @@ def test_main_exits_zero_when_all_waves_are_well_formed(
     monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (True, ""))
     monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: [_issue("polylogue-a", labels=["wave:1"])])
     monkeypatch.setattr(verify_bead_graph, "REQUIRED_CONTRACT_IDS", frozenset())
+    monkeypatch.setattr(verify_bead_graph, "REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES", ())
+    monkeypatch.setattr(verify_bead_graph, "REINDEX_PROOF_EDGE_GUARD_PHASE_BINDINGS", ())
 
     rc = verify_bead_graph.main([])
 
@@ -256,16 +271,46 @@ def test_current_export_satisfies_reindex_live_proof_edge_policy() -> None:
     assert verify_bead_graph.reindex_proof_edge_findings(_exported_issues()) == []
 
 
+def test_reindex_edge_policy_remains_active_without_phase_consumers() -> None:
+    findings = verify_bead_graph.reindex_proof_edge_findings([])
+
+    assert len(findings) == 14
+    assert {finding.kind for finding in findings} == {
+        "missing-required-reindex-proof-edge",
+        "missing-reindex-proof-edge-guard-binding",
+    }
+
+
+def test_required_reindex_edge_rejects_missing_blocker_endpoint() -> None:
+    dependent, blocker = next(iter(EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES))
+    issues = [
+        _issue(
+            dependent,
+            dependencies=[{"type": "blocks", "depends_on_id": blocker}],
+        )
+    ]
+
+    findings = verify_bead_graph.reindex_proof_edge_findings(issues)
+
+    assert any(
+        finding.kind == "missing-required-reindex-proof-edge"
+        and finding.bead_id == blocker
+        and "missing blocker" in finding.detail
+        for finding in findings
+    )
+
+
 @pytest.mark.parametrize(
-    "edge",
-    verify_bead_graph.REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES,
-    ids=lambda edge: f"{edge.dependent_id}->{edge.blocker_id}",
+    "edge_pair",
+    sorted(EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES),
+    ids=lambda edge_pair: f"{edge_pair[0]}->{edge_pair[1]}",
 )
 def test_each_required_reindex_live_proof_edge_fails_closed_when_removed(
-    edge: verify_bead_graph.RequiredBlockingEdge,
+    edge_pair: tuple[str, str],
 ) -> None:
     """Removing one required edge must fail the graph policy."""
     issues = deepcopy(_exported_issues())
+    edge = verify_bead_graph.RequiredBlockingEdge(*edge_pair)
     dependent = next(issue for issue in issues if issue["id"] == edge.dependent_id)
     dependencies = dependent["dependencies"]
     assert isinstance(dependencies, list)
