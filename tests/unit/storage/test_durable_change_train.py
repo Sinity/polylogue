@@ -1362,6 +1362,20 @@ def test_forward_receipt_checks_missing_chain_before_empty_history(
         )
 
 
+def test_forward_receipt_skips_non_train_audit_tier(tmp_path: Path) -> None:
+    with sqlite3.connect(":memory:") as conn:
+        assert (
+            durable_change_train_module._forward_version_receipt_for_current_tier(
+                tmp_path,
+                conn,
+                ArchiveTier.AUDIT,
+                current_version=1,
+                current_target_version=1,
+            )
+            is None
+        )
+
+
 def test_startup_recovers_later_train_before_released_chain_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

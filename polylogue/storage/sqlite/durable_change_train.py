@@ -339,10 +339,26 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
         "versions": versions,
     }
     payload["marker_digest"] = _bootstrap_marker_digest(payload)
-    marker_root.joinpath(_FRESH_DURABLE_BOOTSTRAP_MARKER).write_text(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
+    encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=marker_root,
+            prefix=f".{_FRESH_DURABLE_BOOTSTRAP_MARKER}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker_path)
+        temporary = None
+        _migration_runner._fsync_manifest_directory(marker_root)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> dict[ArchiveTier, int]:
@@ -1703,7 +1719,7 @@ def _forward_version_receipt_for_current_tier(
         for train in manifests_by_target.values()
         if train.state is DurableChangeTrainState.RELEASED and train.target_version < current_version
     ]
-    if current_version > DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:
+    if tier in DURABLE_MIGRATION_ADOPTION_FLOORS and current_version > DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:
         _require_released_train_chain(
             tier,
             manifests_by_target,
