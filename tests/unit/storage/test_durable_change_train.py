@@ -1116,10 +1116,11 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         assert conn.execute("PRAGMA user_version").fetchone() == (3,)
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='later_items'").fetchone() == ("later_items",)
     assert released == [True, True]
+    historical_manifest = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
     manifest_v3 = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 3)
     manifest_v3_bytes = manifest_v3.read_bytes()
     manifest_v3.unlink()
-    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+    with pytest.raises(DurableChangeTrainError, match=r"versions \[3\]"):
         durable_change_train_module.reconcile_durable_change_train_startup(tmp_path)
     with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
         execute_durable_change_train(
@@ -1177,7 +1178,6 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     assert schema_inventories == 3
     assert canonical_inventories == 1
 
-    historical_manifest = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
     historical_train = load_durable_change_train_manifest(historical_manifest)
     with sqlite3.connect(db_path) as conn:
         actual = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
