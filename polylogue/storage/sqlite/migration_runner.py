@@ -1607,7 +1607,12 @@ def capture_durable_database_evidence(
     live_path = _connection_main_path(conn)
     from polylogue.storage.archive_identity import ArchiveIdentity
 
-    archive_identity_digest = ArchiveIdentity.resolve(live_path.parent).authority_identity_digest
+    # Durable migration evidence must survive replacement of rebuildable
+    # generations. The source/user tier identities are the durable authority;
+    # active index, embeddings, and ops identities belong to derived/runtime
+    # state and must not invalidate a durable train.
+    durable_id = ArchiveIdentity.resolve(live_path.parent).durable_id
+    archive_identity_digest = hashlib.sha256(durable_id.encode("utf-8")).hexdigest()
     content_hasher = hashlib.sha256()
     for statement in conn.iterdump():
         content_hasher.update(statement.encode("utf-8"))

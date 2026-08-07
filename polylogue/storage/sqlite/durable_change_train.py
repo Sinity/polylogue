@@ -1423,22 +1423,16 @@ def _historical_schema_evidence(train: DurableChangeTrain) -> DurableFreshDDLPar
     return historical
 
 
-def _historical_schema_inventory(train: DurableChangeTrain) -> _migration_runner.DurableSchemaInventory:
-    """Reconstruct the exact canonical object set owned by a released train."""
-    historical = _historical_schema_evidence(train)
+def _canonical_schema_inventory(tier: ArchiveTier, target_version: int) -> _migration_runner.DurableSchemaInventory:
+    """Construct the canonical object set for one live durable schema version."""
     with closing(sqlite3.connect(":memory:")) as fresh:
         fresh.execute("PRAGMA foreign_keys = ON")
         archive_ddl = cast(dict[ArchiveTier, str], vars(_migration_runner)["ARCHIVE_DDL_BY_TIER"])
-        fresh.executescript(archive_ddl[train.tier])
-        fresh.execute(f"PRAGMA user_version = {train.target_version}")
-        _migration_runner._prepare_fresh_connection_for_target(fresh, train.tier, train.target_version)
+        fresh.executescript(archive_ddl[tier])
+        fresh.execute(f"PRAGMA user_version = {target_version}")
+        _migration_runner._prepare_fresh_connection_for_target(fresh, tier, target_version)
         fresh.commit()
-        inventory = _migration_runner.capture_durable_schema_inventory(fresh)
-    if inventory.sha256 != historical.fresh_inventory_sha256:
-        raise DurableChangeTrainError(
-            "released train canonical schema inventory no longer matches its historical fresh-DDL proof"
-        )
-    return inventory
+        return _migration_runner.capture_durable_schema_inventory(fresh)
 
 
 def _verify_released_train_live_tier(
@@ -1470,7 +1464,6 @@ def _verify_released_train_live_tier(
             _verify_persisted_live_tier_continuity(conn, train, actual=actual)
         return None
     historical = _historical_schema_evidence(train)
-    expected_inventory = _historical_schema_inventory(train)
     expected_identity = train.apply_evidence.post.archive_identity_digest
     if actual.archive_identity_digest != expected_identity:
         raise DurableChangeTrainError(
@@ -1481,23 +1474,30 @@ def _verify_released_train_live_tier(
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier integrity check failed after later train advancement"
         )
+    integrity_check = tuple(str(row[0]) for row in conn.execute("PRAGMA integrity_check"))
+    if integrity_check != ("ok",):
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier integrity check failed after later train advancement: {integrity_check}"
+        )
     live_inventory = _migration_runner.capture_durable_schema_inventory(conn)
     if live_inventory.sha256 != actual.schema_inventory_sha256:
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier schema inventory changed during forward admission"
         )
+    expected_inventory = _canonical_schema_inventory(train.tier, actual.user_version)
     expected_by_ref = {item.object_ref: item for item in expected_inventory.objects}
     live_by_ref = {item.object_ref: item for item in live_inventory.objects}
     missing = sorted(set(expected_by_ref) - set(live_by_ref))
+    unexpected = sorted(set(live_by_ref) - set(expected_by_ref))
     changed = sorted(
         object_ref
         for object_ref in set(expected_by_ref) & set(live_by_ref)
         if expected_by_ref[object_ref].definition_sha256 != live_by_ref[object_ref].definition_sha256
     )
-    if missing or changed:
+    if missing or unexpected or changed:
         raise DurableChangeTrainError(
-            f"{train.tier.value} durable tier historical schema objects changed after later train advancement: "
-            f"missing={missing}, changed={changed}"
+            f"{train.tier.value} durable tier schema differs from the canonical live version: "
+            f"missing={missing}, unexpected={unexpected}, changed={changed}"
         )
     runtime_target = (
         cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[train.tier]
@@ -1518,6 +1518,34 @@ def _verify_released_train_live_tier(
         historical_schema_inventory_sha256=historical.migrated_inventory_sha256,
         archive_identity_digest=actual.archive_identity_digest,
     )
+
+
+def _forward_version_receipt_for_current_tier(
+    archive_root: Path,
+    conn: sqlite3.Connection,
+    tier: ArchiveTier,
+    *,
+    current_version: int,
+    current_target_version: int,
+) -> DurableForwardVersionReceipt | None:
+    """Return the newest released historical-train receipt at the live target."""
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    historical: list[DurableChangeTrain] = []
+    if manifest_root.is_dir():
+        for path in sorted(manifest_root.glob(f"{tier.value}-*.json")):
+            train = load_durable_change_train_manifest(path)
+            if train.state is DurableChangeTrainState.RELEASED and train.target_version < current_version:
+                historical.append(train)
+    for train in sorted(historical, key=lambda item: item.target_version, reverse=True):
+        receipt = _verify_released_train_live_tier(
+            archive_root,
+            conn,
+            train,
+            current_target_version=current_target_version,
+        )
+        if receipt is not None:
+            return receipt
+    return None
 
 
 def _prove_and_release_persisted_train(
@@ -1630,7 +1658,20 @@ def execute_durable_change_train(
                 f"durable migration chain for {tier.value} stops at v{current_version}; "
                 f"runtime requires v{runtime_target_version} and the next train sidecar is missing"
             )
-        return DurableChangeTrainExecution(train=None, manifest_path=None, migration_result=legacy_result)
+        with _open_existing_tier(tier_path) as live:
+            forward_version_receipt = _forward_version_receipt_for_current_tier(
+                archive_root,
+                live,
+                tier,
+                current_version=current_version,
+                current_target_version=runtime_target_version,
+            )
+        return DurableChangeTrainExecution(
+            train=None,
+            manifest_path=None,
+            migration_result=legacy_result,
+            forward_version_receipt=forward_version_receipt,
+        )
 
     manifest_path = durable_change_train_manifest_path(archive_root, tier, sidecar.slot)
     if manifest_path.exists():

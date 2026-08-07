@@ -111,6 +111,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
         logger.warning("could not open source.db read-only", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not open source.db read-only: {exc}")
     try:
+        conn.execute("BEGIN")
         raw_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'"
         ).fetchone()
@@ -152,36 +153,40 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
                        LIMIT 1
                    ) AS support_status
+                   ,r.acquired_at_ms
             FROM raw_sessions AS r
             WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
                OR r.validation_status = 'failed'
-            ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
             """
         else:
             failure_query = """
-            SELECT r.raw_id, r.origin, r.validation_status, NULL AS artifact_kind, NULL AS support_status
+            SELECT r.raw_id, r.origin, r.validation_status, NULL AS artifact_kind, NULL AS support_status,
+                   r.acquired_at_ms
             FROM raw_sessions AS r
             WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
                OR r.validation_status = 'failed'
-            ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
             """
-        summary_rows = conn.execute(
+        summary_counts: Counter[tuple[object, object, object, object]] = Counter()
+        sample_rows: list[tuple[object, ...]] = []
+        sample_limit = max(0, sample_limit)
+        failure_rows = conn.execute(
             f"""
-            WITH failed AS ({failure_query})
-            SELECT origin, validation_status, artifact_kind, support_status, COUNT(*)
-            FROM failed
-            GROUP BY origin, validation_status, artifact_kind, support_status
+            WITH failed AS ({failure_query}),
+            ranked AS (
+                SELECT failed.*,
+                       ROW_NUMBER() OVER (ORDER BY acquired_at_ms DESC, raw_id DESC) AS sample_rank
+                FROM failed
+            )
+            SELECT raw_id, origin, validation_status, artifact_kind, support_status, sample_rank
+            FROM ranked
             """
-        ).fetchall()
-        sample_rows = conn.execute(
-            f"""
-            WITH failed AS ({failure_query})
-            SELECT raw_id, origin, validation_status, artifact_kind, support_status
-            FROM failed
-            LIMIT ?
-            """,
-            (max(0, sample_limit),),
-        ).fetchall()
+        )
+        for row in failure_rows:
+            key = (row[1], row[2], row[3], row[4])
+            summary_counts[key] += 1
+            if int(row[5]) <= sample_limit:
+                sample_rows.append(tuple(row[:5]))
+        summary_rows = [(*key, count) for key, count in summary_counts.items()]
     except sqlite3.Error as exc:
         logger.warning("could not read raw failure lifecycle", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not read raw failure lifecycle: {exc}")

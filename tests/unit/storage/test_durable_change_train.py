@@ -1116,6 +1116,17 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         assert conn.execute("PRAGMA user_version").fetchone() == (3,)
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='later_items'").fetchone() == ("later_items",)
     assert released == [True, True]
+    third = execute_durable_change_train(
+        tmp_path,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: released.append(True),
+    )
+    assert third.forward_version_receipt is not None
+    assert third.forward_version_receipt.historical_target_version == 2
+    assert third.forward_version_receipt.observed_live_version == 3
 
     historical_manifest = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
     historical_train = load_durable_change_train_manifest(historical_manifest)
@@ -1167,7 +1178,7 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         conn.execute("DROP TABLE base_items")
         conn.commit()
         tampered = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
-        with pytest.raises(DurableChangeTrainError, match="historical schema objects changed"):
+        with pytest.raises(DurableChangeTrainError, match="canonical live version"):
             durable_change_train_module._verify_released_train_live_tier(
                 tmp_path,
                 conn,
