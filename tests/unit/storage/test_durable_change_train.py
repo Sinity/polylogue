@@ -1122,6 +1122,7 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     manifest_v3.unlink()
     with pytest.raises(DurableChangeTrainError, match=r"versions \[3\]"):
         durable_change_train_module.reconcile_durable_change_train_startup(tmp_path)
+    assert released == [True, True]
     with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
         execute_durable_change_train(
             tmp_path,
