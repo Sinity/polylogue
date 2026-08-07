@@ -110,6 +110,7 @@ class BeadRecord:
     acceptance_criteria: str = ""
     notes_tail: str = ""
     dependencies: list[str] = field(default_factory=list)
+    contract_confidence: str | None = None
     error: str = ""
 
 
@@ -151,6 +152,14 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
         return BeadRecord(id=bead_id, found=False, error=f"unparseable bd show output: {exc}")
 
     notes = record.get("notes") or ""
+    metadata = record.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            metadata = {}
+    contract = metadata.get("acceptance_contract_v1") if isinstance(metadata, dict) else None
+    confidence = contract.get("confidence") if isinstance(contract, dict) else None
     return BeadRecord(
         id=record.get("id", bead_id),
         found=True,
@@ -162,6 +171,7 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
         acceptance_criteria=record.get("acceptance_criteria") or "",
         notes_tail=notes[-500:],
         dependencies=_dep_labels(record),
+        contract_confidence=confidence if isinstance(confidence, str) else None,
     )
 
 
@@ -335,6 +345,11 @@ def _render_markdown(
             continue
         lines.append(f"### {r.id} -- P{r.priority} {r.issue_type} -- {r.title}")
         lines.append("")
+        if r.contract_confidence == "planner-review":
+            lines.append(
+                "**DISPATCH BLOCKED:** this acceptance contract requires planner review before implementation dispatch."
+            )
+            lines.append("")
         lines.append("**Description:**")
         lines.append("")
         lines.append(r.description or "(empty)")
@@ -493,7 +508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print(brief)
 
-    return 0
+    return 2 if any(r.contract_confidence == "planner-review" for r in records) else 0
 
 
 if __name__ == "__main__":

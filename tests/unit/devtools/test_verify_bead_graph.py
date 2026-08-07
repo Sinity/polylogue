@@ -141,6 +141,7 @@ def test_main_exits_nonzero_and_reports_malformed_wave(
         "_run_bd_list_all",
         lambda: [_issue("polylogue-a", labels=["wave:later"])],
     )
+    monkeypatch.setattr(verify_bead_graph, "REQUIRED_CONTRACT_IDS", frozenset())
 
     rc = verify_bead_graph.main([])
 
@@ -155,12 +156,29 @@ def test_main_exits_zero_when_all_waves_are_well_formed(
 ) -> None:
     monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (True, ""))
     monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: [_issue("polylogue-a", labels=["wave:1"])])
+    monkeypatch.setattr(verify_bead_graph, "REQUIRED_CONTRACT_IDS", frozenset())
 
     rc = verify_bead_graph.main([])
 
     out = capsys.readouterr().out
     assert rc == 0
-    assert "violations: dup_labels=0 inversions=0 missing_ac=0 malformed_wave=0 parent_integrity=0" in out
+    assert (
+        "violations: dup_labels=0 inversions=0 missing_ac=0 invalid_contracts=0 "
+        "missing_required_contracts=0 malformed_wave=0 parent_integrity=0" in out
+    )
+
+
+def test_invalid_structured_contract_is_reported() -> None:
+    issue = _issue("polylogue-a", metadata={"acceptance_contract_v1": {"schema_version": 1}})
+    findings = verify_bead_graph.collect_findings([issue])
+    assert any(f.kind == "invalid-acceptance-contract" and f.bead_id == "polylogue-a" for f in findings)
+
+
+def test_required_contract_removal_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    findings = verify_bead_graph.collect_findings(
+        [_issue("polylogue-a")], required_contract_ids=frozenset({"polylogue-a"})
+    )
+    assert [f.kind for f in findings] == ["missing-required-acceptance-contract"]
 
 
 def test_parent_child_validation_allows_zero_or_one_canonical_parent() -> None:
@@ -261,6 +279,23 @@ def test_bd_list_rejects_each_malformed_issue_record(monkeypatch: pytest.MonkeyP
 
     with pytest.raises(RuntimeError, match="expected object with non-empty string id|has no non-empty string id"):
         verify_bead_graph._run_bd_list_all()
+
+
+def test_metadata_acceptance_contract_parses_serialized_json() -> None:
+    contract = {"acceptance_contract_v1": {"confidence": "high"}}
+
+    assert verify_bead_graph._metadata({"metadata": contract}) == contract
+    assert verify_bead_graph._metadata({"metadata": json.dumps(contract)}) == contract
+    assert verify_bead_graph._metadata({"metadata": "{"}) == {}
+    assert verify_bead_graph._metadata({"metadata": "[]"}) == {}
+
+
+def test_required_contract_absence_is_reported() -> None:
+    findings = verify_bead_graph.collect_findings([], required_contract_ids=frozenset({"polylogue-a"}))
+
+    assert len(findings) == 1
+    assert findings[0].kind == "missing-required-acceptance-contract"
+    assert findings[0].detail == "manifest Bead is absent"
 
 
 def test_main_reports_bd_cycle_launch_failure_as_json(
