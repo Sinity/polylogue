@@ -56,9 +56,12 @@ def _canonical_digest(payload: object) -> str:
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise CursorAuthorityReconciliationError(f"backup blob inventory is unreadable: {path}") from exc
     return digest.hexdigest()
 
 
@@ -238,7 +241,9 @@ def _private_projection(projection: RawFrontierIntegrityProjection) -> dict[str,
         if isinstance(value, dict):
             return {
                 key: (
-                    _identity_digest(item)
+                    cursor_authority_path_digest(Path(item))
+                    if key == "source_path" and isinstance(item, str)
+                    else _identity_digest(item)
                     if key in {"source_path", "logical_source_key", "accepted_raw_id", "raw_id", "session_id"}
                     and isinstance(item, str)
                     else None
@@ -351,32 +356,12 @@ def _require_healthy_projection_siblings(projection: RawFrontierIntegrityProject
         raise CursorAuthorityReconciliationError("raw-frontier sibling projections are not healthy")
 
 
-def _build_plan(root: Path, source_path: Path, *, require_candidate: bool = True) -> dict[str, object]:
+def _build_plan(root: Path, source_path: Path) -> dict[str, object]:
     tiers = _tier_snapshots(root)
     projection = _projection_for(root)
-    _require_healthy_projection_siblings(projection)
     path_digest = cursor_authority_path_digest(source_path)
+    _require_healthy_projection_siblings(projection)
     if projection.cursor_ahead_count == 0:
-        if require_candidate and projection.cursor_authority_gap_count == 0 and projection.overall_status == "healthy":
-            not_applicable_plan: dict[str, object] = {
-                "format": PLAN_FORMAT,
-                "archive_identity": _path_identity(root),
-                "active_index": _active_index_binding(root),
-                "code_sha": _code_sha(),
-                "deployed_package_sha": _deployed_package_sha(),
-                "tier_fingerprints": tiers,
-                "source_schema_versions": {tier: tiers[tier]["user_version"] for tier in _REQUIRED_TIERS},
-                "selected_path_digest": path_digest,
-                "observed_at_ms": int(time.time() * 1000),
-                "status": "not_applicable",
-                "cursor_byte_offset": None,
-                "accepted_frontier": None,
-                "accepted_raw_id_digest": None,
-                "source_prefix_digest": None,
-                "before_projection": _private_projection(projection),
-            }
-            not_applicable_plan["plan_digest"] = _canonical_digest(not_applicable_plan)
-            return not_applicable_plan
         raise CursorAuthorityReconciliationError("cursor authority is incomparable or has no selected violation")
     if projection.cursor_ahead_count != 1:
         raise CursorAuthorityReconciliationError("refusing to guess among multiple cursor-ahead rows")
@@ -436,6 +421,134 @@ def _backup_root(manifest_path: Path) -> Path:
     return root
 
 
+def _validated_blob_inventory(
+    root: Path,
+    manifest: Mapping[str, object],
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    """Re-hash the current backup blob files and compare them with the receipt."""
+
+    if manifest.get("blob_inventory_file") != "blob-inventory.json":
+        raise CursorAuthorityReconciliationError("backup uses a noncanonical blob inventory path")
+    inventory_path = root / "blob-inventory.json"
+    try:
+        inventory_metadata = inventory_path.lstat()
+    except OSError as exc:
+        raise CursorAuthorityReconciliationError("backup blob inventory is unreadable") from exc
+    if stat.S_ISLNK(inventory_metadata.st_mode) or not stat.S_ISREG(inventory_metadata.st_mode):
+        raise CursorAuthorityReconciliationError("backup blob inventory is not a regular file")
+    if inventory_metadata.st_nlink != 1:
+        raise CursorAuthorityReconciliationError("backup blob inventory must not be hard-linked")
+    inventory_evidence = receipt.get("blob_inventory_file")
+    if not isinstance(inventory_evidence, dict):
+        raise CursorAuthorityReconciliationError("backup blob inventory lacks authenticated file evidence")
+    if (
+        inventory_evidence.get("path") != "blob-inventory.json"
+        or inventory_evidence.get("present") is not True
+        or inventory_evidence.get("size_bytes") != inventory_metadata.st_size
+        or inventory_evidence.get("sha256") != _sha256_file(inventory_path)
+    ):
+        raise CursorAuthorityReconciliationError("backup blob inventory does not match its verification receipt")
+    try:
+        declared = json.loads(inventory_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CursorAuthorityReconciliationError("backup blob inventory is unreadable") from exc
+    expected = receipt.get("blobs")
+    if not isinstance(declared, list) or not isinstance(expected, list):
+        raise CursorAuthorityReconciliationError("backup blob inventory is not fully attested")
+
+    declared_by_hash: dict[str, dict[str, object]] = {}
+    for item in declared:
+        if not isinstance(item, dict) or not isinstance(item.get("blob_hash"), str):
+            raise CursorAuthorityReconciliationError("backup blob inventory contains an invalid row")
+        blob_hash = str(item["blob_hash"]).lower()
+        if len(blob_hash) != 64 or any(character not in "0123456789abcdef" for character in blob_hash):
+            raise CursorAuthorityReconciliationError("backup blob inventory contains an invalid blob hash")
+        if blob_hash in declared_by_hash:
+            raise CursorAuthorityReconciliationError("backup blob inventory contains duplicate blob hashes")
+        declared_by_hash[blob_hash] = item
+
+    actual_rows: list[dict[str, object]] = []
+    blob_root = root / "blob"
+    if blob_root.is_symlink():
+        raise CursorAuthorityReconciliationError("backup blob root is a symlink")
+    for path in sorted(blob_root.rglob("*")):
+        if path.is_symlink():
+            raise CursorAuthorityReconciliationError("backup blob inventory contains a symlink")
+        if not path.is_file():
+            continue
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise CursorAuthorityReconciliationError(f"backup blob is unreadable: {path}") from exc
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise CursorAuthorityReconciliationError(f"backup blob must be a single-linked regular file: {path}")
+        relative = path.relative_to(root).as_posix()
+        if len(path.parent.name) != 2 or len(path.name) != 62:
+            raise CursorAuthorityReconciliationError(f"backup blob path is not content-addressed: {relative}")
+        blob_hash = f"{path.parent.name}{path.name}".lower()
+        if relative != f"blob/{blob_hash[:2]}/{blob_hash[2:]}":
+            raise CursorAuthorityReconciliationError(f"backup blob path is not canonical: {relative}")
+        if blob_hash not in declared_by_hash:
+            raise CursorAuthorityReconciliationError("backup contains a blob absent from blob-inventory.json")
+        size_bytes, sha256 = _file_fingerprint(path)
+        if sha256 != blob_hash:
+            raise CursorAuthorityReconciliationError(f"backup blob digest does not match its path: {relative}")
+        declared_item = declared_by_hash[blob_hash]
+        protection = declared_item.get("protection")
+        if not isinstance(protection, list) or not all(isinstance(value, str) for value in protection):
+            raise CursorAuthorityReconciliationError("backup blob inventory has invalid protection metadata")
+        if declared_item.get("size_bytes") != size_bytes:
+            raise CursorAuthorityReconciliationError("backup blob size disagrees with blob-inventory.json")
+        actual_rows.append(
+            {
+                "blob_hash": blob_hash,
+                "path": relative,
+                "size_bytes": size_bytes,
+                "sha256": sha256,
+                "protection": sorted(str(value) for value in protection),
+            }
+        )
+
+    actual_rows.sort(key=lambda item: str(item["blob_hash"]))
+    expected_rows: list[dict[str, object]] = []
+    for item in expected:
+        if not isinstance(item, dict):
+            raise CursorAuthorityReconciliationError("backup verification receipt contains an invalid blob row")
+        expected_rows.append(
+            {
+                "blob_hash": item.get("blob_hash"),
+                "path": item.get("path"),
+                "size_bytes": item.get("size_bytes"),
+                "sha256": item.get("sha256"),
+                "protection": sorted(str(value) for value in item.get("protection", []))
+                if isinstance(item.get("protection"), list)
+                else item.get("protection"),
+            }
+        )
+    expected_rows.sort(key=lambda item: str(item["blob_hash"]))
+    if expected_rows != actual_rows:
+        raise CursorAuthorityReconciliationError(
+            "current backup blob inventory does not match its verification receipt"
+        )
+    if len(declared_by_hash) != len(actual_rows):
+        raise CursorAuthorityReconciliationError("blob-inventory.json contains a missing backup blob")
+    manifest_count = manifest.get("blob_count")
+    if isinstance(manifest_count, int) and manifest_count != len(actual_rows):
+        raise CursorAuthorityReconciliationError("backup manifest blob count does not match current blob inventory")
+    total_size_bytes = 0
+    for item in actual_rows:
+        row_size_bytes = item["size_bytes"]
+        if not isinstance(row_size_bytes, int):
+            raise CursorAuthorityReconciliationError("current backup blob inventory has an invalid size")
+        total_size_bytes += row_size_bytes
+    return {
+        "count": len(actual_rows),
+        "size_bytes": total_size_bytes,
+        "inventory_digest": _canonical_digest(actual_rows),
+    }
+
+
 def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[str, object]:
     root = _backup_root(manifest_path)
     try:
@@ -474,6 +587,10 @@ def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[st
         )
     except BackupAttestationError as exc:
         raise CursorAuthorityReconciliationError("backup verification receipt attestation is invalid") from exc
+    manifest_sha256 = _sha256_file(root / "manifest.json")
+    if receipt.get("manifest_sha256") != manifest_sha256:
+        raise CursorAuthorityReconciliationError("backup manifest does not match its verification receipt")
+    blob_inventory = _validated_blob_inventory(root, manifest, receipt)
     declared = manifest.get("tier_source_fingerprints")
     expected = plan.get("tier_fingerprints")
     if not isinstance(declared, dict) or not isinstance(expected, dict):
@@ -503,7 +620,11 @@ def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[st
                 raise CursorAuthorityReconciliationError(
                     "backup index fingerprint does not bind the active index generation"
                 )
-    return {"root": _path_identity(root), "manifest_sha256": _sha256_file(root / "manifest.json")}
+    return {
+        "root": _path_identity(root),
+        "manifest_sha256": manifest_sha256,
+        "blob_inventory": blob_inventory,
+    }
 
 
 def _quick_checks(root: Path) -> dict[str, list[str]]:
@@ -692,6 +813,18 @@ def _before_projection(plan: Mapping[str, object]) -> dict[str, object]:
     return value
 
 
+def _require_selected_path_in_before_projection(plan: Mapping[str, object], source_path: Path) -> None:
+    before_projection = _before_projection(plan)
+    samples = before_projection.get("cursor_ahead_samples")
+    selected_path_digest = cursor_authority_path_digest(source_path)
+    if not isinstance(samples, list) or not any(
+        isinstance(sample, dict) and sample.get("source_path") == selected_path_digest for sample in samples
+    ):
+        raise CursorAuthorityReconciliationError(
+            "plan does not bind the selected path to a previously observed cursor-ahead violation"
+        )
+
+
 def _same_plan_bindings(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
     def comparable(plan: Mapping[str, object]) -> dict[str, object]:
         value = dict(plan)
@@ -793,6 +926,7 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
     with owner:
         backup_evidence = _validate_backup(backup_manifest, plan)
         current_path = _find_path_by_digest(root, str(plan["selected_path_digest"]))
+        _require_selected_path_in_before_projection(plan, current_path)
         try:
             current_plan = _build_plan(root, current_path)
         except CursorAuthorityReconciliationError:
