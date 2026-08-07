@@ -27,6 +27,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash, deterministic_raw_session_id
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import (
+    DurableChangeTrainError,
     MigrationError,
     validate_migration_backup_live_fingerprint,
     validate_migration_backup_manifest,
@@ -981,6 +982,44 @@ def test_failure_before_prepared_receipt_rolls_back_without_receipt_or_mutation(
     assert not receipt.exists()
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
+
+
+def test_committed_delete_reports_continuity_refresh_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _source_archive(tmp_path)
+
+    def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        return path
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_manifest",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_live_fingerprint",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid", lambda _config: None
+    )
+    monkeypatch.setattr(
+        liveness_reconciliation,
+        "refresh_released_source_train_continuity",
+        lambda *args, **kwargs: (_ for _ in ()).throw(DurableChangeTrainError("continuity unavailable")),
+    )
+
+    receipt = tmp_path / "receipts" / "continuity-failed.jsonl"
+    report = reconcile_blob_ref_liveness(
+        archive_root,
+        backup_manifest=tmp_path / "backup" / "manifest.json",
+        receipt_path=receipt,
+        dry_run=False,
+    )
+
+    assert report.applied is True
+    assert report.deleted_count == 4
+    assert report.continuity_refresh_receipt is None
+    assert report.continuity_refresh_error == "continuity unavailable"
+    assert json.loads(receipt.read_text(encoding="utf-8").splitlines()[-1])["phase"] == "committed"
 
 
 def test_shared_legacy_hook_path_fails_closed_without_cross_product(

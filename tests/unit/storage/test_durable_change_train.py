@@ -430,9 +430,110 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert refreshed.state is DurableChangeTrainState.RELEASED
     assert refreshed.source_continuity_evidence is not None
     assert released.apply_evidence is not None
+    assert refreshed.apply_evidence == released.apply_evidence
+    assert refreshed.revision == released.revision + 1
+    assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
     assert refreshed.source_continuity_evidence.content_sha256 != released.apply_evidence.post.content_sha256
     assert refreshed_path.is_file()
     assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
+
+    mutation_receipt.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(db_path),
+                "backup_manifest": str(backup_manifest),
+                "candidate_digest": "a" * 64,
+            }
+        )
+        + "\n"
+        + json.dumps({"kind": "blob_ref_liveness_reconciliation", "phase": "prepared"})
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DurableChangeTrainError, match="does not bind"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id="a" * 64,
+            evidence_ref="proof:mutation-invalid-footer",
+        )
+
+    mutation_receipt.write_text('{"kind": "blob_ref_liveness_reconciliation"}\n', encoding="utf-8")
+    with pytest.raises(DurableChangeTrainError, match="incomplete"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id="a" * 64,
+            evidence_ref="proof:mutation-incomplete",
+        )
+
+    mutation_receipt.write_text("not-json\n", encoding="utf-8")
+    with pytest.raises(DurableChangeTrainError, match="valid JSONL"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id="a" * 64,
+            evidence_ref="proof:mutation-malformed",
+        )
+
+    mutation_receipt.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(db_path),
+                "backup_manifest": str(backup_manifest),
+                "candidate_digest": "b" * 64,
+            }
+        )
+        + "\n"
+        + json.dumps({"kind": "blob_ref_liveness_reconciliation", "phase": "committed"})
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DurableChangeTrainError, match="does not bind"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id="a" * 64,
+            evidence_ref="proof:mutation-wrong-operation",
+        )
+
+    manifest.unlink()
+    mutation_receipt.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(db_path),
+                "backup_manifest": str(backup_manifest),
+                "candidate_digest": "a" * 64,
+            }
+        )
+        + "\n"
+        + json.dumps({"kind": "blob_ref_liveness_reconciliation", "phase": "committed"})
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DurableChangeTrainError, match="no released source train"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id="a" * 64,
+            evidence_ref="proof:mutation-no-train",
+        )
 
 
 @pytest.mark.parametrize("tier", (ArchiveTier.SOURCE, ArchiveTier.USER))

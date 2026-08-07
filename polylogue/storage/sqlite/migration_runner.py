@@ -3054,6 +3054,8 @@ def validate_durable_change_train_manifest(train: DurableChangeTrain) -> None:
                 raise DurableChangeTrainError("source continuity evidence changed schema or archive identity")
             if refreshed.observed_at_ms < train.released_at_ms:
                 raise DurableChangeTrainError("source continuity evidence predates train release")
+            if not any(ref.startswith("proof:source-continuity-refresh:") for ref in train.proof_refs):
+                raise DurableChangeTrainError("source continuity evidence is not retained by the train")
         return
     raise DurableChangeTrainError(f"unknown durable change train state: {train.state}")
 

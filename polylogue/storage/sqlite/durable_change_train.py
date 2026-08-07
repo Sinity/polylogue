@@ -306,9 +306,10 @@ def refresh_released_source_train_continuity(
     """Record an authorized source mutation without weakening train checks.
 
     Source maintenance may change rows after a schema train is released. The
-    mutation must be proven by the named operation and its verified backup,
-    then the released train gets a separate current-evidence binding. The
-    original migration evidence remains immutable in ``apply_evidence``.
+    caller must first validate the named operation and backup against the
+    pre-mutation live tier. This helper then binds those exact receipt and
+    backup bytes to a separate current-evidence record. The original migration
+    evidence remains immutable in ``apply_evidence``.
     """
     from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 
@@ -320,10 +321,9 @@ def refresh_released_source_train_continuity(
         raise DurableChangeTrainError("source mutation backup manifest is not a real file")
 
     try:
-        receipt_records = [
-            json.loads(line) for line in mutation_receipt.read_text(encoding="utf-8").splitlines() if line.strip()
-        ]
-    except (OSError, json.JSONDecodeError) as exc:
+        receipt_bytes = mutation_receipt.read_bytes()
+        receipt_records = [json.loads(line) for line in receipt_bytes.decode("utf-8").splitlines() if line.strip()]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DurableChangeTrainError("source mutation receipt is not valid JSONL") from exc
     if len(receipt_records) < 2 or not all(isinstance(record, dict) for record in receipt_records):
         raise DurableChangeTrainError("source mutation receipt is incomplete")
@@ -341,7 +341,7 @@ def refresh_released_source_train_continuity(
     ):
         raise DurableChangeTrainError("source mutation receipt does not bind the named liveness operation")
 
-    mutation_digest = hashlib.sha256(mutation_receipt.read_bytes()).hexdigest()
+    mutation_digest = hashlib.sha256(receipt_bytes).hexdigest()
     backup_digest = hashlib.sha256(backup_manifest.read_bytes()).hexdigest()
     with OwnedArchiveLocation.acquire(
         ArchiveLocation.resolve(archive_root),
@@ -405,14 +405,36 @@ def refresh_released_source_train_continuity(
         refresh_root.mkdir(parents=True, exist_ok=True)
         refresh_path = refresh_root / f"{refresh_digest}.json"
         if refresh_path.exists():
-            existing = json.loads(refresh_path.read_text(encoding="utf-8"))
+            try:
+                existing = json.loads(refresh_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise DurableChangeTrainError(
+                    f"source continuity refresh receipt is unreadable: {refresh_path}"
+                ) from exc
             if existing != {**payload, "refresh_sha256": refresh_digest}:
                 raise DurableChangeTrainError("source continuity refresh receipt collision")
         else:
-            refresh_path.write_text(
-                json.dumps({**payload, "refresh_sha256": refresh_digest}, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            encoded = (
+                json.dumps({**payload, "refresh_sha256": refresh_digest}, indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=refresh_root,
+                    prefix=f".{refresh_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as stream:
+                    temporary = Path(stream.name)
+                    stream.write(encoded)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, refresh_path)
+                temporary = None
+                _migration_runner._fsync_manifest_directory(refresh_root)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
         refresh_ref = f"proof:source-continuity-refresh:{refresh_digest}"
         references = _migration_runner._append_proof_refs(train.proof_refs, evidence_ref, refresh_ref)
         if train.proof is None:
@@ -853,7 +875,7 @@ def _verify_released_train_live_tier(conn: sqlite3.Connection, train: DurableCha
     if actual.user_version == train.target_version:
         if train.source_continuity_evidence is not None:
             _assert_durable_database_continuity(
-                capture_durable_database_evidence(conn, train.tier),
+                actual,
                 train.source_continuity_evidence,
                 label="source continuity refresh",
             )
@@ -995,7 +1017,7 @@ def execute_durable_change_train(
                     f"released {tier.value} train {train.train_id} expects live v{runtime_target_version}, "
                     f"found v{live_version}; authorize a new execution"
                 )
-            _verify_persisted_live_tier_continuity(live, train)
+            _verify_released_train_live_tier(live, train)
         return DurableChangeTrainExecution(train=train, manifest_path=manifest_path, migration_result=None)
 
     if train.state is DurableChangeTrainState.DECLARED:
