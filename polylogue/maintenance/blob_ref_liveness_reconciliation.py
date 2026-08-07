@@ -30,7 +30,9 @@ from polylogue.storage.blob_ref_liveness import (
 from polylogue.storage.hook_payload_ref_reconciliation import _deterministic_raw_session_id_udf
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.durable_change_train import refresh_released_source_train_continuity
 from polylogue.storage.sqlite.migration_runner import (
+    capture_durable_database_evidence,
     validate_migration_backup_live_fingerprint,
     validate_migration_backup_manifest,
 )
@@ -66,6 +68,7 @@ class BlobRefLivenessReconciliationReport:
     receipt_path: Path | None = None
     backup_manifest: Path | None = None
     post_classification: BlobRefLivenessClassification | None = None
+    continuity_refresh_receipt: Path | None = None
 
     def to_dict(self, *, sample_limit: int = 30) -> dict[str, object]:
         return {
@@ -75,6 +78,9 @@ class BlobRefLivenessReconciliationReport:
             "deleted_count": self.deleted_count,
             "receipt_path": str(self.receipt_path) if self.receipt_path is not None else None,
             "backup_manifest": str(self.backup_manifest) if self.backup_manifest is not None else None,
+            "continuity_refresh_receipt": (
+                str(self.continuity_refresh_receipt) if self.continuity_refresh_receipt is not None else None
+            ),
             "post_classification": self.post_classification.to_dict() if self.post_classification is not None else None,
             **self.classification.to_dict(sample_limit=sample_limit),
         }
@@ -758,6 +764,7 @@ def reconcile_blob_ref_liveness(
     try:
         _checkpoint_source_db(pre_conn)
         validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=pre_conn)
+        pre_mutation_evidence = capture_durable_database_evidence(pre_conn, ArchiveTier.SOURCE)
         staged_plan = stage_blob_ref_liveness(pre_conn)
         classification = staged_plan.classification
         if not classification.safe_to_apply:
@@ -901,6 +908,18 @@ def reconcile_blob_ref_liveness(
             f"source.db committed but could not finalize receipt {receipt_path}"
         ) from exc
 
+    continuity_refresh_receipt: Path | None = None
+    train_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    if train_root.is_dir():
+        continuity_refresh_receipt = refresh_released_source_train_continuity(
+            archive_root,
+            mutation_receipt=receipt_path,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=pre_mutation_evidence,
+            operation_id=candidate_digest,
+            evidence_ref=f"proof:blob-ref-liveness:{candidate_digest}",
+        )
+
     assert staged_plan is not None
     return BlobRefLivenessReconciliationReport(
         source_db=str(source_db),
@@ -911,6 +930,7 @@ def reconcile_blob_ref_liveness(
         receipt_path=receipt_path,
         backup_manifest=backup_manifest,
         post_classification=post_classification,
+        continuity_refresh_receipt=continuity_refresh_receipt,
     )
 
 

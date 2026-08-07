@@ -24,6 +24,8 @@ from polylogue.storage.sqlite.durable_change_train import (
     durable_change_train_policy_report,
     durable_migration_sidecar_for_slot,
     execute_durable_change_train,
+    reconcile_durable_change_train_startup,
+    refresh_released_source_train_continuity,
     validate_durable_migration_sidecars,
 )
 from polylogue.storage.sqlite.migration_runner import (
@@ -354,10 +356,83 @@ def test_applied_train_release_requires_the_source_hook_event_writer_probe(
 
     assert released.state is DurableChangeTrainState.RELEASED
     assert released.proof is not None
+    assert released.apply_evidence is not None
     hook_writer = next(
         result for result in released.proof.runtime_consumers if result.consumer_id == "source-hook-event-writer"
     )
     assert hook_writer.passed is True
+
+
+def test_released_source_train_can_record_an_authorized_mutation_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
+    train = _admitted(ArchiveTier.SOURCE)
+    with sqlite3.connect(db_path) as conn:
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        train = apply_durable_change_train(conn, train)
+    train = record_durable_writer_release(train, evidence_ref="proof:writer-release")
+    with sqlite3.connect(db_path) as conn:
+        runtime_results = _runtime_results()
+        restart = capture_durable_restart_convergence(
+            conn,
+            train,
+            runtime_consumers=runtime_results,
+            evidence_ref="proof:restart",
+        )
+    train = prove_durable_change_train(
+        train,
+        fresh_ddl_parity=_parity(ArchiveTier.SOURCE),
+        runtime_consumers=runtime_results,
+        restart_convergence=restart,
+    )
+    train = release_durable_change_train(train, evidence_ref="proof:release")
+    manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
+    manifest.parent.mkdir(parents=True)
+    write_durable_change_train_manifest(manifest, train, expected_revision=-1)
+    released = load_durable_change_train_manifest(manifest)
+    with sqlite3.connect(db_path) as conn:
+        before = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+        conn.execute("INSERT INTO base_items VALUES ('mutation-1', 'authorized')")
+        conn.commit()
+
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    mutation_receipt = tmp_path / "mutation-receipt.jsonl"
+    mutation_receipt.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(db_path),
+                "backup_manifest": str(backup_manifest),
+                "candidate_digest": "a" * 64,
+            }
+        )
+        + "\n"
+        + json.dumps({"kind": "blob_ref_liveness_reconciliation", "phase": "committed"})
+        + "\n",
+        encoding="utf-8",
+    )
+    refreshed_path = refresh_released_source_train_continuity(
+        tmp_path,
+        mutation_receipt=mutation_receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="a" * 64,
+        evidence_ref="proof:mutation-1",
+    )
+
+    refreshed = load_durable_change_train_manifest(manifest)
+    assert refreshed.state is DurableChangeTrainState.RELEASED
+    assert refreshed.source_continuity_evidence is not None
+    assert released.apply_evidence is not None
+    assert refreshed.source_continuity_evidence.content_sha256 != released.apply_evidence.post.content_sha256
+    assert refreshed_path.is_file()
+    assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
 
 
 @pytest.mark.parametrize("tier", (ArchiveTier.SOURCE, ArchiveTier.USER))

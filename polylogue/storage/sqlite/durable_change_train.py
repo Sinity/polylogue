@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import json
@@ -10,7 +11,7 @@ import re
 import sqlite3
 import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
 from typing import Final, cast
@@ -24,11 +25,14 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainError,
     DurableChangeTrainRecoveryError,
     DurableChangeTrainState,
+    DurableDatabaseEvidence,
     DurableFreshDDLParityProof,
     DurableMigrationClaim,
     DurableRuntimeConsumerResult,
     MigrationResult,
     _assert_durable_database_continuity,
+    _canonical_json_sha256,
+    _require_nonempty,
     _validate_riders,
     add_durable_change_train_rider,
     admit_durable_change_train,
@@ -288,6 +292,140 @@ def durable_migration_sidecar_for_slot(tier: ArchiveTier, slot: int) -> DurableM
 def _persist_train_transition(path: Path, train: DurableChangeTrain, *, expected_revision: int) -> DurableChangeTrain:
     write_durable_change_train_manifest(path, train, expected_revision=expected_revision)
     return load_durable_change_train_manifest(path)
+
+
+def refresh_released_source_train_continuity(
+    archive_root: Path,
+    *,
+    mutation_receipt: Path,
+    backup_manifest: Path,
+    pre_mutation_evidence: DurableDatabaseEvidence,
+    operation_id: str,
+    evidence_ref: str,
+) -> Path:
+    """Record an authorized source mutation without weakening train checks.
+
+    Source maintenance may change rows after a schema train is released. The
+    mutation must be proven by the named operation and its verified backup,
+    then the released train gets a separate current-evidence binding. The
+    original migration evidence remains immutable in ``apply_evidence``.
+    """
+    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+
+    _require_nonempty(operation_id, label="source mutation operation id")
+    _require_nonempty(evidence_ref, label="source continuity evidence ref")
+    if not mutation_receipt.is_file() or mutation_receipt.is_symlink():
+        raise DurableChangeTrainError("source mutation receipt is not a real file")
+    if not backup_manifest.is_file() or backup_manifest.is_symlink():
+        raise DurableChangeTrainError("source mutation backup manifest is not a real file")
+
+    try:
+        receipt_records = [
+            json.loads(line) for line in mutation_receipt.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DurableChangeTrainError("source mutation receipt is not valid JSONL") from exc
+    if len(receipt_records) < 2 or not all(isinstance(record, dict) for record in receipt_records):
+        raise DurableChangeTrainError("source mutation receipt is incomplete")
+    header = receipt_records[0]
+    footer = receipt_records[-1]
+    source_path = archive_root / "source.db"
+    if (
+        header.get("kind") != "blob_ref_liveness_reconciliation"
+        or header.get("phase") != "prepared"
+        or header.get("source_db") != str(source_path)
+        or header.get("backup_manifest") != str(backup_manifest)
+        or header.get("candidate_digest") != operation_id
+        or footer.get("kind") != "blob_ref_liveness_reconciliation"
+        or footer.get("phase") != "committed"
+    ):
+        raise DurableChangeTrainError("source mutation receipt does not bind the named liveness operation")
+
+    mutation_digest = hashlib.sha256(mutation_receipt.read_bytes()).hexdigest()
+    backup_digest = hashlib.sha256(backup_manifest.read_bytes()).hexdigest()
+    with OwnedArchiveLocation.acquire(
+        ArchiveLocation.resolve(archive_root),
+        owner_id=f"source-continuity-refresh:{os.getpid()}",
+        allow_reentrant=True,
+    ):
+        with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+            current = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+
+        manifest_candidates = sorted(
+            (archive_root / ".maintenance-state" / "durable-change-trains").glob("source-*.json")
+        )
+        if not manifest_candidates:
+            raise DurableChangeTrainError("source continuity refresh found no released source train")
+        matching: list[tuple[Path, DurableChangeTrain]] = []
+        for candidate in manifest_candidates:
+            candidate_train = load_durable_change_train_manifest(candidate)
+            if (
+                candidate_train.state is DurableChangeTrainState.RELEASED
+                and candidate_train.tier is ArchiveTier.SOURCE
+                and candidate_train.target_version == current.user_version
+            ):
+                matching.append((candidate, candidate_train))
+        if len(matching) != 1:
+            raise DurableChangeTrainError(
+                "source continuity refresh requires exactly one released source train for the live schema"
+            )
+        manifest_path, train = matching[0]
+        if train.state is not DurableChangeTrainState.RELEASED:
+            raise DurableChangeTrainError("source continuity refresh requires a released source train")
+        if train.tier is not ArchiveTier.SOURCE:
+            raise DurableChangeTrainError("source continuity refresh selected a non-source train")
+        if train.apply_evidence is None:
+            raise DurableChangeTrainError("source continuity refresh requires apply evidence")
+        if pre_mutation_evidence.user_version != train.target_version:
+            raise DurableChangeTrainError("source continuity refresh pre-state has the wrong schema version")
+        if current.user_version != train.target_version:
+            raise DurableChangeTrainError("source continuity refresh changed the schema version")
+        if pre_mutation_evidence.archive_identity_digest != train.apply_evidence.post.archive_identity_digest:
+            raise DurableChangeTrainError("source continuity refresh pre-state has the wrong archive identity")
+        if current.archive_identity_digest != train.apply_evidence.post.archive_identity_digest:
+            raise DurableChangeTrainError("source continuity refresh changed archive identity")
+        if pre_mutation_evidence.quick_check != ("ok",) or current.quick_check != ("ok",):
+            raise DurableChangeTrainError("source continuity refresh requires successful quick_check evidence")
+
+        payload = {
+            "format": "polylogue.source-continuity-refresh.v1",
+            "operation_id": operation_id,
+            "evidence_ref": evidence_ref,
+            "backup_manifest": str(backup_manifest),
+            "backup_manifest_sha256": backup_digest,
+            "mutation_receipt": str(mutation_receipt),
+            "mutation_receipt_sha256": mutation_digest,
+            "train_id": train.train_id,
+            "source_before": _migration_runner._manifest_json_value(pre_mutation_evidence),
+            "source_after": _migration_runner._manifest_json_value(current),
+            "refreshed_at_ms": current.observed_at_ms,
+        }
+        refresh_digest = _canonical_json_sha256(payload)
+        refresh_root = archive_root / ".maintenance-state" / "source-continuity-refreshes"
+        refresh_root.mkdir(parents=True, exist_ok=True)
+        refresh_path = refresh_root / f"{refresh_digest}.json"
+        if refresh_path.exists():
+            existing = json.loads(refresh_path.read_text(encoding="utf-8"))
+            if existing != {**payload, "refresh_sha256": refresh_digest}:
+                raise DurableChangeTrainError("source continuity refresh receipt collision")
+        else:
+            refresh_path.write_text(
+                json.dumps({**payload, "refresh_sha256": refresh_digest}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        refresh_ref = f"proof:source-continuity-refresh:{refresh_digest}"
+        references = _migration_runner._append_proof_refs(train.proof_refs, evidence_ref, refresh_ref)
+        if train.proof is None:
+            raise DurableChangeTrainError("source continuity refresh requires train proof")
+        updated = replace(
+            train,
+            revision=train.revision + 1,
+            source_continuity_evidence=current,
+            proof=replace(train.proof, proof_refs=references),
+            proof_refs=references,
+        )
+        write_durable_change_train_manifest(manifest_path, updated, expected_revision=train.revision)
+    return refresh_path
 
 
 def _fresh_ddl_parity_for_train(
@@ -713,7 +851,14 @@ def _verify_released_train_live_tier(conn: sqlite3.Connection, train: DurableCha
             "target; refusing startup initialization"
         )
     if actual.user_version == train.target_version:
-        _verify_persisted_live_tier_continuity(conn, train)
+        if train.source_continuity_evidence is not None:
+            _assert_durable_database_continuity(
+                capture_durable_database_evidence(conn, train.tier),
+                train.source_continuity_evidence,
+                label="source continuity refresh",
+            )
+        else:
+            _verify_persisted_live_tier_continuity(conn, train)
         return
     integrity = conn.execute("PRAGMA integrity_check").fetchone()
     if integrity != ("ok",):
@@ -1040,6 +1185,7 @@ __all__ = [
     "record_durable_writer_release",
     "prove_durable_change_train",
     "release_durable_change_train",
+    "refresh_released_source_train_continuity",
     "write_durable_change_train_manifest",
     "load_durable_change_train_manifest",
 ]
