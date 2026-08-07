@@ -482,10 +482,15 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     monkeypatch.chdir(tmp_path)
     fsync_calls: list[Path] = []
     real_fsync_manifest_directory = migration_runner._fsync_manifest_directory
+
+    def record_fsync_manifest_directory(path: Path) -> None:
+        fsync_calls.append(path)
+        real_fsync_manifest_directory(path)
+
     monkeypatch.setattr(
         migration_runner,
         "_fsync_manifest_directory",
-        lambda path: (fsync_calls.append(path), real_fsync_manifest_directory(path))[1],
+        record_fsync_manifest_directory,
     )
     pending_path = write_source_continuity_pending_intent(
         tmp_path,
