@@ -323,6 +323,27 @@ def test_restart_recovers_prepared_receipt_after_committed_delete(tmp_path: Path
     assert rows[-1]["phase"] == "recovered_committed"
 
 
+def test_prepared_receipt_persists_new_receipt_parent_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _source_archive(tmp_path)
+    receipt = tmp_path / "receipts" / "fresh.jsonl"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        classification = classify_blob_ref_liveness(conn)
+    fsync_calls: list[Path] = []
+    real_fsync_directory = liveness_reconciliation._fsync_directory
+
+    def record_fsync_directory(path: Path) -> None:
+        fsync_calls.append(path)
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(liveness_reconciliation, "_fsync_directory", record_fsync_directory)
+    liveness_reconciliation._write_prepared_receipt(
+        receipt, archive_root / "source.db", classification, tmp_path / "backup.json"
+    )
+
+    assert receipt.parent in fsync_calls
+    assert receipt.parent.parent in fsync_calls
+
+
 def test_restart_recovers_prepared_receipt_after_rollback(tmp_path: Path) -> None:
     archive_root = _source_archive(tmp_path)
     receipt = tmp_path / "receipts" / "rolled-back.jsonl"

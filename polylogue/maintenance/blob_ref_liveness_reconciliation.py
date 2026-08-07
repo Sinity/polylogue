@@ -209,7 +209,10 @@ def _write_prepared_receipt(
     candidate_digest: str | None = None,
     backup_manifest_sha256: str | None = None,
 ) -> None:
+    receipt_parent_existed = receipt_path.parent.is_dir()
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    if not receipt_parent_existed:
+        _fsync_directory(receipt_path.parent.parent)
     header: dict[str, object] = {
         "kind": "blob_ref_liveness_reconciliation",
         "phase": "prepared",

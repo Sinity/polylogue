@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainRecoveryError,
     DurableChangeTrainState,
     DurableDatabaseEvidence,
+    DurableFailureClassification,
     DurableFreshDDLParityProof,
     DurableMigrationClaim,
     DurableRuntimeConsumerResult,
@@ -439,8 +440,18 @@ def assert_source_continuity_apply_allowed(archive_root: Path) -> None:
     released: list[DurableChangeTrain] = []
     for candidate in sorted(manifest_root.glob("source-*.json")):
         train = load_durable_change_train_manifest(candidate)
-        if train.target_version != current_version and not (
-            train.reservation is not None and train.reservation.active and train.current_version == current_version
+        rollback_failed_train = (
+            train.state is DurableChangeTrainState.FAILED
+            and train.failure is not None
+            and train.failure.classification is DurableFailureClassification.ROLLED_BACK_TO_CURRENT
+            and train.current_version == current_version
+        )
+        if (
+            train.target_version != current_version
+            and not (
+                train.reservation is not None and train.reservation.active and train.current_version == current_version
+            )
+            and not rollback_failed_train
         ):
             continue
         if train.state is DurableChangeTrainState.RELEASED:

@@ -1523,6 +1523,12 @@ INSERT INTO table_that_does_not_exist VALUES (1);
         failure_manifest = tmp_path / "source-failed-train.json"
         write_durable_change_train_manifest(failure_manifest, failed, expected_revision=-1)
         failed = load_durable_change_train_manifest(failure_manifest)
+        released_failed = record_durable_writer_release(failed, evidence_ref="proof:failed-writer-release")
+        released_manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
+        released_manifest.parent.mkdir(parents=True)
+        write_durable_change_train_manifest(released_manifest, released_failed, expected_revision=-1)
+        with pytest.raises(DurableChangeTrainError, match="unreleased source train"):
+            assert_source_continuity_apply_allowed(tmp_path)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == _CURRENT_VERSION
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='durable_items'").fetchone() is None
         recovered = recover_durable_change_train(
