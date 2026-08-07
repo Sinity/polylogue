@@ -74,6 +74,8 @@ _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")
 _DROP_SQL_RE = re.compile(r"(?is)\bDROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)\b")
 _SOURCE_CONTINUITY_PENDING_FORMAT = "polylogue.source-continuity-pending.v1"
+_FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
+_FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
 
 
 class DurableSourceTrainMissingError(DurableChangeTrainError):
@@ -316,6 +318,55 @@ def durable_change_train_manifest_path(archive_root: Path, tier: ArchiveTier, sl
     if slot <= DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:
         raise DurableChangeTrainError(f"durable train slot is below the adoption floor: {tier.value}/{slot}")
     return archive_root / ".maintenance-state" / "durable-change-trains" / f"{tier.value}-{slot:03d}.json"
+
+
+def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
+    """Record the versions and identity of a direct, current-schema bootstrap."""
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
+    archive_root = archive_root.resolve()
+    marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    marker_root.mkdir(parents=True, exist_ok=True)
+    versions: dict[str, int] = {}
+    for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
+        with sqlite3.connect(archive_root / f"{tier.value}.db") as connection:
+            versions[tier.value] = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    payload = {
+        "format": _FRESH_DURABLE_BOOTSTRAP_FORMAT,
+        "archive_identity_digest": ArchiveIdentity.resolve(archive_root).authority_identity_digest,
+        "versions": versions,
+    }
+    marker_root.joinpath(_FRESH_DURABLE_BOOTSTRAP_MARKER).write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> dict[ArchiveTier, int]:
+    """Return direct-bootstrap versions when the marker is authentic."""
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
+    marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
+    if not marker_path.is_file():
+        return {}
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DurableChangeTrainError(f"invalid fresh durable bootstrap marker: {marker_path}") from exc
+    if not isinstance(payload, dict) or payload.get("format") != _FRESH_DURABLE_BOOTSTRAP_FORMAT:
+        raise DurableChangeTrainError(f"fresh durable bootstrap marker format mismatch: {marker_path}")
+    if payload.get("archive_identity_digest") != ArchiveIdentity.resolve(archive_root).authority_identity_digest:
+        raise DurableChangeTrainError("fresh durable bootstrap marker archive identity mismatch")
+    raw_versions = payload.get("versions")
+    if not isinstance(raw_versions, dict):
+        raise DurableChangeTrainError(f"fresh durable bootstrap marker versions are invalid: {marker_path}")
+    versions: dict[ArchiveTier, int] = {}
+    for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
+        raw_version = raw_versions.get(tier.value)
+        if not isinstance(raw_version, int) or raw_version < 0:
+            raise DurableChangeTrainError(f"fresh durable bootstrap marker version is invalid: {marker_path}")
+        versions[tier] = raw_version
+    return versions
 
 
 def durable_migration_sidecar_for_slot(tier: ArchiveTier, slot: int) -> DurableMigrationSidecar | None:
@@ -1940,6 +1991,7 @@ def _reconcile_durable_change_train_startup_locked(
     canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
     manifest_paths = tuple(sorted(manifest_root.glob("*.json")))
+    fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
 
     def record_reconciled(path: Path) -> None:
         if path not in reconciled:
@@ -2002,6 +2054,9 @@ def _reconcile_durable_change_train_startup_locked(
         if current_version <= adoption_floor:
             continue
         manifests_by_tier[tier] = _released_train_manifests_by_target(manifest_root, tier)
+        tier_manifest_paths = tuple(manifest_root.glob(f"{tier.value}-*.json"))
+        if fresh_bootstrap_versions.get(tier) == current_version and not tier_manifest_paths:
+            continue
         _require_released_train_chain(
             tier,
             manifests_by_tier[tier],

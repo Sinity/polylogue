@@ -1485,6 +1485,14 @@ def test_startup_checks_chain_when_manifest_directory_is_missing(
         durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
 
 
+def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    assert reconcile_durable_change_train_startup(tmp_path) == ()
+    initialize_active_archive_root(tmp_path)
+
+
 def test_source_train_identity_survives_late_user_tier_initialization(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 

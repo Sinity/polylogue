@@ -313,6 +313,9 @@ def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
     from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 
+    fresh_durable_bootstrap = not any(
+        (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
+    )
     with OwnedArchiveLocation.acquire(
         ArchiveLocation.resolve(root),
         owner_id=f"bootstrap:{os.getpid()}",
@@ -321,6 +324,10 @@ def initialize_active_archive_root(root: Path) -> None:
         reconcile_durable_change_trains_on_startup(root)
         for spec in ARCHIVE_TIER_SPECS.values():
             initialize_archive_database(root / spec.filename, spec.tier)
+        if fresh_durable_bootstrap:
+            from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+
+            _record_fresh_durable_bootstrap(root)
 
 
 def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
