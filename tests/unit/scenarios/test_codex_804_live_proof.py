@@ -19,11 +19,13 @@ import hashlib
 import json
 import os
 import resource
+import shutil
 import sqlite3
 import subprocess
 import sys
 import time
 from dataclasses import replace
+from datetime import datetime
 from functools import cache
 from pathlib import Path
 
@@ -38,6 +40,7 @@ from polylogue.scenarios import (
 from polylogue.scenarios.workload import raw_authority_fixed_point_spec
 from polylogue.schemas.operator.receipt import package_hashes_for_registry
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -55,6 +58,8 @@ TERMINAL_WIRE_BYTES = 90_822_451
 SESSION_NATIVE_ID = "codex-sanitized-804-session"
 SOURCE_PATH = "codex/incident-804-sanitized.jsonl"
 NEAR_TERMINAL_PREDECESSOR_BYTES = 32 * 1024 * 1024
+_BASELINE_MESSAGE_IDS = tuple(f"{SESSION_NATIVE_ID}-message-{index}" for index in range(2))
+_BASELINE_MESSAGE_TIMESTAMPS = ("2026-07-31T04:25:20Z", "2026-07-31T04:25:20Z")
 
 
 def _wire_target_bytes(revision: int) -> int:
@@ -89,7 +94,7 @@ def _codex_payload(revision: int, *, terminal: bool) -> bytes:
             records.append(
                 {
                     "type": "response_item",
-                    "timestamp": revision_timestamp,
+                    "timestamp": _BASELINE_MESSAGE_TIMESTAMPS[message_index],
                     "payload": {
                         "type": "message",
                         "id": f"{SESSION_NATIVE_ID}-message-{message_index}",
@@ -160,6 +165,24 @@ def _codex_payload(revision: int, *, terminal: bool) -> bytes:
     else:
         assert len(payload) == _wire_target_bytes(revision)
     return payload
+
+
+def _baseline_message_timestamps(payload: bytes) -> tuple[str, ...]:
+    timestamps: dict[str, str] = {}
+    for line in payload.splitlines():
+        record = json.loads(line)
+        if not isinstance(record, dict):
+            continue
+        record_payload = record.get("payload")
+        if not isinstance(record_payload, dict) or record_payload.get("type") != "message":
+            continue
+        message_id = record_payload.get("id")
+        timestamp = record.get("timestamp")
+        if isinstance(message_id, str) and message_id in _BASELINE_MESSAGE_IDS:
+            if not isinstance(timestamp, str):
+                raise AssertionError(f"baseline message {message_id} has no string timestamp")
+            timestamps[message_id] = timestamp
+    return tuple(timestamps[message_id] for message_id in _BASELINE_MESSAGE_IDS)
 
 
 def _incident_program() -> CorpusProgram:
@@ -273,7 +296,7 @@ def _readiness_count(readiness: dict[str, object], key: str) -> int:
     return int(value)
 
 
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(420)
 @pytest.mark.uses_real_clock("waits for a real subprocess replay checkpoint and kill/resume boundary")
 def test_sanitized_codex_804_revision_recovery_proof(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
@@ -335,6 +358,12 @@ def test_sanitized_codex_804_revision_recovery_proof(
         assert current_payload.startswith(previous_payload)
     assert b"incident witness user baseline" in first_revision_payload
     assert b"parsed milestone revision 1" in second_revision_payload
+    # Mutation that assigns every recursively extended baseline message the
+    # current revision timestamp fails this exact multi-revision comparison.
+    for revision, terminal in ((0, False), (1, False), (800, False), (803, True)):
+        assert _baseline_message_timestamps(_codex_payload(revision, terminal=terminal)) == (
+            _BASELINE_MESSAGE_TIMESTAMPS
+        )
 
     program_digest = hashlib.sha256(program_json.encode("utf-8")).hexdigest()
 
@@ -364,6 +393,22 @@ def test_sanitized_codex_804_revision_recovery_proof(
         )
     )
 
+    # Source remediation is a phase-2 input to candidate construction. Run
+    # the production remediation route in an isolated archive, then carry its
+    # finalized durable source tier into this fresh-index candidate fixture.
+    # This keeps the rebuild receipt frozen after remediation, so a candidate
+    # replay cannot hide a source mutation behind its own provenance gate.
+    # The replay phase intentionally begins before source remediation and the
+    # crash boundary so its receipt covers the complete recovery envelope.
+    replay_before = _resource_sample(root)
+    replay_started = time.perf_counter()
+    source_ready_root = tmp_path / "codex-804-source-ready"
+    initialize_active_archive_root(source_ready_root)
+    shutil.copy2(root / "source.db", source_ready_root / "source.db")
+    shutil.copytree(root / "blob", source_ready_root / "blob")
+    backfill_historical_revision_evidence(source_ready_root, ingest_workers=1, bulk_fts=True)
+    shutil.copy2(source_ready_root / "source.db", root / "source.db")
+
     schema_inference_receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
     store = IndexGenerationStore.for_archive_root(root)
     active_before = store.active_pointer.resolve(strict=True)
@@ -377,6 +422,65 @@ def test_sanitized_codex_804_revision_recovery_proof(
     assert transaction.status == "running"
     transaction_path = store.transactions_root / f"{operation_id}.json"
     assert transaction_path.is_file()
+    precheckpoint_script = """
+import os
+import sys
+from pathlib import Path
+
+from polylogue.storage.index_generation import IndexGenerationStore
+
+original_checkpoint = IndexGenerationStore.checkpoint_transaction
+
+def terminate_before_page_checkpoint(self, transaction, **kwargs):
+    if kwargs.get("status") == "paused" and kwargs.get("processed_raw_count", 0) > 0:
+        os._exit(97)
+    return original_checkpoint(self, transaction, **kwargs)
+
+IndexGenerationStore.checkpoint_transaction = terminate_before_page_checkpoint
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+
+root = Path(sys.argv[1])
+operation_id = sys.argv[2]
+receipt = Path(sys.argv[3])
+rebuild_index_from_source_sync(
+    RebuildIndexRequest(
+        archive_root=root,
+        operation_id=operation_id,
+        promote=False,
+        schema_inference_receipt_path=receipt,
+        raw_batch_size=8,
+    )
+)
+raise SystemExit("checkpoint seam was not reached")
+"""
+    precheckpoint_process = subprocess.run(
+        [sys.executable, "-c", precheckpoint_script, str(root), operation_id, str(schema_inference_receipt_path)],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert precheckpoint_process.returncode == 97, (
+        f"pre-checkpoint boundary did not terminate at the checkpoint seam: "
+        f"returncode={precheckpoint_process.returncode}; "
+        f"stdout={precheckpoint_process.stdout}; stderr={precheckpoint_process.stderr}"
+    )
+    persisted_before_page = store.load_transaction(operation_id)
+    # Mutation that advances the cursor before checkpoint_transaction returns
+    # fails these pre-checkpoint invariants and the receipt census below.
+    assert persisted_before_page.status == "running"
+    assert persisted_before_page.processed_raw_count == 0
+    assert persisted_before_page.last_raw_id is None
+    assert persisted_before_page.last_blob_hash_hex is None
+    receipt_directory = store.transactions_root / f"{operation_id}.receipts"
+    assert not tuple(receipt_directory.glob("pass-*.json")), "a pre-checkpoint kill emitted a false paused receipt"
+    precheckpoint_generation = store.load(persisted_before_page.generation_id)
+    with sqlite3.connect(precheckpoint_generation.index_path) as conn:
+        assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) > 0
+    committed_page = store.next_raw_page(persisted_before_page, limit=8)
+    committed_page_raw_ids = tuple(row[0] for row in committed_page.rows)
+    assert len(committed_page_raw_ids) == 8
     replay_script = """
 import sys
 from pathlib import Path
@@ -397,8 +501,6 @@ result = rebuild_index_from_source_sync(
 )
 print(result.status)
 """
-    replay_before = _resource_sample(root)
-    replay_started = time.perf_counter()
     replay_process = subprocess.Popen(
         [sys.executable, "-c", replay_script, str(root), operation_id, str(schema_inference_receipt_path)],
         cwd=Path.cwd(),
@@ -427,7 +529,7 @@ print(result.status)
     assert replay_returncode == -9
     persisted = store.load_transaction(operation_id)
     assert persisted.status == "paused"
-    assert persisted.processed_raw_count > 0
+    assert persisted.processed_raw_count == len(committed_page_raw_ids)
     interrupted_generation = store.load(persisted.generation_id)
     with sqlite3.connect(interrupted_generation.index_path) as conn:
         assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) > 0
@@ -447,9 +549,21 @@ print(result.status)
     resume_before = _resource_sample(root)
     resume_started = time.perf_counter()
     resume_script = """
+import json
 import sys
 from pathlib import Path
 
+import polylogue.maintenance.replay as replay_module
+
+trace = Path(sys.argv[4])
+real_replay = replay_module.rebuild_index_from_source
+
+async def recording_replay(*args, **kwargs):
+    with trace.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(list(kwargs["raw_ids"]), sort_keys=True) + "\\n")
+    return await real_replay(*args, **kwargs)
+
+replay_module.rebuild_index_from_source = recording_replay
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 
 root = Path(sys.argv[1])
@@ -470,12 +584,25 @@ for _ in range(200):
 else:
     raise SystemExit("persisted rebuild did not reach replayed")
 """
+    replay_trace_path = tmp_path / "rebuild-replay-trace.jsonl"
     resumed_process = subprocess.run(
-        [sys.executable, "-c", resume_script, str(root), operation_id, str(schema_inference_receipt_path)],
+        [
+            sys.executable,
+            "-c",
+            resume_script,
+            str(root),
+            operation_id,
+            str(schema_inference_receipt_path),
+            str(replay_trace_path),
+        ],
         cwd=Path.cwd(),
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
+    )
+    assert resumed_process.returncode == 0, (
+        f"restart subprocess failed: returncode={resumed_process.returncode}; "
+        f"stdout={resumed_process.stdout}; stderr={resumed_process.stderr}"
     )
     generation_id = resumed_process.stdout.strip().splitlines()[-1]
     assert generation_id.startswith("gen-")
@@ -485,6 +612,20 @@ else:
     assert candidate.state == "inactive"
     assert Path(candidate.index_path).is_file()
     assert store.active_pointer.resolve(strict=True) == active_before
+    resumed_raw_pages = tuple(
+        tuple(json.loads(line)) for line in replay_trace_path.read_text(encoding="utf-8").splitlines()
+    )
+    assert resumed_raw_pages, "restart observed no production replay selections for the suffix"
+    resumed_raw_sequence = tuple(raw_id for page in resumed_raw_pages for raw_id in page)
+    with sqlite3.connect(root / "source.db") as conn:
+        all_raw_sequence = tuple(
+            str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY blob_hash, raw_id")
+        )
+    assert all(isinstance(raw_id, str) for page in resumed_raw_pages for raw_id in page)
+    assert len(resumed_raw_sequence) == len(set(resumed_raw_sequence)), "restart replayed a raw more than once"
+    assert len(all_raw_sequence) == len(set(all_raw_sequence))
+    assert set(committed_page_raw_ids).isdisjoint(set(resumed_raw_sequence))
+    assert resumed_raw_sequence == all_raw_sequence[len(committed_page_raw_ids) :]
     phases.append(
         _phase(
             "postflight",
@@ -502,8 +643,7 @@ else:
     assert max_blob_size == TERMINAL_WIRE_BYTES
     assert source_path_count == 1
     assert parse_error_count == 0
-    assert authorities
-    assert set(authorities) <= {"asserted", "byte_proven", "quarantined"}
+    assert authorities == ("byte_proven",)
     assert tuple(row[1] for row in raw_rows) == tuple(
         _wire_target_bytes(revision) for revision in range(REVISION_COUNT)
     )
@@ -529,7 +669,31 @@ else:
                 "WHERE logical_source_key IS NOT NULL ORDER BY logical_source_key"
             )
         )
-    assert post_recovery_membership_count in {0, REVISION_COUNT}
+        raw_ids = {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")}
+        authority_counts = tuple(
+            (str(row[0]), int(row[1]))
+            for row in conn.execute("SELECT revision_authority, COUNT(*) FROM raw_sessions GROUP BY revision_authority")
+        )
+        membership_rows = tuple(
+            (str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
+            for row in conn.execute(
+                "SELECT raw_id, revision_authority, decision FROM raw_session_memberships ORDER BY raw_id"
+            )
+        )
+        census_rows = tuple(
+            (str(row[0]), str(row[1]))
+            for row in conn.execute("SELECT raw_id, status FROM raw_membership_census ORDER BY raw_id")
+        )
+    # This fixture is the byte-revision authority route, so semantic
+    # membership census remains exactly empty. The application ledger below
+    # is the production coverage relation for all 804 byte revisions.
+    assert post_recovery_membership_count == 0
+    # Mutation that omits one authority row from the final census fails the
+    # exact raw, membership, and complete-census conservation below.
+    assert len(raw_ids) == REVISION_COUNT
+    assert authority_counts == (("byte_proven", REVISION_COUNT),)
+    assert membership_rows == ()
+    assert census_rows == ()
     assert len(source_keys) == 1
     terminal_logical_source_key = membership_keys[0] if membership_keys else source_keys[0]
 
@@ -565,6 +729,17 @@ else:
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
             (terminal_logical_source_key,),
         ).fetchall()
+        application_rows = conn.execute(
+            "SELECT raw_id, decision, accepted_raw_id FROM raw_revision_applications ORDER BY raw_id"
+        ).fetchall()
+    assert len(application_rows) == REVISION_COUNT
+    assert {str(row[0]) for row in application_rows} == raw_ids
+    assert {str(row[1]) for row in application_rows} <= {"selected_baseline", "applied_append", "superseded"}
+    accepted_application_ids = {str(row[2]) for row in application_rows if row[2] is not None}
+    assert len(accepted_application_ids) == 1
+    assert accepted_application_ids <= raw_ids
+    assert accepted_application_ids == {terminal_raw_id}
+    assert all(row[2] is not None for row in application_rows)
     assert len(indexed) == 1
     assert len(selected_heads) == 1
     selected_raw_id = str(selected_heads[0][0])
@@ -577,6 +752,19 @@ else:
         ).fetchone()
     assert selected_source_row == (TERMINAL_WIRE_BYTES, terminal_blob_hash)
     assert terminal_block_count > 0
+    expected_baseline_timestamps = tuple(
+        int(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000)
+        for timestamp in _BASELINE_MESSAGE_TIMESTAMPS
+    )
+    with sqlite3.connect(candidate.index_path) as conn:
+        persisted_baseline_timestamps = tuple(
+            int(row[0])
+            for row in conn.execute(
+                "SELECT occurred_at_ms FROM messages WHERE message_id LIKE ? ORDER BY message_id",
+                (f"%{SESSION_NATIVE_ID}-message-%",),
+            )
+        )
+    assert persisted_baseline_timestamps == expected_baseline_timestamps
 
     quiescent = _resource_sample(root)
     phases.append(
