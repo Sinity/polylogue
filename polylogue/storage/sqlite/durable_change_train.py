@@ -311,6 +311,8 @@ def _write_source_continuity_pending_intent(
     evidence_ref: str,
 ) -> Path:
     """Persist the recovery input before a source mutation can commit."""
+    mutation_receipt = mutation_receipt.resolve()
+    backup_manifest = backup_manifest.resolve()
     pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
     pending_root.mkdir(parents=True, exist_ok=True)
     payload: dict[str, object] = {
@@ -409,6 +411,31 @@ def _clear_source_continuity_pending_intent(path: Path) -> None:
     _migration_runner._fsync_manifest_directory(path.parent)
 
 
+def _assert_source_continuity_apply_allowed(archive_root: Path) -> None:
+    """Reject a new source mutation that could invalidate continuity recovery."""
+    pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
+    pending_intents = tuple(sorted(pending_root.glob("*.json"))) if pending_root.is_dir() else ()
+    if pending_intents:
+        raise DurableChangeTrainError("source liveness apply is blocked while source continuity recovery is pending")
+
+    source_path = archive_root / "source.db"
+    with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+        current_version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    if not manifest_root.is_dir():
+        return
+    unreleased = tuple(
+        candidate
+        for candidate in sorted(manifest_root.glob("source-*.json"))
+        if (train := load_durable_change_train_manifest(candidate)).target_version == current_version
+        and train.state is not DurableChangeTrainState.RELEASED
+    )
+    if unreleased:
+        raise DurableChangeTrainError(
+            "source liveness apply is blocked by an unreleased source train for the live schema"
+        )
+
+
 def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
     """Finish committed source mutations whose manifest refresh was interrupted."""
     pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
@@ -446,6 +473,9 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
         except (DurableChangeTrainError, KeyError, TypeError, ValueError) as exc:
             raise DurableChangeTrainError(f"source continuity pending intent is malformed: {path}") from exc
         receipt_phase = _liveness_receipt_phase(receipt)
+        if receipt_phase == "recovered_rolled_back":
+            _clear_source_continuity_pending_intent(path)
+            continue
         if receipt_phase in {"prepared", "batch_committed"}:
             from polylogue.maintenance.blob_ref_liveness_reconciliation import _recover_prepared_receipt
 

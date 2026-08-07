@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -202,6 +203,51 @@ def test_apply_requires_backup_and_receipt_before_mutation(tmp_path: Path) -> No
     archive_root = _source_archive(tmp_path)
     with pytest.raises(BlobRefLivenessReconciliationError, match="backup manifest"):
         reconcile_blob_ref_liveness(archive_root, dry_run=False, receipt_path=tmp_path / "receipt.jsonl")
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
+
+
+def test_apply_refuses_a_fresh_mutation_while_continuity_recovery_is_pending(tmp_path: Path) -> None:
+    archive_root = _source_archive(tmp_path)
+    pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
+    pending_root.mkdir(parents=True)
+    (pending_root / "pending.json").write_text("{}\n", encoding="utf-8")
+    receipt = tmp_path / "receipts" / "fresh.jsonl"
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="continuity recovery is pending"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    assert not receipt.exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
+
+
+def test_apply_refuses_an_unreleased_source_train_before_writing_a_receipt(tmp_path: Path) -> None:
+    archive_root = _source_archive(tmp_path)
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    manifest_root.mkdir(parents=True)
+    manifest_root.joinpath("source-029.json").write_text(
+        resources.files("polylogue.storage.sqlite.migrations.source")
+        .joinpath("029.train.json")
+        .read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    receipt = tmp_path / "receipts" / "blocked-by-train.jsonl"
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="unreleased source train"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    assert not receipt.exists()
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
 

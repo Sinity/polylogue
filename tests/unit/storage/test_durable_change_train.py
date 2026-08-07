@@ -449,15 +449,22 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
     assert refreshed.source_continuity_evidence.content_sha256 != released.apply_evidence.post.content_sha256
     assert refreshed_path.is_file()
+    operator_cwd = tmp_path / "operator-cwd"
+    operator_cwd.mkdir()
+    monkeypatch.chdir(tmp_path)
     pending_path = _write_source_continuity_pending_intent(
         tmp_path,
-        mutation_receipt=mutation_receipt,
-        backup_manifest=backup_manifest,
+        mutation_receipt=Path("mutation-receipt.jsonl"),
+        backup_manifest=Path("backup-manifest.json"),
         pre_mutation_evidence=before,
         operation_id=_EMPTY_LIVENESS_DIGEST,
         evidence_ref="proof:mutation-1",
     )
     assert pending_path.is_file()
+    pending_payload = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert pending_payload["mutation_receipt"] == str(mutation_receipt)
+    assert pending_payload["backup_manifest"] == str(backup_manifest)
+    monkeypatch.chdir(operator_cwd)
     assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
     assert not pending_path.exists()
     terminal_pending_path = _write_source_continuity_pending_intent(
@@ -595,6 +602,28 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
             operation_id=_EMPTY_LIVENESS_DIGEST,
             evidence_ref="proof:mutation-no-train",
         )
+
+
+def test_startup_consumes_an_already_recovered_rollback_intent(tmp_path: Path) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        before = migration_runner.capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    receipt = tmp_path / "rolled-back.jsonl"
+    receipt.write_text('{"phase": "recovered_rolled_back"}\n', encoding="utf-8")
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    pending_path = _write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="rolled-back-operation",
+        evidence_ref="proof:rolled-back-operation",
+    )
+
+    assert reconcile_durable_change_train_startup(tmp_path) == ()
+    assert not pending_path.exists()
 
 
 @pytest.mark.parametrize("tier", (ArchiveTier.SOURCE, ArchiveTier.USER))

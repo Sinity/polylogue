@@ -36,6 +36,7 @@ from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainError,
+    _assert_source_continuity_apply_allowed,
     _clear_source_continuity_pending_intent,
     _mark_source_continuity_pending_intent_terminal,
     _write_source_continuity_pending_intent,
@@ -775,6 +776,8 @@ def reconcile_blob_ref_liveness(
         raise BlobRefLivenessReconciliationError(
             "applying blob-ref liveness reconciliation requires a receipt path (--receipt-file)"
         )
+    backup_manifest = backup_manifest.resolve()
+    receipt_path = receipt_path.resolve()
     if receipt_path.exists():
         outcome = _recover_prepared_receipt(source_db, receipt_path)
         raise BlobRefLivenessReconciliationError(
@@ -782,6 +785,10 @@ def reconcile_blob_ref_liveness(
         )
     if reason := _offline_apply_block_reason(archive_root):
         raise BlobRefLivenessReconciliationError(reason)
+    try:
+        _assert_source_continuity_apply_allowed(archive_root)
+    except DurableChangeTrainError as exc:
+        raise BlobRefLivenessReconciliationError(str(exc)) from exc
 
     pre_conn = sqlite3.connect(source_db)
     staged_plan = None
