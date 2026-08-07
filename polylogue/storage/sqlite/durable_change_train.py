@@ -117,6 +117,16 @@ class DurableForwardVersionReceipt:
     archive_identity_digest: str
 
 
+@dataclass(frozen=True, slots=True)
+class _DurableForwardVersionEvidence:
+    """Cached live evidence reused by one no-op maintenance execution."""
+
+    actual: DurableDatabaseEvidence
+    integrity_check: tuple[str, ...]
+    live_inventory: _migration_runner.DurableSchemaInventory
+    canonical_inventory: _migration_runner.DurableSchemaInventory
+
+
 def durable_migration_sidecar_name(slot: int) -> str:
     """Return the only accepted Git path for a numbered train sidecar."""
     if slot < 1:
@@ -1551,6 +1561,7 @@ def _forward_version_receipt_for_current_tier(
     *,
     current_version: int,
     current_target_version: int,
+    evidence: _DurableForwardVersionEvidence | None = None,
 ) -> DurableForwardVersionReceipt | None:
     """Return the newest released historical-train receipt at the live target."""
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
@@ -1560,12 +1571,26 @@ def _forward_version_receipt_for_current_tier(
             train = load_durable_change_train_manifest(path)
             if train.state is DurableChangeTrainState.RELEASED and train.target_version < current_version:
                 historical.append(train)
+    if not historical:
+        return None
+    if evidence is None:
+        actual = capture_durable_database_evidence(conn, tier)
+        evidence = _DurableForwardVersionEvidence(
+            actual=actual,
+            integrity_check=tuple(str(row[0]) for row in conn.execute("PRAGMA integrity_check")),
+            live_inventory=_migration_runner.capture_durable_schema_inventory(conn),
+            canonical_inventory=_canonical_schema_inventory(tier, actual.user_version),
+        )
     for train in sorted(historical, key=lambda item: item.target_version, reverse=True):
         receipt = _verify_released_train_live_tier(
             archive_root,
             conn,
             train,
             current_target_version=current_target_version,
+            actual_evidence=evidence.actual,
+            integrity_check=evidence.integrity_check,
+            live_inventory=evidence.live_inventory,
+            canonical_inventory=evidence.canonical_inventory,
         )
         if receipt is not None:
             return receipt
@@ -1639,7 +1664,8 @@ def execute_durable_change_train(
     release_archive_ownership: Callable[[], None],
 ) -> DurableChangeTrainExecution:
     """Execute the real maintenance route through every persisted train state."""
-    reconcile_durable_change_train_startup(archive_root)
+    forward_version_evidence: dict[ArchiveTier, _DurableForwardVersionEvidence] = {}
+    reconcile_durable_change_train_startup(archive_root, live_evidence_cache=forward_version_evidence)
     tier_path = archive_root / f"{tier.value}.db"
     with _open_existing_tier(tier_path) as probe:
         current_version = int(probe.execute("PRAGMA user_version").fetchone()[0] or 0)
@@ -1689,6 +1715,7 @@ def execute_durable_change_train(
                 tier,
                 current_version=current_version,
                 current_target_version=runtime_target_version,
+                evidence=forward_version_evidence.get(tier),
             )
         return DurableChangeTrainExecution(
             train=None,
@@ -1804,7 +1831,11 @@ def execute_durable_change_train(
     return DurableChangeTrainExecution(train=train, manifest_path=manifest_path, migration_result=migration_result)
 
 
-def reconcile_durable_change_train_startup(archive_root: Path) -> tuple[Path, ...]:
+def reconcile_durable_change_train_startup(
+    archive_root: Path,
+    *,
+    live_evidence_cache: dict[ArchiveTier, _DurableForwardVersionEvidence] | None = None,
+) -> tuple[Path, ...]:
     """Reconcile backup-authorized trains left by a crashed maintenance process."""
     from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 
@@ -1813,10 +1844,17 @@ def reconcile_durable_change_train_startup(archive_root: Path) -> tuple[Path, ..
         owner_id=f"durable-train-recovery:{os.getpid()}",
         allow_reentrant=True,
     ):
-        return _reconcile_durable_change_train_startup_locked(archive_root)
+        return _reconcile_durable_change_train_startup_locked(
+            archive_root,
+            live_evidence_cache=live_evidence_cache,
+        )
 
 
-def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[Path, ...]:
+def _reconcile_durable_change_train_startup_locked(
+    archive_root: Path,
+    *,
+    live_evidence_cache: dict[ArchiveTier, _DurableForwardVersionEvidence] | None = None,
+) -> tuple[Path, ...]:
     """Reconcile persisted trains while the caller holds archive ownership."""
     _recover_pending_source_continuity_intents(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
@@ -1872,6 +1910,13 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
                     if train.tier not in canonical_inventory_by_tier:
                         canonical_inventory_by_tier[train.tier] = _canonical_schema_inventory(
                             train.tier, actual.user_version
+                        )
+                    if live_evidence_cache is not None:
+                        live_evidence_cache[train.tier] = _DurableForwardVersionEvidence(
+                            actual=actual,
+                            integrity_check=live_integrity_by_tier[train.tier],
+                            live_inventory=live_inventory_by_tier[train.tier],
+                            canonical_inventory=canonical_inventory_by_tier[train.tier],
                         )
                 _verify_released_train_live_tier(
                     archive_root,

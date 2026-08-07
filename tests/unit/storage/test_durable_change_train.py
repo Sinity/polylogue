@@ -1116,6 +1116,35 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         assert conn.execute("PRAGMA user_version").fetchone() == (3,)
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='later_items'").fetchone() == ("later_items",)
     assert released == [True, True]
+    evidence_captures = 0
+    schema_inventories = 0
+    canonical_inventories = 0
+    real_capture = durable_change_train_module.capture_durable_database_evidence
+    real_schema_inventory = migration_runner.capture_durable_schema_inventory
+    real_canonical_inventory = durable_change_train_module._canonical_schema_inventory
+
+    def count_evidence_captures(
+        connection: sqlite3.Connection, tier: ArchiveTier
+    ) -> migration_runner.DurableDatabaseEvidence:
+        nonlocal evidence_captures
+        evidence_captures += 1
+        return real_capture(connection, tier)
+
+    def count_schema_inventories(
+        connection: sqlite3.Connection,
+    ) -> migration_runner.DurableSchemaInventory:
+        nonlocal schema_inventories
+        schema_inventories += 1
+        return real_schema_inventory(connection)
+
+    def count_canonical_inventories(tier: ArchiveTier, target_version: int) -> migration_runner.DurableSchemaInventory:
+        nonlocal canonical_inventories
+        canonical_inventories += 1
+        return real_canonical_inventory(tier, target_version)
+
+    monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", count_evidence_captures)
+    monkeypatch.setattr(migration_runner, "capture_durable_schema_inventory", count_schema_inventories)
+    monkeypatch.setattr(durable_change_train_module, "_canonical_schema_inventory", count_canonical_inventories)
     third = execute_durable_change_train(
         tmp_path,
         ArchiveTier.SOURCE,
@@ -1127,6 +1156,11 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     assert third.forward_version_receipt is not None
     assert third.forward_version_receipt.historical_target_version == 2
     assert third.forward_version_receipt.observed_live_version == 3
+    assert evidence_captures == 1
+    # One live inventory plus the canonical inventory built from the fresh DDL.
+    # The no-op receipt reuses both instead of constructing a second pair.
+    assert schema_inventories == 3
+    assert canonical_inventories == 1
 
     historical_manifest = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
     historical_train = load_durable_change_train_manifest(historical_manifest)

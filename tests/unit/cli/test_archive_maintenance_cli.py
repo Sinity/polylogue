@@ -1535,6 +1535,69 @@ def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='future_items'").fetchone() == ("future_items",)
 
 
+def test_migrate_tier_cli_exposes_forward_version_receipt(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.cli.commands.maintenance import _migrate_tier
+    from polylogue.storage.sqlite.durable_change_train import (
+        DurableChangeTrainExecution,
+        DurableForwardVersionReceipt,
+    )
+
+    source_db = cli_workspace["archive_root"] / "source.db"
+    if not source_db.exists():
+        with sqlite3.connect(source_db) as conn:
+            conn.execute("PRAGMA user_version = 3")
+            conn.commit()
+    receipt = DurableForwardVersionReceipt(
+        tier=ArchiveTier.SOURCE,
+        historical_train_id="train:source:v2",
+        historical_target_version=2,
+        current_target_version=3,
+        observed_live_version=3,
+        historical_schema_inventory_sha256="a" * 64,
+        archive_identity_digest="b" * 64,
+    )
+    monkeypatch.setattr(
+        _migrate_tier,
+        "execute_durable_change_train",
+        lambda *_args, **_kwargs: DurableChangeTrainExecution(
+            train=None,
+            manifest_path=None,
+            migration_result=None,
+            forward_version_receipt=receipt,
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "migrate-tier", "source", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["forward_version_receipt"] == {
+        "archive_identity_digest": "b" * 64,
+        "current_target_version": 3,
+        "historical_schema_inventory_sha256": "a" * 64,
+        "historical_target_version": 2,
+        "historical_train_id": "train:source:v2",
+        "observed_live_version": 3,
+        "tier": "source",
+    }
+
+    plain = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "migrate-tier", "source"],
+        catch_exceptions=False,
+    )
+    assert plain.exit_code == 0, plain.output
+    assert "historical train train:source:v2 is admitted at live schema v3" in plain.output
+
+
 def test_migrate_tier_cli_refuses_live_daemon_before_sql(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,

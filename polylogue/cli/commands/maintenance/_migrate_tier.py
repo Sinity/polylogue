@@ -138,6 +138,19 @@ def migrate_tier_command(
         "from_version": result.from_version if result is not None else 0 if initialized else None,
         "to_version": result.to_version if result is not None else initialized_version,
         "applied_versions": list(result.applied_versions) if result is not None else [],
+        "forward_version_receipt": (
+            {
+                "tier": execution.forward_version_receipt.tier.value,
+                "historical_train_id": execution.forward_version_receipt.historical_train_id,
+                "historical_target_version": execution.forward_version_receipt.historical_target_version,
+                "current_target_version": execution.forward_version_receipt.current_target_version,
+                "observed_live_version": execution.forward_version_receipt.observed_live_version,
+                "historical_schema_inventory_sha256": execution.forward_version_receipt.historical_schema_inventory_sha256,
+                "archive_identity_digest": execution.forward_version_receipt.archive_identity_digest,
+            }
+            if execution is not None and execution.forward_version_receipt is not None
+            else None
+        ),
     }
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
@@ -147,6 +160,14 @@ def migrate_tier_command(
         click.echo(f"Initialized missing {tier} tier at schema version {initialized_version}.")
         return
     if result is None:
+        if execution is not None and execution.forward_version_receipt is not None:
+            receipt = execution.forward_version_receipt
+            click.echo(
+                f"No pending durable migration for {tier}; historical train {receipt.historical_train_id} "
+                f"is admitted at live schema v{receipt.observed_live_version} "
+                f"(target v{receipt.current_target_version})."
+            )
+            return
         click.echo(f"No pending durable migration for {tier}.")
         return
     applied = ", ".join(str(version) for version in result.applied_versions) or "none"
