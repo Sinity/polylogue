@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import replace
@@ -165,6 +166,35 @@ def test_planner_preserves_incomparable_population(monkeypatch: pytest.MonkeyPat
     before_projection = plan["before_projection"]
     assert isinstance(before_projection, dict)
     assert before_projection["cursor_authority_gap_count"] == 727
+    watcher.stop()
+
+
+def test_disappeared_selected_row_is_typed_not_applicable_with_incomparable_population(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
+
+    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    projection = replace(
+        reconcile._projection_for(tmp_path),
+        overall_status="unknown",
+        cursor_ahead_status="unknown",
+        cursor_ahead_count=0,
+        cursor_ahead_samples=(),
+        cursor_authority_gap_count=2,
+    )
+    monkeypatch.setattr(reconcile, "_projection_for", lambda root: projection)
+    monkeypatch.setattr(reconcile, "_cursor_rows", lambda root: [])
+
+    plan = reconcile._build_plan(tmp_path, source_path)
+
+    assert plan["status"] == "not_applicable"
+    reason = plan["not_applicable_reason"]
+    assert isinstance(reason, str)
+    assert "disappeared" in reason
+    before_projection = plan["before_projection"]
+    assert isinstance(before_projection, dict)
+    assert before_projection["cursor_authority_gap_count"] == 2
     watcher.stop()
 
 
@@ -357,8 +387,15 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
 ) -> None:
     backup = tmp_path / "backup"
     backup.mkdir()
-    (backup / "blob").mkdir()
-    (backup / "blob-inventory.json").write_text("{}", encoding="utf-8")
+    blob_payload = b"blob"
+    blob_hash = hashlib.sha256(blob_payload).hexdigest()
+    blob_path = backup / "blob" / blob_hash[:2] / blob_hash[2:]
+    blob_path.parent.mkdir(parents=True)
+    blob_path.write_bytes(blob_payload)
+    (backup / "blob-inventory.json").write_text(
+        json.dumps([{"blob_hash": blob_hash, "size_bytes": len(blob_payload), "protection": ["referenced"]}]),
+        encoding="utf-8",
+    )
     tiers: dict[str, dict[str, object]] = {}
     for tier in ("source", "index", "ops", "audit"):
         path = backup / f"{tier}.db"
@@ -381,6 +418,15 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
                     "index_attachment_blobs_resolved": True,
                     "blob_inventory_exact": True,
                 },
+                "blobs": [
+                    {
+                        "blob_hash": blob_hash,
+                        "path": f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
+                        "size_bytes": len(blob_payload),
+                        "sha256": blob_hash,
+                        "protection": ["referenced"],
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -392,6 +438,22 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
     validated = reconcile._validate_backup(backup, plan)
     assert isinstance(validated["root"], dict)
     assert validated["root"]["basename"] == backup.name
+    blob_path.write_bytes(b"changed")
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="blob digest"):
+        reconcile._validate_backup(backup, plan)
+    blob_path.write_bytes(blob_payload)
+    blob_path.unlink()
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="blob inventory"):
+        reconcile._validate_backup(backup, plan)
+    blob_path.write_bytes(blob_payload)
+    extra_payload = b"extra"
+    extra_hash = hashlib.sha256(extra_payload).hexdigest()
+    extra_path = backup / "blob" / extra_hash[:2] / extra_hash[2:]
+    extra_path.parent.mkdir(parents=True)
+    extra_path.write_bytes(extra_payload)
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="absent from blob-inventory"):
+        reconcile._validate_backup(backup, plan)
+    extra_path.unlink()
     (backup / "audit.db").unlink()
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="tier is missing"):
         reconcile._validate_backup(backup, plan)

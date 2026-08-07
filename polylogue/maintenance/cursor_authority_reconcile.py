@@ -357,7 +357,23 @@ def _build_plan(root: Path, source_path: Path, *, require_candidate: bool = True
     _require_healthy_projection_siblings(projection)
     path_digest = cursor_authority_path_digest(source_path)
     if projection.cursor_ahead_count == 0:
-        if require_candidate and projection.cursor_authority_gap_count == 0 and projection.overall_status == "healthy":
+        current_cursor_paths = {Path(path).resolve() for path, _offset in _cursor_rows(root)}
+        selected_path_disappeared = source_path.resolve() not in current_cursor_paths
+        incomparable_population_preserved = (
+            projection.available
+            and projection.cursor_ahead_status == "unknown"
+            and projection.cursor_authority_gap_count > 0
+            and projection.broken_head_status == "healthy"
+            and projection.missing_source_raw_status == "healthy"
+        )
+        if require_candidate and (
+            projection.overall_status == "healthy" or (selected_path_disappeared and incomparable_population_preserved)
+        ):
+            reason = (
+                "selected cursor row disappeared while the pre-existing incomparable authority population remained"
+                if selected_path_disappeared and incomparable_population_preserved
+                else "selected cursor-ahead violation is no longer present"
+            )
             not_applicable_plan: dict[str, object] = {
                 "format": PLAN_FORMAT,
                 "archive_identity": _path_identity(root),
@@ -369,6 +385,7 @@ def _build_plan(root: Path, source_path: Path, *, require_candidate: bool = True
                 "selected_path_digest": path_digest,
                 "observed_at_ms": int(time.time() * 1000),
                 "status": "not_applicable",
+                "not_applicable_reason": reason,
                 "cursor_byte_offset": None,
                 "accepted_frontier": None,
                 "accepted_raw_id_digest": None,
@@ -436,6 +453,104 @@ def _backup_root(manifest_path: Path) -> Path:
     return root
 
 
+def _validated_blob_inventory(
+    root: Path,
+    manifest: Mapping[str, object],
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    """Re-hash the current backup blob files and compare them with the receipt."""
+
+    inventory_path = root / str(manifest.get("blob_inventory_file", "blob-inventory.json"))
+    try:
+        declared = json.loads(inventory_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CursorAuthorityReconciliationError("backup blob inventory is unreadable") from exc
+    expected = receipt.get("blobs")
+    if not isinstance(declared, list) or not isinstance(expected, list):
+        raise CursorAuthorityReconciliationError("backup blob inventory is not fully attested")
+
+    declared_by_hash: dict[str, dict[str, object]] = {}
+    for item in declared:
+        if not isinstance(item, dict) or not isinstance(item.get("blob_hash"), str):
+            raise CursorAuthorityReconciliationError("backup blob inventory contains an invalid row")
+        blob_hash = str(item["blob_hash"]).lower()
+        if len(blob_hash) != 64 or any(character not in "0123456789abcdef" for character in blob_hash):
+            raise CursorAuthorityReconciliationError("backup blob inventory contains an invalid blob hash")
+        if blob_hash in declared_by_hash:
+            raise CursorAuthorityReconciliationError("backup blob inventory contains duplicate blob hashes")
+        declared_by_hash[blob_hash] = item
+
+    actual_rows: list[dict[str, object]] = []
+    blob_root = root / "blob"
+    for path in sorted(blob_root.rglob("*")):
+        if path.is_symlink():
+            raise CursorAuthorityReconciliationError("backup blob inventory contains a symlink")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if len(path.parent.name) != 2 or len(path.name) != 62:
+            raise CursorAuthorityReconciliationError(f"backup blob path is not content-addressed: {relative}")
+        blob_hash = f"{path.parent.name}{path.name}".lower()
+        if blob_hash not in declared_by_hash:
+            raise CursorAuthorityReconciliationError("backup contains a blob absent from blob-inventory.json")
+        size_bytes, sha256 = _file_fingerprint(path)
+        if sha256 != blob_hash:
+            raise CursorAuthorityReconciliationError(f"backup blob digest does not match its path: {relative}")
+        declared_item = declared_by_hash[blob_hash]
+        protection = declared_item.get("protection")
+        if not isinstance(protection, list) or not all(isinstance(value, str) for value in protection):
+            raise CursorAuthorityReconciliationError("backup blob inventory has invalid protection metadata")
+        if declared_item.get("size_bytes") != size_bytes:
+            raise CursorAuthorityReconciliationError("backup blob size disagrees with blob-inventory.json")
+        actual_rows.append(
+            {
+                "blob_hash": blob_hash,
+                "path": relative,
+                "size_bytes": size_bytes,
+                "sha256": sha256,
+                "protection": sorted(str(value) for value in protection),
+            }
+        )
+
+    actual_rows.sort(key=lambda item: str(item["blob_hash"]))
+    expected_rows = sorted(
+        [
+            {
+                "blob_hash": item.get("blob_hash"),
+                "path": item.get("path"),
+                "size_bytes": item.get("size_bytes"),
+                "sha256": item.get("sha256"),
+                "protection": sorted(str(value) for value in item.get("protection", []))
+                if isinstance(item.get("protection"), list)
+                else item.get("protection"),
+            }
+            for item in expected
+            if isinstance(item, dict)
+        ],
+        key=lambda item: str(item["blob_hash"]),
+    )
+    if expected_rows != actual_rows:
+        raise CursorAuthorityReconciliationError(
+            "current backup blob inventory does not match its verification receipt"
+        )
+    if len(declared_by_hash) != len(actual_rows):
+        raise CursorAuthorityReconciliationError("blob-inventory.json contains a missing backup blob")
+    manifest_count = manifest.get("blob_count")
+    if isinstance(manifest_count, int) and manifest_count != len(actual_rows):
+        raise CursorAuthorityReconciliationError("backup manifest blob count does not match current blob inventory")
+    total_size_bytes = 0
+    for item in actual_rows:
+        row_size_bytes = item["size_bytes"]
+        if not isinstance(row_size_bytes, int):
+            raise CursorAuthorityReconciliationError("current backup blob inventory has an invalid size")
+        total_size_bytes += row_size_bytes
+    return {
+        "count": len(actual_rows),
+        "size_bytes": total_size_bytes,
+        "inventory_digest": _canonical_digest(actual_rows),
+    }
+
+
 def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[str, object]:
     root = _backup_root(manifest_path)
     try:
@@ -456,6 +571,7 @@ def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[st
         raise CursorAuthorityReconciliationError("backup lacks complete blob rollback evidence")
     if not (root / "blob").is_dir() or not (root / "blob-inventory.json").is_file():
         raise CursorAuthorityReconciliationError("backup lacks blob rollback evidence")
+    blob_inventory = _validated_blob_inventory(root, manifest, receipt)
     archive_root = _archive_root()
     location = ArchiveLocation.resolve(archive_root)
     expected_active_index = plan.get("active_index")
@@ -503,7 +619,11 @@ def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[st
                 raise CursorAuthorityReconciliationError(
                     "backup index fingerprint does not bind the active index generation"
                 )
-    return {"root": _path_identity(root), "manifest_sha256": _sha256_file(root / "manifest.json")}
+    return {
+        "root": _path_identity(root),
+        "manifest_sha256": _sha256_file(root / "manifest.json"),
+        "blob_inventory": blob_inventory,
+    }
 
 
 def _quick_checks(root: Path) -> dict[str, list[str]]:
