@@ -23,6 +23,7 @@ from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidateDigest,
 )
 from polylogue.storage.sqlite import migration_runner as _migration_runner
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import (
     DURABLE_CHANGE_TRAIN_FORMAT,
@@ -1443,7 +1444,7 @@ def _canonical_schema_inventory(tier: ArchiveTier, target_version: int) -> _migr
     if isinstance(target_version, bool):
         raise DurableChangeTrainError("canonical schema inventory target version must be an integer")
     try:
-        archive_ddl = _migration_runner.ARCHIVE_DDL_BY_TIER[tier]
+        archive_ddl = ARCHIVE_DDL_BY_TIER[tier]
     except KeyError as exc:
         raise DurableChangeTrainError(f"no canonical archive DDL is registered for {tier.value}") from exc
     with closing(sqlite3.connect(":memory:")) as fresh:
