@@ -130,63 +130,59 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
             conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_artifacts'").fetchone()
             is not None
         )
+        sample_limit = max(0, sample_limit)
         if has_artifacts:
-            failure_query = """
-            SELECT r.raw_id, r.origin, r.validation_status,
-                   (
-                       SELECT a.artifact_kind
-                       FROM raw_artifacts AS a
-                       WHERE a.raw_id = r.raw_id
-                         AND a.origin = r.origin
-                         AND a.source_path = r.source_path
-                         AND a.source_index = r.source_index
-                       ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
-                       LIMIT 1
-                   ) AS artifact_kind
-                   ,(
-                       SELECT a.support_status
-                       FROM raw_artifacts AS a
-                       WHERE a.raw_id = r.raw_id
-                         AND a.origin = r.origin
-                         AND a.source_path = r.source_path
-                         AND a.source_index = r.source_index
-                       ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
-                       LIMIT 1
-                   ) AS support_status
-                   ,r.acquired_at_ms
-            FROM raw_sessions AS r
-            WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
-               OR r.validation_status = 'failed'
+            failed_cte = """
+            WITH latest_artifact AS (
+                SELECT raw_id, origin, source_path, source_index, artifact_kind, support_status,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY raw_id, origin, source_path, source_index
+                           ORDER BY last_observed_at_ms DESC, artifact_id DESC
+                       ) AS artifact_rank
+                FROM raw_artifacts
+            ), failed AS (
+                SELECT r.raw_id, r.origin, r.validation_status,
+                       a.artifact_kind, a.support_status, r.acquired_at_ms
+                FROM raw_sessions AS r
+                LEFT JOIN latest_artifact AS a
+                  ON a.raw_id = r.raw_id
+                 AND a.origin = r.origin
+                 AND a.source_path = r.source_path
+                 AND a.source_index = r.source_index
+                 AND a.artifact_rank = 1
+                WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
+                   OR r.validation_status = 'failed'
+            )
             """
         else:
-            failure_query = """
-            SELECT r.raw_id, r.origin, r.validation_status, NULL AS artifact_kind, NULL AS support_status,
-                   r.acquired_at_ms
-            FROM raw_sessions AS r
-            WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
-               OR r.validation_status = 'failed'
-            """
-        summary_counts: Counter[tuple[object, object, object, object]] = Counter()
-        sample_rows: list[tuple[object, ...]] = []
-        sample_limit = max(0, sample_limit)
-        failure_rows = conn.execute(
-            f"""
-            WITH failed AS ({failure_query}),
-            ranked AS (
-                SELECT failed.*,
-                       ROW_NUMBER() OVER (ORDER BY acquired_at_ms DESC, raw_id DESC) AS sample_rank
-                FROM failed
+            failed_cte = """
+            WITH failed AS (
+                SELECT r.raw_id, r.origin, r.validation_status,
+                       NULL AS artifact_kind, NULL AS support_status, r.acquired_at_ms
+                FROM raw_sessions AS r
+                WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
+                   OR r.validation_status = 'failed'
             )
-            SELECT raw_id, origin, validation_status, artifact_kind, support_status, sample_rank
-            FROM ranked
             """
-        )
-        for row in failure_rows:
-            key = (row[1], row[2], row[3], row[4])
-            summary_counts[key] += 1
-            if int(row[5]) <= sample_limit:
-                sample_rows.append(tuple(row[:5]))
-        summary_rows = [(*key, count) for key, count in summary_counts.items()]
+        summary_rows = conn.execute(
+            failed_cte
+            + """
+            SELECT origin, validation_status, artifact_kind, support_status, COUNT(*) AS failure_count
+            FROM failed
+            GROUP BY origin, validation_status, artifact_kind, support_status
+            ORDER BY origin, validation_status, artifact_kind, support_status
+            """
+        ).fetchall()
+        sample_rows = conn.execute(
+            failed_cte
+            + """
+            SELECT raw_id, origin, validation_status, artifact_kind, support_status
+            FROM failed
+            ORDER BY acquired_at_ms DESC, raw_id DESC
+            LIMIT ?
+            """,
+            (sample_limit,),
+        ).fetchall()
     except sqlite3.Error as exc:
         logger.warning("could not read raw failure lifecycle", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not read raw failure lifecycle: {exc}")
