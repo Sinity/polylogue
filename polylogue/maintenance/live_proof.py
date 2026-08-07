@@ -29,6 +29,7 @@ LIVE_PROOF_REGISTRY_VERSION: Final = 1
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _CODE_SHA_RE: Final = re.compile(r"[0-9a-f]{40,64}")
 _GENERATION_ID_RE: Final = re.compile(r"gen-[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_ACCEPTED_APPLY_STATUSES: Final = frozenset({"applied", "already_satisfied"})
 
 
 class LiveProofError(ValueError):
@@ -387,10 +388,13 @@ def _validated_existing_apply_receipt(path: Path, bindings: LiveProofBindings) -
     receipt_bindings = payload.get("bindings")
     if not isinstance(receipt_bindings, Mapping) or receipt_bindings != bindings.to_document():
         raise LiveProofError("existing apply receipt bindings are stale or mismatched")
-    if not is_json_document(payload.get("result")):
+    result = payload.get("result")
+    if not isinstance(result, Mapping) or not is_json_document(result):
         raise LiveProofError("existing apply receipt result is malformed")
+    if result.get("status") not in _ACCEPTED_APPLY_STATUSES:
+        raise LiveProofError("existing apply receipt result status is not successful")
     _validate_private_path_references(receipt_bindings.get("private_paths"))
-    return require_json_document(payload["result"], context="existing apply receipt result"), digest
+    return require_json_document(result, context="existing apply receipt result"), digest
 
 
 def collect_live_proof(

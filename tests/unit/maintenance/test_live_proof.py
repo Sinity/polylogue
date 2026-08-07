@@ -40,12 +40,12 @@ def archive_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def _apply_receipt(bindings: LiveProofBindings) -> dict[str, object]:
+def _apply_receipt(bindings: LiveProofBindings, *, status: str = "applied") -> dict[str, object]:
     document = {
         "receipt_schema": EXISTING_APPLY_RECEIPT_SCHEMA,
         "operation_id": "known-source-remediation",
         "bindings": bindings.to_document(),
-        "result": {"status": "applied", "changed_count": 1},
+        "result": {"status": status, "changed_count": 1},
     }
     return {**document, "receipt_sha256": hash_payload(document)}
 
@@ -135,6 +135,20 @@ def test_existing_apply_receipt_is_bound_and_rejects_controlled_binding_mutation
     mutated["receipt_sha256"] = hash_payload(unsigned)
     with pytest.raises(LiveProofError, match="bindings are stale"):
         validate_live_proof_receipt(mutated, archive_root)
+
+
+def test_existing_apply_receipt_rejects_non_successful_result(archive_root: Path, tmp_path: Path) -> None:
+    apply_path = tmp_path / "failed-apply-receipt.json"
+    apply_path.write_text(
+        json.dumps(_apply_receipt(capture_live_proof_bindings(archive_root), status="unknown")), encoding="utf-8"
+    )
+
+    with pytest.raises(LiveProofError, match="result status is not successful"):
+        collect_live_proof(
+            LiveProofId.EXISTING_APPLY_RECEIPT.value,
+            archive_root,
+            apply_receipt_path=apply_path,
+        )
 
 
 def test_candidate_receipt_binds_exact_inactive_generation_and_detects_content_mutation(archive_root: Path) -> None:
