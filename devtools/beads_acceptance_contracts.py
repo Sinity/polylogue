@@ -242,11 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     seen = set()
     for issue in load(args.issues):
         bid = issue.get("id")
-        if not bid or (required is not None and bid not in required):
-            continue
-        metadata = _decode_document(issue.get("metadata") or {}) or {}
-        carries = "acceptance_contract_v1" in metadata
-        if required is None and not carries:
+        if not isinstance(bid, str) or bid not in required:
             continue
         seen.add(bid)
         errors = validate(issue)
