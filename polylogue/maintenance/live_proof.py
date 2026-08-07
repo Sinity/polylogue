@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -39,6 +40,7 @@ _LIVE_PROOF_MAX_AGE_MS: Final = 60 * 60 * 1000
 _SQLITE_SIDECARS: Final = ("-wal", "-journal")
 _ARCHIVE_TIER_NAMES: Final = ("audit", "source", "index", "embeddings", "ops", "user")
 _APPLY_RESULT_STATUSES: Final = frozenset({"applied", "already_satisfied", "not_applicable", "failed", "blocked"})
+_REGISTERED_APPLY_OPERATION_IDS: Final = frozenset({"known-source-remediation"})
 
 
 class LiveProofError(ValueError):
@@ -291,21 +293,25 @@ def _installed_code_sha() -> str:
 
 def _code_sha() -> str:
     configured = os.environ.get("POLYLOGUE_CODE_SHA", "").strip().lower()
+    repository = Path(__file__).resolve().parents[2]
+    if (repository / ".git").exists():
+        dirty = _run_git(repository, "status", "--porcelain=v1", "--untracked-files=all")
+        if dirty.returncode != 0 or dirty.stdout.strip():
+            raise LiveProofError("live proofs require a clean git worktree")
+        if configured:
+            if not _CODE_SHA_RE.fullmatch(configured):
+                raise LiveProofError("POLYLOGUE_CODE_SHA must be an exact git commit SHA")
+            return configured
+        completed = _run_git(repository, "rev-parse", "--verify", "HEAD")
+        sha = completed.stdout.strip().lower()
+        if completed.returncode != 0 or not _CODE_SHA_RE.fullmatch(sha):
+            raise LiveProofError("exact code SHA is unavailable")
+        return sha
     if configured:
         if not _CODE_SHA_RE.fullmatch(configured):
             raise LiveProofError("POLYLOGUE_CODE_SHA must be an exact git commit SHA")
         return configured
-    repository = Path(__file__).resolve().parents[2]
-    if not (repository / ".git").exists():
-        return _installed_code_sha()
-    dirty = _run_git(repository, "status", "--porcelain=v1", "--untracked-files=all")
-    if dirty.returncode != 0 or dirty.stdout.strip():
-        raise LiveProofError("live proofs require a clean git worktree")
-    completed = _run_git(repository, "rev-parse", "--verify", "HEAD")
-    sha = completed.stdout.strip().lower()
-    if completed.returncode != 0 or not _CODE_SHA_RE.fullmatch(sha):
-        raise LiveProofError("exact code SHA is unavailable")
-    return sha
+    return _installed_code_sha()
 
 
 def _readonly_uri(path: Path) -> str:
@@ -363,7 +369,6 @@ def _sqlite_file_state(path: Path, *, allow_symlink: bool) -> JSONDocument:
     files: dict[str, JSONValue] = {
         "database": {
             "size": metadata.st_size,
-            "mtime_ns": metadata.st_mtime_ns,
             "sha256": hash_file(path),
         }
     }
@@ -387,7 +392,6 @@ def _sqlite_file_state(path: Path, *, allow_symlink: bool) -> JSONDocument:
         files[suffix] = {
             "exists": True,
             "size": sidecar_metadata.st_size,
-            "mtime_ns": sidecar_metadata.st_mtime_ns,
             "sha256": hash_file(sidecar),
         }
     return files
@@ -398,7 +402,7 @@ def _sqlite_file_set_digest(path: Path, *, allow_symlink: bool = False) -> str:
 
     before = _sqlite_file_state(path, allow_symlink=allow_symlink)
     try:
-        with _open_readonly(path) as connection:
+        with closing(_open_readonly(path)) as connection:
             connection.execute("PRAGMA query_only = ON")
             connection.execute("BEGIN")
             connection.execute("PRAGMA schema_version").fetchone()
@@ -412,7 +416,7 @@ def _sqlite_file_set_digest(path: Path, *, allow_symlink: bool = False) -> str:
 
 def _schema_version(path: Path) -> int:
     try:
-        with _open_readonly(path) as connection:
+        with closing(_open_readonly(path)) as connection:
             row = connection.execute("PRAGMA user_version").fetchone()
     except (OSError, sqlite3.Error) as exc:
         raise LiveProofError("live-proof schema binding is unavailable") from exc
@@ -497,7 +501,7 @@ def capture_live_proof_bindings(archive_root: Path, *, candidate_generation_id: 
         location = ArchiveLocation.resolve(root)
         _require_uri_safe_location(location)
         source_snapshot = rebuild_source_revision_snapshot(root)
-        with _open_readonly(location.configured_tier("source").configured_path) as source:
+        with closing(_open_readonly(location.configured_tier("source").configured_path)) as source:
             origins = sorted(str(row[0]) for row in source.execute("SELECT DISTINCT origin FROM raw_sessions"))
         candidate_index = (
             _candidate_index(location, candidate_generation_id, source_snapshot=source_snapshot)
@@ -627,6 +631,113 @@ def _validate_private_path_references(value: object) -> None:
             raise LiveProofError("input receipt private paths are malformed")
 
 
+def _parse_bindings_document(value: object) -> LiveProofBindings:
+    if not isinstance(value, Mapping):
+        raise LiveProofError("live-proof receipt bindings are malformed")
+
+    def string_field(name: str) -> str:
+        field = value.get(name)
+        if not isinstance(field, str) or not field:
+            raise LiveProofError("live-proof receipt bindings are malformed")
+        return field
+
+    def mapping_field(name: str) -> Mapping[object, object]:
+        field = value.get(name)
+        if not isinstance(field, Mapping):
+            raise LiveProofError("live-proof receipt bindings are malformed")
+        return field
+
+    def digest_mapping(name: str) -> tuple[tuple[str, str], ...]:
+        field = mapping_field(name)
+        if set(field) != set(_ARCHIVE_TIER_NAMES) and name == "tier_file_set_digests":
+            raise LiveProofError("live-proof receipt bindings are malformed")
+        result: list[tuple[str, str]] = []
+        keys: tuple[str, ...]
+        if name == "tier_file_set_digests":
+            keys = _ARCHIVE_TIER_NAMES
+        else:
+            if any(not isinstance(key, str) for key in field):
+                raise LiveProofError("live-proof receipt bindings are malformed")
+            keys = tuple(sorted(cast(str, key) for key in field))
+        for key in keys:
+            digest = field.get(key)
+            if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+                raise LiveProofError("live-proof receipt bindings are malformed")
+            result.append((key, digest))
+        return tuple(result)
+
+    schema_mapping = mapping_field("schema_versions")
+    if set(schema_mapping) != set(_ARCHIVE_TIER_NAMES):
+        raise LiveProofError("live-proof receipt bindings are malformed")
+    schema_versions: list[tuple[str, int]] = []
+    for name in _ARCHIVE_TIER_NAMES:
+        version = schema_mapping.get(name)
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise LiveProofError("live-proof receipt bindings are malformed")
+        schema_versions.append((name, version))
+
+    parser_mapping = mapping_field("parser_fingerprints")
+    parser_items: list[tuple[str, str]] = []
+    for raw_name, raw_fingerprint in parser_mapping.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_fingerprint, str) or not raw_fingerprint:
+            raise LiveProofError("live-proof receipt bindings are malformed")
+        parser_items.append((raw_name, raw_fingerprint))
+    parser_fingerprints = tuple(sorted(parser_items))
+    if len(parser_fingerprints) != len(parser_mapping):
+        raise LiveProofError("live-proof receipt bindings are malformed")
+
+    candidate_generation_id = value.get("candidate_generation_id")
+    if candidate_generation_id is not None and (
+        not isinstance(candidate_generation_id, str) or not _GENERATION_ID_RE.fullmatch(candidate_generation_id)
+    ):
+        raise LiveProofError("live-proof receipt bindings are malformed")
+    candidate_schema = value.get("candidate_index_schema_version")
+    if candidate_schema is not None and (isinstance(candidate_schema, bool) or not isinstance(candidate_schema, int)):
+        raise LiveProofError("live-proof receipt bindings are malformed")
+    candidate_digest = value.get("candidate_index_sha256")
+    if candidate_digest is not None and (
+        not isinstance(candidate_digest, str) or not _SHA256_RE.fullmatch(candidate_digest)
+    ):
+        raise LiveProofError("live-proof receipt bindings are malformed")
+
+    private_paths = mapping_field("private_paths")
+    parsed_private_paths: list[tuple[str, PrivatePathReference]] = []
+    for raw_name, raw_reference in private_paths.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_reference, Mapping):
+            raise LiveProofError("live-proof receipt bindings are malformed")
+        name = raw_name
+        reference = raw_reference
+        basename = reference.get("basename")
+        digest = reference.get("sha256")
+        if (
+            not isinstance(basename, str)
+            or Path(basename).name != basename
+            or not isinstance(digest, str)
+            or not _SHA256_RE.fullmatch(digest)
+        ):
+            raise LiveProofError("live-proof receipt bindings are malformed")
+        parsed_private_paths.append((name, PrivatePathReference(basename, digest)))
+
+    active_digest = string_field("active_index_sha256")
+    if not _SHA256_RE.fullmatch(active_digest):
+        raise LiveProofError("live-proof receipt bindings are malformed")
+    lowering = string_field("lowering_fingerprint")
+    return LiveProofBindings(
+        code_sha=string_field("code_sha"),
+        archive_identity_digest=string_field("archive_identity_digest"),
+        source_snapshot=string_field("source_snapshot"),
+        schema_versions=tuple(schema_versions),
+        tier_file_set_digests=digest_mapping("tier_file_set_digests"),
+        candidate_index_schema_version=candidate_schema,
+        parser_fingerprints=parser_fingerprints,
+        lowering_fingerprint=lowering,
+        active_index_sha256=active_digest,
+        candidate_generation_id=candidate_generation_id,
+        candidate_index_sha256=candidate_digest,
+        private_paths=tuple(parsed_private_paths),
+    )
+
+
 def _apply_proof_status(status: str) -> LiveProofStatus:
     if status in {"applied", "already_satisfied"}:
         return LiveProofStatus.PASSED
@@ -648,7 +759,7 @@ def _validate_existing_apply_document(document: object, bindings: LiveProofBindi
         raise LiveProofError("existing apply receipt self-hash is invalid")
     if payload.get("receipt_schema") != EXISTING_APPLY_RECEIPT_SCHEMA:
         raise LiveProofError("existing apply receipt schema is not accepted")
-    if not isinstance(payload.get("operation_id"), str) or not payload["operation_id"]:
+    if payload.get("operation_id") not in _REGISTERED_APPLY_OPERATION_IDS:
         raise LiveProofError("existing apply receipt operation binding is invalid")
     receipt_bindings = payload.get("bindings")
     if not isinstance(receipt_bindings, Mapping) or receipt_bindings != bindings.to_document():
@@ -658,7 +769,7 @@ def _validate_existing_apply_document(document: object, bindings: LiveProofBindi
         raise LiveProofError("existing apply receipt result is malformed")
     status = result.get("status")
     if not isinstance(status, str) or status not in _APPLY_RESULT_STATUSES:
-        raise LiveProofError("existing apply receipt result status is not successful")
+        raise LiveProofError("existing apply receipt result status is not recognized")
     _validate_private_path_references(receipt_bindings.get("private_paths"))
     return require_json_document(document, context="existing apply receipt"), digest
 
@@ -740,10 +851,12 @@ def _parse_residues(value: object) -> tuple[LiveProofResidue, ...]:
     for residue in value:
         if not isinstance(residue, Mapping):
             raise LiveProofError("live-proof receipt residues are malformed")
+        kind = residue.get("kind")
+        code = residue.get("code")
+        if not isinstance(kind, str) or not isinstance(code, str) or not code:
+            raise LiveProofError("live-proof receipt residues are malformed")
         try:
-            parsed_residue = LiveProofResidue(
-                LiveProofResidueKind(cast(str, residue["kind"])), cast(str, residue["code"])
-            )
+            parsed_residue = LiveProofResidue(LiveProofResidueKind(kind), code)
         except (KeyError, TypeError, ValueError) as exc:
             raise LiveProofError("live-proof receipt residues are malformed") from exc
         residue_key = (parsed_residue.kind, parsed_residue.code)
@@ -772,6 +885,43 @@ def _validate_status_residues(status: LiveProofStatus, residues: tuple[LiveProof
 def _validate_archive_result(
     spec: LiveProofSpec, result: JSONDocument
 ) -> tuple[LiveProofStatus, tuple[LiveProofResidue, ...]]:
+    check_keys = frozenset(
+        {"name", "status", "summary", "count", "details", "breakdown", "evidence", "check_class", "waived_bead_id"}
+    )
+
+    def validate_check(check: object) -> tuple[str, str]:
+        if not isinstance(check, Mapping) or frozenset(check) != check_keys:
+            raise LiveProofError("live-proof receipt archive verification evidence is malformed")
+        name = check.get("name")
+        status = check.get("status")
+        summary = check.get("summary")
+        count = check.get("count")
+        details = check.get("details")
+        breakdown = check.get("breakdown")
+        evidence = check.get("evidence")
+        check_class = check.get("check_class")
+        waived_bead_id = check.get("waived_bead_id")
+        if (
+            not isinstance(name, str)
+            or not isinstance(status, str)
+            or status not in {"ok", "warning", "error", "skip"}
+            or not isinstance(summary, str)
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or not isinstance(details, list)
+            or any(not isinstance(detail, str) for detail in details)
+            or not isinstance(breakdown, Mapping)
+            or any(
+                not isinstance(key, str) or isinstance(value, bool) or not isinstance(value, int)
+                for key, value in breakdown.items()
+            )
+            or not is_json_document(evidence)
+            or not isinstance(check_class, str)
+            or (waived_bead_id is not None and not isinstance(waived_bead_id, str))
+        ):
+            raise LiveProofError("live-proof receipt archive verification evidence is malformed")
+        return name, status
+
     archive_verification = result.get("archive_verification")
     if not isinstance(archive_verification, Mapping):
         raise LiveProofError("live-proof receipt archive verification evidence is malformed")
@@ -783,18 +933,22 @@ def _validate_archive_result(
         evidence = profiles.get(profile.name)
         if not isinstance(evidence, Mapping):
             raise LiveProofError("live-proof receipt archive verification evidence is malformed")
+        summary = evidence.get("summary")
+        blocking = evidence.get("blocking")
         checks = evidence.get("checks")
-        if not isinstance(checks, list):
+        if (
+            frozenset(evidence) != frozenset({"summary", "blocking", "checks"})
+            or not isinstance(summary, Mapping)
+            or frozenset(summary) != frozenset({"ok", "warning", "error", "skip"})
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in summary.values())
+            or not isinstance(blocking, bool)
+            or not isinstance(checks, list)
+        ):
             raise LiveProofError("live-proof receipt archive verification evidence is malformed")
         names: list[str] = []
         statuses: list[str] = []
         for check in checks:
-            if not isinstance(check, Mapping):
-                raise LiveProofError("live-proof receipt archive verification evidence is malformed")
-            name = check.get("name")
-            status = check.get("status")
-            if not isinstance(name, str) or not isinstance(status, str):
-                raise LiveProofError("live-proof receipt archive verification evidence is malformed")
+            name, status = validate_check(check)
             names.append(name)
             statuses.append(status)
         if tuple(names) != profile.checks:
@@ -841,6 +995,78 @@ def _capture_expected_bindings(archive_root: Path, candidate_generation_id: str 
         return capture_live_proof_bindings(archive_root, candidate_generation_id=candidate_generation_id)
     except LiveProofError as exc:
         raise LiveProofError("live-proof receipt bindings are stale or mismatched") from exc
+
+
+def _capture_promoted_candidate_bindings(
+    document: object, archive_root: Path, candidate_generation_id: str
+) -> LiveProofBindings:
+    """Validate a candidate receipt against a promoted or retained generation.
+
+    The receipt's active-index fields intentionally describe the pre-promotion
+    state. Promotion changes that state, so validation instead rechecks the
+    retained candidate content and the durable source-side bindings while
+    preserving the historical receipt document as the expected binding.
+    """
+
+    from polylogue.maintenance.schema_inference_gate import rebuild_source_revision_snapshot
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    if not isinstance(document, Mapping):
+        raise LiveProofError("candidate proof receipt is malformed")
+    recorded = _parse_bindings_document(document.get("bindings"))
+    if recorded.candidate_generation_id != candidate_generation_id:
+        raise LiveProofError("candidate proof receipt targets a different generation")
+    if recorded.candidate_index_sha256 is None or recorded.candidate_index_schema_version is None:
+        raise LiveProofError("candidate proof receipt has incomplete candidate binding")
+
+    try:
+        location = ArchiveLocation.resolve(archive_root)
+        store = IndexGenerationStore(location)
+        generation = store.load(candidate_generation_id)
+        candidate_path = Path(generation.index_path)
+        expected_path = store.generations_root / candidate_generation_id / "index.db"
+        generation_checks = {
+            "state": generation.state in {"active", "retained"},
+            "archive_root": Path(generation.archive_root).resolve() == location.configured_root.resolve(),
+            "candidate_path": candidate_path == expected_path,
+            "regular_file": not candidate_path.is_symlink() and candidate_path.is_file(),
+            "resolved_path": candidate_path.resolve(strict=True) == expected_path.resolve(strict=True),
+            "source_snapshot": rebuild_source_revision_snapshot(archive_root) == generation.source_snapshot,
+        }
+        if not all(generation_checks.values()):
+            raise LiveProofError("promoted candidate generation binding is stale or invalid")
+        current = capture_live_proof_bindings(archive_root)
+        current_schema = dict(current.schema_versions)
+        recorded_schema = dict(recorded.schema_versions)
+        current_tiers = dict(current.tier_file_set_digests)
+        recorded_tiers = dict(recorded.tier_file_set_digests)
+        binding_checks = {
+            "code_sha": recorded.code_sha == current.code_sha,
+            "source_snapshot": recorded.source_snapshot == current.source_snapshot,
+            "parser_fingerprints": recorded.parser_fingerprints == current.parser_fingerprints,
+            "lowering": recorded.lowering_fingerprint == current.lowering_fingerprint,
+            "schema_versions": all(
+                recorded_schema[name] == current_schema[name] for name in _ARCHIVE_TIER_NAMES if name != "index"
+            ),
+            "tier_digests": all(
+                recorded_tiers[name] == current_tiers[name] for name in _ARCHIVE_TIER_NAMES if name != "index"
+            ),
+            "candidate_schema": recorded_schema["index"] == recorded.candidate_index_schema_version,
+            "candidate_schema_current": _schema_version(candidate_path) == recorded.candidate_index_schema_version,
+            "candidate_digest": _sqlite_file_set_digest(candidate_path) == recorded.candidate_index_sha256,
+            "archive_private_path": dict(recorded.private_paths).get("archive_root")
+            == dict(current.private_paths).get("archive_root"),
+            "candidate_private_path": dict(recorded.private_paths).get("candidate_index")
+            == PrivatePathReference.capture(candidate_path),
+        }
+        if not all(binding_checks.values()):
+            raise LiveProofError("promoted candidate generation binding is stale or invalid")
+    except LiveProofError:
+        raise
+    except (OSError, RuntimeError, sqlite3.Error, ValueError, json.JSONDecodeError) as exc:
+        raise LiveProofError("promoted candidate generation binding is unavailable") from exc
+    return recorded
 
 
 def _validate_live_proof_receipt(
@@ -973,9 +1199,28 @@ def _validate_aggregate(receipts: Sequence[object], archive_root: Path) -> tuple
     if not receipts:
         raise LiveProofError("live-operation aggregate requires at least one proof receipt")
     candidate_id = _candidate_id_from_documents(receipts)
-    candidate_bindings = _capture_expected_bindings(archive_root, candidate_id) if candidate_id is not None else None
+    candidate_document = (
+        next(
+            receipt
+            for receipt in receipts
+            if isinstance(receipt, Mapping) and receipt.get("mode") == LiveProofMode.CANDIDATE.value
+        )
+        if candidate_id is not None
+        else None
+    )
+    promoted_candidate = False
+    if candidate_id is not None:
+        try:
+            candidate_bindings = _capture_expected_bindings(archive_root, candidate_id)
+        except LiveProofError:
+            candidate_bindings = _capture_promoted_candidate_bindings(candidate_document, archive_root, candidate_id)
+            promoted_candidate = True
+    else:
+        candidate_bindings = None
     active_bindings = (
-        _active_bindings(candidate_bindings)
+        _capture_expected_bindings(archive_root, None)
+        if promoted_candidate
+        else _active_bindings(candidate_bindings)
         if candidate_bindings is not None
         else _capture_expected_bindings(archive_root, None)
     )
@@ -1065,11 +1310,10 @@ def write_live_proof_receipt(path: Path, receipt: LiveProofReceipt) -> None:
         temporary.unlink()
         temporary = None
         _fsync_directory(target.parent)
-    except FileExistsError as exc:
-        raise LiveProofError("live-proof receipt output already exists") from exc
     except OSError as exc:
         if descriptor is not None:
             os.close(descriptor)
+            descriptor = None
         if published:
             try:
                 target.unlink()
@@ -1082,6 +1326,8 @@ def write_live_proof_receipt(path: Path, receipt: LiveProofReceipt) -> None:
                 _fsync_directory(target.parent)
             except OSError:
                 pass
+        if isinstance(exc, FileExistsError):
+            raise LiveProofError("live-proof receipt output already exists") from exc
         raise LiveProofError("live-proof receipt output could not be written") from exc
 
 

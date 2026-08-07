@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,20 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.maintenance import live_proof
+
+
+@pytest.fixture(autouse=True)
+def clean_git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        live_proof,
+        "_run_git",
+        lambda repository, *arguments: subprocess.CompletedProcess(
+            args=("git", str(repository), *arguments),
+            returncode=0,
+            stdout="" if arguments[0] == "status" else "a" * 40,
+            stderr="",
+        ),
+    )
 
 
 def test_live_proof_cli_dispatches_registered_read_only_proof(

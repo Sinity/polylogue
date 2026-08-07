@@ -48,13 +48,25 @@ def archive_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = (tmp_path / "private-archive").resolve()
     initialize_active_archive_root(root)
     monkeypatch.setenv("POLYLOGUE_CODE_SHA", "a" * 40)
+    monkeypatch.setattr(
+        live_proof,
+        "_run_git",
+        lambda repository, *arguments: subprocess.CompletedProcess(
+            args=("git", str(repository), *arguments),
+            returncode=0,
+            stdout="" if arguments[0] == "status" else "a" * 40,
+            stderr="",
+        ),
+    )
     return root
 
 
-def _apply_receipt(bindings: LiveProofBindings, *, status: str = "applied") -> dict[str, object]:
+def _apply_receipt(
+    bindings: LiveProofBindings, *, status: str = "applied", operation_id: str = "known-source-remediation"
+) -> dict[str, object]:
     document = {
         "receipt_schema": EXISTING_APPLY_RECEIPT_SCHEMA,
-        "operation_id": "known-source-remediation",
+        "operation_id": operation_id,
         "bindings": bindings.to_document(),
         "result": {"status": status, "changed_count": 1},
     }
@@ -303,7 +315,18 @@ def test_existing_apply_receipt_rejects_unknown_result(archive_root: Path, tmp_p
         json.dumps(_apply_receipt(capture_live_proof_bindings(archive_root), status="unknown")), encoding="utf-8"
     )
 
-    with pytest.raises(LiveProofError, match="result status is not successful"):
+    with pytest.raises(LiveProofError, match="result status is not recognized"):
+        collect_live_proof(LiveProofId.EXISTING_APPLY_RECEIPT.value, archive_root, apply_receipt_path=apply_path)
+
+
+def test_existing_apply_receipt_requires_registered_operation(archive_root: Path, tmp_path: Path) -> None:
+    apply_path = tmp_path / "unregistered-apply-receipt.json"
+    apply_path.write_text(
+        json.dumps(_apply_receipt(capture_live_proof_bindings(archive_root), operation_id="invented-operation")),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LiveProofError, match="operation binding is invalid"):
         collect_live_proof(LiveProofId.EXISTING_APPLY_RECEIPT.value, archive_root, apply_receipt_path=apply_path)
 
 
@@ -427,6 +450,27 @@ def test_receipt_rejects_residues_mismatched_to_check_evidence(archive_root: Pat
         validate_live_proof_receipt(_rehash(mutated), archive_root)
 
 
+def test_receipt_rejects_incomplete_archive_check_evidence(archive_root: Path) -> None:
+    receipt = collect_live_proof(LiveProofId.ARCHIVE_VERIFICATION.value, archive_root)
+    mutated = receipt.to_document()
+    result = mutated["result"]
+    assert isinstance(result, dict)
+    verification = result["archive_verification"]
+    assert isinstance(verification, dict)
+    profiles = verification["profiles"]
+    assert isinstance(profiles, dict)
+    profile = profiles["active-archive"]
+    assert isinstance(profile, dict)
+    checks = profile["checks"]
+    assert isinstance(checks, list) and checks
+    check = checks[0]
+    assert isinstance(check, dict)
+    profile["checks"] = [{"name": check["name"], "status": "ok"}, *checks[1:]]
+
+    with pytest.raises(LiveProofError, match="archive verification evidence is malformed"):
+        validate_live_proof_receipt(_rehash(mutated), archive_root)
+
+
 def test_aggregate_rejects_a_self_hashed_failed_proof_result(archive_root: Path) -> None:
     bindings = capture_live_proof_bindings(archive_root)
     document = _apply_receipt(bindings, status="failed")
@@ -482,13 +526,42 @@ def test_aggregate_captures_candidate_and_active_bindings_once(
     assert calls == 1
 
 
+def test_aggregate_preserves_candidate_receipt_after_promotion(archive_root: Path, tmp_path: Path) -> None:
+    generation_id = _candidate(archive_root)
+    candidate_receipt = collect_live_proof(
+        LiveProofId.CANDIDATE_ARCHIVE_VERIFICATION.value,
+        archive_root,
+        candidate_generation_id=generation_id,
+    )
+    store = IndexGenerationStore(ArchiveLocation.resolve(archive_root))
+    store.promote(store.load(generation_id))
+
+    apply_path = tmp_path / "post-promotion-apply.json"
+    apply_path.write_text(json.dumps(_apply_receipt(capture_live_proof_bindings(archive_root))), encoding="utf-8")
+    active_receipt = collect_live_proof(LiveProofId.ARCHIVE_VERIFICATION.value, archive_root)
+    apply_receipt = collect_live_proof(
+        LiveProofId.EXISTING_APPLY_RECEIPT.value,
+        archive_root,
+        apply_receipt_path=apply_path,
+    )
+
+    validated = live_proof._validate_aggregate(
+        (active_receipt.to_document(), candidate_receipt.to_document(), apply_receipt.to_document()), archive_root
+    )
+    assert [receipt.proof_id for receipt in validated] == [
+        LiveProofId.ARCHIVE_VERIFICATION,
+        LiveProofId.CANDIDATE_ARCHIVE_VERIFICATION,
+        LiveProofId.EXISTING_APPLY_RECEIPT,
+    ]
+
+
 def test_readonly_uri_encodes_sqlite_metacharacters(tmp_path: Path) -> None:
-    database = tmp_path / "archive?name#fragment.db"
+    database = tmp_path / "archive%2Fname?name#fragment.db"
     sqlite3.connect(database).close()
 
     uri = live_proof._readonly_uri(database)
 
-    assert "%3F" in uri and "%23" in uri
+    assert "%25" in uri and "%3F" in uri and "%23" in uri
     with sqlite3.connect(uri, uri=True) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (0,)
 
@@ -506,6 +579,18 @@ def test_capture_rejects_archive_paths_unsafe_for_dependency_uris(
 
 def test_git_fallback_rejects_dirty_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYLOGUE_CODE_SHA", raising=False)
+    monkeypatch.setattr(
+        live_proof,
+        "_run_git",
+        lambda *_args: subprocess.CompletedProcess(args=(), returncode=0, stdout=" M live_proof.py\n", stderr=""),
+    )
+
+    with pytest.raises(LiveProofError, match="clean git worktree"):
+        live_proof._code_sha()
+
+
+def test_git_sha_override_still_rejects_dirty_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_CODE_SHA", "a" * 40)
     monkeypatch.setattr(
         live_proof,
         "_run_git",
@@ -558,3 +643,14 @@ def test_receipt_write_removes_published_output_when_directory_sync_fails(
         write_live_proof_receipt(target, receipt)
 
     assert not target.exists()
+
+
+def test_receipt_write_cleans_temporary_file_when_output_exists(archive_root: Path, tmp_path: Path) -> None:
+    receipt = collect_live_proof(LiveProofId.ARCHIVE_VERIFICATION.value, archive_root)
+    target = tmp_path / "existing-receipt.json"
+    write_live_proof_receipt(target, receipt)
+
+    with pytest.raises(LiveProofError, match="output already exists"):
+        write_live_proof_receipt(target, receipt)
+
+    assert list(tmp_path.glob(f".{target.name}.*")) == []
