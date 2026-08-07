@@ -480,6 +480,20 @@ Exit code is non-zero when any check reports `error` (or, with `--strict`,
 temporarily busy under a concurrent rebuild — never aborts the rest; each
 check independently reports its own outcome.
 
+### `polylogue ops maintenance live-proof` — immutable campaign evidence
+
+Read-only evidence collection for the reindex campaign. The command accepts a fixed registered proof id and writes one new self-hashed JSON receipt outside the archive. It has no command-execution option and cannot apply a mutation, control the daemon, migrate a tier, or promote a generation.
+
+```bash
+polylogue ops maintenance live-proof \
+  --proof-id archive-verification \
+  --output /path/to/new/live-proof.json
+```
+
+The registry currently has exactly three routes: `archive-verification` for a fixed read-only archive-check profile, `candidate-archive-verification` for that profile against one named inactive generation, and `existing-apply-receipt` for a pre-existing `polylogue.apply-receipt.v1` input. Candidate mode requires `--candidate-generation`; existing-apply mode requires `--apply-receipt`; every other combination is rejected.
+
+Each `polylogue.live-proof-receipt.v1` binds the proof and Bead id, exact code SHA, archive identity, source snapshot, observed schema versions, parser and lowering fingerprints, candidate generation and index hash where applicable, typed residues, and input receipt digests. Private local paths are represented only as a SHA-256 digest plus basename. The collector validates those bindings again when an aggregate, candidate, or final-proof consumer reads the receipt, so a changed source snapshot, candidate index, schema, or semantic fingerprint makes the receipt stale.
+
 ### `--operation-id` and `--resume`: worked example
 
 Replay execution writes a small JSON state file under
