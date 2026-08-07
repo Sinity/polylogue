@@ -1120,6 +1120,8 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     manifest_v3_bytes = manifest_v3.read_bytes()
     manifest_v3.unlink()
     with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        durable_change_train_module.reconcile_durable_change_train_startup(tmp_path)
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
         execute_durable_change_train(
             tmp_path,
             ArchiveTier.SOURCE,
@@ -1225,6 +1227,7 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     unrelated_manifest = durable_change_train_manifest_path(unrelated_root, ArchiveTier.SOURCE, 2)
     unrelated_manifest.parent.mkdir(parents=True)
     shutil.copy2(historical_manifest, unrelated_manifest)
+    shutil.copy2(manifest_v3, durable_change_train_manifest_path(unrelated_root, ArchiveTier.SOURCE, 3))
     with sqlite3.connect(unrelated_root / "source.db") as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     with pytest.raises(DurableChangeTrainError, match="immutable archive identity differs"):

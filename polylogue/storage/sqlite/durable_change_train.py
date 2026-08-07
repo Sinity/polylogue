@@ -1572,15 +1572,7 @@ def _forward_version_receipt_for_current_tier(
 ) -> DurableForwardVersionReceipt | None:
     """Return the newest released historical-train receipt at the live target."""
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
-    manifests_by_target: dict[int, DurableChangeTrain] = {}
-    if manifest_root.is_dir():
-        for path in sorted(manifest_root.glob(f"{tier.value}-*.json")):
-            train = load_durable_change_train_manifest(path)
-            if train.target_version in manifests_by_target:
-                raise DurableChangeTrainError(
-                    f"duplicate {tier.value} durable train manifests for target v{train.target_version}"
-                )
-            manifests_by_target[train.target_version] = train
+    manifests_by_target = _released_train_manifests_by_target(manifest_root, tier)
     historical = [
         train
         for train in manifests_by_target.values()
@@ -1589,20 +1581,12 @@ def _forward_version_receipt_for_current_tier(
     if not historical:
         return None
     historical_train = max(historical, key=lambda item: item.target_version)
-    missing_targets = [
-        version
-        for version in range(historical_train.target_version + 1, current_version + 1)
-        if manifests_by_target.get(version) is None
-        or manifests_by_target[version].state is not DurableChangeTrainState.RELEASED
-    ]
-    if missing_targets:
-        raise DurableChangeTrainError(
-            f"{tier.value} durable forward admission lacks released train evidence for versions "
-            f"{missing_targets} between v{historical_train.target_version} and live v{current_version}"
-        )
-    for version in range(historical_train.target_version + 1, current_version + 1):
-        intervening = manifests_by_target[version]
-        _historical_schema_evidence(intervening)
+    _require_released_train_chain(
+        tier,
+        manifests_by_target,
+        historical_target_version=historical_train.target_version,
+        current_version=current_version,
+    )
     if evidence is None:
         actual = capture_durable_database_evidence(conn, tier)
         evidence = _DurableForwardVersionEvidence(
@@ -1625,6 +1609,47 @@ def _forward_version_receipt_for_current_tier(
         if receipt is not None:
             return receipt
     return None
+
+
+def _released_train_manifests_by_target(
+    manifest_root: Path,
+    tier: ArchiveTier,
+) -> dict[int, DurableChangeTrain]:
+    """Load one persisted train record per target version for a durable tier."""
+    manifests_by_target: dict[int, DurableChangeTrain] = {}
+    if not manifest_root.is_dir():
+        return manifests_by_target
+    for path in sorted(manifest_root.glob(f"{tier.value}-*.json")):
+        train = load_durable_change_train_manifest(path)
+        if train.target_version in manifests_by_target:
+            raise DurableChangeTrainError(
+                f"duplicate {tier.value} durable train manifests for target v{train.target_version}"
+            )
+        manifests_by_target[train.target_version] = train
+    return manifests_by_target
+
+
+def _require_released_train_chain(
+    tier: ArchiveTier,
+    manifests_by_target: dict[int, DurableChangeTrain],
+    *,
+    historical_target_version: int,
+    current_version: int,
+) -> None:
+    """Require released, schema-proven evidence for every later version."""
+    missing_targets = [
+        version
+        for version in range(historical_target_version + 1, current_version + 1)
+        if manifests_by_target.get(version) is None
+        or manifests_by_target[version].state is not DurableChangeTrainState.RELEASED
+    ]
+    if missing_targets:
+        raise DurableChangeTrainError(
+            f"{tier.value} durable forward admission lacks released train evidence for versions "
+            f"{missing_targets} between v{historical_target_version} and live v{current_version}"
+        )
+    for version in range(historical_target_version + 1, current_version + 1):
+        _historical_schema_evidence(manifests_by_target[version])
 
 
 def _prove_and_release_persisted_train(
@@ -1931,6 +1956,12 @@ def _reconcile_durable_change_train_startup_locked(
                     actual = capture_durable_database_evidence(live, train.tier)
                     live_evidence_by_tier[train.tier] = actual
                 if actual.user_version > train.target_version:
+                    _require_released_train_chain(
+                        train.tier,
+                        _released_train_manifests_by_target(manifest_root, train.tier),
+                        historical_target_version=train.target_version,
+                        current_version=actual.user_version,
+                    )
                     if train.tier not in live_integrity_by_tier:
                         live_integrity_by_tier[train.tier] = tuple(
                             str(row[0]) for row in live.execute("PRAGMA integrity_check")
