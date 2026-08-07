@@ -996,9 +996,19 @@ def _refresh_released_source_train_continuity_locked(
         references = _migration_runner._append_proof_refs(train.proof_refs, evidence_ref, refresh_ref)
         if train.proof is None:
             raise DurableChangeTrainError("source continuity refresh requires train proof")
+        retained_apply_evidence = train.apply_evidence
+        if current.archive_identity_digest != retained_apply_evidence.post.archive_identity_digest:
+            retained_apply_evidence = replace(
+                retained_apply_evidence,
+                post=replace(
+                    retained_apply_evidence.post,
+                    archive_identity_digest=current.archive_identity_digest,
+                ),
+            )
         updated = replace(
             train,
             revision=train.revision + 1,
+            apply_evidence=retained_apply_evidence,
             source_continuity_evidence=current,
             proof_refs=references,
         )
@@ -1639,16 +1649,17 @@ def _require_released_train_chain(
     """Require released, schema-proven evidence for every later version."""
     missing_targets = [
         version
-        for version in range(historical_target_version + 1, current_version + 1)
+        for version in range(DURABLE_MIGRATION_ADOPTION_FLOORS[tier] + 1, current_version + 1)
         if manifests_by_target.get(version) is None
         or manifests_by_target[version].state is not DurableChangeTrainState.RELEASED
     ]
     if missing_targets:
         raise DurableChangeTrainError(
             f"{tier.value} durable forward admission lacks released train evidence for versions "
-            f"{missing_targets} between v{historical_target_version} and live v{current_version}"
+            f"{missing_targets} from adoption floor v{DURABLE_MIGRATION_ADOPTION_FLOORS[tier]} "
+            f"through live v{current_version}"
         )
-    for version in range(historical_target_version + 1, current_version + 1):
+    for version in range(DURABLE_MIGRATION_ADOPTION_FLOORS[tier] + 1, current_version + 1):
         _historical_schema_evidence(manifests_by_target[version])
 
 
@@ -1920,7 +1931,18 @@ def _reconcile_durable_change_train_startup_locked(
     live_integrity_by_tier: dict[ArchiveTier, tuple[str, ...]] = {}
     live_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
-    for manifest_path in sorted(manifest_root.glob("*.json")):
+    manifest_paths = tuple(sorted(manifest_root.glob("*.json")))
+
+    def record_reconciled(path: Path) -> None:
+        if path not in reconciled:
+            reconciled.append(path)
+
+    # Recover every non-released lifecycle state before validating any
+    # released train. A later committed train may be persisted as
+    # backup-authorized, applied, or proven while an older released manifest
+    # is still present. Checking the older train first would reject the
+    # incomplete chain before startup had a chance to finish that recovery.
+    for manifest_path in manifest_paths:
         train = load_durable_change_train_manifest(manifest_path)
         if train.state is DurableChangeTrainState.FAILED:
             tier_path = archive_root / f"{train.tier.value}.db"
@@ -1932,7 +1954,7 @@ def _reconcile_durable_change_train_startup_locked(
                     writer_release_evidence_ref=f"proof:startup-writer-release:{train.train_id}",
                 )
             train = _persist_train_transition(manifest_path, recovered, expected_revision=train.revision)
-            reconciled.append(manifest_path)
+            record_reconciled(manifest_path)
             if train.state is DurableChangeTrainState.ADMITTED:
                 continue
         if train.state is DurableChangeTrainState.BACKUP_AUTHORIZED:
@@ -1949,54 +1971,57 @@ def _reconcile_durable_change_train_startup_locked(
                 _persist_train_transition(manifest_path, exc.failed_train, expected_revision=train.revision)
                 raise
             train = _persist_train_transition(manifest_path, recovered, expected_revision=train.revision)
-        if train.state is DurableChangeTrainState.RELEASED:
-            with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
-                actual = live_evidence_by_tier.get(train.tier)
-                if actual is None:
-                    actual = capture_durable_database_evidence(live, train.tier)
-                    live_evidence_by_tier[train.tier] = actual
-                if actual.user_version > train.target_version:
-                    _require_released_train_chain(
-                        train.tier,
-                        _released_train_manifests_by_target(manifest_root, train.tier),
-                        historical_target_version=train.target_version,
-                        current_version=actual.user_version,
-                    )
-                    if train.tier not in live_integrity_by_tier:
-                        live_integrity_by_tier[train.tier] = tuple(
-                            str(row[0]) for row in live.execute("PRAGMA integrity_check")
-                        )
-                    if train.tier not in live_inventory_by_tier:
-                        live_inventory_by_tier[train.tier] = _migration_runner.capture_durable_schema_inventory(live)
-                    if train.tier not in canonical_inventory_by_tier:
-                        canonical_inventory_by_tier[train.tier] = _canonical_schema_inventory(
-                            train.tier, actual.user_version
-                        )
-                    if live_evidence_cache is not None:
-                        live_evidence_cache[train.tier] = _DurableForwardVersionEvidence(
-                            actual=actual,
-                            integrity_check=live_integrity_by_tier[train.tier],
-                            live_inventory=live_inventory_by_tier[train.tier],
-                            canonical_inventory=canonical_inventory_by_tier[train.tier],
-                        )
-                _verify_released_train_live_tier(
-                    archive_root,
-                    live,
-                    train,
-                    actual_evidence=actual,
-                    integrity_check=live_integrity_by_tier.get(train.tier),
-                    live_inventory=live_inventory_by_tier.get(train.tier),
-                    canonical_inventory=canonical_inventory_by_tier.get(train.tier),
-                )
-            reconciled.append(manifest_path)
-            continue
-        if train.state not in {
+
+        if train.state in {
             DurableChangeTrainState.APPLIED,
             DurableChangeTrainState.PROVEN,
         }:
+            _prove_and_release_persisted_train(archive_root, manifest_path, train)
+            record_reconciled(manifest_path)
+
+    for manifest_path in manifest_paths:
+        train = load_durable_change_train_manifest(manifest_path)
+        if train.state is not DurableChangeTrainState.RELEASED:
             continue
-        _prove_and_release_persisted_train(archive_root, manifest_path, train)
-        reconciled.append(manifest_path)
+        with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
+            actual = live_evidence_by_tier.get(train.tier)
+            if actual is None:
+                actual = capture_durable_database_evidence(live, train.tier)
+                live_evidence_by_tier[train.tier] = actual
+            if actual.user_version > train.target_version:
+                _require_released_train_chain(
+                    train.tier,
+                    _released_train_manifests_by_target(manifest_root, train.tier),
+                    historical_target_version=train.target_version,
+                    current_version=actual.user_version,
+                )
+                if train.tier not in live_integrity_by_tier:
+                    live_integrity_by_tier[train.tier] = tuple(
+                        str(row[0]) for row in live.execute("PRAGMA integrity_check")
+                    )
+                if train.tier not in live_inventory_by_tier:
+                    live_inventory_by_tier[train.tier] = _migration_runner.capture_durable_schema_inventory(live)
+                if train.tier not in canonical_inventory_by_tier:
+                    canonical_inventory_by_tier[train.tier] = _canonical_schema_inventory(
+                        train.tier, actual.user_version
+                    )
+                if live_evidence_cache is not None:
+                    live_evidence_cache[train.tier] = _DurableForwardVersionEvidence(
+                        actual=actual,
+                        integrity_check=live_integrity_by_tier[train.tier],
+                        live_inventory=live_inventory_by_tier[train.tier],
+                        canonical_inventory=canonical_inventory_by_tier[train.tier],
+                    )
+            _verify_released_train_live_tier(
+                archive_root,
+                live,
+                train,
+                actual_evidence=actual,
+                integrity_check=live_integrity_by_tier.get(train.tier),
+                live_inventory=live_inventory_by_tier.get(train.tier),
+                canonical_inventory=canonical_inventory_by_tier.get(train.tier),
+            )
+        record_reconciled(manifest_path)
     return tuple(reconciled)
 
 

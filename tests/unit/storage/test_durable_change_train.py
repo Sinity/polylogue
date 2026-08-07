@@ -377,6 +377,8 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
     _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
@@ -400,6 +402,17 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         restart_convergence=restart,
     )
     train = release_durable_change_train(train, evidence_ref="proof:release")
+    assert train.apply_evidence is not None
+    train = replace(
+        train,
+        apply_evidence=replace(
+            train.apply_evidence,
+            post=replace(
+                train.apply_evidence.post,
+                archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
+            ),
+        ),
+    )
     manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
     manifest.parent.mkdir(parents=True)
     write_durable_change_train_manifest(manifest, train, expected_revision=-1)
@@ -458,7 +471,10 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert refreshed.state is DurableChangeTrainState.RELEASED
     assert refreshed.source_continuity_evidence is not None
     assert released.apply_evidence is not None
-    assert refreshed.apply_evidence == released.apply_evidence
+    assert refreshed.apply_evidence is not None
+    assert released.apply_evidence is not None
+    assert refreshed.apply_evidence.pre == released.apply_evidence.pre
+    assert refreshed.apply_evidence.post.archive_identity_digest != released.apply_evidence.post.archive_identity_digest
     assert refreshed.proof == released.proof
     assert refreshed.revision == released.revision + 1
     assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
@@ -1278,6 +1294,100 @@ def test_continuity_admits_legacy_full_archive_identity_digest(tmp_path: Path) -
                 legacy,
                 label="legacy identity without connection",
             )
+
+
+def test_released_train_chain_is_anchored_at_adoption_floor() -> None:
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
+    released = cast(DurableChangeTrain, SimpleNamespace(state=DurableChangeTrainState.RELEASED))
+
+    with pytest.raises(DurableChangeTrainError, match=rf"versions \[{floor + 1}\]"):
+        durable_change_train_module._require_released_train_chain(
+            ArchiveTier.SOURCE,
+            {
+                floor + 2: released,
+                floor + 3: released,
+            },
+            historical_target_version=floor + 2,
+            current_version=floor + 3,
+        )
+
+
+def test_startup_recovers_later_train_before_released_chain_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    manifest_root.mkdir(parents=True)
+    first_path = manifest_root / "source-027.json"
+    later_path = manifest_root / "source-028.json"
+    first_path.touch()
+    later_path.touch()
+    released = cast(
+        DurableChangeTrain,
+        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=27),
+    )
+    later_released = cast(
+        DurableChangeTrain,
+        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=28),
+    )
+    backup_authorized = cast(
+        DurableChangeTrain,
+        SimpleNamespace(
+            state=DurableChangeTrainState.BACKUP_AUTHORIZED,
+            tier=ArchiveTier.SOURCE,
+            target_version=28,
+            train_id="train:source:v28",
+            revision=0,
+        ),
+    )
+    states = {first_path: released, later_path: backup_authorized}
+    events: list[tuple[str, int]] = []
+
+    @contextmanager
+    def fake_open_tier(_path: Path) -> Iterator[sqlite3.Connection]:
+        with sqlite3.connect(":memory:") as connection:
+            yield connection
+
+    def fake_load(path: Path) -> DurableChangeTrain:
+        return states[path]
+
+    def fake_persist(path: Path, train: DurableChangeTrain, *, expected_revision: int) -> DurableChangeTrain:
+        states[path] = train
+        return train
+
+    def fake_recover(*_args: object, **_kwargs: object) -> DurableChangeTrain:
+        events.append(("recover", 28))
+        return later_released
+
+    def fake_capture(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(user_version=28)
+
+    monkeypatch.setattr(durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: None)
+    monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
+    monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", fake_load)
+    monkeypatch.setattr(durable_change_train_module, "_persist_train_transition", fake_persist)
+    monkeypatch.setattr(durable_change_train_module, "reconcile_interrupted_durable_change_train", fake_recover)
+    monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", fake_capture)
+    monkeypatch.setattr(durable_change_train_module, "_historical_schema_evidence", lambda _train: None)
+    monkeypatch.setattr(
+        migration_runner,
+        "capture_durable_schema_inventory",
+        lambda _connection: SimpleNamespace(sha256="inventory"),
+    )
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_canonical_schema_inventory",
+        lambda _tier, _version: SimpleNamespace(sha256="canonical"),
+    )
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_verify_released_train_live_tier",
+        lambda _root, _connection, train, **_kwargs: events.append(("verify", train.target_version)),
+    )
+
+    durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
+
+    assert events == [("recover", 28), ("verify", 27), ("verify", 28)]
 
 
 def test_source_train_identity_survives_late_user_tier_initialization(tmp_path: Path) -> None:
