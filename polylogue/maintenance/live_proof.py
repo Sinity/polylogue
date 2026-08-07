@@ -14,6 +14,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -32,9 +33,11 @@ _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _CODE_SHA_RE: Final = re.compile(r"[0-9a-f]{40,64}")
 _GENERATION_ID_RE: Final = re.compile(r"gen-[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _RESIDUE_CODE_RE: Final = re.compile(r"[a-z][a-z0-9]*(?:[-_.:][a-z0-9]+)*")
-_ABSOLUTE_PATH_RE: Final = re.compile(r"(?<![:\w/])/")
+_ABSOLUTE_PATH_RE: Final = re.compile(r"(?<![\w/])/(?:[^/\s]+/)*[^/\s]+")
 _GIT_TIMEOUT_SECONDS: Final = 2
+_LIVE_PROOF_MAX_AGE_MS: Final = 60 * 60 * 1000
 _SQLITE_SIDECARS: Final = ("-wal", "-journal")
+_ARCHIVE_TIER_NAMES: Final = ("audit", "source", "index", "embeddings", "ops", "user")
 _APPLY_RESULT_STATUSES: Final = frozenset({"applied", "already_satisfied", "not_applicable", "failed", "blocked"})
 
 
@@ -121,6 +124,7 @@ class LiveProofBindings:
     archive_identity_digest: str
     source_snapshot: str
     schema_versions: tuple[tuple[str, int], ...]
+    tier_file_set_digests: tuple[tuple[str, str], ...]
     candidate_index_schema_version: int | None
     parser_fingerprints: tuple[tuple[str, str], ...]
     lowering_fingerprint: str
@@ -135,6 +139,7 @@ class LiveProofBindings:
             "archive_identity_digest": self.archive_identity_digest,
             "source_snapshot": self.source_snapshot,
             "schema_versions": dict(self.schema_versions),
+            "tier_file_set_digests": dict(self.tier_file_set_digests),
             "candidate_index_schema_version": self.candidate_index_schema_version,
             "parser_fingerprints": dict(self.parser_fingerprints),
             "lowering_fingerprint": self.lowering_fingerprint,
@@ -151,6 +156,7 @@ class LiveProofReceipt:
     bead_id: str
     mode: LiveProofMode
     registry_version: int
+    generated_at_ms: int
     bindings: LiveProofBindings
     result: JSONDocument
     residues: tuple[LiveProofResidue, ...]
@@ -163,6 +169,7 @@ class LiveProofReceipt:
             "bead_id": self.bead_id,
             "mode": self.mode.value,
             "registry_version": self.registry_version,
+            "generated_at_ms": self.generated_at_ms,
             "bindings": self.bindings.to_document(),
             "result": self.result,
             "residues": [residue.to_document() for residue in self.residues],
@@ -302,18 +309,11 @@ def _code_sha() -> str:
 
 
 def _readonly_uri(path: Path) -> str:
-    return f"{path.resolve(strict=True).as_uri()}?mode=ro&immutable=1"
+    return f"{path.resolve(strict=True).as_uri()}?mode=ro"
 
 
 def _open_readonly(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(_readonly_uri(path), uri=True, timeout=2)
-
-
-def _require_quiescent_sqlite(paths: Sequence[Path]) -> None:
-    if any(
-        path.with_name(path.name + "-wal").exists() or path.with_name(path.name + "-wal").is_symlink() for path in paths
-    ):
-        raise LiveProofError("live-proof requires a quiescent archive without SQLite WAL files")
 
 
 def _require_uri_safe_location(location: object) -> None:
@@ -327,7 +327,6 @@ def _require_uri_safe_location(location: object) -> None:
     )
     if any(any(character in str(path) for character in ("%", "?", "#")) for path in paths):
         raise LiveProofError("live-proof archive paths cannot contain SQLite URI query characters")
-    _require_quiescent_sqlite(paths[1:])
 
 
 def archive_owned_storage_roots(archive_root: Path) -> tuple[Path, ...]:
@@ -335,7 +334,10 @@ def archive_owned_storage_roots(archive_root: Path) -> tuple[Path, ...]:
 
     from polylogue.storage.archive_identity import ArchiveLocation
 
-    location = ArchiveLocation.resolve(archive_root)
+    try:
+        location = ArchiveLocation.resolve(archive_root)
+    except RuntimeError as exc:
+        raise LiveProofError("archive-owned storage roots are unavailable") from exc
     bases = {location.configured_root.resolve(), location.active_index_path.parent.resolve()}
     if location.active_pointer is not None:
         bases.add(location.active_pointer.parent.resolve())
@@ -417,14 +419,18 @@ def _schema_version(path: Path) -> int:
     return int(row[0]) if row is not None else 0
 
 
-def _schema_versions(location: object) -> tuple[tuple[str, int], ...]:
+def _active_tier_paths(location: object) -> tuple[tuple[str, Path], ...]:
     from polylogue.storage.archive_identity import ArchiveLocation
 
     assert isinstance(location, ArchiveLocation)
     return tuple(
-        (name, _schema_version(location.active_tier(name).configured_path))
-        for name in ("audit", "source", "index", "embeddings", "ops", "user")
+        (name, location.active_index_path if name == "index" else location.active_tier(name).configured_path)
+        for name in _ARCHIVE_TIER_NAMES
     )
+
+
+def _schema_versions(location: object) -> tuple[tuple[str, int], ...]:
+    return tuple((name, _schema_version(path)) for name, path in _active_tier_paths(location))
 
 
 def _candidate_index(location: object, generation_id: str, *, source_snapshot: str) -> Path:
@@ -450,6 +456,14 @@ def _candidate_index(location: object, generation_id: str, *, source_snapshot: s
         expected_root = store.generations_root / generation_id
         index_resolved = index_path.resolve(strict=True)
         expected_resolved = expected_root.resolve(strict=True) / "index.db"
+        transactions = []
+        for transaction_path in store.transactions_root.glob("*.json"):
+            try:
+                transaction = store.load_transaction(transaction_path.stem)
+            except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if transaction.generation_id == generation_id:
+                transactions.append(transaction)
     except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise LiveProofError("candidate generation metadata is unavailable") from exc
     if (
@@ -457,6 +471,10 @@ def _candidate_index(location: object, generation_id: str, *, source_snapshot: s
         or generation.state != "inactive"
         or Path(generation.archive_root).resolve() != location.configured_root.resolve()
         or generation.source_snapshot != source_snapshot
+        or len(transactions) != 1
+        or transactions[0].generation_owner_id != generation.owner_id
+        or transactions[0].source_snapshot != source_snapshot
+        or transactions[0].status != "ready"
         or index_path != expected_root / "index.db"
         or index_path.is_symlink()
         or not index_path.is_file()
@@ -464,7 +482,6 @@ def _candidate_index(location: object, generation_id: str, *, source_snapshot: s
         or location.active_index.same_file(TierFileIdentity.resolve("index", index_path))
     ):
         raise LiveProofError("candidate generation binding is stale or invalid")
-    _require_quiescent_sqlite((index_path,))
     return index_path
 
 
@@ -491,6 +508,10 @@ def capture_live_proof_bindings(archive_root: Path, *, candidate_generation_id: 
         active_index_sha256 = _sqlite_file_set_digest(location.active_index_path, allow_symlink=True)
         candidate_index_sha256 = _sqlite_file_set_digest(candidate_index) if candidate_index is not None else None
         schema_versions = _schema_versions(location)
+        tier_file_set_digests = tuple(
+            (name, _sqlite_file_set_digest(path, allow_symlink=name == "index"))
+            for name, path in _active_tier_paths(location)
+        )
         candidate_index_schema_version = _schema_version(candidate_index) if candidate_index is not None else None
         parser_fingerprints = tuple((origin, parser_fingerprint_for_origin(origin)) for origin in origins)
         lowering = lowering_fingerprint()
@@ -509,6 +530,7 @@ def capture_live_proof_bindings(archive_root: Path, *, candidate_generation_id: 
         archive_identity_digest=identity.authority_identity_digest,
         source_snapshot=source_snapshot,
         schema_versions=schema_versions,
+        tier_file_set_digests=tier_file_set_digests,
         candidate_index_schema_version=candidate_index_schema_version,
         parser_fingerprints=parser_fingerprints,
         lowering_fingerprint=lowering,
@@ -702,6 +724,7 @@ def collect_live_proof(
         bead_id=spec.bead_id,
         mode=spec.mode,
         registry_version=LIVE_PROOF_REGISTRY_VERSION,
+        generated_at_ms=int(time.time() * 1000),
         bindings=bindings,
         result=result,
         residues=residues,
@@ -843,6 +866,15 @@ def _validate_live_proof_receipt(
         raise LiveProofError("live-proof receipt protocol identity is invalid")
     if payload.get("registry_version") != LIVE_PROOF_REGISTRY_VERSION or mode is not spec.mode:
         raise LiveProofError("live-proof receipt registry binding is stale")
+    generated_at_ms = payload.get("generated_at_ms")
+    now_ms = int(time.time() * 1000)
+    if (
+        isinstance(generated_at_ms, bool)
+        or not isinstance(generated_at_ms, int)
+        or generated_at_ms > now_ms + 5_000
+        or now_ms - generated_at_ms > _LIVE_PROOF_MAX_AGE_MS
+    ):
+        raise LiveProofError("live-proof receipt is stale or has an invalid generation time")
     receipt_bindings = payload.get("bindings")
     if not isinstance(receipt_bindings, Mapping):
         raise LiveProofError("live-proof receipt bindings are malformed")
@@ -882,6 +914,7 @@ def _validate_live_proof_receipt(
         bead_id=spec.bead_id,
         mode=mode,
         registry_version=LIVE_PROOF_REGISTRY_VERSION,
+        generated_at_ms=generated_at_ms,
         bindings=expected,
         result=result,
         residues=residues,
@@ -1014,6 +1047,7 @@ def write_live_proof_receipt(path: Path, receipt: LiveProofReceipt) -> None:
     ).encode("utf-8")
     descriptor: int | None = None
     temporary: Path | None = None
+    published = False
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
@@ -1026,6 +1060,7 @@ def write_live_proof_receipt(path: Path, receipt: LiveProofReceipt) -> None:
         os.close(descriptor)
         descriptor = None
         os.link(temporary, target)
+        published = True
         _fsync_directory(target.parent)
         temporary.unlink()
         temporary = None
@@ -1035,6 +1070,12 @@ def write_live_proof_receipt(path: Path, receipt: LiveProofReceipt) -> None:
     except OSError as exc:
         if descriptor is not None:
             os.close(descriptor)
+        if published:
+            try:
+                target.unlink()
+                _fsync_directory(target.parent)
+            except OSError:
+                pass
         if temporary is not None:
             try:
                 temporary.unlink()

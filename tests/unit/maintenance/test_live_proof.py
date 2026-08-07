@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -62,8 +63,9 @@ def _apply_receipt(bindings: LiveProofBindings, *, status: str = "applied") -> d
 
 def _candidate(root: Path) -> str:
     store = IndexGenerationStore(ArchiveLocation.resolve(root))
-    generation = store.create(source_snapshot=rebuild_source_revision_snapshot(root))
-    return generation.generation_id
+    transaction = store.create_transaction(source_snapshot=rebuild_source_revision_snapshot(root))
+    store.save_transaction(replace(transaction, status="ready"))
+    return transaction.generation_id
 
 
 def _rehash(document: JSONDocument) -> JSONDocument:
@@ -88,7 +90,14 @@ def test_read_only_receipt_preserves_full_redacted_canonical_evidence(archive_ro
     receipt = collect_live_proof(LiveProofId.ARCHIVE_VERIFICATION.value, archive_root)
     repeated = collect_live_proof(LiveProofId.ARCHIVE_VERIFICATION.value, archive_root)
 
-    assert receipt.to_document() == repeated.to_document()
+    first_document = receipt.to_document()
+    repeated_document = repeated.to_document()
+    first_document.pop("generated_at_ms")
+    repeated_document.pop("generated_at_ms")
+    first_document.pop("receipt_sha256")
+    repeated_document.pop("receipt_sha256")
+    assert first_document == repeated_document
+    assert repeated.generated_at_ms >= receipt.generated_at_ms
     evidence = receipt.result["archive_verification"]
     assert isinstance(evidence, dict)
     profiles = evidence["profiles"]
@@ -102,6 +111,14 @@ def test_read_only_receipt_preserves_full_redacted_canonical_evidence(archive_ro
     assert str(archive_root) not in json.dumps(receipt.to_document())
     assert receipt.to_document()["receipt_sha256"] == receipt.receipt_sha256
     assert {name for name, _version in receipt.bindings.schema_versions} == {
+        "audit",
+        "embeddings",
+        "index",
+        "ops",
+        "source",
+        "user",
+    }
+    assert {name for name, _digest in receipt.bindings.tier_file_set_digests} == {
         "audit",
         "embeddings",
         "index",
@@ -153,6 +170,23 @@ def test_read_only_receipt_redacts_external_verification_evidence(archive_root: 
     serialized = json.dumps(receipt.to_document())
     assert str(external_source) not in serialized
     assert "[private-path:" in serialized
+
+
+def test_receipt_rejects_expired_generation_time(archive_root: Path) -> None:
+    receipt = collect_live_proof(LiveProofId.ARCHIVE_VERIFICATION.value, archive_root)
+    mutated = receipt.to_document()
+    mutated["generated_at_ms"] = receipt.generated_at_ms - live_proof._LIVE_PROOF_MAX_AGE_MS - 1
+
+    with pytest.raises(LiveProofError, match="stale or has an invalid generation time"):
+        validate_live_proof_receipt(_rehash(mutated), archive_root)
+
+
+def test_capture_accepts_empty_checkpointed_wal_sidecar(archive_root: Path) -> None:
+    (archive_root / "index.db-wal").write_bytes(b"")
+
+    receipt = collect_live_proof(LiveProofId.ARCHIVE_VERIFICATION.value, archive_root)
+
+    assert receipt.bindings.active_index_sha256
 
 
 def test_mode_inputs_are_isolated(archive_root: Path, tmp_path: Path) -> None:
@@ -293,6 +327,21 @@ def test_candidate_receipt_binds_canonical_generation_and_all_profiles(archive_r
         connection.execute("CREATE TABLE proof_binding_mutation (marker TEXT NOT NULL)")
     with pytest.raises(LiveProofError, match="bindings are stale"):
         validate_candidate_proof_receipts((receipt.to_document(),), archive_root, candidate_generation_id=generation_id)
+
+
+def test_candidate_receipt_requires_ready_rebuild_transaction(archive_root: Path) -> None:
+    generation_id = _candidate(archive_root)
+    store = IndexGenerationStore(ArchiveLocation.resolve(archive_root))
+    transaction_path = next(store.transactions_root.glob("*.json"))
+    transaction = store.load_transaction(transaction_path.stem)
+    store.save_transaction(replace(transaction, status="running"))
+
+    with pytest.raises(LiveProofError, match="candidate generation binding"):
+        collect_live_proof(
+            LiveProofId.CANDIDATE_ARCHIVE_VERIFICATION.value,
+            archive_root,
+            candidate_generation_id=generation_id,
+        )
 
 
 def test_candidate_rejects_source_snapshot_drift(archive_root: Path) -> None:
@@ -485,6 +534,26 @@ def test_receipt_write_removes_partial_output_after_os_error(
         raise OSError("disk full")
 
     monkeypatch.setattr(os, "write", fail_write)
+    with pytest.raises(LiveProofError, match="could not be written"):
+        write_live_proof_receipt(target, receipt)
+
+    assert not target.exists()
+
+
+def test_receipt_write_removes_published_output_when_directory_sync_fails(
+    archive_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = collect_live_proof(LiveProofId.ARCHIVE_VERIFICATION.value, archive_root)
+    target = tmp_path / "new-receipt.json"
+    calls = 0
+
+    def fail_after_publish(_path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("directory sync failed")
+
+    monkeypatch.setattr(live_proof, "_fsync_directory", fail_after_publish)
     with pytest.raises(LiveProofError, match="could not be written"):
         write_live_proof_receipt(target, receipt)
 
