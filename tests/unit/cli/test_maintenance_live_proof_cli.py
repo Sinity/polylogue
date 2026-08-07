@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from polylogue.maintenance import live_proof
 
 
 def test_live_proof_cli_dispatches_registered_read_only_proof(
@@ -59,4 +60,33 @@ def test_live_proof_cli_rejects_unknown_route_without_creating_output(
 
     assert result.exit_code != 0
     assert "unknown live-proof id" in result.output
+    assert not output.exists()
+
+
+def test_live_proof_cli_translates_output_os_error(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_CODE_SHA", "c" * 40)
+    output = cli_workspace["archive_root"].parent / "live-proof-output-error.json"
+
+    def fail_write(_path: Path, _receipt: object) -> None:
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(live_proof, "write_live_proof_receipt", fail_write)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "live-proof",
+            "--proof-id",
+            "archive-verification",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "live-proof receipt output could not be written" in result.output
     assert not output.exists()

@@ -52,4 +52,6 @@ def live_proof_command(
         write_live_proof_receipt(target, receipt)
     except LiveProofError as exc:
         raise click.ClickException(str(exc)) from exc
+    except OSError as exc:
+        raise click.ClickException("live-proof receipt output could not be written") from exc
     click.echo(json.dumps(receipt.to_document(), indent=2, sort_keys=True))
