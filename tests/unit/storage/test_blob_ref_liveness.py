@@ -154,6 +154,21 @@ def test_dry_run_is_read_only_and_reports_attachment_parent_join(tmp_path: Path)
     assert after == before
 
 
+def test_default_dry_run_does_not_acquire_the_archive_writer_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _source_archive(tmp_path)
+
+    def unexpected_lease(*args: object, **kwargs: object) -> object:
+        raise AssertionError("default dry-run must not acquire the archive writer lease")
+
+    monkeypatch.setattr("polylogue.storage.archive_identity.OwnedArchiveLocation.acquire", unexpected_lease)
+
+    report = reconcile_blob_ref_liveness(archive_root)
+
+    assert report.dry_run is True
+
+
 def test_legacy_hook_payload_ref_is_rekeyable_not_a_delete_candidate(tmp_path: Path) -> None:
     archive_root = _source_archive(tmp_path)
     blob_hash = b"h" * 32
@@ -1024,6 +1039,11 @@ def test_committed_delete_reports_continuity_refresh_failure(tmp_path: Path, mon
     assert report.continuity_refresh_receipt is None
     assert report.continuity_refresh_error == "continuity unavailable"
     assert json.loads(receipt.read_text(encoding="utf-8").splitlines()[-1])["phase"] == "committed"
+    pending = next((archive_root / ".maintenance-state" / "source-continuity-pending").glob("*.json"))
+    assert json.loads(pending.read_text(encoding="utf-8"))["terminal_outcome"] == {
+        "kind": "continuity_refresh_rejected",
+        "error": "continuity unavailable",
+    }
     assert reconcile_durable_change_train_startup(archive_root) == ()
     assert not list((archive_root / ".maintenance-state" / "source-continuity-pending").glob("*.json"))
 

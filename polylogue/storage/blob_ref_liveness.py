@@ -8,8 +8,10 @@ prove liveness with the same referent joins.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import cast
 
@@ -46,6 +48,33 @@ class BlobRefLivenessCandidate:
             "referent_table": self.referent_table,
             "referent_column": self.referent_column,
         }
+
+
+class BlobRefLivenessCandidateDigest:
+    """Incrementally encode the canonical candidate stream used by receipts."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256(b"[")
+        self._first = True
+
+    def update(self, candidate: BlobRefLivenessCandidate) -> None:
+        if not self._first:
+            self._digest.update(b",")
+        self._digest.update(json.dumps(candidate.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        self._first = False
+
+    def hexdigest(self) -> str:
+        digest = self._digest.copy()
+        digest.update(b"]")
+        return digest.hexdigest()
+
+
+def digest_blob_ref_liveness_candidates(candidates: Iterable[BlobRefLivenessCandidate]) -> str:
+    """Hash candidates with the receipt's canonical JSON array framing."""
+    digest = BlobRefLivenessCandidateDigest()
+    for candidate in candidates:
+        digest.update(candidate)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

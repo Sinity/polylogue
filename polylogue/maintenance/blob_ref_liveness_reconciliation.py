@@ -24,8 +24,10 @@ from polylogue.paths import render_root
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
+    BlobRefLivenessCandidateDigest,
     BlobRefLivenessClassification,
     classify_blob_ref_liveness,
+    digest_blob_ref_liveness_candidates,
     stage_blob_ref_liveness,
     validated_blob_ref_liveness_joins,
 )
@@ -33,7 +35,9 @@ from polylogue.storage.hook_payload_ref_reconciliation import _deterministic_raw
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
+    DurableChangeTrainError,
     _clear_source_continuity_pending_intent,
+    _mark_source_continuity_pending_intent_terminal,
     _write_source_continuity_pending_intent,
     refresh_released_source_train_continuity,
 )
@@ -77,7 +81,7 @@ def _archive_owned(
     def wrapped(
         archive_root: Path, *args: _ArchiveOwnedParams.args, **kwargs: _ArchiveOwnedParams.kwargs
     ) -> _ArchiveOwnedResult:
-        if bool(kwargs.get("dry_run", False)):
+        if bool(kwargs.get("dry_run", True)):
             return function(archive_root, *args, **kwargs)
         with OwnedArchiveLocation.acquire(
             ArchiveLocation.resolve(archive_root),
@@ -158,16 +162,7 @@ def _source_data_version(conn: sqlite3.Connection) -> int:
 
 
 def _candidate_digest(candidates: Iterable[BlobRefLivenessCandidate]) -> str:
-    digest = hashlib.sha256()
-    digest.update(b"[")
-    first = True
-    for candidate in candidates:
-        if not first:
-            digest.update(b",")
-        digest.update(json.dumps(candidate.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8"))
-        first = False
-    digest.update(b"]")
-    return digest.hexdigest()
+    return digest_blob_ref_liveness_candidates(candidates)
 
 
 def _iter_staged_candidates(conn: sqlite3.Connection, table_name: str) -> Iterator[BlobRefLivenessCandidate]:
@@ -292,9 +287,7 @@ def _stage_receipt_candidates(conn: sqlite3.Connection, receipt_path: Path) -> t
     )
     header: dict[str, object] | None = None
     terminal_phases: list[str] = []
-    digest = hashlib.sha256()
-    digest.update(b"[")
-    first_candidate = True
+    digest = BlobRefLivenessCandidateDigest()
     candidate_count = 0
     with receipt_path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -316,25 +309,23 @@ def _stage_receipt_candidates(conn: sqlite3.Connection, receipt_path: Path) -> t
             elif row.get("kind") == "candidate":
                 candidate = _receipt_candidate(row)
                 conn.execute(f"INSERT INTO {table_name} (blob_hash, ref_type, ref_id) VALUES (?, ?, ?)", candidate)
-                if not first_candidate:
-                    digest.update(b",")
-                digest.update(
-                    json.dumps(
-                        {
-                            "blob_hash": candidate[0].hex(),
-                            "ref_id": candidate[2],
-                            "ref_type": candidate[1],
-                            "source_path": row.get("source_path"),
-                            "size_bytes": row.get("size_bytes"),
-                            "acquired_at_ms": row.get("acquired_at_ms"),
-                            "referent_table": row.get("referent_table"),
-                            "referent_column": row.get("referent_column"),
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                )
-                first_candidate = False
+                try:
+                    digest.update(
+                        BlobRefLivenessCandidate(
+                            blob_hash=candidate[0].hex(),
+                            ref_type=candidate[1],
+                            ref_id=candidate[2],
+                            source_path=str(row["source_path"]) if row.get("source_path") is not None else None,
+                            size_bytes=int(row["size_bytes"]),
+                            acquired_at_ms=int(row["acquired_at_ms"]),
+                            referent_table=str(row["referent_table"]),
+                            referent_column=str(row["referent_column"]),
+                        )
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise BlobRefLivenessReconciliationError(
+                        f"prepared receipt contains an invalid candidate: {receipt_path}"
+                    ) from exc
                 candidate_count += 1
     if header is None or header.get("phase") != "prepared":
         raise BlobRefLivenessReconciliationError(f"receipt does not contain a prepared plan: {receipt_path}")
@@ -343,7 +334,6 @@ def _stage_receipt_candidates(conn: sqlite3.Connection, receipt_path: Path) -> t
     receipt_candidate_count = header.get("candidate_count")
     if not isinstance(receipt_candidate_count, int) or receipt_candidate_count != candidate_count:
         raise BlobRefLivenessReconciliationError(f"prepared receipt candidate count mismatch: {receipt_path}")
-    digest.update(b"]")
     if str(header.get("candidate_digest")) != digest.hexdigest():
         raise BlobRefLivenessReconciliationError(f"prepared receipt candidate digest mismatch: {receipt_path}")
     return candidate_count, table_name, header
@@ -963,6 +953,12 @@ def reconcile_blob_ref_liveness(
             evidence_ref=f"proof:blob-ref-liveness:{candidate_digest}",
         )
         _clear_source_continuity_pending_intent(pending_intent)
+    except DurableChangeTrainError as exc:
+        # Semantic continuity rejection cannot become valid by retrying the
+        # same committed source mutation. Preserve it durably for startup to
+        # consume without hiding the fail-closed train mismatch.
+        _mark_source_continuity_pending_intent_terminal(pending_intent, error=exc)
+        continuity_refresh_error = str(exc)
     except Exception as exc:
         # The source deletion and its committed receipt are already durable.
         # Keep the report truthful while leaving the train fail-closed until a

@@ -20,6 +20,8 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
+    DurableSourceTrainMissingError,
+    _mark_source_continuity_pending_intent_terminal,
     _runtime_consumer_results,
     _write_source_continuity_pending_intent,
     durable_change_train_manifest_path,
@@ -458,6 +460,20 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert pending_path.is_file()
     assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
     assert not pending_path.exists()
+    terminal_pending_path = _write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=mutation_receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id=_EMPTY_LIVENESS_DIGEST,
+        evidence_ref="proof:mutation-1",
+    )
+    _mark_source_continuity_pending_intent_terminal(
+        terminal_pending_path,
+        error=DurableChangeTrainError("continuity precondition rejected"),
+    )
+    assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
+    assert not terminal_pending_path.exists()
     refreshed_path.unlink()
     with pytest.raises(DurableChangeTrainError, match="refresh receipt"):
         reconcile_durable_change_train_startup(tmp_path)
@@ -570,7 +586,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         + "\n",
         encoding="utf-8",
     )
-    with pytest.raises(DurableChangeTrainError, match="no released source train"):
+    with pytest.raises(DurableSourceTrainMissingError, match="no released source train"):
         refresh_released_source_train_continuity(
             tmp_path,
             mutation_receipt=mutation_receipt,
