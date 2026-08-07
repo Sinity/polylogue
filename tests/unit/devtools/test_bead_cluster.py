@@ -349,6 +349,51 @@ def test_main_json_output_clusters_overlapping_beads(tmp_path: Path, capsys: pyt
     assert payload["design_horizon_count"] == 1
 
 
+def test_main_defers_unknown_footprints_from_parallel_clusters(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    beads = [
+        _bead("polylogue-known", labels=["horizon:frontier"], design="Touch polylogue/core/known.py."),
+        _bead("polylogue-unknown", labels=["horizon:frontier"]),
+    ]
+    path = tmp_path / "ready.json"
+    path.write_text(json.dumps(beads))
+
+    assert bead_cluster.main(["--input", str(path), "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [[member["id"] for member in cluster["beads"]] for cluster in payload["frontier_clusters"]] == [
+        ["polylogue-known"]
+    ]
+    assert payload["deferred_unknown_footprints"] == [
+        {
+            "id": "polylogue-unknown",
+            "priority": 2,
+            "title": "untitled",
+            "reason": "footprint is unknown; confirm ownership before scheduling a lane",
+        }
+    ]
+
+
+def test_defer_unknown_footprint_preserves_known_members_of_mixed_cluster() -> None:
+    footprints = {
+        "polylogue-known": bead_cluster.Footprint(files=["devtools/known.py"]),
+        "polylogue-unknown": bead_cluster.Footprint(),
+    }
+    clusters = [
+        bead_cluster.WeightedCluster(
+            beads={"polylogue-known", "polylogue-unknown"},
+            score=4.0,
+            shared_files=["devtools/known.py"],
+        )
+    ]
+
+    schedulable, deferred = bead_cluster._defer_unknown_footprint_clusters(clusters, footprints)
+
+    assert [cluster.beads for cluster in schedulable] == [{"polylogue-known"}]
+    assert deferred == ["polylogue-unknown"]
+
+
 def test_weighted_clusters_refuses_merge_past_max_cluster_size() -> None:
     # Five beads all sharing one exact file (df=5 within their own
     # 5-bead population -> weight 0, since d>=n_docs is skipped) would
@@ -426,7 +471,7 @@ def test_main_human_output_renders_sections(tmp_path: Path, capsys: pytest.Captu
 
 def test_main_max_priority_filters_lower_priority_beads(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     beads = [
-        _bead("polylogue-hi", priority=1, labels=["horizon:frontier"]),
+        _bead("polylogue-hi", priority=1, labels=["horizon:frontier"], design="Touch polylogue/core/high.py."),
         _bead("polylogue-lo", priority=3, labels=["horizon:frontier"]),
     ]
     path = tmp_path / "ready.json"

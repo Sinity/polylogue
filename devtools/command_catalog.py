@@ -956,17 +956,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace frontier",
         "workspace",
-        "Classify ready and in-progress Beads into devloop batches.",
+        "Derive a complete, non-mutating execution focus from live Beads state.",
         "devtools.frontier_report",
         use_when=(
-            "During Direction, Velocity, or wait-ahead windows, group the Beads frontier by subsystem, "
-            "proof cost, live-runtime risk, schema-lane conflict, and subagent suitability before claiming "
-            "or dispatching work."
+            "During Direction, Velocity, or wait-ahead windows, distinguish the full ambition, admitted "
+            "active set, current claims, dependency-ready work, and resource-permitted execution focus before "
+            "claiming or dispatching work."
         ),
         examples=(
             "devtools workspace frontier",
             "devtools workspace frontier --json",
-            "devtools workspace frontier --limit 80 --out .agent/task-history/frontier-latest.md",
+            "devtools workspace frontier --out .agent/task-history/frontier-latest.md",
         ),
     ),
     CommandSpec(
@@ -1893,16 +1893,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "lab policy bead-graph",
         "verification lab",
-        "Bead-graph invariant lint over live `bd` state (cycles, wave labels/inversions, missing AC).",
+        "Bead-graph invariant lint and complete missing-AC census over live `bd` state.",
         "devtools.verify_bead_graph",
         use_when=(
             "Run right before shipping a bead-state delta (matches the sinex bead-graph-lint "
             "convention). Checks LIVE `bd dep cycles` / `bd list --all --json` output rather than "
-            "the exported .beads/issues.jsonl snapshot, so it catches drift not yet re-exported. "
+            "the exported .beads/issues.jsonl snapshot, so it catches drift not yet re-exported. It fails "
+            "closed for real missing acceptance criteria and validates zero-or-one structured parent-child "
+            "parents. `--json` emits the complete deterministic missing-AC census, never a display page. "
             "INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:` labels are flagged "
             "(polylogue's `lane:`/`delivery:`/`horizon:` taxonomy is local and not enforced here)."
         ),
-        examples=("devtools lab policy bead-graph",),
+        examples=("devtools lab policy bead-graph", "devtools lab policy bead-graph --json"),
     ),
     CommandSpec(
         "lab policy demo-packet-registry",
