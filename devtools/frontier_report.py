@@ -155,6 +155,35 @@ def _active_set(issues: list[dict[str, Any]]) -> list[str]:
     )
 
 
+def _active_set_rows(issues: list[dict[str, Any]], ready_ids: set[str]) -> list[dict[str, Any]]:
+    """Expose readiness, blockers, and program grouping for admitted leaves."""
+    active_ids = set(_active_set(issues))
+    by_id = {str(issue["id"]): issue for issue in issues}
+    rows: list[dict[str, Any]] = []
+    for issue_id in sorted(active_ids):
+        issue = by_id[issue_id]
+        blockers = sorted(
+            str(dependency["depends_on_id"])
+            for dependency in issue.get("dependencies", [])
+            if isinstance(dependency, dict)
+            and dependency.get("type") == "blocks"
+            and str(dependency.get("depends_on_id")) in by_id
+            and by_id[str(dependency["depends_on_id"])].get("status") != "closed"
+        )
+        rows.append(
+            {
+                "id": issue_id,
+                "title": str(issue.get("title", "")),
+                "status": str(issue.get("status", "unknown")),
+                "priority": _priority(issue),
+                "dependency_ready": issue_id in ready_ids,
+                "blocked_by": blockers,
+                "frontier_program_ref": _metadata(issue).get("frontier_program_ref"),
+            }
+        )
+    return rows
+
+
 def _full_ambition(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return every open Bead with the fields needed to audit its admission."""
     rows: list[dict[str, Any]] = []
@@ -258,6 +287,7 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
         key=lambda item: item["id"],
     )
     claim_ids = [issue["id"] for issue in claims]
+    ambiguous_claim_ids = sorted(issue_id for issue_id in claim_ids if not footprint_keys[issue_id])
     leverage = _critical_path_leverage(issues)
     active_ids = set(_active_set(issues))
     candidates = [
@@ -299,6 +329,13 @@ def derive_execution_focus(issues: list[dict[str, Any]], ready_ids: set[str]) ->
         if not footprint_keys[candidate["id"]]:
             candidate["focus_state"] = "deferred"
             candidate["reason"] = "footprint is ambiguous; confirm ownership before parallel focus"
+            deferred.append(candidate)
+        elif ambiguous_claim_ids:
+            candidate["focus_state"] = "deferred"
+            candidate["reason"] = (
+                "active claim footprint is ambiguous; confirm ownership before parallel focus: "
+                + ", ".join(ambiguous_claim_ids)
+            )
             deferred.append(candidate)
         elif conflicts:
             candidate["focus_state"] = "deferred"
@@ -361,6 +398,7 @@ def build_report(issues: list[Any], ready: list[Any], *, repo: Path) -> dict[str
         },
         "ambition": ambition,
         "active_set": _active_set(issues),
+        "active_set_rows": _active_set_rows(issues, ready_ids),
         "execution_focus": execution_focus,
     }
 
@@ -378,9 +416,23 @@ def _render_markdown(report: dict[str, Any]) -> str:
             f"deferred={counts['deferred']}"
         ),
         "",
-        "## Focus",
+        "## Active Set",
         "",
     ]
+    for item in report.get("active_set_rows", []):
+        blockers = ", ".join(item["blocked_by"]) or "none"
+        program = item["frontier_program_ref"] or "no program"
+        lines.append(
+            f"- `{item['id']}` P{item['priority']} ready={item['dependency_ready']} "
+            f"blocked_by={blockers} program={program} {item['title']}"
+        )
+    lines.extend(
+        [
+            "",
+            "## Focus",
+            "",
+        ]
+    )
     for item in report["execution_focus"]["focus"]:
         lines.append(f"- `{item['id']}` P{item['priority']} leverage={item['critical_path_leverage']} {item['title']}")
     lines.extend(["", "## Deferred", ""])

@@ -535,13 +535,12 @@ def _defer_unknown_footprint_clusters(
     schedulable: list[WeightedCluster] = []
     deferred: list[str] = []
     for cluster in clusters:
-        unknown = sorted(
-            bead_id
-            for bead_id in cluster.beads
-            if not (footprints[bead_id].overlap_keys() | footprints[bead_id].contention_keys())
-        )
+        unknown = sorted(bead_id for bead_id in cluster.beads if not _has_footprint_evidence(footprints[bead_id]))
         if unknown:
             deferred.extend(unknown)
+            known = cluster.beads.difference(unknown)
+            if known:
+                schedulable.append(WeightedCluster(beads=known, score=cluster.score, shared_files=cluster.shared_files))
         else:
             schedulable.append(cluster)
     return schedulable, sorted(deferred)
@@ -550,6 +549,11 @@ def _defer_unknown_footprint_clusters(
 # ---------------------------------------------------------------------------
 # Output rendering
 # ---------------------------------------------------------------------------
+
+
+def _has_footprint_evidence(footprint: Footprint) -> bool:
+    """Use one evidence predicate for scheduling and rendered confirmation."""
+    return bool(footprint.overlap_keys() | footprint.contention_keys())
 
 
 def _short(s: str, n: int = 70) -> str:
@@ -605,7 +609,8 @@ def _render_human(
         for bid in members:
             b = id_to_bead[bid]
             fp = footprints[bid]
-            print(f"    {bid:30s} P{b['priority']}  {_short(b['title'], 55)}")
+            needsconf = "  [NEEDS-CONFIRM: no footprint]" if not _has_footprint_evidence(fp) else ""
+            print(f"    {bid:30s} P{b['priority']}  {_short(b['title'], 55)}{needsconf}")
             if fp.packages:
                 pkgs = ", ".join(fp.packages[:4])
                 if len(fp.packages) > 4:
@@ -701,7 +706,7 @@ def _render_json(
                             "areas": footprints[bid].areas,
                             "migration_slots": footprints[bid].migration_slots,
                             "generated_surfaces": footprints[bid].generated_surfaces,
-                            "needs_confirm": footprints[bid].is_empty,
+                            "needs_confirm": not _has_footprint_evidence(footprints[bid]),
                         },
                     }
                     for bid in members

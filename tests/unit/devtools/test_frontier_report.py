@@ -212,6 +212,46 @@ def test_execution_focus_defers_ambiguous_footprints_and_mixed_resource_work() -
     )
 
 
+def test_execution_focus_defers_candidates_when_an_active_claim_has_ambiguous_footprint() -> None:
+    issues = [
+        _issue("ambiguous-claim", status="in_progress"),
+        _issue("candidate", design="devtools/frontier_report.py", metadata={"frontier": "active"}),
+    ]
+
+    report = frontier_report.build_report(issues, [issues[1]], repo=Path("/repo"))
+
+    assert report["execution_focus"]["focus"] == []
+    assert report["execution_focus"]["deferred"][0]["reason"] == (
+        "active claim footprint is ambiguous; confirm ownership before parallel focus: ambiguous-claim"
+    )
+
+
+def test_active_set_rows_expose_blockers_readiness_and_program() -> None:
+    issues = [
+        _issue("blocker", status="open", design="devtools/blocker.py"),
+        _issue(
+            "active",
+            design="devtools/frontier_report.py",
+            dependencies=[{"type": "blocks", "depends_on_id": "blocker"}],
+            metadata={"frontier": "active", "frontier_program_ref": "program"},
+        ),
+    ]
+
+    report = frontier_report.build_report(issues, [], repo=Path("/repo"))
+
+    assert report["active_set_rows"] == [
+        {
+            "id": "active",
+            "title": "title for active",
+            "status": "open",
+            "priority": 2,
+            "dependency_ready": False,
+            "blocked_by": ["blocker"],
+            "frontier_program_ref": "program",
+        }
+    ]
+
+
 def test_execution_focus_counts_only_dependents_the_candidate_unblocks() -> None:
     issues = [
         _issue("blocker-a", design="devtools/frontier_report.py", metadata={"frontier": "active"}),
@@ -266,6 +306,16 @@ def test_render_markdown_includes_counts_focus_and_deferrals() -> None:
                 "focus": [{"id": "focus", "priority": 1, "critical_path_leverage": 2, "title": "Focus title"}],
                 "deferred": [{"id": "wait", "priority": 2, "reason": "schema-lane occupied by claim(s): claim"}],
             },
+            "active_set_rows": [
+                {
+                    "id": "active",
+                    "title": "Active title",
+                    "priority": 1,
+                    "dependency_ready": True,
+                    "blocked_by": [],
+                    "frontier_program_ref": "program",
+                }
+            ],
             "ambition": [
                 {
                     "id": "ambition",
@@ -284,6 +334,8 @@ def test_render_markdown_includes_counts_focus_and_deferrals() -> None:
         "# Execution Focus\n\n"
         "repo: `/repo`\n"
         "counts: ambition=3 active_set=1 claims=1 dependency_ready=2 execution_focus=1 deferred=1\n\n"
+        "## Active Set\n\n"
+        "- `active` P1 ready=True blocked_by=none program=program Active title\n\n"
         "## Focus\n\n"
         "- `focus` P1 leverage=2 Focus title\n\n"
         "## Deferred\n\n"

@@ -292,6 +292,22 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         cycles_ok, cycles_output = _run_bd_dep_cycles()
+        if not cycles_ok:
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "report_version": 1,
+                            "error": "dependency cycle check failed",
+                            "cycles_output": cycles_output,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(f"bead-graph: dependency cycle check failed: {cycles_output}", file=sys.stderr)
+            return 1
         issues = _run_bd_list_all()
     except (OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
         if args.json:
@@ -304,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(_format_report(report))
-    return 0 if cycles_ok and not report["findings"] else 1
+    return 0 if not report["findings"] else 1
 
 
 if __name__ == "__main__":

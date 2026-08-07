@@ -242,6 +242,24 @@ def test_main_reports_bd_cycle_launch_failure_as_json(
     assert json.loads(capsys.readouterr().out) == {"error": "bd unavailable", "report_version": 1}
 
 
+def test_main_stops_before_loading_issues_when_cycle_check_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (False, "cycle: a -> b -> a"))
+
+    def list_all() -> list[dict[str, object]]:
+        raise AssertionError("issue listing must not run after a cycle failure")
+
+    monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", list_all)
+
+    assert verify_bead_graph.main(["--json"]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "cycles_output": "cycle: a -> b -> a",
+        "error": "dependency cycle check failed",
+        "report_version": 1,
+    }
+
+
 def test_parent_relationship_survives_json_import_export_and_merge_shape() -> None:
     """The production census relies only on structured dependency records."""
     exported = [

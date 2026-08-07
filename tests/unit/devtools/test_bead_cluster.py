@@ -375,6 +375,25 @@ def test_main_defers_unknown_footprints_from_parallel_clusters(
     ]
 
 
+def test_defer_unknown_footprint_preserves_known_members_of_mixed_cluster() -> None:
+    footprints = {
+        "polylogue-known": bead_cluster.Footprint(files=["devtools/known.py"]),
+        "polylogue-unknown": bead_cluster.Footprint(),
+    }
+    clusters = [
+        bead_cluster.WeightedCluster(
+            beads={"polylogue-known", "polylogue-unknown"},
+            score=4.0,
+            shared_files=["devtools/known.py"],
+        )
+    ]
+
+    schedulable, deferred = bead_cluster._defer_unknown_footprint_clusters(clusters, footprints)
+
+    assert [cluster.beads for cluster in schedulable] == [{"polylogue-known"}]
+    assert deferred == ["polylogue-unknown"]
+
+
 def test_weighted_clusters_refuses_merge_past_max_cluster_size() -> None:
     # Five beads all sharing one exact file (df=5 within their own
     # 5-bead population -> weight 0, since d>=n_docs is skipped) would
