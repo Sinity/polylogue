@@ -351,50 +351,65 @@ def _require_healthy_projection_siblings(projection: RawFrontierIntegrityProject
         raise CursorAuthorityReconciliationError("raw-frontier sibling projections are not healthy")
 
 
+def _is_disappeared_cursor_incomparable_projection(projection: RawFrontierIntegrityProjection) -> bool:
+    """Recognize the sole unavailable projection that proves a scoped no-op."""
+
+    return (
+        not projection.available
+        and projection.overall_status == "unknown"
+        and projection.broken_head_status == "healthy"
+        and projection.missing_source_raw_status == "healthy"
+        and projection.cursor_ahead_status == "unknown"
+        and projection.cursor_ahead_count == 0
+        and projection.cursor_authority_gap_count > 0
+    )
+
+
 def _build_plan(root: Path, source_path: Path, *, require_candidate: bool = True) -> dict[str, object]:
     tiers = _tier_snapshots(root)
     projection = _projection_for(root)
-    _require_healthy_projection_siblings(projection)
     path_digest = cursor_authority_path_digest(source_path)
+    not_applicable_reason: str | None = None
     if projection.cursor_ahead_count == 0:
         current_cursor_paths = {Path(path).resolve() for path, _offset in _cursor_rows(root)}
         selected_path_disappeared = source_path.resolve() not in current_cursor_paths
-        incomparable_population_preserved = (
-            projection.available
-            and projection.cursor_ahead_status == "unknown"
-            and projection.cursor_authority_gap_count > 0
-            and projection.broken_head_status == "healthy"
-            and projection.missing_source_raw_status == "healthy"
-        )
-        if require_candidate and (
-            projection.overall_status == "healthy" or (selected_path_disappeared and incomparable_population_preserved)
+        if (
+            require_candidate
+            and selected_path_disappeared
+            and _is_disappeared_cursor_incomparable_projection(projection)
         ):
-            reason = (
+            not_applicable_reason = (
                 "selected cursor row disappeared while the pre-existing incomparable authority population remained"
-                if selected_path_disappeared and incomparable_population_preserved
-                else "selected cursor-ahead violation is no longer present"
             )
-            not_applicable_plan: dict[str, object] = {
-                "format": PLAN_FORMAT,
-                "archive_identity": _path_identity(root),
-                "active_index": _active_index_binding(root),
-                "code_sha": _code_sha(),
-                "deployed_package_sha": _deployed_package_sha(),
-                "tier_fingerprints": tiers,
-                "source_schema_versions": {tier: tiers[tier]["user_version"] for tier in _REQUIRED_TIERS},
-                "selected_path_digest": path_digest,
-                "observed_at_ms": int(time.time() * 1000),
-                "status": "not_applicable",
-                "not_applicable_reason": reason,
-                "cursor_byte_offset": None,
-                "accepted_frontier": None,
-                "accepted_raw_id_digest": None,
-                "source_prefix_digest": None,
-                "before_projection": _private_projection(projection),
-            }
-            not_applicable_plan["plan_digest"] = _canonical_digest(not_applicable_plan)
-            return not_applicable_plan
-        raise CursorAuthorityReconciliationError("cursor authority is incomparable or has no selected violation")
+
+    if not_applicable_reason is None:
+        _require_healthy_projection_siblings(projection)
+    if projection.cursor_ahead_count == 0 and not_applicable_reason is None:
+        if require_candidate and projection.overall_status == "healthy":
+            not_applicable_reason = "selected cursor-ahead violation is no longer present"
+        else:
+            raise CursorAuthorityReconciliationError("cursor authority is incomparable or has no selected violation")
+    if not_applicable_reason is not None:
+        not_applicable_plan: dict[str, object] = {
+            "format": PLAN_FORMAT,
+            "archive_identity": _path_identity(root),
+            "active_index": _active_index_binding(root),
+            "code_sha": _code_sha(),
+            "deployed_package_sha": _deployed_package_sha(),
+            "tier_fingerprints": tiers,
+            "source_schema_versions": {tier: tiers[tier]["user_version"] for tier in _REQUIRED_TIERS},
+            "selected_path_digest": path_digest,
+            "observed_at_ms": int(time.time() * 1000),
+            "status": "not_applicable",
+            "not_applicable_reason": not_applicable_reason,
+            "cursor_byte_offset": None,
+            "accepted_frontier": None,
+            "accepted_raw_id_digest": None,
+            "source_prefix_digest": None,
+            "before_projection": _private_projection(projection),
+        }
+        not_applicable_plan["plan_digest"] = _canonical_digest(not_applicable_plan)
+        return not_applicable_plan
     if projection.cursor_ahead_count != 1:
         raise CursorAuthorityReconciliationError("refusing to guess among multiple cursor-ahead rows")
     if projection.broken_head_count or projection.missing_source_raw_count:
@@ -460,7 +475,9 @@ def _validated_blob_inventory(
 ) -> dict[str, object]:
     """Re-hash the current backup blob files and compare them with the receipt."""
 
-    inventory_path = root / str(manifest.get("blob_inventory_file", "blob-inventory.json"))
+    if manifest.get("blob_inventory_file") != "blob-inventory.json":
+        raise CursorAuthorityReconciliationError("backup uses a noncanonical blob inventory path")
+    inventory_path = root / "blob-inventory.json"
     try:
         declared = json.loads(inventory_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -482,6 +499,8 @@ def _validated_blob_inventory(
 
     actual_rows: list[dict[str, object]] = []
     blob_root = root / "blob"
+    if blob_root.is_symlink():
+        raise CursorAuthorityReconciliationError("backup blob root is a symlink")
     for path in sorted(blob_root.rglob("*")):
         if path.is_symlink():
             raise CursorAuthorityReconciliationError("backup blob inventory contains a symlink")
@@ -491,6 +510,8 @@ def _validated_blob_inventory(
         if len(path.parent.name) != 2 or len(path.name) != 62:
             raise CursorAuthorityReconciliationError(f"backup blob path is not content-addressed: {relative}")
         blob_hash = f"{path.parent.name}{path.name}".lower()
+        if relative != f"blob/{blob_hash[:2]}/{blob_hash[2:]}":
+            raise CursorAuthorityReconciliationError(f"backup blob path is not canonical: {relative}")
         if blob_hash not in declared_by_hash:
             raise CursorAuthorityReconciliationError("backup contains a blob absent from blob-inventory.json")
         size_bytes, sha256 = _file_fingerprint(path)

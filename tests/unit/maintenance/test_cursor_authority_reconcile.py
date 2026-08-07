@@ -177,6 +177,7 @@ def test_disappeared_selected_row_is_typed_not_applicable_with_incomparable_popu
     _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
     projection = replace(
         reconcile._projection_for(tmp_path),
+        available=False,
         overall_status="unknown",
         cursor_ahead_status="unknown",
         cursor_ahead_count=0,
@@ -198,6 +199,28 @@ def test_disappeared_selected_row_is_typed_not_applicable_with_incomparable_popu
     watcher.stop()
 
 
+def test_planner_refuses_unknown_projection_when_selected_cursor_remains(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
+
+    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    projection = replace(
+        reconcile._projection_for(tmp_path),
+        available=False,
+        overall_status="unknown",
+        cursor_ahead_status="unknown",
+        cursor_ahead_count=0,
+        cursor_ahead_samples=(),
+        cursor_authority_gap_count=2,
+    )
+    monkeypatch.setattr(reconcile, "_projection_for", lambda root: projection)
+
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="unavailable"):
+        reconcile._build_plan(tmp_path, source_path)
+    watcher.stop()
+
+
 def test_planner_refuses_multiple_true_ahead_rows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
 
@@ -210,16 +233,21 @@ def test_planner_refuses_multiple_true_ahead_rows(monkeypatch: pytest.MonkeyPatc
     watcher.stop()
 
 
-def test_planner_refuses_unavailable_healthy_sibling_projection(
+def test_planner_refuses_unavailable_projection_with_unknown_sibling(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
 
     _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
-    projection = replace(reconcile._projection_for(tmp_path), missing_source_raw_status="unknown")
+    projection = replace(
+        reconcile._projection_for(tmp_path),
+        available=False,
+        overall_status="unknown",
+        missing_source_raw_status="unknown",
+    )
     monkeypatch.setattr(reconcile, "_projection_for", lambda root: projection)
 
-    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="sibling"):
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="unavailable"):
         reconcile._build_plan(tmp_path, source_path)
     watcher.stop()
 
@@ -406,6 +434,7 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
     manifest = {
         "profile": "full_evidence",
         "included_tiers": [f"{tier}.db" for tier in tiers],
+        "blob_inventory_file": "blob-inventory.json",
         "tier_source_fingerprints": {f"{tier}.db": value for tier, value in tiers.items()},
     }
     (backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -438,6 +467,40 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
     validated = reconcile._validate_backup(backup, plan)
     assert isinstance(validated["root"], dict)
     assert validated["root"]["basename"] == backup.name
+    assert isinstance(validated["blob_inventory"], dict)
+    assert validated["blob_inventory"]["count"] == 1
+    assert validated["blob_inventory"]["size_bytes"] == len(blob_payload)
+    assert validated["blob_inventory"]["inventory_digest"] == reconcile._canonical_digest(
+        [
+            {
+                "blob_hash": blob_hash,
+                "path": f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
+                "size_bytes": len(blob_payload),
+                "sha256": blob_hash,
+                "protection": ["referenced"],
+            }
+        ]
+    )
+    manifest["blob_inventory_file"] = "alternate-inventory.json"
+    (backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="noncanonical blob inventory path"):
+        reconcile._validate_backup(backup, plan)
+    manifest["blob_inventory_file"] = "blob-inventory.json"
+    (backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    blob_root = backup / "blob"
+    relocated_blob_root = backup / "attested-blob"
+    blob_root.rename(relocated_blob_root)
+    blob_root.symlink_to(relocated_blob_root, target_is_directory=True)
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="blob root is a symlink"):
+        reconcile._validate_backup(backup, plan)
+    blob_root.unlink()
+    relocated_blob_root.rename(blob_root)
+    noncanonical_blob_path = blob_root / "nested" / blob_hash[:2] / blob_hash[2:]
+    noncanonical_blob_path.parent.mkdir(parents=True)
+    blob_path.rename(noncanonical_blob_path)
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="blob path is not canonical"):
+        reconcile._validate_backup(backup, plan)
+    noncanonical_blob_path.rename(blob_path)
     blob_path.write_bytes(b"changed")
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="blob digest"):
         reconcile._validate_backup(backup, plan)
