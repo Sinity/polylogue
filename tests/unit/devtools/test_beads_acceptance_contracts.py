@@ -63,6 +63,16 @@ def test_durable_mutation_requires_safety() -> None:
     assert "durable-mutation requires safety clauses" in mod.validate(issue)
 
 
+def test_read_only_audit_contract_does_not_require_mutation_safety() -> None:
+    issue = _issue(kind="audit", risk="read-only")
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["source_digest"] = mod.source_digest(issue)
+    issue["acceptance_criteria"] = mod.render(contract)
+
+    assert mod.validate(issue) == []
+    assert "Safety:" not in issue["acceptance_criteria"]
+
+
 def test_placeholder_is_rejected() -> None:
     issue = _issue()
     issue["metadata"]["acceptance_contract_v1"]["source_digest"] = mod.source_digest(issue)
