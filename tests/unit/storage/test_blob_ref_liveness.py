@@ -26,6 +26,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash, deterministic_raw_session_id
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.durable_change_train import reconcile_durable_change_train_startup
 from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainError,
     MigrationError,
@@ -1007,10 +1008,13 @@ def test_committed_delete_reports_continuity_refresh_failure(tmp_path: Path, mon
         lambda *args, **kwargs: (_ for _ in ()).throw(DurableChangeTrainError("continuity unavailable")),
     )
 
+    backup_manifest = tmp_path / "backup" / "manifest.json"
+    backup_manifest.parent.mkdir()
+    backup_manifest.write_text("{}\n", encoding="utf-8")
     receipt = tmp_path / "receipts" / "continuity-failed.jsonl"
     report = reconcile_blob_ref_liveness(
         archive_root,
-        backup_manifest=tmp_path / "backup" / "manifest.json",
+        backup_manifest=backup_manifest,
         receipt_path=receipt,
         dry_run=False,
     )
@@ -1020,6 +1024,8 @@ def test_committed_delete_reports_continuity_refresh_failure(tmp_path: Path, mon
     assert report.continuity_refresh_receipt is None
     assert report.continuity_refresh_error == "continuity unavailable"
     assert json.loads(receipt.read_text(encoding="utf-8").splitlines()[-1])["phase"] == "committed"
+    assert reconcile_durable_change_train_startup(archive_root) == ()
+    assert not list((archive_root / ".maintenance-state" / "source-continuity-pending").glob("*.json"))
 
 
 def test_shared_legacy_hook_path_fails_closed_without_cross_product(
