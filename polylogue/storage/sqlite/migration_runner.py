@@ -1608,11 +1608,11 @@ def capture_durable_database_evidence(
     from polylogue.storage.archive_identity import ArchiveIdentity
 
     # Durable migration evidence must survive replacement of rebuildable
-    # generations. The source/user tier identities are the durable authority;
-    # active index, embeddings, and ops identities belong to derived/runtime
-    # state and must not invalidate a durable train.
-    durable_id = ArchiveIdentity.resolve(live_path.parent).durable_id
-    archive_identity_digest = hashlib.sha256(durable_id.encode("utf-8")).hexdigest()
+    # generations and creation of another durable tier. Bind a train to the
+    # file it actually migrates, not to the whole durable pair: a source train
+    # must remain valid when a previously absent user.db is initialized later.
+    tier_identity = ArchiveIdentity.resolve(live_path.parent).tier(tier.value).stable_id
+    archive_identity_digest = hashlib.sha256(tier_identity.encode("utf-8")).hexdigest()
     content_hasher = hashlib.sha256()
     for statement in conn.iterdump():
         content_hasher.update(statement.encode("utf-8"))
@@ -1633,14 +1633,16 @@ def _archive_identity_continuity_matches(
     actual_digest: str,
     expected_digest: str,
     archive_root: Path,
+    tier: ArchiveTier,
 ) -> bool:
     if actual_digest == expected_digest:
         return True
     from polylogue.storage.archive_identity import ArchiveIdentity
 
-    identity = ArchiveIdentity.resolve(archive_root)
+    identity = ArchiveIdentity.resolve(archive_root.resolve())
     legacy_digest = identity.authority_identity_digest
-    durable_digest = hashlib.sha256(identity.durable_id.encode("utf-8")).hexdigest()
+    tier_identity = identity.tier(tier.value).stable_id
+    durable_digest = hashlib.sha256(tier_identity.encode("utf-8")).hexdigest()
     # Manifests written before the durable-tier identity split contain the
     # old full-archive digest. Admit that legacy evidence only when the
     # current archive still has the same legacy identity and the newly
@@ -1664,6 +1666,7 @@ def _assert_durable_database_continuity(
             actual.archive_identity_digest,
             expected.archive_identity_digest,
             resolved_archive_root,
+            actual.tier,
         )
     if (
         actual.quick_check != expected.quick_check

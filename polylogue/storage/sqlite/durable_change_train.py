@@ -925,6 +925,7 @@ def _refresh_released_source_train_continuity_locked(
             pre_mutation_evidence.archive_identity_digest,
             train.apply_evidence.post.archive_identity_digest,
             archive_root,
+            ArchiveTier.SOURCE,
         ):
             raise DurableSourceContinuitySemanticError(
                 "source continuity refresh pre-state has the wrong archive identity"
@@ -933,6 +934,7 @@ def _refresh_released_source_train_continuity_locked(
             current.archive_identity_digest,
             train.apply_evidence.post.archive_identity_digest,
             archive_root,
+            ArchiveTier.SOURCE,
         ):
             raise DurableSourceContinuitySemanticError("source continuity refresh changed archive identity")
         if pre_mutation_evidence.quick_check != ("ok",) or current.quick_check != ("ok",):
@@ -1499,7 +1501,12 @@ def _verify_released_train_live_tier(
         return None
     historical = _historical_schema_evidence(train)
     expected_identity = train.apply_evidence.post.archive_identity_digest
-    if not _archive_identity_continuity_matches(actual.archive_identity_digest, expected_identity, archive_root):
+    if not _archive_identity_continuity_matches(
+        actual.archive_identity_digest,
+        expected_identity,
+        archive_root,
+        train.tier,
+    ):
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier immutable archive identity differs from historical train "
             f"v{train.target_version} after later train advancement"
@@ -1593,6 +1600,9 @@ def _forward_version_receipt_for_current_tier(
             f"{tier.value} durable forward admission lacks released train evidence for versions "
             f"{missing_targets} between v{historical_train.target_version} and live v{current_version}"
         )
+    for version in range(historical_train.target_version + 1, current_version + 1):
+        intervening = manifests_by_target[version]
+        _historical_schema_evidence(intervening)
     if evidence is None:
         actual = capture_durable_database_evidence(conn, tier)
         evidence = _DurableForwardVersionEvidence(

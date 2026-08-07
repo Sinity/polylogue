@@ -1276,6 +1276,21 @@ def test_continuity_admits_legacy_full_archive_identity_digest(tmp_path: Path) -
             )
 
 
+def test_source_train_identity_survives_late_user_tier_initialization(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    source_path = tmp_path / "source.db"
+    initialize_archive_database(source_path, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_path) as conn:
+        before = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with sqlite3.connect(source_path) as conn:
+        after = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+
+    assert after.archive_identity_digest == before.archive_identity_digest
+
+
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
