@@ -20,17 +20,18 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
+    DurableSourceContinuitySemanticError,
     DurableSourceTrainMissingError,
-    _mark_source_continuity_pending_intent_terminal,
     _runtime_consumer_results,
-    _write_source_continuity_pending_intent,
     durable_change_train_manifest_path,
     durable_change_train_policy_report,
     durable_migration_sidecar_for_slot,
     execute_durable_change_train,
+    mark_source_continuity_pending_intent_terminal,
     reconcile_durable_change_train_startup,
     refresh_released_source_train_continuity,
     validate_durable_migration_sidecars,
+    write_source_continuity_pending_intent,
 )
 from polylogue.storage.sqlite.migration_runner import (
     DurableChangeRider,
@@ -449,10 +450,33 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
     assert refreshed.source_continuity_evidence.content_sha256 != released.apply_evidence.post.content_sha256
     assert refreshed_path.is_file()
+    # A pending-intent retry after manifest persistence accepts only the
+    # receipt's exact pre/post evidence, rather than bypassing pre-state
+    # authentication because the receipt digest already exists.
+    assert (
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=before,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-1",
+        )
+        == refreshed_path
+    )
+    with pytest.raises(DurableSourceContinuitySemanticError, match="unreceipted content drift"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=replace(before, content_sha256="f" * 64),
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-1",
+        )
     operator_cwd = tmp_path / "operator-cwd"
     operator_cwd.mkdir()
     monkeypatch.chdir(tmp_path)
-    pending_path = _write_source_continuity_pending_intent(
+    pending_path = write_source_continuity_pending_intent(
         tmp_path,
         mutation_receipt=Path("mutation-receipt.jsonl"),
         backup_manifest=Path("backup-manifest.json"),
@@ -467,7 +491,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     monkeypatch.chdir(operator_cwd)
     assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
     assert not pending_path.exists()
-    terminal_pending_path = _write_source_continuity_pending_intent(
+    terminal_pending_path = write_source_continuity_pending_intent(
         tmp_path,
         mutation_receipt=mutation_receipt,
         backup_manifest=backup_manifest,
@@ -475,9 +499,9 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         operation_id=_EMPTY_LIVENESS_DIGEST,
         evidence_ref="proof:mutation-1",
     )
-    _mark_source_continuity_pending_intent_terminal(
+    mark_source_continuity_pending_intent_terminal(
         terminal_pending_path,
-        error=DurableChangeTrainError("continuity precondition rejected"),
+        error=DurableSourceContinuitySemanticError("continuity precondition rejected"),
     )
     assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
     assert not terminal_pending_path.exists()
@@ -613,7 +637,7 @@ def test_startup_consumes_an_already_recovered_rollback_intent(tmp_path: Path) -
     receipt.write_text('{"phase": "recovered_rolled_back"}\n', encoding="utf-8")
     backup_manifest = tmp_path / "backup-manifest.json"
     backup_manifest.write_text("{}\n", encoding="utf-8")
-    pending_path = _write_source_continuity_pending_intent(
+    pending_path = write_source_continuity_pending_intent(
         tmp_path,
         mutation_receipt=receipt,
         backup_manifest=backup_manifest,

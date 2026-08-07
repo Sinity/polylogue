@@ -27,7 +27,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash, deterministic_raw_session_id
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.durable_change_train import reconcile_durable_change_train_startup
+from polylogue.storage.sqlite.durable_change_train import DurableSourceContinuitySemanticError
 from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainError,
     MigrationError,
@@ -1046,7 +1046,9 @@ def test_failure_before_prepared_receipt_rolls_back_without_receipt_or_mutation(
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
 
 
-def test_committed_delete_reports_continuity_refresh_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_committed_delete_retains_pending_intent_for_retryable_refresh_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     archive_root = _source_archive(tmp_path)
 
     def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
@@ -1086,12 +1088,42 @@ def test_committed_delete_reports_continuity_refresh_failure(tmp_path: Path, mon
     assert report.continuity_refresh_error == "continuity unavailable"
     assert json.loads(receipt.read_text(encoding="utf-8").splitlines()[-1])["phase"] == "committed"
     pending = next((archive_root / ".maintenance-state" / "source-continuity-pending").glob("*.json"))
+    assert "terminal_outcome" not in json.loads(pending.read_text(encoding="utf-8"))
+
+
+def test_committed_delete_terminalizes_an_immutable_continuity_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _source_archive(tmp_path)
+
+    def fake_validate(path: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        return path
+
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_manifest", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "validate_migration_backup_live_fingerprint", fake_validate)
+    monkeypatch.setattr(liveness_reconciliation, "running_daemon_pid", lambda _config: None)
+    monkeypatch.setattr(
+        liveness_reconciliation,
+        "refresh_released_source_train_continuity",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            DurableSourceContinuitySemanticError("continuity baseline rejected")
+        ),
+    )
+    backup_manifest = tmp_path / "backup" / "manifest.json"
+    backup_manifest.parent.mkdir()
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    reconcile_blob_ref_liveness(
+        archive_root,
+        backup_manifest=backup_manifest,
+        receipt_path=tmp_path / "receipts" / "continuity-semantic.jsonl",
+        dry_run=False,
+    )
+
+    pending = next((archive_root / ".maintenance-state" / "source-continuity-pending").glob("*.json"))
     assert json.loads(pending.read_text(encoding="utf-8"))["terminal_outcome"] == {
         "kind": "continuity_refresh_rejected",
-        "error": "continuity unavailable",
+        "error": "continuity baseline rejected",
     }
-    assert reconcile_durable_change_train_startup(archive_root) == ()
-    assert not list((archive_root / ".maintenance-state" / "source-continuity-pending").glob("*.json"))
 
 
 def test_shared_legacy_hook_path_fails_closed_without_cross_product(

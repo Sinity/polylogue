@@ -36,11 +36,12 @@ from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainError,
-    _assert_source_continuity_apply_allowed,
-    _clear_source_continuity_pending_intent,
-    _mark_source_continuity_pending_intent_terminal,
-    _write_source_continuity_pending_intent,
+    DurableSourceContinuitySemanticError,
+    assert_source_continuity_apply_allowed,
+    clear_source_continuity_pending_intent,
+    mark_source_continuity_pending_intent_terminal,
     refresh_released_source_train_continuity,
+    write_source_continuity_pending_intent,
 )
 from polylogue.storage.sqlite.migration_runner import (
     capture_durable_database_evidence,
@@ -786,7 +787,7 @@ def reconcile_blob_ref_liveness(
     if reason := _offline_apply_block_reason(archive_root):
         raise BlobRefLivenessReconciliationError(reason)
     try:
-        _assert_source_continuity_apply_allowed(archive_root)
+        assert_source_continuity_apply_allowed(archive_root)
     except DurableChangeTrainError as exc:
         raise BlobRefLivenessReconciliationError(str(exc)) from exc
 
@@ -817,7 +818,7 @@ def reconcile_blob_ref_liveness(
             candidates=candidates,
             candidate_digest=candidate_digest,
         )
-        pending_intent = _write_source_continuity_pending_intent(
+        pending_intent = write_source_continuity_pending_intent(
             archive_root,
             mutation_receipt=receipt_path,
             backup_manifest=backup_manifest,
@@ -959,12 +960,12 @@ def reconcile_blob_ref_liveness(
             operation_id=candidate_digest,
             evidence_ref=f"proof:blob-ref-liveness:{candidate_digest}",
         )
-        _clear_source_continuity_pending_intent(pending_intent)
-    except DurableChangeTrainError as exc:
+        clear_source_continuity_pending_intent(pending_intent)
+    except DurableSourceContinuitySemanticError as exc:
         # Semantic continuity rejection cannot become valid by retrying the
         # same committed source mutation. Preserve it durably for startup to
         # consume without hiding the fail-closed train mismatch.
-        _mark_source_continuity_pending_intent_terminal(pending_intent, error=exc)
+        mark_source_continuity_pending_intent_terminal(pending_intent, error=exc)
         continuity_refresh_error = str(exc)
     except Exception as exc:
         # The source deletion and its committed receipt are already durable.
