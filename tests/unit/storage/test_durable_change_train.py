@@ -1426,6 +1426,42 @@ def test_startup_recovers_later_train_before_released_chain_validation(
     assert events == [("recover", 28), ("verify", 27), ("verify", 28)]
 
 
+def test_startup_checks_chain_when_only_current_train_remains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    manifest_root.mkdir(parents=True)
+    manifest_path = manifest_root / "source-028.json"
+    manifest_path.touch()
+    current = cast(
+        DurableChangeTrain,
+        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=28),
+    )
+
+    @contextmanager
+    def fake_open_tier(_path: Path) -> Iterator[sqlite3.Connection]:
+        with sqlite3.connect(":memory:") as connection:
+            yield connection
+
+    monkeypatch.setattr(durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: None)
+    monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
+    monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", lambda _path: current)
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "capture_durable_database_evidence",
+        lambda _connection, _tier: SimpleNamespace(user_version=28),
+    )
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_released_train_manifests_by_target",
+        lambda _root, _tier: {28: current},
+    )
+
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
+
+
 def test_source_train_identity_survives_late_user_tier_initialization(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 

@@ -1999,7 +1999,7 @@ def _reconcile_durable_change_train_startup_locked(
             if actual is None:
                 actual = capture_durable_database_evidence(live, train.tier)
                 live_evidence_by_tier[train.tier] = actual
-            if actual.user_version > train.target_version:
+            if actual.user_version > DURABLE_MIGRATION_ADOPTION_FLOORS[train.tier]:
                 if train.tier not in manifests_by_tier:
                     manifests_by_tier[train.tier] = _released_train_manifests_by_target(manifest_root, train.tier)
                 _require_released_train_chain(
@@ -2007,6 +2007,7 @@ def _reconcile_durable_change_train_startup_locked(
                     manifests_by_tier[train.tier],
                     current_version=actual.user_version,
                 )
+            if actual.user_version > train.target_version:
                 if train.tier not in live_integrity_by_tier:
                     live_integrity_by_tier[train.tier] = tuple(
                         str(row[0]) for row in live.execute("PRAGMA integrity_check")
