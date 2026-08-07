@@ -187,15 +187,8 @@ def test_disappeared_selected_row_is_typed_not_applicable_with_incomparable_popu
     monkeypatch.setattr(reconcile, "_projection_for", lambda root: projection)
     monkeypatch.setattr(reconcile, "_cursor_rows", lambda root: [])
 
-    plan = reconcile._build_plan(tmp_path, source_path)
-
-    assert plan["status"] == "not_applicable"
-    reason = plan["not_applicable_reason"]
-    assert isinstance(reason, str)
-    assert "disappeared" in reason
-    before_projection = plan["before_projection"]
-    assert isinstance(before_projection, dict)
-    assert before_projection["cursor_authority_gap_count"] == 2
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="unavailable"):
+        reconcile._build_plan(tmp_path, source_path)
     watcher.stop()
 
 
@@ -249,6 +242,28 @@ def test_planner_refuses_unavailable_projection_with_unknown_sibling(
 
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="unavailable"):
         reconcile._build_plan(tmp_path, source_path)
+    watcher.stop()
+
+
+def test_planner_classifies_bound_current_cursor_as_not_applicable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
+
+    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    projection = replace(
+        reconcile._projection_for(tmp_path),
+        overall_status="healthy",
+        cursor_ahead_status="healthy",
+        cursor_ahead_count=0,
+        cursor_ahead_samples=(),
+    )
+    monkeypatch.setattr(reconcile, "_projection_for", lambda root: projection)
+
+    plan = reconcile._build_plan(tmp_path, source_path)
+
+    assert plan["status"] == "not_applicable"
+    assert plan["not_applicable_reason"] == "selected cursor-ahead violation is no longer present"
     watcher.stop()
 
 
@@ -435,31 +450,36 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
         "profile": "full_evidence",
         "included_tiers": [f"{tier}.db" for tier in tiers],
         "blob_inventory_file": "blob-inventory.json",
+        "blob_count": 1,
         "tier_source_fingerprints": {f"{tier}.db": value for tier, value in tiers.items()},
     }
     (backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (backup / "verification-receipt.json").write_text(
-        json.dumps(
+    inventory_bytes = (backup / "blob-inventory.json").read_bytes()
+    receipt_payload: dict[str, object] = {
+        "verdict": "success",
+        "verification": {
+            "source_blobs_resolved": True,
+            "index_attachment_blobs_resolved": True,
+            "blob_inventory_exact": True,
+        },
+        "manifest_sha256": hashlib.sha256((backup / "manifest.json").read_bytes()).hexdigest(),
+        "blob_inventory_file": {
+            "path": "blob-inventory.json",
+            "present": True,
+            "size_bytes": len(inventory_bytes),
+            "sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+        },
+        "blobs": [
             {
-                "verdict": "success",
-                "verification": {
-                    "source_blobs_resolved": True,
-                    "index_attachment_blobs_resolved": True,
-                    "blob_inventory_exact": True,
-                },
-                "blobs": [
-                    {
-                        "blob_hash": blob_hash,
-                        "path": f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
-                        "size_bytes": len(blob_payload),
-                        "sha256": blob_hash,
-                        "protection": ["referenced"],
-                    }
-                ],
+                "blob_hash": blob_hash,
+                "path": f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
+                "size_bytes": len(blob_payload),
+                "sha256": blob_hash,
+                "protection": ["referenced"],
             }
-        ),
-        encoding="utf-8",
-    )
+        ],
+    }
+    (backup / "verification-receipt.json").write_text(json.dumps(receipt_payload), encoding="utf-8")
     monkeypatch.setattr(reconcile, "ARCHIVE_ROOT", tmp_path)
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="attestation"):
         reconcile._validate_backup(backup, plan)
@@ -481,12 +501,23 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
             }
         ]
     )
+    manifest["blob_count"] = 2
+    (backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    receipt_payload["manifest_sha256"] = hashlib.sha256((backup / "manifest.json").read_bytes()).hexdigest()
+    (backup / "verification-receipt.json").write_text(json.dumps(receipt_payload), encoding="utf-8")
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="blob count"):
+        reconcile._validate_backup(backup, plan)
+    manifest["blob_count"] = 1
     manifest["blob_inventory_file"] = "alternate-inventory.json"
     (backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    receipt_payload["manifest_sha256"] = hashlib.sha256((backup / "manifest.json").read_bytes()).hexdigest()
+    (backup / "verification-receipt.json").write_text(json.dumps(receipt_payload), encoding="utf-8")
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="noncanonical blob inventory path"):
         reconcile._validate_backup(backup, plan)
     manifest["blob_inventory_file"] = "blob-inventory.json"
     (backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    receipt_payload["manifest_sha256"] = hashlib.sha256((backup / "manifest.json").read_bytes()).hexdigest()
+    (backup / "verification-receipt.json").write_text(json.dumps(receipt_payload), encoding="utf-8")
     blob_root = backup / "blob"
     relocated_blob_root = backup / "attested-blob"
     blob_root.rename(relocated_blob_root)
@@ -506,8 +537,20 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
         reconcile._validate_backup(backup, plan)
     blob_path.write_bytes(blob_payload)
     blob_path.unlink()
-    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="blob inventory"):
+    with pytest.raises(
+        reconcile.CursorAuthorityReconciliationError,
+        match="current backup blob inventory does not match its verification receipt",
+    ):
         reconcile._validate_backup(backup, plan)
+    blob_path.write_bytes(blob_payload)
+    hardlink_path = backup / "hardlink-target"
+    hardlink_path.write_bytes(blob_payload)
+    blob_path.unlink()
+    blob_path.hardlink_to(hardlink_path)
+    with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="single-linked"):
+        reconcile._validate_backup(backup, plan)
+    blob_path.unlink()
+    hardlink_path.unlink()
     blob_path.write_bytes(blob_payload)
     extra_payload = b"extra"
     extra_hash = hashlib.sha256(extra_payload).hexdigest()
