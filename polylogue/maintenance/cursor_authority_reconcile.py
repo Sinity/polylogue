@@ -241,7 +241,9 @@ def _private_projection(projection: RawFrontierIntegrityProjection) -> dict[str,
         if isinstance(value, dict):
             return {
                 key: (
-                    _identity_digest(item)
+                    cursor_authority_path_digest(Path(item))
+                    if key == "source_path" and isinstance(item, str)
+                    else _identity_digest(item)
                     if key in {"source_path", "logical_source_key", "accepted_raw_id", "raw_id", "session_id"}
                     and isinstance(item, str)
                     else None

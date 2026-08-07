@@ -390,6 +390,27 @@ def test_private_projection_redacts_paths_and_preserves_missing_sample_branches(
     watcher.stop()
 
 
+def test_private_projection_canonicalizes_symlinked_source_paths(tmp_path: Path) -> None:
+    from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
+
+    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    alias = tmp_path / "source-alias.jsonl"
+    alias.symlink_to(source_path)
+    projection = replace(
+        reconcile._projection_for(tmp_path),
+        cursor_ahead_samples=(
+            replace(reconcile._projection_for(tmp_path).cursor_ahead_samples[0], source_path=str(alias)),
+        ),
+    )
+
+    private = reconcile._private_projection(projection)
+
+    samples = private["cursor_ahead_samples"]
+    assert isinstance(samples, list) and samples
+    assert samples[0]["source_path"] == reconcile.cursor_authority_path_digest(source_path)
+    watcher.stop()
+
+
 def test_recovery_attempt_requires_a_later_completed_observation(tmp_path: Path) -> None:
     from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
 
