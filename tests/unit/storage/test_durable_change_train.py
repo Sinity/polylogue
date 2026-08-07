@@ -447,6 +447,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert refreshed.source_continuity_evidence is not None
     assert released.apply_evidence is not None
     assert refreshed.apply_evidence == released.apply_evidence
+    assert refreshed.proof == released.proof
     assert refreshed.revision == released.revision + 1
     assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
     assert refreshed.source_continuity_evidence.content_sha256 != released.apply_evidence.post.content_sha256

@@ -436,7 +436,9 @@ def assert_source_continuity_apply_allowed(archive_root: Path) -> None:
     released: list[DurableChangeTrain] = []
     for candidate in sorted(manifest_root.glob("source-*.json")):
         train = load_durable_change_train_manifest(candidate)
-        if train.target_version != current_version:
+        if train.target_version != current_version and not (
+            train.reservation is not None and train.reservation.active and train.current_version == current_version
+        ):
             continue
         if train.state is DurableChangeTrainState.RELEASED:
             released.append(train)
@@ -932,7 +934,6 @@ def _refresh_released_source_train_continuity_locked(
             train,
             revision=train.revision + 1,
             source_continuity_evidence=current,
-            proof=replace(train.proof, proof_refs=references),
             proof_refs=references,
         )
         write_durable_change_train_manifest(manifest_path, updated, expected_revision=train.revision)

@@ -990,8 +990,12 @@ def reconcile_blob_ref_liveness(
         )
         clear_source_continuity_pending_intent(pending_intent)
     except DurableSourceTrainMissingError as exc:
-        clear_source_continuity_pending_intent(pending_intent)
-        continuity_refresh_error = str(exc)
+        try:
+            clear_source_continuity_pending_intent(pending_intent)
+        except Exception as cleanup_exc:
+            continuity_refresh_error = f"{exc}; pending intent cleanup failed: {cleanup_exc}"
+        else:
+            continuity_refresh_error = str(exc)
     except DurableSourceContinuitySemanticError as exc:
         # Semantic continuity rejection cannot become valid by retrying the
         # same committed source mutation. Preserve it durably for startup to
