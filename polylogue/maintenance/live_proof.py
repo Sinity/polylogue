@@ -243,9 +243,11 @@ def _code_sha() -> str:
 
 def _schema_versions(root: Path, *, candidate_index: Path | None) -> tuple[tuple[str, int], ...]:
     paths = {
+        "audit": root / "audit.db",
         "source": root / "source.db",
         "index": candidate_index or root / "index.db",
         "embeddings": root / "embeddings.db",
+        "ops": root / "ops.db",
         "user": root / "user.db",
     }
     versions: list[tuple[str, int]] = []

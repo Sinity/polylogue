@@ -87,6 +87,14 @@ def test_read_only_receipt_is_deterministic_self_hashed_and_private_path_safe(ar
     assert first.to_document() == second.to_document()
     assert first.to_document()["receipt_sha256"] == first.receipt_sha256
     assert str(archive_root) not in json.dumps(first.to_document())
+    assert {name for name, _version in first.bindings.schema_versions} == {
+        "audit",
+        "embeddings",
+        "index",
+        "ops",
+        "source",
+        "user",
+    }
     assert validate_live_proof_receipt(first.to_document(), archive_root) == first
 
 

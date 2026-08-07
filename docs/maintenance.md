@@ -492,7 +492,7 @@ polylogue ops maintenance live-proof \
 
 The registry currently has exactly three routes: `archive-verification` for a fixed read-only archive-check profile, `candidate-archive-verification` for that profile against one named inactive generation, and `existing-apply-receipt` for a pre-existing `polylogue.apply-receipt.v1` input. Candidate mode requires `--candidate-generation`; existing-apply mode requires `--apply-receipt`; every other combination is rejected.
 
-Each `polylogue.live-proof-receipt.v1` binds the proof and Bead id, exact code SHA, archive identity, source snapshot, observed schema versions, parser and lowering fingerprints, candidate generation and index hash where applicable, typed residues, and input receipt digests. Private local paths are represented only as a SHA-256 digest plus basename. The collector validates those bindings again when an aggregate, candidate, or final-proof consumer reads the receipt, so a changed source snapshot, candidate index, schema, or semantic fingerprint makes the receipt stale.
+Each `polylogue.live-proof-receipt.v1` binds the proof and Bead id, exact code SHA, archive identity, source snapshot, all six archive-tier schema versions, parser and lowering fingerprints, candidate generation and index hash where applicable, typed residues, and input receipt digests. Private local paths are represented only as a SHA-256 digest plus basename. The collector validates those bindings again when an aggregate, candidate, or final-proof consumer reads the receipt, so a changed source snapshot, candidate index, schema, or semantic fingerprint makes the receipt stale.
 
 ### `--operation-id` and `--resume`: worked example
 
