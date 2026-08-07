@@ -77,6 +77,8 @@ def _archive_owned(
     def wrapped(
         archive_root: Path, *args: _ArchiveOwnedParams.args, **kwargs: _ArchiveOwnedParams.kwargs
     ) -> _ArchiveOwnedResult:
+        if bool(kwargs.get("dry_run", False)):
+            return function(archive_root, *args, **kwargs)
         with OwnedArchiveLocation.acquire(
             ArchiveLocation.resolve(archive_root),
             owner_id=f"blob-ref-liveness:{os.getpid()}",

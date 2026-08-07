@@ -390,15 +390,46 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             evidence_ref = str(raw["evidence_ref"])
         except (DurableChangeTrainError, KeyError, TypeError, ValueError) as exc:
             raise DurableChangeTrainError(f"source continuity pending intent is malformed: {path}") from exc
-        refresh_released_source_train_continuity(
-            archive_root,
-            mutation_receipt=receipt,
-            backup_manifest=backup,
-            pre_mutation_evidence=pre_mutation_evidence,
-            operation_id=operation_id,
-            evidence_ref=evidence_ref,
-        )
+        receipt_phase = _liveness_receipt_phase(receipt)
+        if receipt_phase in {"prepared", "batch_committed"}:
+            from polylogue.maintenance.blob_ref_liveness_reconciliation import _recover_prepared_receipt
+
+            outcome = _recover_prepared_receipt(archive_root / "source.db", receipt)
+            if outcome == "recovered_rolled_back":
+                _clear_source_continuity_pending_intent(path)
+                continue
+            if outcome == "recovered_partial":
+                raise DurableChangeTrainError(f"source continuity pending intent has a partial source mutation: {path}")
+            receipt_phase = outcome
+        if receipt_phase not in {"committed", "recovered_committed"}:
+            raise DurableChangeTrainError(f"source continuity pending intent has no committed receipt: {path}")
+        try:
+            refresh_released_source_train_continuity(
+                archive_root,
+                mutation_receipt=receipt,
+                backup_manifest=backup,
+                pre_mutation_evidence=pre_mutation_evidence,
+                operation_id=operation_id,
+                evidence_ref=evidence_ref,
+            )
+        except DurableChangeTrainError as exc:
+            if "found no released source train" not in str(exc):
+                raise
         _clear_source_continuity_pending_intent(path)
+
+
+def _liveness_receipt_phase(receipt_path: Path) -> str:
+    """Read the last liveness phase before deciding how a pending intent recovers."""
+    try:
+        records = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DurableChangeTrainError(f"source continuity pending receipt is unreadable: {receipt_path}") from exc
+    if not records or not isinstance(records[-1], dict):
+        raise DurableChangeTrainError(f"source continuity pending receipt is incomplete: {receipt_path}")
+    phase = records[-1].get("phase")
+    if not isinstance(phase, str):
+        raise DurableChangeTrainError(f"source continuity pending receipt has no phase: {receipt_path}")
+    return phase
 
 
 def _validate_liveness_receipt_bytes(
@@ -424,9 +455,9 @@ def _validate_liveness_receipt_bytes(
         or header.get("backup_manifest") != str(backup_manifest)
         or header.get("candidate_digest") != operation_id
         or footer.get("kind") != "blob_ref_liveness_reconciliation"
-        or footer.get("phase") != "committed"
+        or footer.get("phase") not in {"committed", "recovered_committed"}
         or footer.get("deleted_count") != header.get("candidate_count")
-        or footer.get("post_orphaned_count") != 0
+        or (footer.get("phase") == "committed" and footer.get("post_orphaned_count") != 0)
     ):
         raise DurableChangeTrainError("source mutation receipt does not bind the named liveness operation")
 
