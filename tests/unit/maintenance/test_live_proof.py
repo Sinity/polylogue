@@ -44,7 +44,7 @@ from polylogue.version import VERSION_INFO
 
 @pytest.fixture
 def archive_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    root = tmp_path / "private-archive"
+    root = (tmp_path / "private-archive").resolve()
     initialize_active_archive_root(root)
     monkeypatch.setenv("POLYLOGUE_CODE_SHA", "a" * 40)
     return root
@@ -233,6 +233,22 @@ def test_existing_apply_receipt_keeps_failure_as_failed_evidence(archive_root: P
     assert receipt.result["status"] == "failed"
     with pytest.raises(LiveProofError, match="not acceptable"):
         validate_live_operation_aggregate((receipt.to_document(),), archive_root)
+
+
+def test_existing_apply_receipt_requires_not_applicable_residue(archive_root: Path, tmp_path: Path) -> None:
+    apply_path = tmp_path / "not-applicable-apply-receipt.json"
+    apply_path.write_text(
+        json.dumps(_apply_receipt(capture_live_proof_bindings(archive_root), status="not_applicable")),
+        encoding="utf-8",
+    )
+
+    receipt = collect_live_proof(LiveProofId.EXISTING_APPLY_RECEIPT.value, archive_root, apply_receipt_path=apply_path)
+
+    assert validate_live_operation_aggregate((receipt.to_document(),), archive_root) == (receipt,)
+    mutated = receipt.to_document()
+    mutated["residues"] = []
+    with pytest.raises(LiveProofError, match="status and residues are inconsistent"):
+        validate_live_operation_aggregate((_rehash(mutated),), archive_root)
 
 
 def test_existing_apply_receipt_rejects_unknown_result(archive_root: Path, tmp_path: Path) -> None:

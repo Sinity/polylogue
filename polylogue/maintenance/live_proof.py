@@ -669,6 +669,7 @@ def collect_live_proof(
     """Collect exactly one fixed proof route without operating on the archive."""
 
     validate_live_proof_registry()
+    resolved_archive_root = Path(archive_root).expanduser().resolve()
     spec = live_proof_spec(proof_id)
     if spec.mode is LiveProofMode.CANDIDATE:
         if candidate_generation_id is None or apply_receipt_path is not None:
@@ -679,11 +680,11 @@ def collect_live_proof(
     elif candidate_generation_id is not None or apply_receipt_path is not None:
         raise LiveProofError("read-only proof accepts no candidate or apply receipt input")
 
-    bindings = capture_live_proof_bindings(archive_root, candidate_generation_id=candidate_generation_id)
+    bindings = capture_live_proof_bindings(resolved_archive_root, candidate_generation_id=candidate_generation_id)
     if spec.producer == "archive_verification":
         result, residues = _archive_verification_result(
             spec,
-            archive_root,
+            resolved_archive_root,
             candidate_generation_id=candidate_generation_id,
             bindings=bindings,
         )
