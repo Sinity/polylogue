@@ -19,11 +19,13 @@ import hashlib
 import json
 import os
 import resource
+import shutil
 import sqlite3
 import subprocess
 import sys
 import time
 from dataclasses import replace
+from datetime import datetime
 from functools import cache
 from pathlib import Path
 
@@ -38,6 +40,7 @@ from polylogue.scenarios import (
 from polylogue.scenarios.workload import raw_authority_fixed_point_spec
 from polylogue.schemas.operator.receipt import package_hashes_for_registry
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -293,7 +296,7 @@ def _readiness_count(readiness: dict[str, object], key: str) -> int:
     return int(value)
 
 
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(420)
 @pytest.mark.uses_real_clock("waits for a real subprocess replay checkpoint and kill/resume boundary")
 def test_sanitized_codex_804_revision_recovery_proof(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
@@ -389,6 +392,18 @@ def test_sanitized_codex_804_revision_recovery_proof(
             total=REVISION_COUNT,
         )
     )
+
+    # Source remediation is a phase-2 input to candidate construction. Run
+    # the production remediation route in an isolated archive, then carry its
+    # finalized durable source tier into this fresh-index candidate fixture.
+    # This keeps the rebuild receipt frozen after remediation, so a candidate
+    # replay cannot hide a source mutation behind its own provenance gate.
+    source_ready_root = tmp_path / "codex-804-source-ready"
+    initialize_active_archive_root(source_ready_root)
+    shutil.copy2(root / "source.db", source_ready_root / "source.db")
+    shutil.copytree(root / "blob", source_ready_root / "blob")
+    backfill_historical_revision_evidence(source_ready_root, ingest_workers=1, bulk_fts=True)
+    shutil.copy2(source_ready_root / "source.db", root / "source.db")
 
     schema_inference_receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
     store = IndexGenerationStore.for_archive_root(root)
@@ -533,17 +548,17 @@ import json
 import sys
 from pathlib import Path
 
-import polylogue.maintenance.rebuild_index as rebuild_module
+import polylogue.maintenance.replay as replay_module
 
 trace = Path(sys.argv[4])
-real_selection = rebuild_module.rebuild_selection_evidence
+real_replay = replay_module.rebuild_index_from_source
 
-def recording_selection(raw_ids, **kwargs):
+async def recording_replay(*args, **kwargs):
     with trace.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(list(raw_ids), sort_keys=True) + "\\n")
-    return real_selection(raw_ids, **kwargs)
+        stream.write(json.dumps(list(kwargs["raw_ids"]), sort_keys=True) + "\\n")
+    return await real_replay(*args, **kwargs)
 
-rebuild_module.rebuild_selection_evidence = recording_selection
+replay_module.rebuild_index_from_source = recording_replay
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 
 root = Path(sys.argv[1])
@@ -564,7 +579,7 @@ for _ in range(200):
 else:
     raise SystemExit("persisted rebuild did not reach replayed")
 """
-    selection_trace_path = tmp_path / "rebuild-selection-trace.jsonl"
+    replay_trace_path = tmp_path / "rebuild-replay-trace.jsonl"
     resumed_process = subprocess.run(
         [
             sys.executable,
@@ -573,7 +588,7 @@ else:
             str(root),
             operation_id,
             str(schema_inference_receipt_path),
-            str(selection_trace_path),
+            str(replay_trace_path),
         ],
         cwd=Path.cwd(),
         check=False,
@@ -593,7 +608,7 @@ else:
     assert Path(candidate.index_path).is_file()
     assert store.active_pointer.resolve(strict=True) == active_before
     resumed_raw_pages = tuple(
-        tuple(json.loads(line)) for line in selection_trace_path.read_text(encoding="utf-8").splitlines()
+        tuple(json.loads(line)) for line in replay_trace_path.read_text(encoding="utf-8").splitlines()
     )
     assert resumed_raw_pages, "restart observed no production replay selections for the suffix"
     resumed_raw_ids = {raw_id for page in resumed_raw_pages for raw_id in page}
@@ -713,6 +728,10 @@ else:
     assert len(application_rows) == REVISION_COUNT
     assert {str(row[0]) for row in application_rows} == raw_ids
     assert {str(row[1]) for row in application_rows} <= {"selected_baseline", "applied_append", "superseded"}
+    accepted_application_ids = {str(row[2]) for row in application_rows if row[2] is not None}
+    assert len(accepted_application_ids) == 1
+    assert accepted_application_ids <= raw_ids
+    assert accepted_application_ids == {terminal_raw_id}
     assert all(row[2] is not None for row in application_rows)
     assert len(indexed) == 1
     assert len(selected_heads) == 1
@@ -726,6 +745,19 @@ else:
         ).fetchone()
     assert selected_source_row == (TERMINAL_WIRE_BYTES, terminal_blob_hash)
     assert terminal_block_count > 0
+    expected_baseline_timestamps = tuple(
+        int(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000)
+        for timestamp in _BASELINE_MESSAGE_TIMESTAMPS
+    )
+    with sqlite3.connect(candidate.index_path) as conn:
+        persisted_baseline_timestamps = tuple(
+            int(row[0])
+            for row in conn.execute(
+                "SELECT occurred_at_ms FROM messages WHERE message_id LIKE ? ORDER BY message_id",
+                (f"%{SESSION_NATIVE_ID}-message-%",),
+            )
+        )
+    assert persisted_baseline_timestamps == expected_baseline_timestamps
 
     quiescent = _resource_sample(root)
     phases.append(
