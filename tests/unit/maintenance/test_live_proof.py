@@ -121,6 +121,7 @@ def test_read_only_receipt_normalizes_archive_root_alias(archive_root: Path, tmp
 
     private_paths = dict(receipt.bindings.private_paths)
     assert private_paths["archive_root"] == live_proof.PrivatePathReference.capture(archive_root)
+    assert str(alias) not in json.dumps(receipt.to_document())
     assert validate_live_proof_receipt(receipt.to_document(), alias) == receipt
 
 
