@@ -201,15 +201,16 @@ def test_valid_receipt_allows_real_candidate_acceptance_and_promotion(tmp_path: 
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().exists()
 
 
-def test_rebuild_context_reuses_refreshed_inventory_token_after_detector_change(
+def test_nonresumable_rebuild_reuses_refreshed_inventory_token_after_detector_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A successful metadata-only rehash updates the pass token for later checkpoints.
+    """A nonresumable rebuild carries a metadata refresh to later validations.
 
     Anti-vacuity: this runs the real offline rebuild entry point and validator.
-    Touching the external corpus after the first context validation forces one
-    successful full inventory refresh. Every later context validation must use
-    the refreshed token instead of scanning that corpus again.
+    The real raw-id selection boundary touches the external corpus after the
+    initial receipt validation. Pre-creation validation then refreshes its
+    detector token once; every subsequent validation must use that token
+    instead of scanning the corpus again.
     """
     root = tmp_path / "archive"
     _seed(root, count=1)
@@ -227,32 +228,59 @@ def test_rebuild_context_reuses_refreshed_inventory_token_after_detector_change(
         return original_inventory(roots)  # type: ignore[arg-type]
 
     monkeypatch.setattr(schema_gate_module, "_external_inventory", counted_inventory)
+    original_select = rebuild_index_module.select_rebuild_raw_ids
+    inventory_calls_before_refresh: int | None = None
+
+    def select_then_touch(request: RebuildIndexRequest) -> tuple[int, list[str], int]:
+        nonlocal inventory_calls_before_refresh
+        selected = original_select(request)
+        stat = external_path.stat()
+        os.utime(external_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        inventory_calls_before_refresh = full_inventory_calls
+        return selected
+
+    monkeypatch.setattr(rebuild_index_module, "select_rebuild_raw_ids", select_then_touch)
     result = rebuild_index_from_source_sync(
-        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path, promote=False)
+        RebuildIndexRequest(
+            archive_root=root,
+            schema_inference_receipt_path=receipt_path,
+            raw_ids=tuple(_raw_ids(root)),
+            promote=False,
+        )
     )
 
     assert result.status == "replayed"
-    consumed_evidence = result.consumed_evidence
-    inventory_token = cast(dict[str, object], consumed_evidence["external_ground_truth_inventory_token"])
-    provenance = rebuild_index_module.RebuildProvenanceContext(
-        root=root,
-        receipt_path=receipt_path,
-        source_snapshot=str(consumed_evidence["source_snapshot"]),
-        consumed_evidence=consumed_evidence,
-        external_inventory_token=inventory_token,
-    )
-    stat = external_path.stat()
-    os.utime(external_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
-    inventory_calls_before_refresh = full_inventory_calls
-
-    rebuild_index_module._validate_before_derived_state(provenance)
-    inventory_calls_after_refresh = full_inventory_calls
-    rebuild_index_module._validate_before_derived_state(provenance)
-
-    assert inventory_calls_after_refresh == inventory_calls_before_refresh + 1
-    assert full_inventory_calls == inventory_calls_after_refresh, (
+    assert inventory_calls_before_refresh is not None
+    assert full_inventory_calls == inventory_calls_before_refresh + 1, (
         "the refreshed pass token must prevent a second full inventory scan"
     )
+
+
+@pytest.mark.parametrize("transaction_payload", [None, "{"], ids=["missing", "malformed"])
+def test_invalid_receipt_preserves_provenance_error_when_recovery_state_is_unreadable(
+    tmp_path: Path, transaction_payload: str | None
+) -> None:
+    """Recovery load failures cannot replace the admission-gate rejection."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["generated_at"] = "2000-01-01T00:00:00Z"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    operation_id = "unreadable-recovery"
+    if transaction_payload is not None:
+        transaction_path = root / ".index-rebuild-transactions" / f"{operation_id}.json"
+        transaction_path.parent.mkdir()
+        transaction_path.write_text(transaction_payload, encoding="utf-8")
+
+    with pytest.raises(rebuild_index_module.RebuildProvenanceError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=operation_id,
+            )
+        )
 
 
 def test_resume_revalidates_external_mapping_before_more_replay(tmp_path: Path) -> None:

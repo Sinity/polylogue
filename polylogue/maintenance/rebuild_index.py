@@ -1383,10 +1383,16 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
             if initial_provenance_error is not None:
                 if request.operation_id is not None:
                     recovery_store = IndexGenerationStore(owned.location)
-                    existing = recovery_store.load_transaction(request.operation_id)
-                    existing = _reconcile_active_generation_transaction(recovery_store, existing)
-                    if existing.status in _REBUILD_TERMINAL_NOT_RESUMABLE:
-                        raise initial_provenance_error
+                    try:
+                        existing = recovery_store.load_transaction(request.operation_id)
+                    except Exception:
+                        # The stale-marker path below owns transaction-load
+                        # failures and preserves the provenance rejection.
+                        pass
+                    else:
+                        existing = _reconcile_active_generation_transaction(recovery_store, existing)
+                        if existing.status in _REBUILD_TERMINAL_NOT_RESUMABLE:
+                            raise initial_provenance_error
                 _mark_rebuild_transaction_stale_after_provenance_failure(
                     root, request.operation_id, initial_provenance_error
                 )
@@ -1567,6 +1573,7 @@ async def _rebuild_index_from_source_owned(
                 external_inventory_token=inventory_token,
             )
             precreate_provenance.validate()
+            inventory_token = precreate_provenance.external_inventory_token
             generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
         try:
             selection_evidence = rebuild_selection_evidence(
