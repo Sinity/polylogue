@@ -1933,8 +1933,6 @@ def _reconcile_durable_change_train_startup_locked(
     """Reconcile persisted trains while the caller holds archive ownership."""
     _recover_pending_source_continuity_intents(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
-    if not manifest_root.is_dir():
-        return ()
     reconciled: list[Path] = []
     live_evidence_by_tier: dict[ArchiveTier, DurableDatabaseEvidence] = {}
     live_integrity_by_tier: dict[ArchiveTier, tuple[str, ...]] = {}
@@ -1989,6 +1987,26 @@ def _reconcile_durable_change_train_startup_locked(
         }:
             _prove_and_release_persisted_train(archive_root, manifest_path, train)
             record_reconciled(manifest_path)
+
+    # An existing durable tier above its adoption floor must have a complete
+    # released-train chain even when the manifest directory is absent or empty.
+    # Fresh database creation does not enter this startup reconciliation route.
+    # Recovery runs first so an indeterminate persisted failure keeps its
+    # stronger fail-closed error rather than being masked by chain validation.
+    for tier, adoption_floor in DURABLE_MIGRATION_ADOPTION_FLOORS.items():
+        tier_path = archive_root / f"{tier.value}.db"
+        if not tier_path.is_file():
+            continue
+        with _open_existing_tier(tier_path) as live:
+            current_version = int(live.execute("PRAGMA user_version").fetchone()[0] or 0)
+        if current_version <= adoption_floor:
+            continue
+        manifests_by_tier[tier] = _released_train_manifests_by_target(manifest_root, tier)
+        _require_released_train_chain(
+            tier,
+            manifests_by_tier[tier],
+            current_version=current_version,
+        )
 
     for manifest_path in manifest_paths:
         train = load_durable_change_train_manifest(manifest_path)

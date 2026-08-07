@@ -1398,7 +1398,11 @@ def test_startup_recovers_later_train_before_released_chain_validation(
     def fake_capture(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(user_version=28)
 
-    monkeypatch.setattr(durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: None)
+    monkeypatch.setattr(
+        durable_change_train_module,
+        "_recover_pending_source_continuity_intents",
+        lambda _root: None,
+    )
     monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
     monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", fake_load)
     monkeypatch.setattr(durable_change_train_module, "_persist_train_transition", fake_persist)
@@ -1457,6 +1461,25 @@ def test_startup_checks_chain_when_only_current_train_remains(
         "_released_train_manifests_by_target",
         lambda _root, _tier: {28: current},
     )
+
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
+
+
+def test_startup_checks_chain_when_manifest_directory_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "source.db").touch()
+
+    @contextmanager
+    def fake_open_tier(_path: Path) -> Iterator[sqlite3.Connection]:
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("PRAGMA user_version = 28")
+            yield connection
+
+    monkeypatch.setattr(durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: None)
+    monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
 
     with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
         durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
