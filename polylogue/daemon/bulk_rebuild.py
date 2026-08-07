@@ -46,6 +46,10 @@ from typing import TYPE_CHECKING
 from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
+from polylogue.maintenance.rebuild_index import (
+    _REBUILD_TERMINAL_NOT_RESUMABLE,
+    _reconcile_active_generation_transaction,
+)
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.index_generation import (
     IndexGenerationStore,
@@ -149,7 +153,7 @@ DAEMON_BULK_REBUILD_BATCH_SIZE = 500
 #: ``stale`` (source evidence changed mid-build), and ``failed`` (a pass
 #: raised; automagic doctrine retries rather than waiting on an operator to
 #: intervene).
-_TERMINAL_NOT_RESUMABLE = frozenset({"promoted", "promoted-attestation-failed", "stale", "failed"})
+_TERMINAL_NOT_RESUMABLE = _REBUILD_TERMINAL_NOT_RESUMABLE
 
 
 def _preflight_raw_failure_lifecycle(root: Path) -> None:
@@ -162,41 +166,6 @@ def _preflight_raw_failure_lifecycle(root: Path) -> None:
     else:
         reason = snapshot.reason or "raw failure lifecycle is unavailable"
     raise RuntimeError(f"daemon bulk-rebuild raw failure lifecycle preflight failed: {reason}")
-
-
-def _reconcile_active_generation_transaction(
-    store: IndexGenerationStore, transaction: IndexRebuildTransaction
-) -> IndexRebuildTransaction:
-    """Turn a post-pointer-write transaction into terminal state on restart.
-
-    Promotion changes the active pointer before the transaction attestation is
-    durable. If both the normal and recovery checkpoints fail, the persisted
-    transaction can still look resumable even though its generation is active.
-    The next resolver pass must record that observed fact before returning it
-    to the rebuild loop, otherwise the daemon retries an already-active
-    generation forever.
-    """
-
-    if transaction.status in _TERMINAL_NOT_RESUMABLE:
-        return transaction
-    try:
-        generation = store.load(transaction.generation_id)
-        active_path = store.active_pointer.resolve(strict=True)
-        generation_path = Path(generation.index_path).resolve(strict=True)
-    except (FileNotFoundError, OSError, ValueError):
-        return transaction
-    if generation.state != "active" or active_path != generation_path:
-        return transaction
-    return store.checkpoint_transaction(
-        transaction,
-        status="promoted-attestation-failed",
-        error="reconciled active generation after interrupted promotion attestation",
-        post_promotion_attestation={
-            "status": "reconciled-after-restart",
-            "generation_id": generation.generation_id,
-            "generation_state": generation.state,
-        },
-    )
 
 
 def resolve_or_start_daemon_bulk_rebuild_transaction(

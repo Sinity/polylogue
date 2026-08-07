@@ -16,7 +16,7 @@ import os
 import sqlite3
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
 from http import HTTPStatus
 from pathlib import Path
@@ -159,6 +159,11 @@ class RebuildProvenanceContext:
             verify_blob_integrity=verify_blob_integrity,
             verified_blob_integrity_snapshot=cached_snapshot,
         )
+        refreshed_inventory_token = validated.get("external_ground_truth_inventory_token")
+        if isinstance(refreshed_inventory_token, dict):
+            self.external_inventory_token = refreshed_inventory_token
+            self.consumed_evidence["external_ground_truth_inventory_token"] = refreshed_inventory_token
+            _ACTIVE_EXTERNAL_INVENTORY_TOKEN.set(refreshed_inventory_token)
         if verify_blob_integrity:
             refreshed_snapshot = validated.pop("_verified_blob_integrity_snapshot", None)
             if isinstance(refreshed_snapshot, dict):
@@ -174,6 +179,10 @@ class RebuildProvenanceContext:
         """Authorize failure cleanup from the immutable pre-mutation proof."""
         if not self.consumed_evidence or not self.source_snapshot:
             raise RuntimeError("rebuild cleanup has no validated provenance context")
+
+    def receipt_evidence(self) -> dict[str, object]:
+        """Snapshot the latest receipt-bound evidence for a durable record."""
+        return dict(self.consumed_evidence)
 
 
 def _validate_rebuild_provenance_receipt(
@@ -204,6 +213,50 @@ def _validate_rebuild_provenance_receipt(
         raise RebuildProvenanceError(f"rebuild schema-inference preflight gate failed: {exc}") from exc
 
 
+_REBUILD_TERMINAL_NOT_RESUMABLE = frozenset({"promoted", "promoted-attestation-failed", "stale", "failed"})
+
+
+def _reconcile_active_generation_transaction(
+    store: IndexGenerationStore, transaction: IndexRebuildTransaction
+) -> IndexRebuildTransaction:
+    """Turn a post-pointer-write transaction into terminal state on restart.
+
+    Promotion changes the active pointer before the transaction attestation is
+    durable. If both the normal and recovery checkpoints fail, the persisted
+    transaction can still look resumable even though its generation is active.
+    The next resolver pass must record that observed fact before returning it
+    to the rebuild loop, otherwise the caller retries an already-active
+    generation forever. The transaction's generation owner is also required
+    to match the active generation owner, so a stale transaction cannot
+    attest a generation owned by another rebuild.
+    """
+
+    if transaction.status in _REBUILD_TERMINAL_NOT_RESUMABLE:
+        return transaction
+    try:
+        generation = store.load(transaction.generation_id)
+        active_path = store.active_pointer.resolve(strict=True)
+        generation_path = Path(generation.index_path).resolve(strict=True)
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        return transaction
+    if (
+        generation.owner_id != transaction.generation_owner_id
+        or generation.state != "active"
+        or active_path != generation_path
+    ):
+        return transaction
+    return store.checkpoint_transaction(
+        transaction,
+        status="promoted-attestation-failed",
+        error="reconciled active generation after interrupted promotion attestation",
+        post_promotion_attestation={
+            "status": "reconciled-after-restart",
+            "generation_id": generation.generation_id,
+            "generation_state": generation.state,
+        },
+    )
+
+
 def _mark_rebuild_transaction_stale_after_provenance_failure(
     root: Path, operation_id: str | None, error: RebuildProvenanceError
 ) -> None:
@@ -223,6 +276,7 @@ def _mark_rebuild_transaction_stale_after_provenance_failure(
     try:
         store = IndexGenerationStore.for_archive_root(root)
         transaction = store.load_transaction(operation_id)
+        transaction = _reconcile_active_generation_transaction(store, transaction)
     except Exception as load_error:
         error.add_note(f"could not load rebuild transaction to mark it stale: {load_error}")
         return
@@ -351,17 +405,13 @@ def _cleanup_nonresumable_generation_failure(
 def _create_rebuild_transaction_after_receipt_validation(
     generation_store: IndexGenerationStore,
     request: RebuildIndexRequest,
-    root: Path,
-    *,
-    inventory_token: dict[str, object] | None = None,
+    provenance: RebuildProvenanceContext,
 ) -> IndexRebuildTransaction:
     """Create the first candidate only after an ownership-bound validation."""
     from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
 
-    consumed_evidence = _validate_rebuild_provenance_receipt(
-        root, request.schema_inference_receipt_path, inventory_token=inventory_token
-    )
-    source_snapshot = rebuild_source_evidence_snapshot(root)
+    provenance.validate()
+    source_snapshot = rebuild_source_evidence_snapshot(provenance.root)
     transaction = generation_store.create_transaction(
         source_snapshot=source_snapshot,
         pass_byte_budget=(
@@ -370,12 +420,11 @@ def _create_rebuild_transaction_after_receipt_validation(
         pass_deadline_ms=(
             int(request.pass_deadline_seconds * 1000) if request.pass_deadline_seconds is not None else None
         ),
+        consumed_evidence=provenance.receipt_evidence(),
     )
     try:
-        _validate_rebuild_provenance_receipt(
-            root, request.schema_inference_receipt_path, inventory_token=inventory_token
-        )
-        if rebuild_source_evidence_snapshot(root) != source_snapshot:
+        provenance.validate()
+        if rebuild_source_evidence_snapshot(provenance.root) != source_snapshot:
             raise RebuildProvenanceError(
                 "rebuild schema-inference preflight gate failed: source evidence changed during transaction creation"
             )
@@ -383,9 +432,9 @@ def _create_rebuild_transaction_after_receipt_validation(
         _cleanup_transaction_after_provenance_failure(
             generation_store,
             transaction,
-            root,
-            request.schema_inference_receipt_path,
-            consumed_evidence,
+            provenance.root,
+            provenance.receipt_path,
+            provenance.consumed_evidence,
             exc,
         )
         raise
@@ -395,8 +444,7 @@ def _create_rebuild_transaction_after_receipt_validation(
 def _checkpoint_rebuild_transaction_after_receipt_validation(
     generation_store: IndexGenerationStore,
     transaction: IndexRebuildTransaction,
-    root: Path,
-    receipt_path: Path | None,
+    provenance: RebuildProvenanceContext,
     *,
     status: str,
     last_blob_hash_hex: str | None = None,
@@ -406,16 +454,10 @@ def _checkpoint_rebuild_transaction_after_receipt_validation(
     error: str | None = None,
     derived_stores_cleared: bool | None = None,
     post_promotion_attestation: dict[str, object] | None = None,
-    inventory_token: dict[str, object] | None = None,
     verify_blob_integrity: bool = False,
 ) -> IndexRebuildTransaction:
     """Validate immediately before every persisted rebuild state transition."""
-    _validate_rebuild_provenance_receipt(
-        root,
-        receipt_path,
-        inventory_token=inventory_token,
-        verify_blob_integrity=verify_blob_integrity,
-    )
+    provenance.validate(verify_blob_integrity=verify_blob_integrity)
     return generation_store.checkpoint_transaction(
         transaction,
         status=status,
@@ -426,6 +468,7 @@ def _checkpoint_rebuild_transaction_after_receipt_validation(
         error=error,
         derived_stores_cleared=derived_stores_cleared,
         post_promotion_attestation=post_promotion_attestation,
+        consumed_evidence=provenance.receipt_evidence(),
     )
 
 
@@ -433,13 +476,13 @@ def _save_rebuild_pass_receipt_after_receipt_validation(
     generation_store: IndexGenerationStore,
     operation_id: str,
     pass_receipt: RebuildIndexReceipt,
-    root: Path,
-    receipt_path: Path | None,
-    inventory_token: dict[str, object] | None = None,
-) -> None:
+    provenance: RebuildProvenanceContext,
+) -> RebuildIndexReceipt:
     """Validate before publishing a pass receipt tied to rebuild state."""
-    _validate_rebuild_provenance_receipt(root, receipt_path, inventory_token=inventory_token)
+    provenance.validate()
+    pass_receipt = replace(pass_receipt, consumed_evidence=provenance.receipt_evidence())
     generation_store.save_pass_receipt(operation_id, pass_receipt.to_dict())
+    return pass_receipt
 
 
 #: Passed through to ``CensusParseStage.warm_raw_ids``'s ``max_payload_bytes``
@@ -1379,8 +1422,15 @@ async def _rebuild_index_from_source_owned(
     from polylogue.storage.repair import repair_session_insights
 
     generation_store = IndexGenerationStore(owned.location)
-    inventory_token = cast(dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {}))
-    _ACTIVE_EXTERNAL_INVENTORY_TOKEN.set(inventory_token)
+    provenance = RebuildProvenanceContext(
+        root=root,
+        receipt_path=request.schema_inference_receipt_path,
+        source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
+        consumed_evidence=consumed_evidence,
+        external_inventory_token=cast(
+            dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})
+        ),
+    )
     # ``rebuild_index_from_source`` already acquired this root's
     # ``RebuildLease`` before any operation mutation.  Retain this scope only
     # to preserve the body's indentation and make the outer ownership boundary
@@ -1410,12 +1460,10 @@ async def _rebuild_index_from_source_owned(
         if resumable_full_source:
             if request.operation_id is not None:
                 transaction = generation_store.load_transaction(request.operation_id)
+                transaction = _reconcile_active_generation_transaction(generation_store, transaction)
             else:
                 transaction = _create_rebuild_transaction_after_receipt_validation(
-                    generation_store,
-                    request,
-                    root,
-                    inventory_token=inventory_token,
+                    generation_store, request, provenance
                 )
                 transaction_created_here = True
             if transaction.status in {"promoted", "promoted-attestation-failed", "stale"}:
@@ -1441,8 +1489,7 @@ async def _rebuild_index_from_source_owned(
                     _checkpoint_rebuild_transaction_after_receipt_validation(
                         generation_store,
                         transaction,
-                        root,
-                        request.schema_inference_receipt_path,
+                        provenance,
                         status="stale",
                         error="source evidence changed since this rebuild was planned",
                     )
@@ -1465,13 +1512,12 @@ async def _rebuild_index_from_source_owned(
                 raise RuntimeError(f"rebuild operation {transaction.operation_id} lost its inactive candidate")
             if not transaction.derived_stores_cleared:
                 try:
-                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+                    provenance.validate()
                     _clear_bulk_build_derived_stores(Path(generation.index_path))
                     transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                         generation_store,
                         transaction,
-                        root,
-                        request.schema_inference_receipt_path,
+                        provenance,
                         status=transaction.status,
                         derived_stores_cleared=True,
                     )
@@ -1503,14 +1549,7 @@ async def _rebuild_index_from_source_owned(
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
-            precreate_provenance = RebuildProvenanceContext(
-                root=root,
-                receipt_path=request.schema_inference_receipt_path,
-                source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
-                consumed_evidence=consumed_evidence,
-                external_inventory_token=inventory_token,
-            )
-            precreate_provenance.validate()
+            provenance.validate()
             generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
         try:
             selection_evidence = rebuild_selection_evidence(
@@ -1532,13 +1571,6 @@ async def _rebuild_index_from_source_owned(
                     primary=exc,
                 )
             raise
-        provenance = RebuildProvenanceContext(
-            root=root,
-            receipt_path=request.schema_inference_receipt_path,
-            source_snapshot=str(consumed_evidence.get("source_snapshot", "")),
-            consumed_evidence=consumed_evidence,
-            external_inventory_token=inventory_token,
-        )
         sharded_replay = request.shard_count > 1 and len(selected_raw_ids) >= request.shard_count
         source_drifted = False
         try:
@@ -1679,8 +1711,7 @@ async def _rebuild_index_from_source_owned(
                         transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                             generation_store,
                             transaction,
-                            root,
-                            request.schema_inference_receipt_path,
+                            provenance,
                             status="stale",
                             error="source evidence changed during deadline-interrupted rebuild pass",
                         )
@@ -1691,8 +1722,7 @@ async def _rebuild_index_from_source_owned(
                     transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                         generation_store,
                         transaction,
-                        root,
-                        request.schema_inference_receipt_path,
+                        provenance,
                         status="deferred",
                         error=str(exc),
                     )
@@ -1761,14 +1791,13 @@ async def _rebuild_index_from_source_owned(
                         ),
                         selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
-                        consumed_evidence=consumed_evidence,
+                        consumed_evidence=provenance.receipt_evidence(),
                     )
-                    _save_rebuild_pass_receipt_after_receipt_validation(
+                    pass_receipt = _save_rebuild_pass_receipt_after_receipt_validation(
                         generation_store,
                         transaction.operation_id,
                         pass_receipt,
-                        root,
-                        request.schema_inference_receipt_path,
+                        provenance,
                     )
                     return pass_receipt
             pass_elapsed_s = time.perf_counter() - pass_started_at_s
@@ -1786,12 +1815,11 @@ async def _rebuild_index_from_source_owned(
                             "rebuild schema-inference preflight gate failed: "
                             "source evidence changed during this bounded rebuild pass"
                         )
-                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+                    provenance.validate()
                     transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                         generation_store,
                         transaction,
-                        root,
-                        request.schema_inference_receipt_path,
+                        provenance,
                         status="stale",
                         error="source evidence changed during this bounded rebuild pass",
                     )
@@ -1809,8 +1837,7 @@ async def _rebuild_index_from_source_owned(
                 transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                     generation_store,
                     transaction,
-                    root,
-                    request.schema_inference_receipt_path,
+                    provenance,
                     status=status,
                     last_blob_hash_hex=last_blob_hash_hex,
                     last_raw_id=last_raw_id,
@@ -1862,14 +1889,13 @@ async def _rebuild_index_from_source_owned(
                         ),
                         selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
-                        consumed_evidence=consumed_evidence,
+                        consumed_evidence=provenance.receipt_evidence(),
                     )
-                    _save_rebuild_pass_receipt_after_receipt_validation(
+                    pass_receipt = _save_rebuild_pass_receipt_after_receipt_validation(
                         generation_store,
                         transaction.operation_id,
                         pass_receipt,
-                        root,
-                        request.schema_inference_receipt_path,
+                        provenance,
                     )
                     return pass_receipt
             # polylogue-o56w: terminal-stage costs used to survive only as log
@@ -1902,12 +1928,11 @@ async def _rebuild_index_from_source_owned(
                         "source evidence changed before terminal readiness"
                     )
                 if transaction is not None:
-                    _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+                    provenance.validate()
                     transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                         generation_store,
                         transaction,
-                        root,
-                        request.schema_inference_receipt_path,
+                        provenance,
                         status="stale",
                         error="source evidence changed before terminal readiness",
                     )
@@ -2036,8 +2061,7 @@ async def _rebuild_index_from_source_owned(
                 transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                     generation_store,
                     transaction,
-                    root,
-                    request.schema_inference_receipt_path,
+                    provenance,
                     status="ready",
                 )
             if request.promote:
@@ -2047,7 +2071,7 @@ async def _rebuild_index_from_source_owned(
                 # caught before clobbering someone else's activation rather
                 # than after (polylogue-ovme.2 AC3).
                 assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
-                _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+                provenance.validate()
                 terminal_started_at = time.perf_counter()
                 generation = generation_store.promote(generation)
                 terminal_timings_s["terminal.promote"] = time.perf_counter() - terminal_started_at
@@ -2075,6 +2099,7 @@ async def _rebuild_index_from_source_owned(
                             transaction,
                             status="promoted",
                             post_promotion_attestation=attestation,
+                            consumed_evidence=provenance.receipt_evidence(),
                         )
                     except Exception as attestation_error:
                         source_drifted = True
@@ -2123,8 +2148,7 @@ async def _rebuild_index_from_source_owned(
                     _checkpoint_rebuild_transaction_after_receipt_validation(
                         generation_store,
                         transaction,
-                        root,
-                        request.schema_inference_receipt_path,
+                        provenance,
                         status="failed",
                         error="bounded rebuild pass failed; candidate retained for diagnosis or explicit recovery",
                     )
@@ -2169,7 +2193,7 @@ async def _rebuild_index_from_source_owned(
                 replay=replay,
                 terminal_timings_s=terminal_timings_s,
             ),
-            consumed_evidence=consumed_evidence,
+            consumed_evidence=provenance.receipt_evidence(),
         )
         try:
             _persist_candidate_receipt(generation, final_receipt.to_dict())
@@ -2188,6 +2212,7 @@ async def _rebuild_index_from_source_owned(
                             "generation_state": "active",
                             "error": str(attestation_error),
                         },
+                        consumed_evidence=provenance.receipt_evidence(),
                     )
                 except BaseException as recovery_error:
                     attestation_error.add_note(
@@ -2217,6 +2242,7 @@ async def _rebuild_index_from_source_owned(
                                 "generation_state": "active",
                                 "error": str(attestation_error),
                             },
+                            consumed_evidence=provenance.receipt_evidence(),
                         )
                     except BaseException as recovery_error:
                         attestation_error.add_note(
@@ -2225,12 +2251,11 @@ async def _rebuild_index_from_source_owned(
                         )
                     raise
             else:
-                _save_rebuild_pass_receipt_after_receipt_validation(
+                final_receipt = _save_rebuild_pass_receipt_after_receipt_validation(
                     generation_store,
                     transaction.operation_id,
                     final_receipt,
-                    root,
-                    request.schema_inference_receipt_path,
+                    provenance,
                 )
     except BaseException as exc:
         if transaction is None:

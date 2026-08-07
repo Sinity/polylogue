@@ -24,6 +24,7 @@ from polylogue.maintenance.rebuild_index import (
 )
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.archive_readiness import probe_archive_tier
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
@@ -162,11 +163,14 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
     """
     root = tmp_path / "archive"
     _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
     location = ArchiveLocation.resolve(root)
     owned = OwnedArchiveLocation.acquire(location, owner_id="concurrent-campaign")
     try:
         with pytest.raises(ArchiveOwnershipError):
-            rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+            rebuild_index_from_source_sync(
+                RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+            )
         # Failure happened before any generation bookkeeping was created.
         assert not (root / ".index-generations").exists()
         # The rebuild lease is now deliberately acquired before the general
@@ -176,7 +180,9 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
         owned.release()
 
     # Releasing the concurrent holder's ownership lets the rebuild proceed.
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+    )
     assert receipt.status == "empty-source"
 
 
@@ -186,6 +192,8 @@ def test_rebuild_blocks_unsafe_cursor_authority_before_generation_creation(
 ) -> None:
     root = tmp_path / "archive"
     _init_empty_source(root)
+    cursor_payload = b"cursor-authority-fixture"
+    cursor_blob_hash, _ = BlobStore(root / "blob").write_from_bytes(cursor_payload)
     with sqlite3.connect(root / "source.db") as conn:
         conn.execute(
             """
@@ -194,18 +202,21 @@ def test_rebuild_blocks_unsafe_cursor_authority_before_generation_creation(
                 blob_size, acquired_at_ms, logical_source_key, revision_kind,
                 source_revision, acquisition_generation, revision_authority
             ) VALUES ('raw-1', 'codex-session', 'session-1', 'source.jsonl', 0, ?,
-                      1, 1, 'codex:session-1', 'full', 'revision-0', 0, 'byte_proven')
+                      ?, 1, 'codex:session-1', 'full', 'revision-0', 0, 'byte_proven')
             """,
-            (bytes(32),),
+            (bytes.fromhex(cursor_blob_hash), len(cursor_payload)),
         )
         conn.commit()
     monkeypatch.setattr(
         "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
         lambda _root: "1 ingest cursor row committed past accepted raw material",
     )
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
 
     with pytest.raises(RuntimeError, match="raw frontier integrity"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
 
     assert not (root / ".index-generations").exists()
 
@@ -221,30 +232,42 @@ def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_c
             """,
             (b"o" * 32,),
         )
+        conn.commit()
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
 
     with pytest.raises(RuntimeError, match="reindex source preflight gate failed: blob-refs-liveness"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
 
     assert not (root / ".index-generations").exists()
 
 
 def test_rebuild_source_preflight_rejects_unexplained_raw_failure(tmp_path: Path) -> None:
+    """Reach raw-failure classification after satisfying earlier readiness gates."""
     root = tmp_path / "archive"
     _init_empty_source(root)
+    initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
+    initialize_archive_database(root / "ops.db", ArchiveTier.OPS)
+    failed_payload = b"raw-failure-fixture"
+    failed_blob_hash, _ = BlobStore(root / "blob").write_from_bytes(failed_payload)
     with sqlite3.connect(root / "source.db") as conn:
         conn.execute(
             """
             INSERT INTO raw_sessions(
                 raw_id, origin, native_id, source_path, blob_hash, blob_size,
                 acquired_at_ms, parse_error
-            ) VALUES ('raw-failed', 'codex-session', 'failed', '/x', ?, 10, 100, 'unexpected parser failure')
+            ) VALUES ('raw-failed', 'codex-session', 'failed', '/x', ?, ?, 100, 'unexpected parser failure')
             """,
-            (b"u" * 32,),
+            (bytes.fromhex(failed_blob_hash), len(failed_payload)),
         )
         conn.commit()
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
 
     with pytest.raises(RuntimeError, match="raw-failure-lifecycle"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
 
     assert not (root / ".index-generations").exists()
 
@@ -264,9 +287,13 @@ def test_rebuild_preflight_exposes_unreconciled_source_ref_types(tmp_path: Path)
                 (b"h" * 32, "hook-gone", "hook_payload"),
             ),
         )
+        conn.commit()
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
 
     with pytest.raises(RuntimeError) as exc_info:
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+        )
 
     message = str(exc_info.value)
     assert "reindex source preflight gate failed: blob-refs-liveness" in message
@@ -286,8 +313,11 @@ def test_rebuild_releases_ownership_lock_after_completion(tmp_path: Path) -> Non
     """
     root = tmp_path / "archive"
     _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
 
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
+    )
     assert receipt.status == "empty-source"
 
     location = ArchiveLocation.resolve(root)
