@@ -7,11 +7,12 @@ import json
 import os
 import sqlite3
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Concatenate, ParamSpec, TypeVar, cast
 
 if TYPE_CHECKING:
     from polylogue.storage.blob_gc import OrphanedBlobRefCensus
@@ -20,6 +21,7 @@ from polylogue.config import Config
 from polylogue.daemon.write_coordinator import daemon_write_lease_active
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.paths import render_root
+from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
     BlobRefLivenessClassification,
@@ -32,6 +34,8 @@ from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainError,
+    _clear_source_continuity_pending_intent,
+    _write_source_continuity_pending_intent,
     refresh_released_source_train_continuity,
 )
 from polylogue.storage.sqlite.migration_runner import (
@@ -59,6 +63,28 @@ _RECOVERY_TERMINAL_PHASES = {
 
 class BlobRefLivenessReconciliationError(RuntimeError):
     """Raised when reconciliation cannot prove a safe source-tier apply."""
+
+
+_ArchiveOwnedParams = ParamSpec("_ArchiveOwnedParams")
+_ArchiveOwnedResult = TypeVar("_ArchiveOwnedResult")
+
+
+def _archive_owned(
+    function: Callable[Concatenate[Path, _ArchiveOwnedParams], _ArchiveOwnedResult],
+) -> Callable[Concatenate[Path, _ArchiveOwnedParams], _ArchiveOwnedResult]:
+    """Hold the archive lease across the complete liveness operation."""
+
+    @wraps(function)
+    def wrapped(
+        archive_root: Path, *args: _ArchiveOwnedParams.args, **kwargs: _ArchiveOwnedParams.kwargs
+    ) -> _ArchiveOwnedResult:
+        with OwnedArchiveLocation.acquire(
+            ArchiveLocation.resolve(archive_root),
+            owner_id=f"blob-ref-liveness:{os.getpid()}",
+        ):
+            return function(archive_root, *args, **kwargs)
+
+    return cast(Callable[Concatenate[Path, _ArchiveOwnedParams], _ArchiveOwnedResult], wrapped)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +208,7 @@ def _write_prepared_receipt(
     candidate_digest: str | None = None,
 ) -> None:
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    header = {
+    header: dict[str, object] = {
         "kind": "blob_ref_liveness_reconciliation",
         "phase": "prepared",
         "tool_version": TOOL_VERSION,
@@ -198,6 +224,8 @@ def _write_prepared_receipt(
             for ref_type, table, column in classification.ref_type_joins
         ],
     }
+    if backup_manifest.is_file():
+        header["backup_manifest_sha256"] = hashlib.sha256(backup_manifest.read_bytes()).hexdigest()
     try:
         with receipt_path.open("x", encoding="utf-8") as handle:
             handle.write(json.dumps(header, sort_keys=True, separators=(",", ":")))
@@ -717,6 +745,7 @@ def _validate_locked_candidate_plan(
         )
 
 
+@_archive_owned
 def reconcile_blob_ref_liveness(
     archive_root: Path,
     *,
@@ -789,6 +818,14 @@ def reconcile_blob_ref_liveness(
             backup_manifest,
             candidates=candidates,
             candidate_digest=candidate_digest,
+        )
+        pending_intent = _write_source_continuity_pending_intent(
+            archive_root,
+            mutation_receipt=receipt_path,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=pre_mutation_evidence,
+            operation_id=candidate_digest,
+            evidence_ref=f"proof:blob-ref-liveness:{candidate_digest}",
         )
         expected_count = classification.orphaned_count
         staged_data_version = _source_data_version(pre_conn)
@@ -924,6 +961,7 @@ def reconcile_blob_ref_liveness(
             operation_id=candidate_digest,
             evidence_ref=f"proof:blob-ref-liveness:{candidate_digest}",
         )
+        _clear_source_continuity_pending_intent(pending_intent)
     except DurableChangeTrainError as exc:
         # The source deletion and its committed receipt are already durable.
         # Keep the report truthful while leaving the train fail-closed until a

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -20,6 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
     _runtime_consumer_results,
+    _write_source_continuity_pending_intent,
     durable_change_train_manifest_path,
     durable_change_train_policy_report,
     durable_migration_sidecar_for_slot,
@@ -62,6 +64,7 @@ from polylogue.storage.sqlite.migration_runner import (
 
 _CURRENT_VERSION = 1
 _TARGET_VERSION = 2
+_EMPTY_LIVENESS_DIGEST = hashlib.sha256(b"[]").hexdigest()
 _ADDITIVE_SQL = """-- migration-safety: additive-no-backup
 CREATE TABLE durable_items (
     item_id TEXT PRIMARY KEY,
@@ -409,11 +412,20 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
                 "phase": "prepared",
                 "source_db": str(db_path),
                 "backup_manifest": str(backup_manifest),
-                "candidate_digest": "a" * 64,
+                "candidate_count": 0,
+                "candidate_digest": _EMPTY_LIVENESS_DIGEST,
+                "backup_manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
             }
         )
         + "\n"
-        + json.dumps({"kind": "blob_ref_liveness_reconciliation", "phase": "committed"})
+        + json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "committed",
+                "deleted_count": 0,
+                "post_orphaned_count": 0,
+            }
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -422,7 +434,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         mutation_receipt=mutation_receipt,
         backup_manifest=backup_manifest,
         pre_mutation_evidence=before,
-        operation_id="a" * 64,
+        operation_id=_EMPTY_LIVENESS_DIGEST,
         evidence_ref="proof:mutation-1",
     )
 
@@ -435,7 +447,17 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
     assert refreshed.source_continuity_evidence.content_sha256 != released.apply_evidence.post.content_sha256
     assert refreshed_path.is_file()
+    pending_path = _write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=mutation_receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id=_EMPTY_LIVENESS_DIGEST,
+        evidence_ref="proof:mutation-1",
+    )
+    assert pending_path.is_file()
     assert reconcile_durable_change_train_startup(tmp_path) == (manifest,)
+    assert not pending_path.exists()
 
     mutation_receipt.write_text(
         json.dumps(
@@ -444,7 +466,9 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
                 "phase": "prepared",
                 "source_db": str(db_path),
                 "backup_manifest": str(backup_manifest),
-                "candidate_digest": "a" * 64,
+                "candidate_count": 0,
+                "candidate_digest": _EMPTY_LIVENESS_DIGEST,
+                "backup_manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
             }
         )
         + "\n"
@@ -458,7 +482,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
             mutation_receipt=mutation_receipt,
             backup_manifest=backup_manifest,
             pre_mutation_evidence=before,
-            operation_id="a" * 64,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
             evidence_ref="proof:mutation-invalid-footer",
         )
 
@@ -469,7 +493,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
             mutation_receipt=mutation_receipt,
             backup_manifest=backup_manifest,
             pre_mutation_evidence=before,
-            operation_id="a" * 64,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
             evidence_ref="proof:mutation-incomplete",
         )
 
@@ -480,7 +504,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
             mutation_receipt=mutation_receipt,
             backup_manifest=backup_manifest,
             pre_mutation_evidence=before,
-            operation_id="a" * 64,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
             evidence_ref="proof:mutation-malformed",
         )
 
@@ -491,11 +515,20 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
                 "phase": "prepared",
                 "source_db": str(db_path),
                 "backup_manifest": str(backup_manifest),
+                "candidate_count": 0,
                 "candidate_digest": "b" * 64,
+                "backup_manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
             }
         )
         + "\n"
-        + json.dumps({"kind": "blob_ref_liveness_reconciliation", "phase": "committed"})
+        + json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "committed",
+                "deleted_count": 0,
+                "post_orphaned_count": 0,
+            }
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -505,7 +538,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
             mutation_receipt=mutation_receipt,
             backup_manifest=backup_manifest,
             pre_mutation_evidence=before,
-            operation_id="a" * 64,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
             evidence_ref="proof:mutation-wrong-operation",
         )
 
@@ -517,11 +550,20 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
                 "phase": "prepared",
                 "source_db": str(db_path),
                 "backup_manifest": str(backup_manifest),
-                "candidate_digest": "a" * 64,
+                "candidate_count": 0,
+                "candidate_digest": _EMPTY_LIVENESS_DIGEST,
+                "backup_manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
             }
         )
         + "\n"
-        + json.dumps({"kind": "blob_ref_liveness_reconciliation", "phase": "committed"})
+        + json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "committed",
+                "deleted_count": 0,
+                "post_orphaned_count": 0,
+            }
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -531,7 +573,7 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
             mutation_receipt=mutation_receipt,
             backup_manifest=backup_manifest,
             pre_mutation_evidence=before,
-            operation_id="a" * 64,
+            operation_id=_EMPTY_LIVENESS_DIGEST,
             evidence_ref="proof:mutation-no-train",
         )
 
