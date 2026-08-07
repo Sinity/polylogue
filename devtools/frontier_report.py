@@ -42,6 +42,11 @@ _SCHEMA_TEXT_MARKERS = (
     "schema migration",
     "schema change",
 )
+_CANONICAL_TIER_DDL_SUFFIXES = (
+    "storage/sqlite/archive_tiers/index.py",
+    "storage/sqlite/archive_tiers/source.py",
+    "storage/sqlite/archive_tiers/user.py",
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -140,6 +145,7 @@ def _resource_classes(issue: dict[str, Any], footprint: bead_cluster.Footprint) 
         or "area:schema" in labels
         or any(marker in text for marker in _SCHEMA_TEXT_MARKERS)
         or any("schema" in path.lower() and "storage" in path.lower() for path in footprint.files)
+        or any(path.lower().endswith(suffix) for path in footprint.files for suffix in _CANONICAL_TIER_DDL_SUFFIXES)
     ):
         resources.append("schema-lane")
     if "resource:live-state" in labels or "risk:live-state" in labels:
@@ -163,12 +169,18 @@ def _active_set_rows(issues: list[dict[str, Any]], ready_ids: set[str]) -> list[
     for issue_id in sorted(active_ids):
         issue = by_id[issue_id]
         blockers = sorted(
-            str(dependency["depends_on_id"])
+            (
+                str(dependency["depends_on_id"])
+                if str(dependency.get("depends_on_id", "")) in by_id
+                else f"{str(dependency.get('depends_on_id', '')) or '<missing-id>'} (missing)"
+            )
             for dependency in issue.get("dependencies", [])
             if isinstance(dependency, dict)
             and dependency.get("type") == "blocks"
-            and str(dependency.get("depends_on_id")) in by_id
-            and by_id[str(dependency["depends_on_id"])].get("status") != "closed"
+            and (
+                str(dependency.get("depends_on_id", "")) not in by_id
+                or by_id[str(dependency["depends_on_id"])].get("status") != "closed"
+            )
         )
         rows.append(
             {
@@ -377,6 +389,12 @@ def build_report(issues: list[Any], ready: list[Any], *, repo: Path) -> dict[str
     issues = _normalize_issues(issues, source="bd list")
     ready = _normalize_issues(ready, source="bd ready")
     ready_ids = {issue["id"] for issue in ready}
+    issue_ids = {issue["id"] for issue in issues}
+    missing_ready_ids = sorted(ready_ids - issue_ids)
+    if missing_ready_ids:
+        raise RuntimeError(
+            "bd ready snapshot contains IDs absent from bd list snapshot: " + ", ".join(missing_ready_ids)
+        )
     execution_focus = derive_execution_focus(issues, ready_ids)
     ambition = _full_ambition(issues)
     claims = [

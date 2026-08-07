@@ -124,6 +124,12 @@ def _parent_findings(issues: list[dict[str, Any]]) -> list[Finding]:
     findings: list[Finding] = []
     canonical: dict[str, str] = {}
     for bead_id, issue in sorted(by_id.items()):
+        for dependency in issue.get("dependencies", []) if isinstance(issue.get("dependencies"), list) else []:
+            if not isinstance(dependency, dict) or dependency.get("type") != "parent-child":
+                continue
+            target = dependency.get("depends_on_id")
+            if not isinstance(target, str) or not target:
+                findings.append(Finding("malformed-parent", bead_id, f"invalid parent-child target: {target!r}"))
         targets = _parent_targets(issue)
         if len(targets) > 1:
             findings.append(Finding("multiple-parents", bead_id, f"parent-child targets={sorted(targets)}"))
@@ -177,8 +183,14 @@ def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
         wave_labels = [label for label in _labels(issue) if label.startswith("wave:")]
         if len(wave_labels) > 1:
             findings.append(Finding("duplicate-wave", issue_id, f"labels={wave_labels}"))
-        if not str(issue.get("acceptance_criteria") or "").strip():
-            findings.append(Finding("missing-ac", issue_id, str(issue.get("title", ""))[:60]))
+        acceptance_criteria = issue.get("acceptance_criteria")
+        if not isinstance(acceptance_criteria, str) or not acceptance_criteria.strip():
+            detail = (
+                str(issue.get("title", ""))[:60]
+                if isinstance(acceptance_criteria, str)
+                else "acceptance_criteria must be a non-empty string"
+            )
+            findings.append(Finding("missing-ac", issue_id, detail))
         wave_value = waves.get(issue_id)
         dependencies = issue.get("dependencies")
         for dependency in dependencies if isinstance(dependencies, list) else []:
@@ -205,6 +217,8 @@ def _campaigns(issue: dict[str, Any]) -> list[str]:
     elif isinstance(metadata_campaign, list):
         values.update(value for value in metadata_campaign if isinstance(value, str) and value)
     values.update(label.removeprefix("campaign:") for label in _labels(issue) if label.startswith("campaign:"))
+    if "campaign" in _labels(issue):
+        values.add(str(issue.get("id", "")))
     return sorted(values)
 
 

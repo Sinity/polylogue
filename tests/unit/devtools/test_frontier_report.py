@@ -79,6 +79,26 @@ def test_execution_focus_reports_active_set_without_mutating_admission() -> None
     assert report["execution_focus"]["focus"][0]["id"] == "active"
 
 
+def test_build_report_rejects_ready_ids_absent_from_the_issue_snapshot() -> None:
+    issue = _issue("listed", design="devtools/frontier_report.py")
+    ready = _issue("ready-only", design="devtools/frontier_report.py")
+
+    with pytest.raises(RuntimeError, match="ready snapshot contains IDs absent"):
+        frontier_report.build_report([issue], [ready], repo=Path("/repo"))
+
+
+def test_schema_tier_ddl_occupies_the_schema_lane() -> None:
+    issue = _issue(
+        "ddl",
+        design="Add the new table to polylogue/storage/sqlite/archive_tiers/index.py.",
+        metadata={"frontier": "active"},
+    )
+
+    report = frontier_report.build_report([issue], [issue], repo=Path("/repo"))
+
+    assert report["execution_focus"]["focus"][0]["resource_classes"] == ["schema-lane"]
+
+
 def test_execution_focus_excludes_unadmitted_ready_work_and_emits_full_ambition() -> None:
     issues = [
         _issue("active", design="devtools/frontier_report.py", metadata={"frontier": "active"}),
@@ -250,6 +270,19 @@ def test_active_set_rows_expose_blockers_readiness_and_program() -> None:
             "frontier_program_ref": "program",
         }
     ]
+
+
+def test_active_set_rows_preserve_dangling_blockers() -> None:
+    issue = _issue(
+        "active",
+        design="devtools/frontier_report.py",
+        dependencies=[{"type": "blocks", "depends_on_id": "missing"}],
+        metadata={"frontier": "active"},
+    )
+
+    report = frontier_report.build_report([issue], [], repo=Path("/repo"))
+
+    assert report["active_set_rows"][0]["blocked_by"] == ["missing (missing)"]
 
 
 def test_execution_focus_counts_only_dependents_the_candidate_unblocks() -> None:

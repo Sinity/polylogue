@@ -219,6 +219,39 @@ def test_parent_child_validation_rejects_duplicate_edge_records() -> None:
     assert ("multiple-parents", "polylogue-child") in {(finding.kind, finding.bead_id) for finding in findings}
 
 
+def test_parent_child_validation_rejects_malformed_targets() -> None:
+    empty = _issue("empty", dependencies=[{"type": "parent-child", "depends_on_id": ""}])
+    non_string = _issue("non-string", dependencies=[{"type": "parent-child", "depends_on_id": "placeholder"}])
+    non_string["dependencies"] = [{"type": "parent-child", "depends_on_id": {}}]
+    issues = [empty, non_string]
+
+    findings = verify_bead_graph.collect_findings(issues)
+
+    assert {(finding.kind, finding.bead_id) for finding in findings} >= {
+        ("malformed-parent", "empty"),
+        ("malformed-parent", "non-string"),
+    }
+
+
+def test_non_string_acceptance_criteria_is_missing() -> None:
+    issue = _issue("polylogue-a")
+    issue["acceptance_criteria"] = []
+    issues = [issue]
+
+    findings = verify_bead_graph.collect_findings(issues)
+
+    assert [finding.kind for finding in findings] == ["missing-ac"]
+
+
+def test_bare_campaign_label_is_reported_with_the_bead_id() -> None:
+    issues = [_issue("campaign-bead", labels=["campaign"], acceptance_criteria="")]
+
+    census = verify_bead_graph.missing_ac_census(issues)
+
+    assert census["items"][0]["campaign_relevance"] == "declared"
+    assert census["items"][0]["campaigns"] == ["campaign-bead"]
+
+
 @pytest.mark.parametrize("payload", [["not-an-issue"], [{"id": ""}], [{"id": 42}]])
 def test_bd_list_rejects_each_malformed_issue_record(monkeypatch: pytest.MonkeyPatch, payload: list[object]) -> None:
     class Completed:
