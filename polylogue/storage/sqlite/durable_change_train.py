@@ -326,16 +326,19 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
 
     archive_root = archive_root.resolve()
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    if (marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER).exists() or any(marker_root.glob("*.json")):
+        raise DurableChangeTrainError(f"cannot record fresh durable bootstrap over existing train state: {marker_root}")
     marker_root.mkdir(parents=True, exist_ok=True)
     versions: dict[str, int] = {}
     for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
         with sqlite3.connect(archive_root / f"{tier.value}.db") as connection:
             versions[tier.value] = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    payload = {
+    payload: dict[str, object] = {
         "format": _FRESH_DURABLE_BOOTSTRAP_FORMAT,
         "durable_identity_digest": _durable_identity_digest(ArchiveIdentity.resolve(archive_root)),
         "versions": versions,
     }
+    payload["marker_digest"] = _bootstrap_marker_digest(payload)
     marker_root.joinpath(_FRESH_DURABLE_BOOTSTRAP_MARKER).write_text(
         json.dumps(payload, sort_keys=True, separators=(",", ":")),
         encoding="utf-8",
@@ -346,6 +349,8 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
     """Return direct-bootstrap versions when the marker is authentic."""
     from polylogue.storage.archive_identity import ArchiveIdentity
 
+    archive_root = archive_root.resolve()
+    marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
     if not marker_path.is_file():
         return {}
@@ -357,6 +362,11 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
         raise DurableChangeTrainError(f"fresh durable bootstrap marker format mismatch: {marker_path}")
     if payload.get("durable_identity_digest") != _durable_identity_digest(ArchiveIdentity.resolve(archive_root)):
         raise DurableChangeTrainError("fresh durable bootstrap marker durable identity mismatch")
+    marker_digest = payload.get("marker_digest")
+    unsigned_payload = dict(payload)
+    unsigned_payload.pop("marker_digest", None)
+    if not isinstance(marker_digest, str) or marker_digest != _bootstrap_marker_digest(unsigned_payload):
+        raise DurableChangeTrainError("fresh durable bootstrap marker digest mismatch")
     raw_versions = payload.get("versions")
     if not isinstance(raw_versions, dict):
         raise DurableChangeTrainError(f"fresh durable bootstrap marker versions are invalid: {marker_path}")
@@ -380,6 +390,11 @@ def _durable_identity_digest(identity: object) -> str:
         "durable_id": identity.durable_id,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _bootstrap_marker_digest(payload: dict[str, object]) -> str:
+    """Authenticate bootstrap identity and recorded durable versions together."""
+    return _canonical_json_sha256(payload)
 
 
 def _adopt_pre_marker_durable_bootstrap(archive_root: Path) -> None:
@@ -886,7 +901,9 @@ def _refresh_released_source_train_continuity_locked(
     caller must first validate the named operation and backup against the
     pre-mutation live tier. This helper then binds those exact receipt and
     backup bytes to a separate current-evidence record. The original migration
-    evidence remains immutable in ``apply_evidence``.
+    evidence remains immutable in ``apply_evidence``; only the
+    legacy-authority-digest compatibility path may rewrite that historical
+    identity field while preserving the migration evidence.
     """
     from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation, OwnedArchiveLocation
 
@@ -1691,12 +1708,7 @@ def _forward_version_receipt_for_current_tier(
             tier,
             manifests_by_target,
             current_version=current_version,
-            floor=max(
-                DURABLE_MIGRATION_ADOPTION_FLOORS[tier],
-                _fresh_durable_bootstrap_versions(archive_root, manifest_root).get(
-                    tier, DURABLE_MIGRATION_ADOPTION_FLOORS[tier]
-                ),
-            ),
+            floor=_chain_floor(tier, _fresh_durable_bootstrap_versions(archive_root, manifest_root)),
         )
     if not historical:
         return None
@@ -1769,6 +1781,12 @@ def _require_released_train_chain(
         )
     for version in range(chain_floor + 1, current_version + 1):
         _historical_schema_evidence(manifests_by_target[version])
+
+
+def _chain_floor(tier: ArchiveTier, bootstrap_versions: dict[ArchiveTier, int]) -> int:
+    """Return the durable train floor allowed by adoption and bootstrap evidence."""
+    adoption_floor = DURABLE_MIGRATION_ADOPTION_FLOORS[tier]
+    return max(adoption_floor, bootstrap_versions.get(tier, adoption_floor))
 
 
 def _prove_and_release_persisted_train(
@@ -1923,6 +1941,16 @@ def execute_durable_change_train(
                 live,
                 train,
                 current_target_version=runtime_target_version,
+                actual_evidence=(forward_version_evidence[tier].actual if tier in forward_version_evidence else None),
+                integrity_check=(
+                    forward_version_evidence[tier].integrity_check if tier in forward_version_evidence else None
+                ),
+                live_inventory=(
+                    forward_version_evidence[tier].live_inventory if tier in forward_version_evidence else None
+                ),
+                canonical_inventory=(
+                    forward_version_evidence[tier].canonical_inventory if tier in forward_version_evidence else None
+                ),
             )
         return DurableChangeTrainExecution(
             train=train,
@@ -2045,6 +2073,7 @@ def _reconcile_durable_change_train_startup_locked(
     live_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
+    validated_tiers: set[ArchiveTier] = set()
     manifest_paths = tuple(sorted(manifest_root.glob("*.json")))
     fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
 
@@ -2116,13 +2145,15 @@ def _reconcile_durable_change_train_startup_locked(
                 f"{tier.value} durable tier regressed below fresh bootstrap v{bootstrap_version}"
             )
         if bootstrap_version == current_version and not tier_manifest_paths:
+            validated_tiers.add(tier)
             continue
         _require_released_train_chain(
             tier,
             manifests_by_tier[tier],
             current_version=current_version,
-            floor=max(adoption_floor, bootstrap_version or adoption_floor),
+            floor=_chain_floor(tier, fresh_bootstrap_versions),
         )
+        validated_tiers.add(tier)
 
     for manifest_path in manifest_paths:
         train = load_durable_change_train_manifest(manifest_path)
@@ -2133,17 +2164,17 @@ def _reconcile_durable_change_train_startup_locked(
             if actual is None:
                 actual = capture_durable_database_evidence(live, train.tier)
                 live_evidence_by_tier[train.tier] = actual
-            if actual.user_version > DURABLE_MIGRATION_ADOPTION_FLOORS[train.tier]:
+            if (
+                actual.user_version > DURABLE_MIGRATION_ADOPTION_FLOORS[train.tier]
+                and train.tier not in validated_tiers
+            ):
                 if train.tier not in manifests_by_tier:
                     manifests_by_tier[train.tier] = _released_train_manifests_by_target(manifest_root, train.tier)
                 _require_released_train_chain(
                     train.tier,
                     manifests_by_tier[train.tier],
                     current_version=actual.user_version,
-                    floor=max(
-                        DURABLE_MIGRATION_ADOPTION_FLOORS[train.tier],
-                        fresh_bootstrap_versions.get(train.tier, DURABLE_MIGRATION_ADOPTION_FLOORS[train.tier]),
-                    ),
+                    floor=_chain_floor(train.tier, fresh_bootstrap_versions),
                 )
             if actual.user_version > train.target_version:
                 if train.tier not in live_integrity_by_tier:

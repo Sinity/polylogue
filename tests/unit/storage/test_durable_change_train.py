@@ -1317,14 +1317,16 @@ def test_released_train_chain_is_anchored_at_adoption_floor() -> None:
 
 
 def test_released_train_chain_can_start_at_bootstrap_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
+    current_version = floor + 1
     released = cast(DurableChangeTrain, SimpleNamespace(state=DurableChangeTrainState.RELEASED))
     monkeypatch.setattr(durable_change_train_module, "_historical_schema_evidence", lambda _train: None)
 
     durable_change_train_module._require_released_train_chain(
         ArchiveTier.SOURCE,
-        {30: released},
-        current_version=30,
-        floor=29,
+        {current_version: released},
+        current_version=current_version,
+        floor=floor,
     )
 
 
@@ -1535,6 +1537,19 @@ def test_fresh_bootstrap_receipt_rejects_archive_identity_mismatch(tmp_path: Pat
     marker.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(DurableChangeTrainError, match="durable identity mismatch"):
+        reconcile_durable_change_train_startup(tmp_path)
+
+
+def test_fresh_bootstrap_receipt_rejects_recorded_version_tampering(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    cast(dict[str, int], payload["versions"])["source"] += 1
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DurableChangeTrainError, match="marker digest mismatch"):
         reconcile_durable_change_train_startup(tmp_path)
 
 

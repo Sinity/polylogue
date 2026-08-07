@@ -313,22 +313,26 @@ def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
     from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 
-    durable_tier_exists = any((root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS)
-    manifest_root = root / ".maintenance-state" / "durable-change-trains"
-    has_durable_train_state = any(manifest_root.glob("*.json"))
-    has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
-    fresh_durable_bootstrap = not durable_tier_exists and not has_durable_train_state and not has_bootstrap_marker
-    pre_marker_adoption = (
-        (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
-        and durable_tier_exists
-        and not has_durable_train_state
-        and not has_bootstrap_marker
-    )
     with OwnedArchiveLocation.acquire(
         ArchiveLocation.resolve(root),
         owner_id=f"bootstrap:{os.getpid()}",
         allow_reentrant=True,
     ):
+        # Classify the archive after acquiring ownership. Another process may
+        # publish a marker or durable train while the probe is in flight.
+        durable_tier_exists = any(
+            (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
+        )
+        manifest_root = root / ".maintenance-state" / "durable-change-trains"
+        has_durable_train_state = any(manifest_root.glob("*.json"))
+        has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
+        fresh_durable_bootstrap = not durable_tier_exists and not has_durable_train_state and not has_bootstrap_marker
+        pre_marker_adoption = (
+            (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
+            and durable_tier_exists
+            and not has_durable_train_state
+            and not has_bootstrap_marker
+        )
         if not fresh_durable_bootstrap and not pre_marker_adoption:
             reconcile_durable_change_trains_on_startup(root)
         for spec in ARCHIVE_TIER_SPECS.values():

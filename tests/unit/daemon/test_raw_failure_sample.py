@@ -570,6 +570,67 @@ class TestRawFailureInfoProducesTypedSamples:
         assert info["terminal_rejections"] == snapshot.terminal == 1
         assert info["unexplained_failures"] == snapshot.unexplained == 0
 
+    def test_daemon_status_uses_the_lifecycle_sample_rows(self, tmp_path: Path) -> None:
+        """Status must retain classified rows selected ahead of newer unexplained rows."""
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        with sqlite3.connect(source_db) as conn:
+            conn.executemany(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                    acquired_at_ms, parse_error
+                ) VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?)
+                """,
+                [
+                    (
+                        f"raw-unexplained-{index}",
+                        "codex-session",
+                        f"native-{index}",
+                        "/data/unexplained.jsonl",
+                        bytes(index.to_bytes(32, "big")),
+                        1_770_000_000_100 + index,
+                        "newer unexplained failure",
+                    )
+                    for index in range(50)
+                ]
+                + [
+                    (
+                        "raw-terminal",
+                        "unknown-export",
+                        "terminal-native",
+                        "/data/terminal.json",
+                        bytes(32),
+                        1_770_000_000_000,
+                        "parsed raw payload produced no sessions",
+                    )
+                ],
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-terminal",
+                ArchiveSourceArtifact(
+                    artifact_id="terminal-evidence",
+                    origin="unknown-export",
+                    source_path="/data/terminal.json",
+                    source_index=0,
+                    artifact_kind="terminal_unsupported_shape",
+                    classification_reason="terminal_unsupported_shape",
+                    support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                ),
+            )
+            conn.commit()
+
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+        ):
+            info = _raw_failure_info()
+
+        samples = cast(list[RawFailureSample], info["samples"])
+        assert len(samples) == 50
+        assert any(sample.provider_hint == "unknown-export" and sample.lifecycle == "terminal" for sample in samples)
+
     def test_lifecycle_samples_are_sql_bounded_for_large_file_backed_failure_sets(
         self,
         tmp_path: Path,
@@ -763,7 +824,11 @@ class TestRawFailureInfoProducesTypedSamples:
 
             def __iter__(self) -> object:
                 normalized = " ".join(self._sql.split()).lower()
-                if "from raw_sessions as r" in normalized and "limit 50" not in normalized:
+                if (
+                    "from raw_sessions as r" in normalized
+                    and "limit 50" not in normalized
+                    and "r.raw_id in (" not in normalized
+                ):
                     raise AssertionError("raw-failure lifecycle totals must aggregate in SQL")
                 return iter(self._cursor)
 

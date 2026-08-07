@@ -189,7 +189,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                             ('terminal_corrupt_input', 'decode_failed'),
                             ('terminal_unsupported_shape', 'unsupported_parseable')
                         ) THEN 1
-                        ELSE 0
+                        ELSE 2
                     END,
                     f.acquired_at_ms DESC, f.raw_id DESC
                     LIMIT ?
