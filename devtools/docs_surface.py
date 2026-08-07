@@ -222,6 +222,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "GitHub and Beads authority split, and the reconciliation script that checks it.",
         "operations",
     ),
+    _entry(
+        "Acceptance Contract Wave",
+        "plans/beads-acceptance-contracts-2026-08-07.md",
+        "Guarded structured acceptance contracts for the current Beads execution wave.",
+        "operations",
+    ),
     # Evidence and product
     _entry(
         "Demos and Proofs",

@@ -78,6 +78,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
 | [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
 | [Tracker Authority](tracker-authority.md) | GitHub and Beads authority split, and the reconciliation script that checks it. |
+| [Acceptance Contract Wave](plans/beads-acceptance-contracts-2026-08-07.md) | Guarded structured acceptance contracts for the current Beads execution wave. |
 
 ## Demos, Evidence, and Product
 
