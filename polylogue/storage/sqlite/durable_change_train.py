@@ -1565,14 +1565,34 @@ def _forward_version_receipt_for_current_tier(
 ) -> DurableForwardVersionReceipt | None:
     """Return the newest released historical-train receipt at the live target."""
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
-    historical: list[DurableChangeTrain] = []
+    manifests_by_target: dict[int, DurableChangeTrain] = {}
     if manifest_root.is_dir():
         for path in sorted(manifest_root.glob(f"{tier.value}-*.json")):
             train = load_durable_change_train_manifest(path)
-            if train.state is DurableChangeTrainState.RELEASED and train.target_version < current_version:
-                historical.append(train)
+            if train.target_version in manifests_by_target:
+                raise DurableChangeTrainError(
+                    f"duplicate {tier.value} durable train manifests for target v{train.target_version}"
+                )
+            manifests_by_target[train.target_version] = train
+    historical = [
+        train
+        for train in manifests_by_target.values()
+        if train.state is DurableChangeTrainState.RELEASED and train.target_version < current_version
+    ]
     if not historical:
         return None
+    historical_train = max(historical, key=lambda item: item.target_version)
+    missing_targets = [
+        version
+        for version in range(historical_train.target_version + 1, current_version + 1)
+        if manifests_by_target.get(version) is None
+        or manifests_by_target[version].state is not DurableChangeTrainState.RELEASED
+    ]
+    if missing_targets:
+        raise DurableChangeTrainError(
+            f"{tier.value} durable forward admission lacks released train evidence for versions "
+            f"{missing_targets} between v{historical_train.target_version} and live v{current_version}"
+        )
     if evidence is None:
         actual = capture_durable_database_evidence(conn, tier)
         evidence = _DurableForwardVersionEvidence(

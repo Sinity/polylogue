@@ -131,58 +131,82 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
             is not None
         )
         sample_limit = max(0, sample_limit)
+        failed_cte = """
+        WITH failed AS (
+            SELECT r.raw_id, r.origin, r.source_path, r.source_index,
+                   r.validation_status, r.acquired_at_ms
+            FROM raw_sessions AS r
+            WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
+               OR r.validation_status = 'failed'
+        )
+        """
+        latest_artifact_join = """
+        LEFT JOIN raw_artifacts AS a
+          ON a.raw_id = f.raw_id
+         AND a.origin = f.origin
+         AND a.source_path = f.source_path
+         AND a.source_index = f.source_index
+         AND NOT EXISTS (
+             SELECT 1
+             FROM raw_artifacts AS newer
+             WHERE newer.raw_id = a.raw_id
+               AND newer.origin = a.origin
+               AND newer.source_path = a.source_path
+               AND newer.source_index = a.source_index
+               AND (newer.last_observed_at_ms > a.last_observed_at_ms
+                    OR (newer.last_observed_at_ms = a.last_observed_at_ms
+                        AND newer.artifact_id > a.artifact_id))
+         )
+        """
         if has_artifacts:
-            failed_cte = """
-            WITH latest_artifact AS (
-                SELECT raw_id, origin, source_path, source_index, artifact_kind, support_status,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY raw_id, origin, source_path, source_index
-                           ORDER BY last_observed_at_ms DESC, artifact_id DESC
-                       ) AS artifact_rank
-                FROM raw_artifacts
-            ), failed AS (
-                SELECT r.raw_id, r.origin, r.validation_status,
-                       a.artifact_kind, a.support_status, r.acquired_at_ms
-                FROM raw_sessions AS r
-                LEFT JOIN latest_artifact AS a
-                  ON a.raw_id = r.raw_id
-                 AND a.origin = r.origin
-                 AND a.source_path = r.source_path
-                 AND a.source_index = r.source_index
-                 AND a.artifact_rank = 1
-                WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
-                   OR r.validation_status = 'failed'
+            summary_sql = (
+                failed_cte
+                + """
+                SELECT f.origin, f.validation_status, a.artifact_kind, a.support_status,
+                       COUNT(*) AS failure_count
+                FROM failed AS f
+                """
+                + latest_artifact_join
+                + """
+                GROUP BY f.origin, f.validation_status, a.artifact_kind, a.support_status
+                ORDER BY f.origin, f.validation_status, a.artifact_kind, a.support_status
+                """
             )
-            """
+            sample_sql = (
+                failed_cte
+                + """
+                , sampled AS (
+                    SELECT *
+                    FROM failed
+                    ORDER BY acquired_at_ms DESC, raw_id DESC
+                    LIMIT ?
+                )
+                SELECT f.raw_id, f.origin, f.validation_status, a.artifact_kind, a.support_status
+                FROM sampled AS f
+                """
+                + latest_artifact_join
+            )
         else:
-            failed_cte = """
-            WITH failed AS (
-                SELECT r.raw_id, r.origin, r.validation_status,
-                       NULL AS artifact_kind, NULL AS support_status, r.acquired_at_ms
-                FROM raw_sessions AS r
-                WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
-                   OR r.validation_status = 'failed'
+            summary_sql = (
+                failed_cte
+                + """
+                SELECT f.origin, f.validation_status, NULL, NULL, COUNT(*) AS failure_count
+                FROM failed AS f
+                GROUP BY f.origin, f.validation_status
+                ORDER BY f.origin, f.validation_status
+                """
             )
-            """
-        summary_rows = conn.execute(
-            failed_cte
-            + """
-            SELECT origin, validation_status, artifact_kind, support_status, COUNT(*) AS failure_count
-            FROM failed
-            GROUP BY origin, validation_status, artifact_kind, support_status
-            ORDER BY origin, validation_status, artifact_kind, support_status
-            """
-        ).fetchall()
-        sample_rows = conn.execute(
-            failed_cte
-            + """
-            SELECT raw_id, origin, validation_status, artifact_kind, support_status
-            FROM failed
-            ORDER BY acquired_at_ms DESC, raw_id DESC
-            LIMIT ?
-            """,
-            (sample_limit,),
-        ).fetchall()
+            sample_sql = (
+                failed_cte
+                + """
+                SELECT raw_id, origin, validation_status, NULL, NULL
+                FROM failed
+                ORDER BY acquired_at_ms DESC, raw_id DESC
+                LIMIT ?
+                """
+            )
+        summary_rows = conn.execute(summary_sql).fetchall()
+        sample_rows = conn.execute(sample_sql, (sample_limit,)).fetchall()
     except sqlite3.Error as exc:
         logger.warning("could not read raw failure lifecycle", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not read raw failure lifecycle: {exc}")

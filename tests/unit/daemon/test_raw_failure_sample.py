@@ -604,10 +604,12 @@ class TestRawFailureInfoProducesTypedSamples:
 
         assert snapshot.parse_failures == snapshot.unexplained == 200
         assert len(snapshot.samples) == 3
-        summary_queries = [statement for statement in statements if "GROUP BY origin" in statement]
-        sample_queries = [statement for statement in statements if "LIMIT 3" in statement]
+        summary_queries = [statement for statement in statements if "GROUP BY f.origin" in statement]
+        sample_queries = [statement for statement in statements if "FROM sampled AS f" in statement]
         assert len(summary_queries) == 1
         assert len(sample_queries) == 1
+        assert "ROW_NUMBER()" not in sample_queries[0]
+        assert "NOT EXISTS" in sample_queries[0]
 
     @pytest.mark.parametrize("source_state", ["missing", "malformed"])
     def test_status_fails_closed_when_source_lifecycle_is_unavailable(

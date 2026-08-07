@@ -1116,6 +1116,19 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         assert conn.execute("PRAGMA user_version").fetchone() == (3,)
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='later_items'").fetchone() == ("later_items",)
     assert released == [True, True]
+    manifest_v3 = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 3)
+    manifest_v3_bytes = manifest_v3.read_bytes()
+    manifest_v3.unlink()
+    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+        execute_durable_change_train(
+            tmp_path,
+            ArchiveTier.SOURCE,
+            backup_manifest=None,
+            daemon_stopped_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+            release_archive_ownership=lambda: pytest.fail("missing intervening train was admitted"),
+        )
+    manifest_v3.write_bytes(manifest_v3_bytes)
     evidence_captures = 0
     schema_inventories = 0
     canonical_inventories = 0
