@@ -61,10 +61,22 @@ JUDGMENT_AUTOMATION_AUTHOR_KIND = "automation"
 JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS = 60
 
 JUDGMENT_AUTOMATION_STAGE = "judgment-automation"
-JUDGMENT_AUTOMATION_PARKED_RECEIPT_FRESHNESS_MS = 5 * 60 * 1000
+JUDGMENT_AUTOMATION_RECEIPT_GRACE_MIN_SECONDS = 5 * 60
+JUDGMENT_AUTOMATION_RECEIPT_GRACE_MAX_SECONDS = 60 * 60
 JudgmentAutomationReceiptStatus = Literal["completed", "parked", "failed"]
 
 JudgmentAutomationDecisionKind = Literal["accept", "reject", "escalate"]
+
+
+def _judgment_automation_receipt_coalescing_horizon_ms(interval_s: int) -> int:
+    """Return the bounded horizon for coalescing an identical scheduler receipt."""
+
+    effective_interval_s = max(interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)
+    grace_s = min(
+        max(effective_interval_s // 10, JUDGMENT_AUTOMATION_RECEIPT_GRACE_MIN_SECONDS),
+        JUDGMENT_AUTOMATION_RECEIPT_GRACE_MAX_SECONDS,
+    )
+    return (effective_interval_s + grace_s) * 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -597,7 +609,9 @@ async def periodic_judgment_automation_sweep(
                     now_ms=None,
                     batch_limit=cfg.judgment_automation_batch_limit,
                     retryable=True,
-                    suppress_identical_for_ms=JUDGMENT_AUTOMATION_PARKED_RECEIPT_FRESHNESS_MS,
+                    suppress_identical_for_ms=_judgment_automation_receipt_coalescing_horizon_ms(
+                        cfg.judgment_automation_interval_s
+                    ),
                 )
             except Exception:
                 logger.warning("judgment_automation: parked receipt write failed; retrying next tick", exc_info=True)
@@ -658,7 +672,6 @@ __all__ = [
     "JUDGMENT_AUTOMATION_ACTOR_REF",
     "JUDGMENT_AUTOMATION_AUTHOR_KIND",
     "JUDGMENT_AUTOMATION_STAGE",
-    "JUDGMENT_AUTOMATION_PARKED_RECEIPT_FRESHNESS_MS",
     "JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS",
     "JudgmentAutomationDecision",
     "JudgmentAutomationDecisionKind",

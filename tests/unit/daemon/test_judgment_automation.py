@@ -517,6 +517,47 @@ def test_periodic_reloads_config_after_sleep_and_serializes_parked_receipts(tmp_
     ]
 
 
+def test_periodic_coalesces_identical_disabled_receipt_through_default_interval(tmp_path: Path) -> None:
+    """A normal default-interval disabled tick does not duplicate telemetry."""
+
+    _init_ops_db(tmp_path / "ops.db")
+    default_interval_s = 60 * 60
+    cfg = SimpleNamespace(
+        judgment_automation_enabled=False,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=default_interval_s,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={},
+    )
+    write_coordinator = AsyncMock()
+    base_ms = 1_800_000_000_000
+
+    async def _fake_run_sync(actor, function, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return function(*args, **kwargs)
+
+    with (
+        patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+        patch(
+            "polylogue.daemon.events.current_epoch_ms",
+            side_effect=[base_ms, base_ms + default_interval_s * 1000],
+        ),
+    ):
+        write_coordinator.run_sync.side_effect = _fake_run_sync
+        asyncio.run(_run_ticks(2))
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute(
+            "SELECT ts_ms, payload_json FROM daemon_events WHERE kind = 'judgment-automation' ORDER BY id"
+        ).fetchall()
+
+    assert write_coordinator.run_sync.await_count == 2
+    assert len(rows) == 1
+    assert rows[0][0] == base_ms
+    assert json.loads(rows[0][1])["reason"] == "capability_gate_disabled"
+
+
 def test_periodic_inner_failure_keeps_detailed_receipt_as_authoritative(tmp_path: Path) -> None:
     _init_user_db(tmp_path / "user.db")
     _init_ops_db(tmp_path / "ops.db")
