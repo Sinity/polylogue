@@ -901,6 +901,38 @@ def require_current_parser_source_census(
             f"{len(stale_raw_ids)} raw(s) are stale or incomplete (sample: {sample})"
         )
 
+    unresolved_raw_ids: list[str] = []
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+        for selection in selections:
+            authority_where = "" if selection is None else f"AND r.raw_id IN ({','.join('?' for _ in selection)})"
+            authority_params: tuple[object, ...] = () if selection is None else selection
+            unresolved_raw_ids.extend(
+                str(row[0])
+                for row in source_conn.execute(
+                    f"""
+                    SELECT DISTINCT r.raw_id
+                    FROM raw_sessions AS r
+                    LEFT JOIN raw_membership_census AS c ON c.raw_id = r.raw_id
+                    LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                    WHERE r.revision_authority = 'quarantined'
+                      {authority_where}
+                      AND (
+                          c.raw_id IS NULL OR c.status != 'complete'
+                          OR m.raw_id IS NULL OR m.decision IS NULL
+                          OR m.decision IN ('ambiguous', 'deferred')
+                      )
+                    ORDER BY r.raw_id
+                    """,
+                    authority_params,
+                )
+            )
+    if unresolved_raw_ids:
+        sample = ", ".join(unresolved_raw_ids[:5])
+        raise FrozenSourceRemediationRequiredError(
+            "inactive candidate requires complete frozen source authority; "
+            f"{len(unresolved_raw_ids)} raw(s) remain quarantined or undecided (sample: {sample})"
+        )
+
 
 def census_historical_revision_evidence(
     archive_root: Path,

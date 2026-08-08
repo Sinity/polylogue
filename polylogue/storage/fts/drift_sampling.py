@@ -18,6 +18,7 @@ dependency.
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -57,6 +58,19 @@ def _index_db_path_sync(conn: sqlite3.Connection) -> Path | None:
     return None
 
 
+def _is_owned_inactive_generation_index(index_db_path: Path) -> bool:
+    """Return whether an index belongs to a validated inactive generation."""
+    metadata_path = index_db_path.parent / "generation.json"
+    if not metadata_path.is_file():
+        return False
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        declared_index = Path(str(payload["index_path"])).resolve(strict=True)
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+    return payload.get("state") == "inactive" and declared_index == index_db_path.resolve(strict=True)
+
+
 def sample_fts_drift_to_ops_sync(conn: sqlite3.Connection, *, archive_root: Path | None = None) -> int:
     """Append one ops.db drift sample per recorded FTS surface.
 
@@ -88,6 +102,8 @@ def sample_fts_drift_to_ops_sync(conn: sqlite3.Connection, *, archive_root: Path
     else:
         index_db_path = _index_db_path_sync(conn)
         if index_db_path is None:
+            return 0
+        if _is_owned_inactive_generation_index(index_db_path):
             return 0
         ops_db_path = index_db_path.with_name("ops.db")
     if not ops_db_path.exists():

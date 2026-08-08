@@ -16,7 +16,7 @@ import json
 import math
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
@@ -136,7 +136,7 @@ from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuer
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.blob_store import Heartbeat
+from polylogue.storage.blob_store import CleanupOrphansResult, Heartbeat, PreparedBlob
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
@@ -1654,6 +1654,35 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
             "inactive candidate generations may read frozen blobs but may not publish or replace blob bytes"
         )
 
+    def _queue(self, prepared: PreparedBlob) -> NoReturn:
+        del prepared
+        self._refuse()
+
+    def prepare_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> NoReturn:
+        del source, heartbeat
+        self._refuse()
+
+    def prepare_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> NoReturn:
+        del source, heartbeat
+        self._refuse()
+
+    def prepare_from_bytes(self, data: bytes) -> NoReturn:
+        del data
+        self._refuse()
+
+    def publish_prepared(self, prepared: PreparedBlob) -> NoReturn:
+        del prepared
+        self._refuse()
+
+    def publish_many(self, prepared: Iterable[PreparedBlob]) -> NoReturn:
+        del prepared
+        self._refuse()
+
+    @staticmethod
+    def discard_prepared(prepared: PreparedBlob) -> NoReturn:
+        del prepared
+        _InactiveCandidateBlobPublisher._refuse()
+
     def write_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
         del source, heartbeat
         return self._refuse()
@@ -1665,6 +1694,26 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:
         del data
         return self._refuse()
+
+    def remove(self, hash_hex: str) -> NoReturn:
+        del hash_hex
+        self._refuse()
+
+    def cleanup_orphans(
+        self,
+        orphan_hashes: set[str],
+        *,
+        dry_run: bool = True,
+    ) -> CleanupOrphansResult:
+        if not dry_run:
+            return self._refuse()
+        return super().cleanup_orphans(orphan_hashes, dry_run=True)
+
+    def flush(self) -> tuple[()]:
+        return ()
+
+    def discard_pending(self) -> None:
+        return None
 
 
 class ArchiveStore:
@@ -1705,25 +1754,31 @@ class ArchiveStore:
                     self._active_writer_lease = None
                     raise
             else:
-                from polylogue.storage.index_generation import IndexGenerationStore
+                from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 
                 generation_id, owner_id = owned_inactive_generation
                 # An inactive generation is opened from its generation root,
                 # while the configured root may intentionally point at a
-                # different live archive. Resolve the owning archive from the
-                # candidate path instead of routing this safety check through
-                # global configuration.
-                generation_archive_root = archive_root.parent.parent
-                generation = IndexGenerationStore.for_archive_root(generation_archive_root).load(generation_id)
+                # different live archive. Read the candidate's declared root,
+                # then require the store anchored at that root to return the
+                # exact same metadata. Deriving the root from ``../..`` fails
+                # for supported split-index layouts, where generations live
+                # beside the external active index rather than below the
+                # durable archive root.
+                generation = IndexGeneration(
+                    **json.loads((archive_root / "generation.json").read_text(encoding="utf-8"))
+                )
+                declared_archive_root = Path(generation.archive_root).resolve(strict=True)
+                authoritative_generation = IndexGenerationStore.for_archive_root(declared_archive_root).load(
+                    generation_id
+                )
                 if (
-                    generation.owner_id != owner_id
+                    generation != authoritative_generation
+                    or generation.owner_id != owner_id
                     or generation.state != "inactive"
                     or Path(generation.index_path).parent.resolve(strict=True) != archive_root.resolve(strict=True)
                 ):
                     raise RuntimeError("inactive index generation ownership validation failed")
-                declared_archive_root = Path(generation.archive_root).resolve(strict=True)
-                if declared_archive_root != generation_archive_root.resolve(strict=True):
-                    raise RuntimeError("inactive index generation archive-root binding is stale")
                 for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
                     expected = declared_archive_root / filename
                     candidate = archive_root / filename
@@ -1955,6 +2010,16 @@ class ArchiveStore:
             conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
         return self._source_conn
+
+    def _open_user_write_connection(self, *, initialize: bool = False) -> sqlite3.Connection:
+        """Open user.db for mutation unless this store is an inactive candidate."""
+        if self._inactive_candidate_durable_read_only:
+            raise InactiveCandidateDurableWriteError(
+                "inactive candidate generations may read frozen user assertions but may not mutate user.db"
+            )
+        if initialize:
+            initialize_archive_database(self.user_db_path, ArchiveTier.USER)
+        return open_connection(self.user_db_path)
 
     def commit(self) -> None:
         """Commit index.db and any source transaction left by other callers.
@@ -4385,10 +4450,8 @@ class ArchiveStore:
         author_kind: str | None = None,
     ) -> int:
         """Add user tag assertions to archive user.db and return changed count."""
-        user_db_path = self.user_db_path
-        initialize_archive_database(user_db_path, ArchiveTier.USER)
         changed = 0
-        user_conn = open_connection(user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         user_conn.row_factory = sqlite3.Row
         try:
             with user_conn:
@@ -4427,7 +4490,7 @@ class ArchiveStore:
         if not resolved_session_ids or not self.user_db_path.exists():
             return 0
         removed = 0
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 for session_id in resolved_session_ids:
@@ -5224,9 +5287,7 @@ class ArchiveStore:
 
     def set_user_metadata(self, session_ids: tuple[str, ...], pairs: tuple[tuple[str, object], ...]) -> int:
         """Set human-owned metadata as archive user.db assertions."""
-        user_db_path = self.user_db_path
-        initialize_archive_database(user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         user_conn.row_factory = sqlite3.Row
         try:
             changed = 0
@@ -5285,7 +5346,7 @@ class ArchiveStore:
             raise ValueError("metadata key cannot be empty")
         if not self.user_db_path.exists():
             return 0
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 assertion_id = assertion_id_for_session_metadata(resolved_session_id, normalized_key)
@@ -5298,8 +5359,7 @@ class ArchiveStore:
 
     def add_mark(self, target_type: str, target_id: str, mark_type: str) -> bool:
         """Add one user mark to archive user.db."""
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_mark(target_type, target_id, mark_type))
             exists = assertion is not None and assertion.status != "deleted"
@@ -5313,7 +5373,7 @@ class ArchiveStore:
         """Remove one user mark from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(
@@ -5362,8 +5422,7 @@ class ArchiveStore:
 
     def save_annotation(self, annotation_id: str, target_type: str, target_id: str, note_text: str) -> bool:
         """Create or update one annotation in archive user.db."""
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_annotation(annotation_id))
             exists = assertion is not None and assertion.status != "deleted"
@@ -5387,8 +5446,7 @@ class ArchiveStore:
     ) -> DurableAnnotationSchema:
         """Persist an immutable annotation schema definition in ``user.db``."""
 
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         user_conn.row_factory = sqlite3.Row
         try:
             with user_conn:
@@ -5431,8 +5489,7 @@ class ArchiveStore:
     def save_annotation_batch(self, batch: AnnotationBatch) -> AnnotationBatch:
         """Persist one immutable annotation-batch provenance container."""
 
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         user_conn.row_factory = sqlite3.Row
         try:
             with user_conn:
@@ -5541,7 +5598,7 @@ class ArchiveStore:
         """Delete one annotation from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_annotation(annotation_id), "deleted")
@@ -5556,8 +5613,7 @@ class ArchiveStore:
         query = json.loads(query_json)
         if not isinstance(query, dict):
             raise ValueError("query_json must encode an object")
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion_id = assertion_id_for_saved_view(view_id)
             assertion = read_assertion_envelope(user_conn, assertion_id)
@@ -5610,7 +5666,7 @@ class ArchiveStore:
         """Delete one saved view from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_saved_view(view_id), "deleted")
@@ -5630,8 +5686,7 @@ class ArchiveStore:
             raise ValueError("payload_json must encode an object")
         payload = dict(payload)
         payload["session_ids_json"] = session_ids_json
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_recall_pack(pack_id))
             exists = assertion is not None and assertion.status != "deleted"
@@ -5679,7 +5734,7 @@ class ArchiveStore:
         """Delete one recall pack from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_recall_pack(pack_id), "deleted")
@@ -5703,8 +5758,7 @@ class ArchiveStore:
             "layout_json": layout_json,
             "active_target_json": active_target_json,
         }
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion_id = assertion_id_for_workspace(workspace_id)
             assertion = read_assertion_envelope(user_conn, assertion_id)
@@ -5762,7 +5816,7 @@ class ArchiveStore:
         """Delete one workspace from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_workspace(workspace_id), "deleted")
@@ -5782,9 +5836,8 @@ class ArchiveStore:
         """Record one learning correction in archive user.db."""
         resolved_session_id = self.resolve_session_id(session_id)
         correction_kind = parse_correction_kind(kind)
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         stored_payload: dict[str, object] = {"payload": dict(payload), "note": note}
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             with user_conn:
                 upsert_correction(
@@ -5837,7 +5890,7 @@ class ArchiveStore:
         correction_kind = parse_correction_kind(kind)
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 correction_id = correction_id_for("insight", resolved_session_id, correction_kind.value)
@@ -5850,7 +5903,7 @@ class ArchiveStore:
         resolved_session_id = self.resolve_session_id(session_id)
         if not self.user_db_path.exists():
             return 0
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 deleted_count = 0
@@ -5880,8 +5933,7 @@ class ArchiveStore:
         context_policy: dict[str, object] | None = None,
     ) -> ArchiveBlackboardNoteEnvelope:
         """Insert-or-update one blackboard note in archive user.db."""
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             envelope = upsert_blackboard_note(
                 user_conn,

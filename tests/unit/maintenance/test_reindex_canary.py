@@ -44,7 +44,6 @@ from polylogue.maintenance.reindex_canary import (
 from polylogue.sources.revision_backfill import (
     RebuildDeadlineExceededError,
     backfill_historical_revision_evidence,
-    census_historical_revision_evidence,
 )
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
@@ -52,7 +51,6 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
-from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
 
 
 @pytest.fixture(autouse=True)
@@ -89,9 +87,44 @@ def _receipt_path(tmp_path: Path) -> Path:
 
 
 def _write_candidate_receipt(archive_root: Path, receipt_path: Path) -> Path:
-    """Bind a real receipt only after the fixture models phase-2 census."""
-    census_historical_revision_evidence(archive_root)
+    """Bind a receipt to a fixture that already completed phase 2."""
     return write_valid_rebuild_receipt(archive_root, receipt_path)
+
+
+def _prepare_candidate_ready_archive(root: Path) -> str:
+    """Build one real-route archive whose source authority is fully settled."""
+    initialize_active_archive_root(root)
+    payload = json.dumps(
+        {
+            "chat_messages": [
+                {"uuid": "fresh-user", "sender": "human", "text": "hello"},
+                {
+                    "uuid": "fresh-assistant",
+                    "sender": "assistant",
+                    "text": "world",
+                    "attachments": [
+                        {
+                            "id": "fresh-attachment",
+                            "name": "fresh.txt",
+                            "mimeType": "text/plain",
+                            "size": 16,
+                            "extracted_content": "attachment bytes",
+                        }
+                    ],
+                },
+            ]
+        }
+    ).encode()
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_AI,
+            payload=payload,
+            source_path="fresh.json",
+            native_id="fresh",
+            acquired_at_ms=1,
+        )
+    backfill_historical_revision_evidence(root)
+    return raw_id
 
 
 def _seed_index(
@@ -575,8 +608,8 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
 def test_run_reindex_canary_rejects_missing_receipt_even_with_ambient_valid_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
-    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    root = tmp_path / "archive"
+    _prepare_candidate_ready_archive(root)
     ambient_receipt = _write_candidate_receipt(root, tmp_path / "ambient-schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(ambient_receipt))
 
@@ -588,8 +621,8 @@ def test_run_reindex_canary_cleans_candidate_after_comparison_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A post-rebuild canary failure cannot strand its inactive candidate."""
-    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
-    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    root = tmp_path / "archive"
+    _prepare_candidate_ready_archive(root)
     receipt_path = _write_candidate_receipt(root, tmp_path / "receipt.json")
 
     def fail_compare(*args: object, **kwargs: object) -> CanaryDiffReport:
@@ -610,8 +643,8 @@ def test_run_reindex_canary_cleans_candidate_after_comparison_failure(
 
 def test_run_reindex_canary_clean_success_retains_a_valid_inactive_candidate(tmp_path: Path) -> None:
     """A successful canary returns the candidate for its comparison evidence."""
-    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
-    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    root = tmp_path / "archive"
+    _prepare_candidate_ready_archive(root)
     receipt_path = _write_candidate_receipt(root, tmp_path / "receipt.json")
 
     result = run_reindex_canary(
@@ -656,8 +689,8 @@ def test_run_reindex_canary_rejects_input_index_outside_archive_root(
 def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_validator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
-    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    root = tmp_path / "archive"
+    _prepare_candidate_ready_archive(root)
     external_index_root = tmp_path / "external-index-root"
     external_index_root.mkdir()
     external_index = external_index_root / "index.db"
@@ -719,37 +752,7 @@ def test_real_no_promote_rebuild_preserves_remediated_source_state(tmp_path: Pat
     """Candidate replay consumes phase-2 source state without changing it."""
 
     root = tmp_path / "archive"
-    initialize_active_archive_root(root)
-    payload = json.dumps(
-        {
-            "chat_messages": [
-                {"uuid": "fresh-user", "sender": "human", "text": "hello"},
-                {
-                    "uuid": "fresh-assistant",
-                    "sender": "assistant",
-                    "text": "world",
-                    "attachments": [
-                        {
-                            "id": "fresh-attachment",
-                            "name": "fresh.txt",
-                            "mimeType": "text/plain",
-                            "size": 16,
-                            "extracted_content": "attachment bytes",
-                        }
-                    ],
-                },
-            ]
-        }
-    ).encode()
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CLAUDE_AI,
-            payload=payload,
-            source_path="fresh.json",
-            native_id="fresh",
-            acquired_at_ms=1,
-        )
-    backfill_historical_revision_evidence(root)
+    raw_id = _prepare_candidate_ready_archive(root)
     with sqlite3.connect(root / "source.db") as connection:
         source_state_before = connection.execute(
             """
@@ -792,8 +795,8 @@ def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
 ) -> None:
     """A source identity mutation after replay fails before inactive readiness."""
 
-    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
-    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    root = tmp_path / "archive"
+    _prepare_candidate_ready_archive(root)
     active_index = root / "index.db"
     active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
     receipt_path = _write_candidate_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
@@ -822,8 +825,8 @@ def test_run_reindex_canary_rejects_active_index_rotation_after_replay(
 ) -> None:
     """A canary cannot compare against an index that stopped being active."""
 
-    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
-    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    root = tmp_path / "archive"
+    _prepare_candidate_ready_archive(root)
     location = ArchiveLocation.resolve(root)
     current_index = location.active_index_path
     rotated_index = tmp_path / "rotated" / "index.db"
@@ -848,8 +851,8 @@ def test_rebuild_rejects_evidence_mutation_in_deadline_interrupted_pass(
 ) -> None:
     """A deferred resumable pass cannot preserve a mutated source proof."""
 
-    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
-    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    root = tmp_path / "archive"
+    _prepare_candidate_ready_archive(root)
 
     from polylogue.maintenance import replay as rebuild_replay
 

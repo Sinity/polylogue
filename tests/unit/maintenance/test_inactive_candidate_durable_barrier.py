@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
+from polylogue.storage.blob_store import PreparedBlob
 from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveStore,
@@ -34,6 +36,14 @@ def _blob_evidence(root: Path) -> tuple[tuple[str, int, str], ...]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     )
+
+
+def _symlink_evidence(path: Path) -> tuple[int, int, str]:
+    stat = path.lstat()
+    target = (
+        f"symlink:{path.readlink()}" if path.is_symlink() else f"file:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+    )
+    return stat.st_dev, stat.st_ino, target
 
 
 def _prepare_frozen_source(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -62,9 +72,23 @@ def test_real_no_promote_candidate_preserves_frozen_durable_tiers(
     receipt_path = _prepare_frozen_source(root, monkeypatch)
     generation_store = IndexGenerationStore.for_archive_root(root)
     active_target_before = generation_store.active_pointer.resolve(strict=True)
+    active_pointer_before = _symlink_evidence(generation_store.active_pointer)
     active_index_before = _file_evidence(active_target_before)
     source_before = _file_evidence(root / "source.db")
     user_before = _file_evidence(root / "user.db")
+    with sqlite3.connect(root / "ops.db") as ops:
+        ops.execute(
+            """
+            INSERT INTO convergence_debt (
+                debt_id, stage, target_type, target_id, status, priority,
+                attempts, last_error, created_at_ms, updated_at_ms
+            ) VALUES ('candidate-guard-debt', 'insights', 'session_id',
+                      'claude-ai-export:frozen-source', 'deferred', 0, 1,
+                      'candidate must not resolve live debt', 1, 1)
+            """
+        )
+        ops.commit()
+    ops_before = _file_evidence(root / "ops.db")
     blobs_before = _blob_evidence(root / "blob")
 
     result = rebuild_index_from_source_sync(
@@ -81,10 +105,16 @@ def test_real_no_promote_candidate_preserves_frozen_durable_tiers(
     generation = generation_store.load(str(result.transaction["generation_id"]))
     assert generation.state == "inactive"
     assert generation_store.active_pointer.resolve(strict=True) == active_target_before
+    assert _symlink_evidence(generation_store.active_pointer) == active_pointer_before
     assert _file_evidence(active_target_before) == active_index_before
     assert _file_evidence(root / "source.db") == source_before
     assert _file_evidence(root / "user.db") == user_before
+    assert _file_evidence(root / "ops.db") == ops_before
     assert _blob_evidence(root / "blob") == blobs_before
+    with sqlite3.connect(root / "ops.db") as ops:
+        assert ops.execute(
+            "SELECT stage, target_id FROM convergence_debt WHERE debt_id = 'candidate-guard-debt'"
+        ).fetchone() == ("insights", "claude-ai-export:frozen-source")
     with sqlite3.connect(f"file:{generation.index_path}?mode=ro", uri=True) as candidate:
         assert candidate.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
@@ -114,8 +144,37 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
             candidate._conn.execute("CREATE TABLE user_tier.candidate_user_probe (value INTEGER) STRICT")
         assert candidate._blob_publisher is not None
-        with pytest.raises(InactiveCandidateDurableWriteError, match="may not publish"):
-            candidate._blob_publisher.write_from_bytes(b"candidate-write")
+        blob_publisher = candidate._blob_publisher
+        existing_blob_hash = next(blob_publisher.iter_all())
+        staged_path = tmp_path / "prepared-candidate-blob"
+        staged_path.write_bytes(b"candidate-write")
+        prepared = PreparedBlob(
+            hash_hex=hashlib.sha256(b"candidate-write").hexdigest(),
+            size_bytes=len(b"candidate-write"),
+            temporary_path=staged_path,
+        )
+        source_path = tmp_path / "candidate-source"
+        source_path.write_bytes(b"candidate-write")
+        refusing_blob_calls = (
+            lambda: blob_publisher.prepare_from_path(source_path),
+            lambda: blob_publisher.prepare_from_fileobj(BytesIO(b"candidate-write")),
+            lambda: blob_publisher.prepare_from_bytes(b"candidate-write"),
+            lambda: blob_publisher.publish_prepared(prepared),
+            lambda: blob_publisher.publish_many((prepared,)),
+            lambda: blob_publisher.discard_prepared(prepared),
+            lambda: blob_publisher.write_from_path(source_path),
+            lambda: blob_publisher.write_from_fileobj(BytesIO(b"candidate-write")),
+            lambda: blob_publisher.write_from_bytes(b"candidate-write"),
+            lambda: blob_publisher.remove(existing_blob_hash),
+            lambda: blob_publisher.cleanup_orphans({existing_blob_hash}, dry_run=False),
+        )
+        for refusing_call in refusing_blob_calls:
+            with pytest.raises(InactiveCandidateDurableWriteError, match="may not publish"):
+                refusing_call()
+        assert blob_publisher.flush() == ()
+        blob_publisher.discard_pending()
+        assert staged_path.read_bytes() == b"candidate-write"
+        assert not tuple((root / "blob").glob(".blob.*"))
         with pytest.raises(InactiveCandidateDurableWriteError, match="may not publish"):
             candidate.write_raw_payload(
                 provider=Provider.CODEX,
@@ -123,6 +182,12 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
                 source_path="candidate-write.jsonl",
                 acquired_at_ms=1,
             )
+        with pytest.raises(InactiveCandidateDurableWriteError, match="may not mutate user.db"):
+            candidate.add_user_tags(("candidate:session",), ("candidate",))
+        with pytest.raises(InactiveCandidateDurableWriteError, match="may not mutate user.db"):
+            candidate.set_user_metadata(("candidate:session",), (("candidate", True),))
+        with pytest.raises(InactiveCandidateDurableWriteError, match="may not mutate user.db"):
+            candidate.post_blackboard_note("candidate write")
 
     assert _file_evidence(root / "source.db") == source_before
     assert _file_evidence(root / "user.db") == user_before
@@ -143,6 +208,29 @@ def test_candidate_requires_current_parser_census_before_generation_readiness(
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-receipt.json")
 
     with pytest.raises(FrozenSourceRemediationRequiredError, match="complete current-parser source census"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                promote=False,
+            )
+        )
+
+    assert not list((root / ".index-generations").glob("gen-*"))
+
+
+def test_candidate_requires_complete_source_authority_before_generation_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    build_independent_raw_corpus(root, raw_count=1, avg_payload_bytes=1_000)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    census = census_historical_revision_evidence(root)
+    assert census.scanned == 1
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-receipt.json")
+
+    with pytest.raises(FrozenSourceRemediationRequiredError, match="complete frozen source authority"):
         rebuild_index_from_source_sync(
             RebuildIndexRequest(
                 archive_root=root,

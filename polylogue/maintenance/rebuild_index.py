@@ -2022,6 +2022,7 @@ async def _rebuild_index_from_source_owned(
                 dry_run=False,
                 archive_root_override=generation_root,
                 owned_inactive_generation=(generation.generation_id, generation.owner_id),
+                resolve_convergence_debt=False,
             )
             terminal_timings_s["terminal.session_insights"] = time.perf_counter() - terminal_started_at
             logger.info(
