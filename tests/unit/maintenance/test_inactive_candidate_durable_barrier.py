@@ -20,6 +20,7 @@ from polylogue.sources.revision_backfill import (
     census_historical_revision_evidence,
     validate_frozen_source_authority,
 )
+from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
 from polylogue.storage.blob_store import PreparedBlob
 from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
 from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
@@ -303,6 +304,25 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
         assert candidate._blob_publisher is not None
         blob_publisher = candidate._blob_publisher
         existing_blob_hash = next(blob_publisher.iter_all())
+        staging_root = blob_publisher.staging_root
+        staging_stat = staging_root.stat()
+        staging_before = (
+            staging_stat.st_dev,
+            staging_stat.st_ino,
+            staging_stat.st_mode,
+            staging_stat.st_mtime_ns,
+            tuple(sorted(path.relative_to(staging_root) for path in staging_root.rglob("*"))),
+        )
+        with pytest.raises(InactiveCandidateDurableWriteError, match="may not publish"):
+            snapshot_sqlite_to_blob(root / "source.db", blob_publisher)
+        staging_stat = staging_root.stat()
+        assert (
+            staging_stat.st_dev,
+            staging_stat.st_ino,
+            staging_stat.st_mode,
+            staging_stat.st_mtime_ns,
+            tuple(sorted(path.relative_to(staging_root) for path in staging_root.rglob("*"))),
+        ) == staging_before
         staged_path = tmp_path / "prepared-candidate-blob"
         staged_path.write_bytes(b"candidate-write")
         prepared = PreparedBlob(
