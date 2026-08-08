@@ -9338,6 +9338,14 @@ def _user_mark_session_id(target_type: str, target_id: str) -> str:
     if target_type == "session":
         return target_id
     if target_type == "message":
+        # Message identities use tagged local components (``:n:<native>`` or
+        # ``:p:<position>.<variant>``). Splitting at the final colon used to
+        # work only while native IDs were untagged; with ``session:n:native``
+        # it incorrectly reports ``session:n`` as the owning session.
+        for marker in (":n:", ":p:"):
+            marker_index = target_id.find(marker)
+            if marker_index > 0:
+                return target_id[:marker_index]
         session_id, _sep, _message_native_id = target_id.rpartition(":")
         return session_id
     return ""

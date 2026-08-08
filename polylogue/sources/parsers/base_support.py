@@ -78,7 +78,7 @@ def synthetic_message_id(
     This is reserved for parser-produced rows that are inherently synthetic,
     such as an exported summary or a transcript section. Native-id fallback
     paths must pass an empty string instead, so ``pipeline.ids`` can use its
-    role/timestamp comparison anchor.
+    role/timestamp/text comparison anchor.
     """
     seed = "\x1f".join((namespace, str(role), timestamp or "", text or "", kind))
     return f"synthetic-{hash_text(seed)[:24]}"
@@ -440,9 +440,9 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
 
         if text:
             # polylogue-slshy: no positional fallback -- empty id lets
-            # _message_comparison_id's content-anchor (role + timestamp)
-            # fallback run instead of a position-derived string that would
-            # change identity when array order shifts across re-acquisitions.
+            # _message_comparison_id's content-derived anchor fallback run
+            # instead of a position-derived string that would change identity
+            # when array order shifts across re-acquisitions.
             msg_id = str(payload.get("id") or payload.get("uuid") or item.get("uuid") or item.get("id") or "")
             messages.append(
                 ParsedMessage(

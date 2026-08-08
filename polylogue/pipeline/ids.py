@@ -235,15 +235,14 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
     return payload
 
 
-#: Marker prefix for a content-derived (role + timestamp) message identity
-#: anchor, used only when a message carries no native ``provider_message_id``.
-#: Namespaced so it can never collide with a real provider id string (a
-#: provider id never contains this literal token by construction).
-_TIMESTAMP_ANCHOR_PREFIX = "__polylogue_msg_ts_anchor__"
+#: Marker prefix for a content-derived message identity anchor, used only
+#: when a message carries no native ``provider_message_id``. Namespaced so it
+#: can never collide with a real provider id string (a provider id never
+#: contains this literal token by construction).
 _CONTENT_ANCHOR_PREFIX = "__polylogue_msg_content_anchor__"
 
 
-def _message_comparison_id(message: ParsedMessage, index: int) -> str:
+def _message_comparison_id(message: ParsedMessage) -> str:
     """Resolve the id used as both a message's content-payload id and its
     comparison identity (``message_identity_hash``'s sole input).
 
@@ -256,10 +255,11 @@ def _message_comparison_id(message: ParsedMessage, index: int) -> str:
     array position would get two different fallback "ids" and compare as a
     conflict instead of the same message (polylogue-gysk3).
 
-    The fix: fall back to a content-derived anchor -- role plus timestamp,
-    or role plus message text when no timestamp exists -- instead of array
-    position, so reordering an otherwise-unchanged id-less message never
-    changes its comparison identity.
+    The fix: fall back to one content-derived anchor over role, timestamp,
+    and message text instead of array position. Including text even when a
+    timestamp exists keeps two same-timestamp id-less messages distinct and
+    gives attachment ownership a stable non-positional anchor when a Drive
+    attachment moves between them.
 
     Parser normalization maintains the complementary invariant: a missing
     native id is never replaced with an array-position-derived value before
@@ -268,9 +268,7 @@ def _message_comparison_id(message: ParsedMessage, index: int) -> str:
     """
     if message.provider_message_id:
         return message.provider_message_id
-    if message.timestamp:
-        return f"{_TIMESTAMP_ANCHOR_PREFIX}:{message.role}:{message.timestamp}"
-    return f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload({'role': str(message.role), 'text': _normalize_for_hash(message.text)})}"
+    return f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload({'role': str(message.role), 'timestamp': _normalize_for_hash(message.timestamp), 'text': _normalize_for_hash(message.text)})}"
 
 
 def message_identity_hash(*, id: str) -> bytes:
@@ -516,7 +514,7 @@ def _session_hash_components(
     caller re-deriving its own copy. Byte-identical to computing each
     payload independently -- pure sharing of an already-pure computation.
     """
-    message_comparison_ids = [_message_comparison_id(msg, idx) for idx, msg in enumerate(convo.messages, start=1)]
+    message_comparison_ids = [_message_comparison_id(msg) for msg in convo.messages]
     messages_payload = [
         _message_hash_payload(message, comparison_id)
         for message, comparison_id in zip(convo.messages, message_comparison_ids, strict=True)

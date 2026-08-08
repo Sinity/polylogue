@@ -23,6 +23,8 @@ import asyncio
 
 import pytest
 
+from polylogue.surfaces.payloads import reader_anchor
+
 pytestmark = pytest.mark.xdist_group("web-reader")
 
 import html as html_module
@@ -333,7 +335,7 @@ def _running_server_without_seed(
 
 # Archive session/message identities for the three seeded sessions.
 # The archive store derives ``session_id`` as ``origin:native_id`` and
-# ``message_id`` as ``session_id:message_native_id``; the daemon's reader
+# ``message_id`` with a tagged native local component; the daemon's reader
 # surface returns these identities verbatim.
 from polylogue.core.identity_law import message_id as _archive_message_id
 from polylogue.core.identity_law import session_id as _archive_session_id
@@ -714,7 +716,14 @@ def _seed_import_explain_archive(workspace: dict[str, Path]) -> tuple[str, str]:
                 message_id, session_id, position, block_type, text, tool_id
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            ("codex-session:route-native:m1", "codex-session:route-native", 0, "tool_use", "pytest", "tool-1"),
+            (
+                _archive_message_id("codex-session:route-native", "m1", position=0),
+                "codex-session:route-native",
+                0,
+                "tool_use",
+                "pytest",
+                "tool-1",
+            ),
         )
         source_conn.commit()
         index_conn.commit()
@@ -1211,11 +1220,11 @@ class TestReaderSearchState:
         # for message targets; we assert the load-bearing identity fields.
         target_ref = hit["match"]["target_ref"]
         assert target_ref["target_type"] == "message"
-        assert target_ref["target_id"] == "claude-code-session:c1:m-c1"
+        assert target_ref["target_id"] == M_C1
         assert target_ref["session_id"] == "claude-code-session:c1"
-        assert target_ref["message_id"] == "claude-code-session:c1:m-c1"
-        assert target_ref["identity_key"] == "message:claude-code-session:c1:claude-code-session:c1:m-c1"
-        assert hit["match"]["anchor"] == "message-claude-code-session-c1-m-c1"
+        assert target_ref["message_id"] == M_C1
+        assert target_ref["identity_key"] == f"message:{C1}:{M_C1}"
+        assert hit["match"]["anchor"] == reader_anchor("message", M_C1)
         assert hit["match"]["actions"]["copy_text"]["enabled"] is True
 
     def test_search_hit_rank_lives_under_match_not_top_level(self, workspace_env: dict[str, Path]) -> None:
@@ -1367,11 +1376,8 @@ class TestReaderSessionState:
         assert payload["title"].startswith("Claude Code")
         assert payload["target_ref"]["identity_key"] == "session:claude-code-session:c1"
         assert payload["anchor"] == "session-claude-code-session-c1"
-        assert (
-            payload["messages"][0]["target_ref"]["identity_key"]
-            == "message:claude-code-session:c1:claude-code-session:c1:m-c1"
-        )
-        assert payload["messages"][0]["anchor"] == "message-claude-code-session-c1-m-c1"
+        assert payload["messages"][0]["target_ref"]["identity_key"] == f"message:{C1}:{M_C1}"
+        assert payload["messages"][0]["anchor"] == reader_anchor("message", M_C1)
 
     def test_session_routes_accept_list_emitted_encoded_ids(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -1408,12 +1414,12 @@ class TestReaderSessionState:
         assert message["text"] == "Hello reader"
         assert message["target_ref"] == {
             "target_type": "message",
-            "target_id": "claude-code-session:c1:m-c1",
+            "target_id": M_C1,
             "session_id": "claude-code-session:c1",
-            "message_id": "claude-code-session:c1:m-c1",
-            "identity_key": "message:claude-code-session:c1:claude-code-session:c1:m-c1",
+            "message_id": M_C1,
+            "identity_key": f"message:{C1}:{M_C1}",
         }
-        assert message["anchor"] == "message-claude-code-session-c1-m-c1"
+        assert message["anchor"] == reader_anchor("message", M_C1)
         assert message["actions"]["copy_text"]["enabled"] is True
         assert message["actions"]["annotate"]["enabled"] is True
         assert message["actions"]["annotate"]["state"] == "enabled"
@@ -1762,11 +1768,11 @@ class TestReaderUserState:
                 payload={
                     "session_id": "claude-code-session:c1",
                     "target_type": "message",
-                    "message_id": "claude-code-session:c1:m-c1",
+                    "message_id": M_C1,
                     "mark_type": "pin",
                 },
             )
-            marks = _get_json(base_url, "/api/user/marks?target_type=message&message_id=claude-code-session:c1:m-c1")
+            marks = _get_json(base_url, f"/api/user/marks?target_type=message&message_id={quote(M_C1, safe='')}")
 
         marks_payload = cast(dict[str, object], marks)
         created_payload = cast(dict[str, object], created)
@@ -1774,15 +1780,15 @@ class TestReaderUserState:
         assert created_payload["status"] == "ok"
         assert created_payload["operation"] == "mark.add"
         assert created_payload["target_type"] == "message"
-        assert created_payload["target_id"] == "claude-code-session:c1:m-c1"
-        assert created_payload["message_id"] == "claude-code-session:c1:m-c1"
+        assert created_payload["target_id"] == M_C1
+        assert created_payload["message_id"] == M_C1
         mark_items = cast(list[dict[str, object]], marks_payload["items"])
         assert mark_items == [
             {
                 "target_type": "message",
-                "target_id": "claude-code-session:c1:m-c1",
+                "target_id": M_C1,
                 "session_id": "claude-code-session:c1",
-                "message_id": "claude-code-session:c1:m-c1",
+                "message_id": M_C1,
                 "mark_type": "pin",
                 "created_at": mark_items[0]["created_at"],
             }
@@ -1808,7 +1814,7 @@ class TestReaderUserState:
                     "annotation_id": "ann-m1",
                     "session_id": "claude-code-session:c1",
                     "target_type": "message",
-                    "message_id": "claude-code-session:c1:m-c1",
+                    "message_id": M_C1,
                     "note_text": "Important request",
                 },
             )
@@ -1837,7 +1843,7 @@ class TestReaderUserState:
         assert msg_note_payload["resource_type"] == "annotation"
         assert msg_note_payload["resource_id"] == "ann-m1"
         assert msg_note_payload["target_type"] == "message"
-        assert msg_note_payload["target_id"] == "claude-code-session:c1:m-c1"
+        assert msg_note_payload["target_id"] == M_C1
         assert fetched_payload["note_text"] == "Important request"
         assert {item["annotation_id"] for item in items} == {"ann-c1", "ann-m1"}
         assert delete_status == 200
@@ -2008,7 +2014,7 @@ class TestReaderUserState:
                         {
                             "target_type": "message",
                             "session_id": "claude-code-session:c1",
-                            "message_id": "claude-code-session:c1:m-c1",
+                            "message_id": M_C1,
                         },
                         {
                             "target_type": "message",
@@ -2021,7 +2027,7 @@ class TestReaderUserState:
                     "active_target": {
                         "target_type": "message",
                         "session_id": "claude-code-session:c1",
-                        "message_id": "claude-code-session:c1:m-c1",
+                        "message_id": M_C1,
                     },
                 },
             )
