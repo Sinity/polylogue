@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +17,14 @@ from polylogue.sources import revision_backfill
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.growth_budgets import GrowthBudget, GrowthObservation, assert_growth_budgets
+from tests.infra.growth_budgets import GrowthBudget, GrowthObservation, evaluate_growth_budgets
 from tests.infra.sqlite_work_counter import sqlite_work_counter
+
+_COMPONENT_DERIVED_WORK_BUDGET = GrowthBudget(metric="component_derived_vm_steps", max_step_multiplier=4.0)
+# A terminal refresh is allowed to emit the bounded quartet's observed
+# archive-wide statement envelope once per production-route pass. The law
+# rejects paying that envelope once per selected component.
+_COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET = 9
 
 
 def _config(root: Path) -> Config:
@@ -96,65 +103,85 @@ def _run_component_measurement(
     archive_size: int,
     monkeypatch: pytest.MonkeyPatch,
     *,
-    mutate_archive_wide_rebuild: bool,
+    component_count: int,
+    install_mutation: Callable[[pytest.MonkeyPatch], None] | None = None,
 ) -> GrowthObservation:
-    root = tmp_path / (f"mutant-{archive_size}" if mutate_archive_wide_rebuild else f"healthy-{archive_size}")
+    if component_count < 1 or component_count > archive_size:
+        raise ValueError("component_count must be between one and archive_size")
+    root = tmp_path / f"component-{archive_size}"
     _seed_raw_archive(root, archive_size, prefix="existing")
     _materialize_all(root, archive_size)
 
     with ArchiveStore.open_existing(root, read_only=False) as archive:
-        archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=_tool_call_payload("target"),
-            source_path="target.jsonl",
-            acquired_at_ms=archive_size + 1,
-        )
+        for index in range(component_count):
+            native_id = f"target-{index}"
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_tool_call_payload(native_id),
+                source_path=f"{native_id}.jsonl",
+                acquired_at_ms=archive_size + index + 1,
+            )
 
-    mutation_context = monkeypatch.context() if mutate_archive_wide_rebuild else None
-    if mutation_context is not None:
-        from polylogue.storage.fts import fts_lifecycle
-        from polylogue.storage.sqlite import action_pairs, delegation_facts
-
-        original_backfill = revision_backfill.backfill_historical_revision_evidence
-
-        def replay_with_deleted_regression(*args: Any, **kwargs: Any) -> Any:
-            result = original_backfill(*args, **kwargs)
-            archive_root = Path(args[0])
-            with sqlite3.connect(archive_root / "index.db") as conn:
-                conn.execute("PRAGMA busy_timeout = 600000")
-                fts_lifecycle.rebuild_fts_index_sync(conn)
-                fts_lifecycle.rebuild_command_trigram_index_sync(conn)
-                action_pairs.rebuild_all_action_pairs_sync(conn)
-                delegation_facts.rebuild_all_delegation_facts_sync(conn)
-                conn.commit()
-            return result
-
-        with mutation_context as mutation:
-            mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", replay_with_deleted_regression)
-            with sqlite_work_counter(step_interval=1) as counter:
-                result = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=1)
-    else:
+    with monkeypatch.context() as mutation:
+        if install_mutation is not None:
+            install_mutation(mutation)
         with sqlite_work_counter(step_interval=1) as counter:
-            result = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=1)
+            result = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=component_count)
 
-    assert result.repaired_count == 1
+    assert result.repaired_count == component_count
     return GrowthObservation(
         tier=str(archive_size),
         size=archive_size,
         metrics={
-            "derived_vm_steps": float(counter.metric("derived_vm_steps")),
-            "archive_wide_rebuild_calls": float(4 if mutate_archive_wide_rebuild else 0),
+            "component_derived_vm_steps": float(counter.metric("derived_vm_steps")),
+            "archive_wide_derived_statements": float(counter.metric("archive_wide_derived_statements")),
+            "component_rows_scanned": result.metrics["raw_materialization_scanned_raw_count"],
+            "component_rows_written": result.metrics["raw_materialization_replayed_logical_source_count"],
+            "component_bytes": result.metrics["raw_materialization_selected_total_blob_bytes"],
+            "component_passes": result.metrics["raw_materialization_executed_count"],
+            "selected_component_count": float(component_count),
         },
     )
 
 
 def _assert_component_shape(observations: list[GrowthObservation]) -> None:
-    assert all(observation.metric("archive_wide_rebuild_calls") == 0 for observation in observations)
-    assert any(observation.metric("derived_vm_steps") > 0 for observation in observations)
-    assert_growth_budgets(
-        observations,
-        [GrowthBudget(metric="derived_vm_steps", max_step_multiplier=4.0)],
+    report = evaluate_growth_budgets(observations, [_COMPONENT_DERIVED_WORK_BUDGET])
+    measured = "\n".join(f"  {observation.tier}: {dict(observation.metrics)}" for observation in observations)
+    assert report.ok, (
+        "component derived work exceeded the scale bound "
+        f"{_COMPONENT_DERIVED_WORK_BUDGET.max_step_multiplier}x; "
+        f"violations={report.violations}; measured counters:\n{measured}"
     )
+    archive_wide = [observation.metric("archive_wide_derived_statements") for observation in observations]
+    assert all(value <= _COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET for value in archive_wide), (
+        "incremental component route exceeded the one-terminal-refresh envelope; "
+        f"declared statement budget={_COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET}; measured counters:\n{measured}"
+    )
+    assert any(observation.metric("component_derived_vm_steps") > 0 for observation in observations), (
+        f"production route reported no derived work; measured counters:\n{measured}"
+    )
+
+
+def _restore_deleted_archive_wide_refresh(mutation: pytest.MonkeyPatch) -> None:
+    """Restore the deleted qsagp quartet through the real backfill seam."""
+    from polylogue.storage.fts import fts_lifecycle
+    from polylogue.storage.sqlite import action_pairs, delegation_facts
+
+    original_backfill = revision_backfill.backfill_historical_revision_evidence
+
+    def replay_with_deleted_regression(*args: Any, **kwargs: Any) -> Any:
+        result = original_backfill(*args, **kwargs)
+        archive_root = Path(args[0])
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            conn.execute("PRAGMA busy_timeout = 600000")
+            fts_lifecycle.rebuild_fts_index_sync(conn)
+            fts_lifecycle.rebuild_command_trigram_index_sync(conn)
+            action_pairs.rebuild_all_action_pairs_sync(conn)
+            delegation_facts.rebuild_all_delegation_facts_sync(conn)
+            conn.commit()
+        return result
+
+    mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", replay_with_deleted_regression)
 
 
 def test_one_component_derived_work_is_archive_scale_stable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,9 +190,9 @@ def test_one_component_derived_work_is_archive_scale_stable(tmp_path: Path, monk
             tmp_path,
             archive_size,
             monkeypatch,
-            mutate_archive_wide_rebuild=False,
+            component_count=component_count,
         )
-        for archive_size in (2, 8, 32)
+        for archive_size, component_count in ((2, 1), (8, 2), (32, 4))
     ]
 
     _assert_component_shape(observations)
@@ -180,21 +207,30 @@ def test_component_law_rejects_qsagp_archive_wide_per_item_mutation(
             tmp_path,
             archive_size,
             monkeypatch,
-            mutate_archive_wide_rebuild=True,
+            component_count=component_count,
+            install_mutation=_restore_deleted_archive_wide_refresh,
         )
-        for archive_size in (2, 8, 32)
+        for archive_size, component_count in ((2, 1), (8, 2), (32, 4))
     ]
 
+    archive_wide = [observation.metric("archive_wide_derived_statements") for observation in observations]
+    assert any(value > _COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET for value in archive_wide), (
+        "red mutation did not exceed the terminal-refresh statement envelope; "
+        f"measured counters={[dict(observation.metrics) for observation in observations]}"
+    )
     with pytest.raises(AssertionError):
         _assert_component_shape(observations)
-    assert all(observation.metric("archive_wide_rebuild_calls") == 4 for observation in observations)
+    assert all(value > 0 for value in archive_wide), (
+        "red mutation did not reach observed archive-wide SQL; "
+        f"measured counters={[dict(observation.metrics) for observation in observations]}"
+    )
 
 
 def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     batch_size = 2
-    observed: list[tuple[int, int, int]] = []
+    observed: list[tuple[int, int, int, int]] = []
     for archive_size in (4, 16, 64):
         root = tmp_path / f"batch-{archive_size}"
         _seed_raw_archive(root, archive_size, prefix="batch")
@@ -214,9 +250,18 @@ def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(
 
         assert result.metrics["raw_materialization_executed_count"] == float(batch_size)
         assert result.metrics["raw_materialization_scanned_raw_count"] <= float(batch_size)
-        observed.append((archive_size, selected_work, result.repaired_count))
+        observed.append(
+            (
+                archive_size,
+                selected_work,
+                result.repaired_count,
+                int(result.metrics["raw_materialization_executed_count"]),
+            )
+        )
 
-    assert observed == [(4, 2, 2), (16, 2, 2), (64, 2, 2)]
+    assert observed == [(4, 2, 2, 2), (16, 2, 2, 2), (64, 2, 2, 2)], (
+        f"bounded replay exceeded batch bound={batch_size}; observed={observed}"
+    )
 
 
 def test_mixed_hot_cold_large_small_components_all_receive_a_turn(

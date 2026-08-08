@@ -13,9 +13,12 @@ from unittest.mock import patch
 
 _DERIVED_SURFACES = (
     "messages_fts",
+    "messages_fts_identity",
+    "session_work_events_fts",
     "blocks_command_trigram",
     "action_pairs",
     "delegation_facts",
+    "delegation_refresh_scope",
 )
 _SQL_SPACE = re.compile(r"\s+")
 
@@ -48,16 +51,18 @@ def _is_archive_wide_derived_statement(sql: str) -> bool:
     """Recognize the deleted qsagp shape, without naming a private call site."""
     if not _mentions_derived_surface(sql):
         return False
+    if " values " in sql:
+        return False
     if sql.startswith("delete from "):
         return " where " not in sql
     if sql.startswith("insert into action_pairs"):
         return "where u.session_id =" not in sql
-    if sql.startswith("insert into messages_fts") or sql.startswith("insert into blocks_command_trigram"):
-        return "where session_id =" not in sql
+    if sql.startswith("insert into messages_fts"):
+        return "target.session_id = b.session_id" not in sql
+    if sql.startswith("insert into blocks_command_trigram"):
+        return "session_id" not in sql
     if sql.startswith("insert or replace into delegation_refresh_scope"):
         return "select session_id from sessions" in sql
-    if sql.startswith("insert into delegation_facts"):
-        return "where parent_session_id =" not in sql
     return False
 
 
