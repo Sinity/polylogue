@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from io import BytesIO
 from pathlib import Path
@@ -11,7 +12,10 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-from polylogue.sources.revision_backfill import census_historical_revision_evidence
+from polylogue.sources.revision_backfill import (
+    backfill_historical_revision_evidence,
+    census_historical_revision_evidence,
+)
 from polylogue.storage.blob_store import PreparedBlob
 from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
 from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
@@ -48,6 +52,47 @@ def _symlink_evidence(path: Path) -> tuple[int, int, str]:
     return stat.st_dev, stat.st_ino, target
 
 
+def _optional_path_evidence(path: Path) -> tuple[int, int, str] | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    return _symlink_evidence(path)
+
+
+def _assert_no_candidate_bookkeeping(root: Path) -> None:
+    assert not (root / ".index-generations").exists()
+    assert not (root / ".index-rebuild-transactions").exists()
+
+
+def _chatgpt_bundle(*native_ids: str) -> bytes:
+    sessions = []
+    for native_id in native_ids:
+        node_id = f"{native_id}-node"
+        sessions.append(
+            {
+                "id": native_id,
+                "conversation_id": native_id,
+                "title": native_id,
+                "create_time": 1_700_000_000,
+                "update_time": 1_700_000_001,
+                "current_node": node_id,
+                "mapping": {
+                    node_id: {
+                        "id": node_id,
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": f"{native_id}-message",
+                            "author": {"role": "user"},
+                            "content": {"content_type": "text", "parts": [native_id]},
+                            "create_time": 1_700_000_000,
+                        },
+                    }
+                },
+            }
+        )
+    return json.dumps(sessions, sort_keys=True).encode()
+
+
 def _prepare_frozen_source(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     build_independent_raw_corpus(root, raw_count=1, avg_payload_bytes=1_000)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
@@ -73,6 +118,8 @@ def test_real_no_promote_candidate_preserves_frozen_durable_tiers(
     root = tmp_path / "archive"
     receipt_path = _prepare_frozen_source(root, monkeypatch)
     generation_store = IndexGenerationStore.for_archive_root(root)
+    anchor = root / ".index-active-pointer"
+    anchor_before = _optional_path_evidence(anchor)
     active_target_before = generation_store.active_pointer.resolve(strict=True)
     active_pointer_before = _symlink_evidence(generation_store.active_pointer)
     active_index_before = _file_evidence(active_target_before)
@@ -107,6 +154,7 @@ def test_real_no_promote_candidate_preserves_frozen_durable_tiers(
     generation = generation_store.load(str(result.transaction["generation_id"]))
     assert generation.state == "inactive"
     assert generation_store.active_pointer.resolve(strict=True) == active_target_before
+    assert _optional_path_evidence(anchor) == anchor_before
     assert _symlink_evidence(generation_store.active_pointer) == active_pointer_before
     assert _file_evidence(active_target_before) == active_index_before
     assert _file_evidence(root / "source.db") == source_before
@@ -130,6 +178,9 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
     generation_store = IndexGenerationStore.for_archive_root(root)
     generation = generation_store.create(source_snapshot=source_revision_snapshot(root))
     generation_root = Path(generation.index_path).parent
+    anchor = root / ".index-active-pointer"
+    anchor.write_text(str(generation.index_path), encoding="utf-8")
+    poisoned_anchor_before = _optional_path_evidence(anchor)
     source_before = _file_evidence(root / "source.db")
     user_before = _file_evidence(root / "user.db")
     ops_before = _file_evidence(root / "ops.db")
@@ -198,20 +249,30 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
     assert _file_evidence(root / "user.db") == user_before
     assert _file_evidence(root / "ops.db") == ops_before
     assert _blob_evidence(root / "blob") == blobs_before
+    assert _optional_path_evidence(anchor) == poisoned_anchor_before
     with sqlite3.connect(generation.index_path) as candidate_index:
         assert candidate_index.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'candidate_index_probe'"
         ).fetchone() == (1,)
 
 
+@pytest.mark.parametrize("anchor_state", ["missing", "poisoned"])
 def test_candidate_requires_current_parser_census_before_generation_readiness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    anchor_state: str,
 ) -> None:
     root = tmp_path / "archive"
     build_independent_raw_corpus(root, raw_count=1, avg_payload_bytes=1_000)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-receipt.json")
+    anchor = root / ".index-active-pointer"
+    if anchor_state == "poisoned":
+        anchor.write_text(
+            str(root / ".index-generations" / "gen-poisoned" / "index.db"),
+            encoding="utf-8",
+        )
+    anchor_before = _optional_path_evidence(anchor)
 
     with pytest.raises(FrozenSourceRemediationRequiredError, match="complete current-parser source census"):
         rebuild_index_from_source_sync(
@@ -222,7 +283,8 @@ def test_candidate_requires_current_parser_census_before_generation_readiness(
             )
         )
 
-    assert not list((root / ".index-generations").glob("gen-*"))
+    assert _optional_path_evidence(anchor) == anchor_before
+    _assert_no_candidate_bookkeeping(root)
 
 
 def test_candidate_requires_complete_source_authority_before_generation_readiness(
@@ -245,19 +307,26 @@ def test_candidate_requires_complete_source_authority_before_generation_readines
             )
         )
 
-    assert not list((root / ".index-generations").glob("gen-*"))
+    _assert_no_candidate_bookkeeping(root)
 
 
+@pytest.mark.parametrize("drift", ["asserted", "stale-byte-proven"])
 def test_candidate_rejects_authority_drift_in_frozen_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    drift: str,
 ) -> None:
     root = tmp_path / "archive"
     _prepare_frozen_source(root, monkeypatch)
     with sqlite3.connect(root / "source.db") as source:
-        source.execute("UPDATE raw_sessions SET revision_authority = 'asserted', baseline_raw_id = NULL")
+        if drift == "asserted":
+            source.execute("UPDATE raw_sessions SET revision_authority = 'asserted', baseline_raw_id = NULL")
+        else:
+            source.execute("UPDATE raw_sessions SET acquisition_generation = 7")
         source.commit()
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "post-drift-receipt.json")
+    anchor = root / ".index-active-pointer"
+    anchor_before = _optional_path_evidence(anchor)
 
     with pytest.raises(FrozenSourceRemediationRequiredError, match="re-derived different byte authority"):
         rebuild_index_from_source_sync(
@@ -267,6 +336,62 @@ def test_candidate_rejects_authority_drift_in_frozen_source(
                 promote=False,
             )
         )
+
+    assert _optional_path_evidence(anchor) == anchor_before
+    _assert_no_candidate_bookkeeping(root)
+
+
+def test_candidate_rejects_membership_authority_drift_before_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_chatgpt_bundle("membership-a", "membership-b"),
+            source_path="conversations.json",
+            acquired_at_ms=1,
+        )
+    result = backfill_historical_revision_evidence(root)
+    assert result.replayed_logical_sources == 2
+    with sqlite3.connect(root / "source.db") as source:
+        decisions = source.execute(
+            """
+            SELECT logical_source_key, decision
+            FROM raw_session_memberships WHERE raw_id = ?
+            ORDER BY logical_source_key
+            """,
+            (raw_id,),
+        ).fetchall()
+        assert decisions == [
+            ("chatgpt:membership-a", "applied"),
+            ("chatgpt:membership-b", "applied"),
+        ]
+        source.execute(
+            """
+            UPDATE raw_session_memberships SET decision = 'superseded_prefix'
+            WHERE raw_id = ? AND logical_source_key = ?
+            """,
+            (raw_id, "chatgpt:membership-a"),
+        )
+        source.commit()
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "membership-drift-receipt.json")
+    anchor = root / ".index-active-pointer"
+    anchor_before = _optional_path_evidence(anchor)
+
+    with pytest.raises(FrozenSourceRemediationRequiredError, match="different membership authority"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                promote=False,
+            )
+        )
+
+    assert _optional_path_evidence(anchor) == anchor_before
+    _assert_no_candidate_bookkeeping(root)
 
 
 def test_active_bootstrap_still_rejects_candidate_durable_symlinks(

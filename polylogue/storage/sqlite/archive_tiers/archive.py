@@ -197,6 +197,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     finalize_raw_parse_state,
     mark_raw_parse_failed,
     mark_raw_parse_succeeded,
+    membership_decisions_for_classification,
     open_raw_revision_material,
     pending_raw_revision_logical_keys,
     raw_append_revision_parent,
@@ -221,6 +222,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     record_raw_failure_evidence,
     release_provisional_full_revisions,
     replace_raw_membership_census,
+    require_frozen_membership_authority,
     unclassified_raw_revision_rows,
     write_parsed_for_retained_raw,
     write_parsed_for_retained_raw_result,
@@ -1728,12 +1730,16 @@ class ArchiveStore:
         read_timeout: float = 5.0,
         owned_inactive_generation: tuple[str, str] | None = None,
         source_tier_acquisition: bool = False,
+        frozen_source_validation: bool = False,
     ) -> None:
         if source_tier_acquisition and read_only:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
+        if frozen_source_validation and (not read_only or owned_inactive_generation is not None):
+            raise ValueError("frozen source validation requires a read-only active archive")
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
-        self._inactive_candidate_durable_read_only = owned_inactive_generation is not None
+        self._frozen_source_validation = frozen_source_validation
+        self._inactive_candidate_durable_read_only = owned_inactive_generation is not None or frozen_source_validation
         self._active_writer_lease = None
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
@@ -1769,9 +1775,10 @@ class ArchiveStore:
                     **json.loads((archive_root / "generation.json").read_text(encoding="utf-8"))
                 )
                 declared_archive_root = Path(generation.archive_root).resolve(strict=True)
-                authoritative_generation = IndexGenerationStore.for_archive_root(declared_archive_root).load(
-                    generation_id
-                )
+                authoritative_generation = IndexGenerationStore.for_archive_root(
+                    declared_archive_root,
+                    repair_anchor=False,
+                ).load(generation_id)
                 if (
                     generation != authoritative_generation
                     or generation.owner_id != owner_id
@@ -1866,8 +1873,9 @@ class ArchiveStore:
             return
         if initialize:
             initialize_active_archive_root(archive_root)
-        if read_only:
+        if read_only and not self._frozen_source_validation:
             self._ensure_read_runtime_indexes()
+        if read_only:
             self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True, timeout=read_timeout)
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
@@ -1905,6 +1913,11 @@ class ArchiveStore:
                 _InactiveCandidateBlobPublisher if self._inactive_candidate_durable_read_only else ArchiveBlobPublisher
             )
             self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
+        elif self._frozen_source_validation:
+            self._blob_publisher = _InactiveCandidateBlobPublisher(
+                self.source_db_path,
+                self.archive_root / "blob",
+            )
         self._attach_user_tier_if_present()
 
     @classmethod
@@ -1930,6 +1943,16 @@ class ArchiveStore:
         connection raises immediately.
         """
         return cls(archive_root, initialize=False, read_only=False, source_tier_acquisition=True)
+
+    @classmethod
+    def open_frozen_source_validation(cls, archive_root: Path) -> ArchiveStore:
+        """Open the live tiers without repairing or mutating any durable or pointer state."""
+        return cls(
+            archive_root,
+            initialize=False,
+            read_only=True,
+            frozen_source_validation=True,
+        )
 
     @classmethod
     def open_owned_inactive_generation(cls, archive_root: Path, *, generation_id: str, owner_id: str) -> ArchiveStore:
@@ -2499,6 +2522,18 @@ class ArchiveStore:
 
     def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
         return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
+
+    def require_frozen_membership_authority(
+        self,
+        logical_source_key: str,
+        classification: MembershipClassification,
+    ) -> None:
+        require_frozen_membership_authority(
+            self,
+            logical_source_key,
+            classification,
+            membership_decisions_for_classification(classification),
+        )
 
     def classify_raw_revision_cohort_for_live_watch(
         self,

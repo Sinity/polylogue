@@ -452,7 +452,7 @@ class IndexGenerationStore:
     authority belongs.
     """
 
-    def __init__(self, location: ArchiveLocation) -> None:
+    def __init__(self, location: ArchiveLocation, *, repair_anchor: bool = True) -> None:
         self.archive_root = location.configured_root
         self.location = location
         anchor = location.configured_root / ".index-active-pointer"
@@ -486,23 +486,29 @@ class IndexGenerationStore:
                 self.active_pointer = configured_index if _is_generation_member(resolved) else resolved
             else:
                 self.active_pointer = configured_index
-            temporary = anchor.with_suffix(".tmp")
-            # Constructing the store must not require the archive root to have
-            # been materialized first. Daemon bulk-rebuild routing is now
-            # unconditional, so this runs on every convergence tick -- including
-            # against a configured-but-not-yet-created root, where the eager
-            # pointer write previously raised FileNotFoundError.
-            anchor.parent.mkdir(parents=True, exist_ok=True)
-            temporary.write_text(str(self.active_pointer.absolute()), encoding="utf-8")
-            os.replace(temporary, anchor)
-            _fsync_directory(anchor.parent)
+            if repair_anchor:
+                temporary = anchor.with_suffix(".tmp")
+                # Constructing the store must not require the archive root to have
+                # been materialized first. Daemon bulk-rebuild routing is now
+                # unconditional, so this runs on every convergence tick -- including
+                # against a configured-but-not-yet-created root, where the eager
+                # pointer write previously raised FileNotFoundError.
+                anchor.parent.mkdir(parents=True, exist_ok=True)
+                temporary.write_text(str(self.active_pointer.absolute()), encoding="utf-8")
+                os.replace(temporary, anchor)
+                _fsync_directory(anchor.parent)
         self.generations_root = self.active_pointer.parent / ".index-generations"
         self.transactions_root = self.active_pointer.parent / ".index-rebuild-transactions"
 
     @classmethod
-    def for_archive_root(cls, archive_root: Path) -> IndexGenerationStore:
+    def for_archive_root(
+        cls,
+        archive_root: Path,
+        *,
+        repair_anchor: bool = True,
+    ) -> IndexGenerationStore:
         """Convenience constructor resolving ``archive_root`` into an :class:`ArchiveLocation` first."""
-        return cls(ArchiveLocation.resolve(archive_root))
+        return cls(ArchiveLocation.resolve(archive_root), repair_anchor=repair_anchor)
 
     def create_transaction(
         self,

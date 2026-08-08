@@ -934,6 +934,71 @@ def require_current_parser_source_census(
         )
 
 
+def validate_frozen_source_authority(
+    archive_root: Path,
+    *,
+    selected_raw_ids: list[str] | None = None,
+    max_payload_bytes: int | None = None,
+    ingest_workers: int = 1,
+    prefetch_cache: RawParsePrefetchCache | None = None,
+) -> None:
+    """Re-derive every selected source decision before allocating a candidate."""
+    with (
+        ArchiveStore.open_frozen_source_validation(archive_root) as archive,
+        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
+    ):
+        census = _load_frozen_revision_evidence(
+            archive,
+            spill,
+            selected_raw_ids=selected_raw_ids,
+            max_payload_bytes=max_payload_bytes,
+            ingest_workers=ingest_workers,
+            prefetch_cache=prefetch_cache,
+        )
+        _unclassified, logical_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        _membership_raw_ids, persisted_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+        membership_keys = {*persisted_membership_keys, *census.membership_candidates}
+        byte_replayed_keys: set[str] = set()
+
+        for logical_key in sorted(logical_keys):
+            plan = archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
+            if not plan.accepted_raw_ids:
+                convertible = archive.convertible_full_revision_raw_ids(logical_key)
+                if convertible:
+                    raise FrozenSourceRemediationRequiredError(
+                        "inactive candidate found a full-revision cohort that still requires membership "
+                        f"remediation in frozen source: {logical_key}"
+                    )
+                continue
+            byte_replayed_keys.add(logical_key)
+
+        for logical_key in sorted(membership_keys - byte_replayed_keys):
+            candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
+            candidate_raw_ids.update(census.membership_candidates.get(logical_key, ()))
+            revisions: list[MembershipRevision] = []
+            for raw_id in sorted(candidate_raw_ids):
+                sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+                for session in sessions:
+                    session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                    if session_logical_key != logical_key:
+                        continue
+                    projection = session_revision_projection(session)
+                    revisions.append(
+                        MembershipRevision(
+                            raw_id,
+                            projection,
+                            session.updated_at,
+                            browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                            provider_message_ids=frozenset(message.provider_message_id for message in session.messages),
+                            provider_attachment_ids=frozenset(
+                                attachment.provider_attachment_id for attachment in session.attachments
+                            ),
+                        )
+                    )
+            classification = classify_membership_revisions(revisions, existing_accepted_raw_id=None)
+            archive.require_frozen_membership_authority(logical_key, classification)
+
+
 def census_historical_revision_evidence(
     archive_root: Path,
     *,

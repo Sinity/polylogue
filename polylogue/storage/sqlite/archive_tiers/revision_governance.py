@@ -2553,6 +2553,76 @@ def _application_decision_for(decision: MembershipDecision) -> ApplicationDecisi
     return ApplicationDecision.SELECTED_BASELINE
 
 
+def membership_decisions_for_classification(
+    classification: MembershipClassification,
+) -> dict[str, MembershipDecision]:
+    """Return the source-tier decisions a fresh replay must persist."""
+    decisions: dict[str, MembershipDecision] = dict.fromkeys(
+        classification.ambiguous_raw_ids,
+        MembershipDecision.AMBIGUOUS,
+    )
+    decisions.update(
+        dict.fromkeys(
+            classification.equivalent_raw_ids,
+            MembershipDecision.SUPERSEDED_EQUIVALENT
+            if classification.accepted_raw_ids
+            else MembershipDecision.AMBIGUOUS,
+        )
+    )
+    for raw_id in classification.accepted_raw_ids[:-1]:
+        decisions[raw_id] = MembershipDecision.SUPERSEDED_PREFIX
+    if classification.accepted_raw_ids:
+        decisions[classification.accepted_raw_ids[-1]] = MembershipDecision.APPLIED
+    return decisions
+
+
+def require_frozen_membership_authority(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+    classification: MembershipClassification,
+    decisions: dict[str, MembershipDecision] | None = None,
+) -> None:
+    """Require persisted membership authority to equal a current re-derivation."""
+    conn = store._ensure_source_conn()
+    expected_decisions = decisions or membership_decisions_for_classification(classification)
+    for raw_id, decision in expected_decisions.items():
+        expected = (
+            decision.value,
+            "quarantined" if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED} else "byte_proven",
+            classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
+        )
+        persisted = conn.execute(
+            """
+            SELECT decision, revision_authority, acquisition_generation
+            FROM raw_session_memberships
+            WHERE raw_id = ? AND logical_source_key = ?
+            """,
+            (raw_id, logical_source_key),
+        ).fetchone()
+        if persisted is None or tuple(persisted) != expected:
+            raise FrozenSourceRemediationRequiredError(
+                "inactive candidate re-derived different membership authority for frozen raw "
+                f"{raw_id}; complete source remediation before candidate construction"
+            )
+        complete = conn.execute(
+            """
+            SELECT c.status = 'complete'
+               AND NOT EXISTS (
+                   SELECT 1 FROM raw_session_memberships AS m
+                   WHERE m.raw_id = c.raw_id
+                     AND (m.decision IS NULL OR m.decision IN ('ambiguous', 'deferred'))
+               )
+            FROM raw_membership_census AS c WHERE c.raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchone()
+        if complete is None or not bool(complete[0]):
+            raise FrozenSourceRemediationRequiredError(
+                "inactive candidate found incomplete frozen membership authority for raw "
+                f"{raw_id}; complete source remediation before candidate construction"
+            )
+
+
 def apply_raw_membership_classification(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
@@ -2584,25 +2654,13 @@ def apply_raw_membership_classification(
     """
     conn = store._ensure_source_conn()
     decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
-    decisions: dict[str, MembershipDecision] = dict.fromkeys(
-        classification.ambiguous_raw_ids, MembershipDecision.AMBIGUOUS
-    )
+    decisions = membership_decisions_for_classification(classification)
     # "superseded_equivalent" asserts an accepted chain superseded the
     # member. With no accepted head, equivalence collapses back into the
     # unresolved cohort: labeling it superseded (and, downstream,
     # byte_proven) fabricates authority for a head that was never written
     # -- 914 headless-but-"byte_proven" logical sources on the 2026-07-20
     # rebuild walk came from exactly this mislabel.
-    decisions.update(
-        dict.fromkeys(
-            classification.equivalent_raw_ids,
-            MembershipDecision.SUPERSEDED_EQUIVALENT
-            if classification.accepted_raw_ids
-            else MembershipDecision.AMBIGUOUS,
-        )
-    )
-    for raw_id in classification.accepted_raw_ids[:-1]:
-        decisions[raw_id] = MembershipDecision.SUPERSEDED_PREFIX
     session_id: str | None = None
     # Ambiguous evidence is debt, not deletion authority. A later branch
     # must not erase the last accepted session/head; a cold rebuild simply
@@ -2908,27 +2966,7 @@ def apply_raw_membership_classification(
             decisions[accepted_raw_id] = MembershipDecision.APPLIED
 
     if _is_frozen_candidate(store):
-        for raw_id, decision in decisions.items():
-            expected = (
-                decision.value,
-                "quarantined"
-                if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
-                else "byte_proven",
-                classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
-            )
-            persisted = conn.execute(
-                """
-                SELECT decision, revision_authority, acquisition_generation
-                FROM raw_session_memberships
-                WHERE raw_id = ? AND logical_source_key = ?
-                """,
-                (raw_id, logical_source_key),
-            ).fetchone()
-            if persisted is None or tuple(persisted) != expected:
-                raise FrozenSourceRemediationRequiredError(
-                    "inactive candidate re-derived different membership authority for frozen raw "
-                    f"{raw_id}; complete source remediation before candidate construction"
-                )
+        require_frozen_membership_authority(store, logical_source_key, classification, decisions)
     else:
         with conn if manage_transaction else nullcontext():
             for raw_id, decision in decisions.items():
@@ -2967,11 +3005,6 @@ def apply_raw_membership_classification(
             (raw_id,),
         ).fetchone()
         if _is_frozen_candidate(store):
-            if complete is None or not bool(complete[0]):
-                raise FrozenSourceRemediationRequiredError(
-                    "inactive candidate found incomplete frozen membership authority for raw "
-                    f"{raw_id}; complete source remediation before candidate construction"
-                )
             continue
         if complete is not None and bool(complete[0]):
             provider, _blob_hash, _source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
