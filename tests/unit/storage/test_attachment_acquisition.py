@@ -24,6 +24,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.identity import archive_message_id
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -222,7 +223,7 @@ def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeyp
     ).fetchone()
     assert ref is not None
     assert ref[1] == "claude-ai-export:claude-attachment-session"
-    assert ref[2] == "claude-ai-export:claude-attachment-session:m0"
+    assert ref[2] == archive_message_id("claude-ai-export:claude-attachment-session", "m0", position=0)
 
 
 @pytest.mark.parametrize("payload", [b"must be reserved first", b""], ids=["nonempty", "empty"])

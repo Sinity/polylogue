@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, SCHEMA_VERSION
+from tests.infra.identity import archive_message_id
 
 # =============================================================================
 # Schema DDL parity: sync and async must use the same DDL (f33ef29)
@@ -329,7 +330,7 @@ class TestFTS5CountGuard:
                 """,
                 (session_id,),
             )
-            message_id = f"{session_id}:m1"
+            message_id = archive_message_id(session_id, "m1", position=0)
             conn.execute(
                 """
                 INSERT INTO blocks (message_id, session_id, position, block_type, text)

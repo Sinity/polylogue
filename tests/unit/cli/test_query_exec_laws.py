@@ -41,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchH
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 from polylogue.surfaces.payloads import decode_search_cursor
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.identity import archive_message_id
 
 
 async def _execute_query_params(env: AppEnv, params: dict[str, object]) -> None:
@@ -3509,7 +3510,9 @@ class TestSearchQueryContracts:
             data = json.loads(result.output)
             assert data["mode"] == "query-unit", case_id
             assert data["unit"] == "message", case_id
-            assert [item["message_id"] for item in data["items"]] == ["chatgpt-export:ext-conv1:m2"], case_id
+            assert [item["message_id"] for item in data["items"]] == [
+                archive_message_id("chatgpt-export:ext-conv1", "m2", position=1)
+            ], case_id
             assert data["items"][0]["role"] == "assistant", case_id
         elif expectation == "plain_list":
             assert result.output.strip(), case_id

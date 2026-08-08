@@ -57,6 +57,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import db_setup
 
 # ---------------------------------------------------------------------------
@@ -470,7 +471,14 @@ def _seed_import_explain_archive(tmp_path: Path, *, source_path: str | None = No
                 message_id, session_id, position, block_type, text, tool_id
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            ("codex-session:native-1:msg-1", "codex-session:native-1", 0, "tool_use", "pytest", "tool-1"),
+            (
+                archive_message_id("codex-session:native-1", "msg-1", position=0),
+                "codex-session:native-1",
+                0,
+                "tool_use",
+                "pytest",
+                "tool-1",
+            ),
         )
         source_conn.commit()
         index_conn.commit()
@@ -2609,7 +2617,9 @@ async def test_query_units_reports_pipeline_stages(tmp_path: Path) -> None:
         assert envelope.pipeline["result"] == {"limit": 1, "offset": 1}
         assert envelope.pipeline["session_scope"] == envelope.pipeline_stages[0]["predicate"]
         assert envelope.limit == 1
-        assert [cast(Any, item).message_id for item in envelope.items] == ["codex-session:unit-pipeline-codex:m2"]
+        assert [cast(Any, item).message_id for item in envelope.items] == [
+            archive_message_id("codex-session:unit-pipeline-codex", "m2", position=1)
+        ]
     finally:
         await archive.close()
 
@@ -2861,7 +2871,7 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         assert session_payload.payload is not None
         assert session_payload.payload["id"] == session_id
 
-        message_id = f"{session_id}:m1"
+        message_id = archive_message_id(session_id, "m1", position=0)
         message_payload = await archive.resolve_ref(f"message:{session_id}:{message_id}")
         assert message_payload.resolved is True
         assert message_payload.payload_kind == "message"
@@ -4188,7 +4198,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert normal_envelope.total == 1
         assert normal_envelope.retrieval_lane == "dialogue"
         assert [hit.session.id for hit in normal_envelope.hits] == [session_id]
-        assert normal_envelope.hits[0].match.message_id == f"{session_id}:m1"
+        assert normal_envelope.hits[0].match.message_id == archive_message_id(session_id, "m1", position=0)
         assert unit_envelope.mode == "query-unit"
         assert unit_envelope.unit == "message"
         assert unit_envelope.total == 1
@@ -4198,9 +4208,10 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert normal_neighbors[0].summary.message_count == 1
         assert {reason.kind for reason in normal_neighbors[0].reasons} >= {"query_match", "content_similarity"}
         assert total_messages == 1
-        assert [message.id for message in paged_messages] == [f"{session_id}:m1"]
+        expected_message_id = archive_message_id(session_id, "m1", position=0)
+        assert [message.id for message in paged_messages] == [expected_message_id]
         assert list(bulk_messages) == [session_id]
-        assert [message.id for message in bulk_messages[session_id]] == [f"{session_id}:m1"]
+        assert [message.id for message in bulk_messages[session_id]] == [expected_message_id]
 
         with ArchiveStore.open_existing(archive.config.archive_root, read_only=False) as archive_db:
             archive_db._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")

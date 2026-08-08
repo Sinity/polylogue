@@ -27,6 +27,7 @@ from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.identity import archive_message_id
 
 _CLAUDE_AI_PAYLOAD = {
     "uuid": "reacq-session-1",
@@ -137,6 +138,7 @@ def _write_bare_unfetched_attachment(
     )
     if source_url is not None:
         dummy_hash = bytes(32)
+        message_id = archive_message_id("unknown-export:bare-session", "m0", position=0)
         index_conn.execute(
             "INSERT INTO sessions (origin, native_id, content_hash) VALUES ('unknown-export', 'bare-session', ?)",
             (dummy_hash,),
@@ -148,8 +150,8 @@ def _write_bare_unfetched_attachment(
         )
         index_conn.execute(
             "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position, source_url) "
-            "VALUES (?, 'unknown-export:bare-session', 'unknown-export:bare-session:m0', 0, ?)",
-            (attachment_id, source_url),
+            "VALUES (?, 'unknown-export:bare-session', ?, 0, ?)",
+            (attachment_id, message_id, source_url),
         )
     index_conn.commit()
 

@@ -20,6 +20,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.identity import archive_block_id, archive_message_id
 from tests.infra.live_ingest import ingest_session
 
 
@@ -299,8 +300,8 @@ async def test_file_edits_round_trip_keyed_by_tool_use_block(tmp_path: Path) -> 
     assert edit.structured_patch == [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}]
     # Keyed by the TOOL_USE block (message m1, position 0) even though the
     # evidence was attached to the TOOL_RESULT block reported in message m2.
-    assert edit.tool_use_block_id == f"{session_id}:m1:0"
-    assert edit.message_id == f"{session_id}:m2"
+    assert edit.tool_use_block_id == archive_block_id(archive_message_id(session_id, "m1", position=0), position=0)
+    assert edit.message_id == archive_message_id(session_id, "m2", position=1)
 
 
 async def test_file_edits_empty_for_session_without_edits(tmp_path: Path) -> None:
@@ -456,8 +457,8 @@ async def test_web_content_constructs_round_trip_search_result(tmp_path: Path) -
     query_construct = by_type["search_query"]
     assert query_construct.session_id == session_id
     assert query_construct.query == "polylogue archive"
-    assert query_construct.message_id == f"{session_id}:m1"
-    assert query_construct.block_id == f"{session_id}:m1:0"
+    assert query_construct.message_id == archive_message_id(session_id, "m1", position=0)
+    assert query_construct.block_id == archive_block_id(query_construct.message_id, position=0)
 
     result_construct = by_type["search_result"]
     assert result_construct.title == "Polylogue"
@@ -562,5 +563,7 @@ async def test_session_links_parent_tool_use_block_id_resolves_via_tool_id(tmp_p
 
     assert len(links) == 1
     link = links[0]
-    assert link["parent_tool_use_block_id"] == f"{parent_id}:m1:0"
+    assert link["parent_tool_use_block_id"] == archive_block_id(
+        archive_message_id(parent_id, "m1", position=0), position=0
+    )
     assert link["method"] == "parent-tool-use-id"

@@ -26,6 +26,7 @@ from polylogue.storage.search.runtime import search_messages_impl
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.queries.attachment_records import search_attachment_identity_evidence_hits
 from polylogue.storage.sqlite.schema import SCHEMA_DDL
+from tests.infra.identity import archive_message_id
 
 
 def _insert_timeless_session_with_text_block(
@@ -40,7 +41,7 @@ def _insert_timeless_session_with_text_block(
         "INSERT INTO messages (session_id, position, role, content_hash) VALUES (?, 0, 'assistant', ?)",
         (session_id, bytes(32)),
     )
-    message_id = f"{session_id}:0.0"
+    message_id = archive_message_id(session_id, None, position=0)
     conn.execute(
         "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
         (message_id, session_id, text),
@@ -100,7 +101,7 @@ def test_ranked_action_search_since_filter_includes_timeless_session(tmp_path: P
             "INSERT INTO messages (session_id, position, role, content_hash) VALUES (?, 0, 'assistant', ?)",
             (session_id, bytes(32)),
         )
-        message_id = f"{session_id}:0.0"
+        message_id = archive_message_id(session_id, None, position=0)
         conn.execute(
             "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, text) "
             "VALUES (?, ?, 0, 'tool_use', 'Bash', 'tool-1', 'run pytest suite')",
@@ -128,7 +129,7 @@ def test_ranked_session_search_since_filter_still_excludes_out_of_range_timestam
             "INSERT INTO messages (session_id, position, role, content_hash) VALUES (?, 0, 'assistant', ?)",
             (session_id, bytes(32)),
         )
-        message_id = f"{session_id}:0.0"
+        message_id = archive_message_id(session_id, None, position=0)
         conn.execute(
             "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
             (message_id, session_id, "the quick fox jumps"),

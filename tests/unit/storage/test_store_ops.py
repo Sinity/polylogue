@@ -37,6 +37,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import (
     _prune_attachment_refs,
     make_attachment,
@@ -840,7 +841,7 @@ def test_prune_attachment_refs_contract(test_conn: sqlite3.Connection) -> None:
         WHERE ar.session_id = ? AND ar.message_id = ? AND ani.native_id IN ('att-prune-1', 'att-shared')
         ORDER BY ani.native_id
         """,
-        (current_session_id, f"{current_session_id}:msg-prune-1"),
+        (current_session_id, archive_message_id(current_session_id, "msg-prune-1", position=0)),
     ).fetchall()
     keep_refs = {str(row["ref_id"]) for row in keep_rows}
     assert len(keep_refs) == 2
@@ -897,7 +898,7 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
         ("msg-optional",),
     ).fetchone()
     assert msg_row is not None
-    assert msg_row["message_id"] == "unknown-export:conv-optional:msg-optional"
+    assert msg_row["message_id"] == archive_message_id("unknown-export:conv-optional", "msg-optional", position=0)
     assert msg_row["role"] == "unknown"
     assert msg_row["native_id"] == "msg-optional"
     assert (
@@ -1598,8 +1599,8 @@ class TestRepositoryOperations:
         for row in rows:
             by_message.setdefault(str(row["message_id"]), set()).add(str(row["attachment_native_id"]))
 
-        assert by_message[f"{session_id}:m1"] == {"att1", "att2"}
-        assert by_message[f"{session_id}:m2"] == {"att3"}
+        assert by_message[archive_message_id(session_id, "m1", position=0)] == {"att1", "att2"}
+        assert by_message[archive_message_id(session_id, "m2", position=1)] == {"att3"}
 
     async def test_get_eager_attachment_metadata_not_stored_in_index(self, workspace_env: dict[str, Path]) -> None:
         """Attachment metadata is not an index-tier escape hatch."""

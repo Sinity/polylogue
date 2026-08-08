@@ -41,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.identity import archive_message_id
 
 
 class _SessionIdOnly:
@@ -448,7 +449,7 @@ def _seed_minimal_archive(db_path: Path, source_path: Path, *, session_id: str =
             INSERT INTO blocks(message_id, session_id, position, block_type, text)
             VALUES (?, ?, 0, 'text', 'archive searchable block')
             """,
-            (f"{session_id}:m1", session_id),
+            (archive_message_id(session_id, "m1", position=0), session_id),
         )
         conn.execute("DELETE FROM messages_fts")
         conn.commit()

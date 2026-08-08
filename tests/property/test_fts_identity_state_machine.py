@@ -26,6 +26,7 @@ from polylogue.storage.fts.fts_lifecycle import (
     restore_fts_triggers_sync,
 )
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.identity import archive_message_id
 
 
 class _Block:
@@ -84,14 +85,15 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
         self._next_id += 1
         message_native_id = f"msg-{self._next_id}"
         session_id = f"{self._origin}:{session_native_id}"
-        message_id = f"{session_id}:{message_native_id}"
+        position = self._next_position(session_native_id)
+        message_id = archive_message_id(session_id, message_native_id, position=position)
         content_hash = self._fresh_content_hash()
         self._conn.execute(
             """
             INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
             VALUES (?, ?, ?, 'user', 'message', ?)
             """,
-            (session_id, message_native_id, self._next_position(session_native_id), content_hash),
+            (session_id, message_native_id, position, content_hash),
         )
         self._conn.execute(
             """
@@ -170,14 +172,15 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
             self._next_id += 1
             message_native_id = f"msg-{self._next_id}"
             session_id = f"{self._origin}:{session_native_id}"
-            message_id = f"{session_id}:{message_native_id}"
+            position = self._next_position(session_native_id)
+            message_id = archive_message_id(session_id, message_native_id, position=position)
             content_hash = self._fresh_content_hash()
             self._conn.execute(
                 """
                 INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
                 VALUES (?, ?, ?, 'user', 'message', ?)
                 """,
-                (session_id, message_native_id, self._next_position(session_native_id), content_hash),
+                (session_id, message_native_id, position, content_hash),
             )
             self._conn.execute(
                 """
@@ -213,14 +216,15 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
             self._next_id += 1
             message_native_id = f"rollback-msg-{self._next_id}"
             session_id = f"{self._origin}:{session_native_id}"
-            message_id = f"{session_id}:{message_native_id}"
+            position = self._next_position(session_native_id)
+            message_id = archive_message_id(session_id, message_native_id, position=position)
             content_hash = self._fresh_content_hash()
             self._conn.execute(
                 """
                 INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
                 VALUES (?, ?, ?, 'user', 'message', ?)
                 """,
-                (session_id, message_native_id, self._next_position(session_native_id), content_hash),
+                (session_id, message_native_id, position, content_hash),
             )
             self._conn.execute(
                 """

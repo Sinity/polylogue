@@ -30,6 +30,7 @@ from polylogue.storage.fts.fts_lifecycle import (
 )
 from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID, message_identity_mismatch_sql
 from polylogue.storage.sqlite.archive_tiers.ops_write import list_fts_drift_samples, record_fts_drift_sample
+from tests.infra.identity import archive_message_id
 
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedSession
@@ -52,7 +53,7 @@ def _seed_block(
     """
     origin = "unknown-export"
     session_id = f"{origin}:{native_session_id}"
-    message_id = f"{session_id}:{native_message_id}"
+    message_id = archive_message_id(session_id, native_message_id, position=message_position)
     conn.execute(
         "INSERT OR IGNORE INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
         (native_session_id, origin, "Identity ledger test", content_hash),
@@ -352,7 +353,7 @@ class TestIdentityMismatchDetection:
             native_message_id="msg-identity-orphan",
             text="will be deleted from messages_fts only",
         )
-        block_id = "unknown-export:conv-identity-orphan:msg-identity-orphan:0"
+        block_id = archive_message_id("unknown-export:conv-identity-orphan", "msg-identity-orphan", position=0) + ":0"
         rowid = _block_rowid(test_conn, block_id)
         assert _identity_mismatch_count(test_conn) == 0
 

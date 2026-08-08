@@ -15,6 +15,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SP
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries import message_query_reads
 from polylogue.storage.sqlite.queries.mappers_archive import _row_to_message
+from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import ingest_session
 
 
@@ -70,7 +71,9 @@ async def test_real_archive_write_read_hydrates_spec_fields(tmp_path: Path) -> N
     finally:
         await backend.close()
 
-    assert str(records[0].message_id) == "claude-code-session:spec-hydration:native-message"
+    assert str(records[0].message_id) == archive_message_id(
+        "claude-code-session:spec-hydration", "native-message", position=0
+    )
     assert str(blocks[str(records[0].message_id)][0].block_id) == f"{records[0].message_id}:0"
     assert hydrated.stop_reason == "end_turn"
     assert hydrated.is_active_path is True
