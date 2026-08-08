@@ -42,7 +42,7 @@
         {
           "async": false,
           "binding": "Polylogue.__init__",
-          "signature": "(archive_root: 'str | Path | None' = None, db_path: 'str | Path | None' = None, *, runtime: 'ResolvedRuntimeConfig | None' = None) -> 'None'"
+          "signature": "(archive_root: 'str | Path | None' = None, db_path: 'str | Path | None' = None, *, runtime: 'ResolvedRuntimeConfig | None' = None, config: 'Config | None' = None) -> 'None'"
         },
         {
           "async": false,

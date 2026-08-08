@@ -347,7 +347,7 @@ Route/tier class: `lifecycle`. CLI: Intentional absence: `polylogue-s1kr`. MCP: 
 | Python callable | Signature |
 |---|---|
 | `Polylogue` | Constructed facade builder |
-| `Polylogue.__init__` | `(archive_root: 'str | Path | None' = None, db_path: 'str | Path | None' = None, *, runtime: 'ResolvedRuntimeConfig | None' = None) -> 'None'` |
+| `Polylogue.__init__` | `(archive_root: 'str | Path | None' = None, db_path: 'str | Path | None' = None, *, runtime: 'ResolvedRuntimeConfig | None' = None, config: 'Config | None' = None) -> 'None'` |
 | `Polylogue.open` | `(*, config: 'Config | None' = None, runtime: 'ResolvedRuntimeConfig | None' = None, **kwargs: 'object') -> 'Polylogue'` |
 | `Polylogue.__aenter__` | `async (self) -> 'Polylogue'` |
 | `Polylogue.__aexit__` | `async (self, exc_type: 'object', exc_val: 'object', exc_tb: 'object') -> 'None'` |

@@ -126,6 +126,9 @@ class TestPolylogueInitialization:
         assert archive.config.embedding_model == "configured-model"
         assert archive.config.embedding_dimension == 512
 
+        with pytest.raises(ValueError, match="config cannot be combined"):
+            Polylogue.open(config=config, archive_root=tmp_path / "other-archive")
+
 
 class TestArchiveStatsCreation:
     """Test ArchiveStats instantiation and attributes."""

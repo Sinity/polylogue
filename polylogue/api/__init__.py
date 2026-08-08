@@ -98,13 +98,9 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
         runtime: ResolvedRuntimeConfig | None = None,
         **kwargs: object,
     ) -> Polylogue:
-        if runtime is not None:
-            return cls(runtime=runtime)
-        if config is not None:
-            return cls(config=config)
         archive_root: str | Path | None = kwargs.get("archive_root")  # type: ignore[assignment]
         db_path: str | Path | None = kwargs.get("db_path")  # type: ignore[assignment]
-        return cls(archive_root=archive_root, db_path=db_path)
+        return cls(archive_root=archive_root, db_path=db_path, runtime=runtime, config=config)
 
     async def __aenter__(self) -> Polylogue:
         return self
