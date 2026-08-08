@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
 
 import pytest
 from hypothesis import given
 
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.index_generation import IndexGenerationStore
 from tests.infra.corpus_program import (
     Acquire,
     Append,
@@ -33,6 +34,7 @@ from tests.infra.corpus_program import (
     corpus_program_schedule_strategy,
     corpus_program_strategy,
 )
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 class RecordingRunner:
@@ -187,18 +189,22 @@ def test_production_route_composes_acquire_append_and_converge(
     fixture_path = Path(__file__).parents[1] / "data" / "codex_event_stream" / "text_only_stream.jsonl"
     initial = fixture_path.read_bytes()
     delta = b'{"type":"response_item","payload":{"type":"message","id":"msg-appended","role":"user","timestamp":"2025-01-15T10:01:00Z","content":[{"type":"input_text","text":"Append this turn."}]}}\n'
+    replacement = initial.replace(b"The capital of France is Paris.", b"Replacement reached production.")
+    assert replacement != initial
     program = CorpusProgram(
         operations=(
-            Acquire("acquire-v1", _artifact("session", initial)),
             Append("append", "session", delta),
             Converge("converge"),
-        )
+            Replace("replace", "session", replacement),
+            Acquire("acquire-v1", _artifact("session", initial)),
+        ),
+        schedule=("acquire-v1", "append", "replace", "converge"),
     )
     runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
 
     run = program.run(runtime)
 
-    assert run.state.artifact("session").payload.endswith(delta)
+    assert run.state.artifact("session").payload == replacement
     assert runtime.last_results
     with runtime.archive_root.joinpath("index.db").open("rb"):
         pass
@@ -207,8 +213,11 @@ def test_production_route_composes_acquire_append_and_converge(
     with sqlite3.connect(runtime.archive_root / "index.db") as conn:
         session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         message_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        block_text = "\n".join(str(row[0]) for row in conn.execute("SELECT text FROM blocks ORDER BY block_id"))
     assert session_count == 1
-    assert message_count >= 3
+    assert message_count >= 2
+    assert "Replacement reached production" in block_text
+    assert "Append this turn" not in block_text
 
 
 def test_production_route_carries_attachment_identity_metadata_and_bytes(
@@ -242,6 +251,8 @@ def test_production_route_carries_attachment_identity_metadata_and_bytes(
     blob_hash = row[4]
     assert isinstance(blob_hash, bytes)
     assert len(blob_hash) == 32
+    with BlobStore(runtime.archive_root / "blob").open(blob_hash.hex()) as retained:
+        assert retained.read() == attachment.payload
     assert runtime._raw_ids["session"]
 
 
@@ -271,23 +282,81 @@ def test_production_route_persists_canonical_hook_envelope(workspace_env: dict[s
     }
 
 
-def test_promote_reenters_owned_rebuild_boundary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    runtime = ProductionCorpusRuntime(tmp_path / "archive")
-    runtime._rebuild_receipt = SimpleNamespace(transaction={"operation_id": "rebuild-op"})  # type: ignore[assignment]
-    calls: list[object] = []
+def _freeze_runtime_source(
+    runtime: ProductionCorpusRuntime,
+    receipt_path: Path,
+    *,
+    expected_raws: int = 1,
+) -> None:
+    backfill = backfill_historical_revision_evidence(runtime.archive_root)
+    assert backfill.scanned == expected_raws
+    assert backfill.classified_full == expected_raws
+    assert backfill.replayed_logical_sources + backfill.adoption_deferred == 1
+    runtime.bind_schema_inference_receipt(write_valid_rebuild_receipt(runtime.archive_root, receipt_path))
 
-    async def resume(request: object) -> object:
-        calls.append(request)
-        return object()
 
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source", resume)
+def test_production_route_promotes_the_owned_candidate_with_terminal_transaction(
+    workspace_env: dict[str, Path],
+) -> None:
+    fixture_path = Path(__file__).parents[1] / "data" / "codex_event_stream" / "text_only_stream.jsonl"
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    runtime.acquire(_artifact("session", fixture_path.read_bytes()))
+    _freeze_runtime_source(
+        runtime,
+        workspace_env["archive_root"].parent / "corpus-program-schema-inference-receipt.json",
+    )
+    store = IndexGenerationStore.for_archive_root(runtime.archive_root)
+    active_before = store.active_pointer.resolve(strict=True)
 
-    result = runtime.promote()
+    built = runtime.rebuild()
 
-    assert result is runtime._rebuild_receipt
-    request = cast(Any, calls[0])
-    assert request.operation_id == "rebuild-op"
-    assert request.promote is True
+    assert built.status == "replayed"
+    assert built.generation["state"] == "inactive"
+    assert built.transaction is not None
+    assert built.transaction["status"] == "ready"
+    operation_id = built.transaction["operation_id"]
+    assert store.active_pointer.resolve(strict=True) == active_before
+
+    promoted = runtime.promote()
+
+    assert promoted.status == "replayed"
+    assert promoted.generation["state"] == "active"
+    assert promoted.transaction is not None
+    assert promoted.transaction["operation_id"] == operation_id
+    assert promoted.transaction["status"] == "promoted"
+    assert store.active_pointer.resolve(strict=True) == Path(str(promoted.generation["index_path"])).resolve()
+
+
+def test_production_route_refuses_promotion_after_source_drift(
+    workspace_env: dict[str, Path],
+) -> None:
+    fixture_path = Path(__file__).parents[1] / "data" / "codex_event_stream" / "text_only_stream.jsonl"
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    artifact = _artifact("session", fixture_path.read_bytes())
+    runtime.acquire(artifact)
+    _freeze_runtime_source(
+        runtime,
+        workspace_env["archive_root"].parent / "corpus-program-source-drift-receipt.json",
+    )
+    store = IndexGenerationStore.for_archive_root(runtime.archive_root)
+    active_before = store.active_pointer.resolve(strict=True)
+
+    built = runtime.rebuild()
+    assert built.transaction is not None
+    operation_id = str(built.transaction["operation_id"])
+    runtime.acquire(artifact.with_payload(artifact.payload + b"\n"))
+    _freeze_runtime_source(
+        runtime,
+        workspace_env["archive_root"].parent / "corpus-program-post-drift-receipt.json",
+        expected_raws=2,
+    )
+
+    with pytest.raises(RuntimeError, match="source evidence changed"):
+        runtime.promote()
+
+    transaction = store.load_transaction(operation_id)
+    assert transaction.status == "stale"
+    assert store.active_pointer.resolve(strict=True) == active_before
 
 
 def test_emit_hook_refuses_non_object_payload_with_named_reason(tmp_path: Path) -> None:

@@ -866,12 +866,20 @@ class ProductionCorpusRuntime:
         self._raw_ids: dict[str, tuple[str, ...]] = {}
         self._source_paths: dict[str, Path] = {}
         self._rebuild_receipt: RebuildIndexReceipt | None = None
+        self._schema_inference_receipt_path: Path | None = None
         self._crashed = False
         self.last_results: list[object] = []
 
     def _ensure_running(self) -> None:
         if self._crashed:
             raise CorpusRuntimeCrashedError("runtime is crashed; apply Restart before the next effect")
+
+    def bind_schema_inference_receipt(self, receipt_path: Path) -> None:
+        """Bind external rebuild authority without manufacturing it inside the harness."""
+        resolved = receipt_path.resolve()
+        if not resolved.is_file():
+            raise CorpusProgramError(f"schema-inference receipt does not exist: {resolved}")
+        self._schema_inference_receipt_path = resolved
 
     def acquire(self, artifact: RawArtifact) -> object:
         self._ensure_running()
@@ -976,19 +984,25 @@ class ProductionCorpusRuntime:
         self.last_results.append(result)
         return result
 
-    def rebuild(self) -> object:
+    def rebuild(self) -> RebuildIndexReceipt:
         self._ensure_running()
         from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source
 
         async def run() -> RebuildIndexReceipt:
-            return await rebuild_index_from_source(RebuildIndexRequest(archive_root=self.archive_root, promote=False))
+            return await rebuild_index_from_source(
+                RebuildIndexRequest(
+                    archive_root=self.archive_root,
+                    promote=False,
+                    schema_inference_receipt_path=self._schema_inference_receipt_path,
+                )
+            )
 
         result = asyncio.run(run())
         self._rebuild_receipt = result
         self.last_results.append(result)
         return result
 
-    def promote(self) -> object:
+    def promote(self) -> RebuildIndexReceipt:
         self._ensure_running()
         if self._rebuild_receipt is None:
             raise CorpusProgramError("Promote requires a preceding Rebuild")
@@ -1002,7 +1016,12 @@ class ProductionCorpusRuntime:
 
         async def run() -> RebuildIndexReceipt:
             return await rebuild_index_from_source(
-                RebuildIndexRequest(archive_root=self.archive_root, operation_id=operation_id, promote=True)
+                RebuildIndexRequest(
+                    archive_root=self.archive_root,
+                    operation_id=operation_id,
+                    promote=True,
+                    schema_inference_receipt_path=self._schema_inference_receipt_path,
+                )
             )
 
         result = asyncio.run(run())
