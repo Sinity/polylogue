@@ -1141,9 +1141,14 @@ def require_current_parser_source_census(
                     WHERE r.revision_authority = 'quarantined'
                       {authority_where}
                       AND (
-                          c.raw_id IS NULL OR c.status != 'complete'
-                          OR m.raw_id IS NULL OR m.decision IS NULL
-                          OR m.decision IN ('ambiguous', 'deferred')
+                          c.raw_id IS NULL OR c.status NOT IN ('complete', 'non_session')
+                          OR (
+                              c.status = 'complete'
+                              AND (
+                                  m.raw_id IS NULL OR m.decision IS NULL
+                                  OR m.decision IN ('ambiguous', 'deferred')
+                              )
+                          )
                       )
                     ORDER BY r.raw_id
                     """,

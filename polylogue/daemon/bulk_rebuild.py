@@ -211,7 +211,6 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
         # after ownership acquisition so receipt expiry, source revision, or
         # external-corpus drift cannot reach generation bookkeeping.
         _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
-        validate_rebuild_source_admission(root, location)
         store = IndexGenerationStore(location, repair_anchor=False)
         transaction: IndexRebuildTransaction | None
         try:
@@ -231,6 +230,11 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
             if transaction.status not in _TERMINAL_NOT_RESUMABLE:
                 _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
                 return transaction
+
+        # A fresh transaction receives one archive-wide source admission.
+        # Resumed passes validate only their selected authority component in
+        # rebuild_index_from_source_sync, avoiding a full reparse per page.
+        validate_rebuild_source_admission(root, location)
 
         if transaction is not None:
             if transaction.status == "promoted-attestation-failed":

@@ -1623,7 +1623,7 @@ def _session_filter_is_active(session_filters: Mapping[str, object] | None) -> b
 
 
 class _SourceTierOnlyIndexConnection:
-    """Loud placeholder for the index connection in source-tier acquisition mode.
+    """Loud placeholder for an archive mode that must not open ``index.db``.
 
     Acquire-only ingestion (polylogue-gbs02) deliberately never opens
     ``index.db`` — a derived tier awaiting rebuild may be at an older schema
@@ -1633,13 +1633,16 @@ class _SourceTierOnlyIndexConnection:
     instead of writing through a stale-schema handle.
     """
 
+    def __init__(self, mode: str = "source-tier acquisition") -> None:
+        self._mode = mode
+
     def __getattr__(self, name: str) -> Any:
         if name == "close":
             return lambda: None
         raise RuntimeError(
-            "index tier is unavailable in source-tier acquisition mode "
+            f"index tier is unavailable in {self._mode} mode "
             f"(attempted connection attribute {name!r}); only raw source-tier "
-            "admission is permitted while derived tiers await rebuild"
+            "access is permitted while the derived tier is unavailable"
         )
 
 
@@ -1875,6 +1878,21 @@ class ArchiveStore:
             self._tags_relation = "session_tags"
             self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
             return
+        if self._frozen_source_validation:
+            # Candidate admission derives every decision from source.db and
+            # frozen blob bytes. Requiring an index handle here would make the
+            # derived tier being rebuilt a prerequisite for its own rebuild.
+            self._conn = cast(
+                sqlite3.Connection,
+                _SourceTierOnlyIndexConnection("frozen source validation"),
+            )
+            self._user_tier_attached = False
+            self._tags_relation = "session_tags"
+            self._blob_publisher = _InactiveCandidateBlobPublisher(
+                self.source_db_path,
+                self.archive_root / "blob",
+            )
+            return
         if initialize:
             initialize_active_archive_root(archive_root)
         if read_only and not self._frozen_source_validation:
@@ -1917,11 +1935,6 @@ class ArchiveStore:
                 _InactiveCandidateBlobPublisher if self._inactive_candidate_durable_read_only else ArchiveBlobPublisher
             )
             self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
-        elif self._frozen_source_validation:
-            self._blob_publisher = _InactiveCandidateBlobPublisher(
-                self.source_db_path,
-                self.archive_root / "blob",
-            )
         self._attach_user_tier_if_present()
 
     @classmethod

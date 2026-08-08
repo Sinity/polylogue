@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.sources.revision_backfill as revision_backfill_module
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.daemon.bulk_rebuild import resolve_or_start_daemon_bulk_rebuild_transaction
@@ -17,6 +18,7 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 from polylogue.sources.revision_backfill import (
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
+    validate_frozen_source_authority,
 )
 from polylogue.storage.blob_store import PreparedBlob
 from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
@@ -95,12 +97,12 @@ def _chatgpt_bundle(*native_ids: str) -> bytes:
     return json.dumps(sessions, sort_keys=True).encode()
 
 
-def _prepare_frozen_source(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    build_independent_raw_corpus(root, raw_count=1, avg_payload_bytes=1_000)
+def _prepare_frozen_source(root: Path, monkeypatch: pytest.MonkeyPatch, *, raw_count: int = 1) -> Path:
+    build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=1_000)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     census = census_historical_revision_evidence(root)
-    assert census.scanned == 1
-    assert census.classified_full == 1
+    assert census.scanned == raw_count
+    assert census.classified_full == raw_count
     with sqlite3.connect(root / "source.db") as source:
         source.execute(
             """
@@ -111,6 +113,104 @@ def _prepare_frozen_source(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         )
         source.commit()
     return write_valid_rebuild_receipt(root, root.parent / "schema-inference-receipt.json")
+
+
+def test_resumed_candidate_validates_only_selected_raw_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    receipt_path = _prepare_frozen_source(root, monkeypatch, raw_count=2)
+    original_validate = revision_backfill_module.validate_frozen_source_authority
+    selections: list[tuple[str, ...] | None] = []
+
+    def record_validation(
+        archive_root: Path,
+        *,
+        selected_raw_ids: list[str] | None = None,
+        **kwargs: object,
+    ) -> None:
+        selections.append(None if selected_raw_ids is None else tuple(selected_raw_ids))
+        original_validate(archive_root, selected_raw_ids=selected_raw_ids, **kwargs)
+
+    monkeypatch.setattr(revision_backfill_module, "validate_frozen_source_authority", record_validation)
+    first = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            schema_inference_receipt_path=receipt_path,
+            raw_batch_size=1,
+            promote=False,
+        )
+    )
+
+    assert first.status == "paused"
+    assert first.transaction is not None
+    assert selections == [None]
+
+    selections.clear()
+    second = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            operation_id=str(first.transaction["operation_id"]),
+            schema_inference_receipt_path=receipt_path,
+            raw_batch_size=1,
+            promote=False,
+        )
+    )
+
+    assert second.status == "replayed"
+    assert len(selections) == 1
+    assert selections[0] is not None
+    assert len(selections[0]) == 1
+
+
+def test_frozen_source_admission_treats_non_session_census_as_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"[]",
+            source_path="empty-conversations.json",
+            acquired_at_ms=1,
+        )
+    census_historical_revision_evidence(root)
+
+    with sqlite3.connect(root / "source.db") as source:
+        assert source.execute(
+            "SELECT status, member_count FROM raw_membership_census WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == ("non_session", 0)
+        assert source.execute(
+            "SELECT revision_authority FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == ("quarantined",)
+
+    validate_frozen_source_authority(root)
+
+
+def test_candidate_rebuild_does_not_require_the_missing_active_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    receipt_path = _prepare_frozen_source(root, monkeypatch)
+    (root / "index.db").unlink()
+
+    result = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            schema_inference_receipt_path=receipt_path,
+            promote=False,
+        )
+    )
+
+    assert result.status == "replayed"
+    assert result.transaction is not None
 
 
 def test_real_no_promote_candidate_preserves_frozen_durable_tiers(
