@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.daemon.bulk_rebuild import resolve_or_start_daemon_bulk_rebuild_transaction
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
@@ -364,6 +365,10 @@ def test_candidate_rejects_poisoned_current_parser_logical_keys_before_allocatio
     _prepare_frozen_source(root, monkeypatch)
     with sqlite3.connect(root / "source.db") as source:
         source.execute(
+            "UPDATE raw_sessions SET logical_source_key = ?",
+            ("codex-session:poisoned-census-key",),
+        )
+        source.execute(
             "UPDATE raw_authority_parser_census SET logical_keys_json = ?",
             (json.dumps(["codex-session:poisoned-census-key"]),),
         )
@@ -382,6 +387,95 @@ def test_candidate_rejects_poisoned_current_parser_logical_keys_before_allocatio
         )
 
     assert _optional_path_evidence(anchor) == anchor_before
+    _assert_no_candidate_bookkeeping(root)
+
+
+def test_candidate_rejects_extra_membership_binding_before_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    _prepare_frozen_source(root, monkeypatch)
+    with sqlite3.connect(root / "source.db") as source:
+        raw_id = str(source.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
+        source.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority, decision, decided_at_ms
+            ) VALUES (?, 'codex-session:stale-extra', 'stale-extra', ?, ?, 0, 0,
+                      'byte_proven', 'applied', 0)
+            """,
+            (raw_id, raw_id, b"\x00" * 32),
+        )
+        source.commit()
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "extra-membership-receipt.json")
+
+    with pytest.raises(FrozenSourceRemediationRequiredError, match="frozen durable authority bindings"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                promote=False,
+            )
+        )
+
+    _assert_no_candidate_bookkeeping(root)
+
+
+def test_candidate_rejects_poisoned_typed_append_census_before_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    _prepare_frozen_source(root, monkeypatch)
+    with sqlite3.connect(root / "source.db") as source:
+        baseline_raw_id, logical_key = source.execute("SELECT raw_id, logical_source_key FROM raw_sessions").fetchone()
+    append_payload = b'{"type":"response_item","payload":{"type":"message","id":"append"}}\n'
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        append_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=append_payload,
+            source_path="current/append.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+            revision=RawRevisionEnvelope(
+                logical_source_key=str(logical_key),
+                kind=RawRevisionKind.APPEND,
+                source_revision="append-revision",
+                predecessor_source_revision=str(baseline_raw_id),
+                predecessor_raw_id=str(baseline_raw_id),
+                baseline_raw_id=str(baseline_raw_id),
+                acquisition_generation=1,
+                append_start_offset=0,
+                append_end_offset=len(append_payload),
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO raw_authority_parser_census (
+                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+            )
+            SELECT ?, parser_fingerprint, 'complete', ?, 'poisoned typed append census', 0
+            FROM raw_authority_parser_census LIMIT 1
+            """,
+            (append_raw_id, json.dumps(["codex-session:poisoned-append-key"])),
+        )
+        source.commit()
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "poisoned-append-receipt.json")
+
+    with pytest.raises(FrozenSourceRemediationRequiredError, match="frozen durable authority bindings"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                promote=False,
+            )
+        )
+
     _assert_no_candidate_bookkeeping(root)
 
 

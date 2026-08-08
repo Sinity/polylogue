@@ -949,6 +949,53 @@ def require_current_parser_source_census(
             f"{len(stale_raw_ids)} raw(s) are stale or incomplete (sample: {sample})"
         )
 
+    durable_logical_keys: dict[str, set[str]] = {raw_id: set() for raw_id in recorded_logical_keys}
+    invalid_durable_bindings: set[str] = set()
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+        for selection in selections:
+            where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
+            params = () if selection is None else selection
+            rows = source_conn.execute(
+                f"""
+                SELECT r.raw_id, r.logical_source_key, r.revision_kind, m.logical_source_key
+                FROM raw_sessions AS r
+                LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                {where}
+                ORDER BY r.raw_id, m.logical_source_key
+                """,
+                params,
+            )
+            for raw_id_value, typed_key, revision_kind, membership_key in rows:
+                raw_id = str(raw_id_value)
+                persisted_keys = durable_logical_keys.setdefault(raw_id, set())
+                raw_keys = [
+                    value
+                    for value in (
+                        typed_key if typed_key is not None and revision_kind != RawRevisionKind.UNKNOWN.value else None,
+                        membership_key,
+                    )
+                    if value is not None
+                ]
+                try:
+                    persisted_keys.update(_canonical_authority_logical_key(str(value)) for value in raw_keys)
+                except ValueError:
+                    invalid_durable_bindings.add(raw_id)
+
+    authority_binding_drift = sorted(
+        invalid_durable_bindings
+        | {
+            raw_id
+            for raw_id, census_keys in recorded_logical_keys.items()
+            if tuple(sorted(durable_logical_keys.get(raw_id, ()))) != census_keys
+        }
+    )
+    if authority_binding_drift:
+        sample = ", ".join(authority_binding_drift[:5])
+        raise FrozenSourceRemediationRequiredError(
+            "inactive candidate current-parser census differs from frozen durable authority bindings; "
+            f"{len(authority_binding_drift)} raw(s) require source remediation (sample: {sample})"
+        )
+
     unresolved_raw_ids: list[str] = []
     with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
         for selection in selections:
