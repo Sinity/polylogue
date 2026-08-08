@@ -1731,14 +1731,18 @@ class ArchiveStore:
         owned_inactive_generation: tuple[str, str] | None = None,
         source_tier_acquisition: bool = False,
         frozen_source_validation: bool = False,
+        frozen_index_path: Path | None = None,
     ) -> None:
         if source_tier_acquisition and read_only:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
         if frozen_source_validation and (not read_only or owned_inactive_generation is not None):
             raise ValueError("frozen source validation requires a read-only active archive")
+        if frozen_index_path is not None and not frozen_source_validation:
+            raise ValueError("a frozen index path is valid only for frozen source validation")
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_source_validation = frozen_source_validation
+        self._frozen_index_path = frozen_index_path
         self._inactive_candidate_durable_read_only = owned_inactive_generation is not None or frozen_source_validation
         self._active_writer_lease = None
         if not read_only:
@@ -1836,7 +1840,7 @@ class ArchiveStore:
     ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
-        self.index_db_path = archive_root / "index.db"
+        self.index_db_path = self._frozen_index_path or archive_root / "index.db"
         self.embeddings_db_path = archive_root / "embeddings.db"
         self.user_db_path = archive_root / "user.db"
         self.ops_db_path = archive_root / "ops.db"
@@ -1945,13 +1949,19 @@ class ArchiveStore:
         return cls(archive_root, initialize=False, read_only=False, source_tier_acquisition=True)
 
     @classmethod
-    def open_frozen_source_validation(cls, archive_root: Path) -> ArchiveStore:
+    def open_frozen_source_validation(
+        cls,
+        archive_root: Path,
+        *,
+        active_index_path: Path | None = None,
+    ) -> ArchiveStore:
         """Open the live tiers without repairing or mutating any durable or pointer state."""
         return cls(
             archive_root,
             initialize=False,
             read_only=True,
             frozen_source_validation=True,
+            frozen_index_path=active_index_path,
         )
 
     @classmethod

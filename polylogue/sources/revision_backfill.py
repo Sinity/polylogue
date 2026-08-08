@@ -937,6 +937,7 @@ def require_current_parser_source_census(
 def validate_frozen_source_authority(
     archive_root: Path,
     *,
+    active_index_path: Path | None = None,
     selected_raw_ids: list[str] | None = None,
     max_payload_bytes: int | None = None,
     ingest_workers: int = 1,
@@ -944,7 +945,10 @@ def validate_frozen_source_authority(
 ) -> None:
     """Re-derive every selected source decision before allocating a candidate."""
     with (
-        ArchiveStore.open_frozen_source_validation(archive_root) as archive,
+        ArchiveStore.open_frozen_source_validation(
+            archive_root,
+            active_index_path=active_index_path,
+        ) as archive,
         _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
     ):
         census = _load_frozen_revision_evidence(

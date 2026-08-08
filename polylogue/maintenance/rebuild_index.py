@@ -1420,6 +1420,7 @@ async def _rebuild_index_from_source_owned(
     from polylogue.storage.archive_readiness import archive_readiness_status
     from polylogue.storage.index_generation import (
         IndexGenerationStore,
+        canonical_active_index_path,
         rebuild_source_evidence_snapshot,
     )
     from polylogue.storage.repair import repair_session_insights
@@ -1460,7 +1461,10 @@ async def _rebuild_index_from_source_owned(
         page = None
         pass_started_at_ms = int(time.time() * 1000)
         if resumable_full_source:
-            validate_frozen_source_authority(root)
+            validate_frozen_source_authority(
+                root,
+                active_index_path=canonical_active_index_path(owned.location),
+            )
             generation_store = IndexGenerationStore(owned.location)
             if request.operation_id is not None:
                 transaction = generation_store.load_transaction(request.operation_id)
@@ -1553,7 +1557,11 @@ async def _rebuild_index_from_source_owned(
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
-            validate_frozen_source_authority(root, selected_raw_ids=selected_raw_ids)
+            validate_frozen_source_authority(
+                root,
+                active_index_path=canonical_active_index_path(owned.location),
+                selected_raw_ids=selected_raw_ids,
+            )
             generation_store = IndexGenerationStore(owned.location)
             provenance.validate()
             generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
