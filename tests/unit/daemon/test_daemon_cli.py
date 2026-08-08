@@ -680,8 +680,10 @@ def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The daemon route selects executable plans before calling the actuator."""
+    """The daemon selects executable plans under its real writer lease."""
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.write_coordinator import daemon_write_coordinator, daemon_write_lease_active
+    from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport
 
     config = Config(
         archive_root=tmp_path,
@@ -692,8 +694,8 @@ def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
     census = SimpleNamespace(
         census_id="census-1",
         items=(
-            SimpleNamespace(plan_id="safe-1", executable=True),
             SimpleNamespace(plan_id="blocked-1", executable=False),
+            SimpleNamespace(plan_id="safe-1", executable=True),
             SimpleNamespace(plan_id="safe-2", executable=True),
         ),
     )
@@ -704,25 +706,39 @@ def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
         *,
         preview_census_id: str,
         selected_plan_ids: tuple[str, ...],
-    ) -> SimpleNamespace:
+    ) -> RawAuthorityFrontierApplyReport:
+        assert daemon_write_lease_active()
         apply_calls.append(
             {
                 "preview_census_id": preview_census_id,
                 "selected_plan_ids": selected_plan_ids,
             }
         )
-        return SimpleNamespace(
-            retryable_plan_count=0,
+        return RawAuthorityFrontierApplyReport(
+            census_id="apply-census-1",
+            preview_census_id=preview_census_id,
             selected_plan_count=len(selected_plan_ids),
-            executed_plan_count=2,
+            executed_plan_count=1,
+            retryable_plan_count=0,
+            post_inventory_digest="digest",
+            post_plan_count=2,
+            outcome_refs=("detail",),
         )
 
     monkeypatch.setattr("polylogue.product.raw_authority.inspect_frontier", lambda _config: census)
-    monkeypatch.setattr("polylogue.product.raw_authority.apply_frontier", fake_apply)
+    monkeypatch.setattr("polylogue.storage.raw_reconciler.apply_raw_authority_frontier", fake_apply)
 
-    executed = daemon_cli._converge_raw_authority_frontier(config, limit=1)
+    async def run_under_daemon_coordinator() -> int:
+        return await daemon_write_coordinator().run_sync(
+            "maintenance.raw_authority_frontier",
+            daemon_cli._converge_raw_authority_frontier,
+            config,
+            limit=1,
+        )
 
-    assert executed == 2
+    executed = asyncio.run(run_under_daemon_coordinator())
+
+    assert executed == 1
     assert apply_calls == [{"preview_census_id": "census-1", "selected_plan_ids": ("safe-1",)}]
 
 
