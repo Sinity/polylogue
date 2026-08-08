@@ -5646,7 +5646,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
                 WHERE r.source_path = ?
                 """,
                 (str(older_bundle),),
-            ).fetchone() == ("deferred_codex_cas_frontier",)
+            ).fetchone() == ("deferred_cas_frontier",)
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
         head_after = conn.execute(
@@ -5849,8 +5849,8 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
             (str(incident_recovery),),
         ).fetchone()
     assert parse_error is not None
-    # The typed evidence, not this free-form diagnostic, is what lets a later
-    # pass ever try again.
+    # The typed evidence is authoritative for new rows. The recognized prefix
+    # remains a bounded compatibility bridge for this historical diagnostic.
     assert parse_error.startswith("MembershipReplayConflictError:")
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute(
@@ -5861,10 +5861,11 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
             WHERE r.source_path = ?
             """,
             (str(incident_recovery),),
-        ).fetchone() == ("deferred_codex_cas_frontier",)
+        ).fetchone() == ("deferred_cas_frontier",)
     from polylogue.storage.repair import _raw_materialization_retryable_missing_blob_error
 
-    assert _raw_materialization_retryable_missing_blob_error(parse_error) is False
+    assert _raw_materialization_retryable_missing_blob_error(parse_error) is True
+    assert _raw_materialization_retryable_missing_blob_error("RuntimeError: unrelated parser failure") is False
     assert _raw_materialization_retryable_missing_blob_error(parse_error, True) is True
 
     with sqlite3.connect(index_db) as conn:

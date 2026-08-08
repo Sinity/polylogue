@@ -72,6 +72,7 @@ class TestRawFailureSampleModel:
                 {
                     "deferred_hot_jsonl_capture",
                     "deferred_claude_code_partial_jsonl",
+                    "deferred_cas_frontier",
                     "deferred_codex_cas_frontier",
                 }
             )
@@ -606,6 +607,69 @@ class TestRawFailureInfoProducesTypedSamples:
         assert snapshot.unexplained == 2
         assert info["terminal_rejections"] == snapshot.terminal
         assert info["unexplained_failures"] == snapshot.unexplained
+
+    def test_raw_failure_status_does_not_project_unvalidated_typed_kinds(self, tmp_path: Path) -> None:
+        """Status uses the lifecycle reader's validation, support, and kind checks."""
+        index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-validation-failed",
+            origin="codex-session",
+            native_id="validation-failed",
+            source_path="/data/validation-failed.jsonl",
+            validation_status="failed",
+            validation_error="schema drift",
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-kind-contradiction",
+            origin="codex-session",
+            native_id="kind-contradiction",
+            source_path="/data/kind-contradiction.jsonl",
+            parse_error="parser failed after artifact observation",
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            upsert_raw_artifact(
+                conn,
+                "raw-validation-failed",
+                ArchiveSourceArtifact(
+                    artifact_id="validation-failed-evidence",
+                    origin="codex-session",
+                    source_path="/data/validation-failed.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.DECODE_FAILED,
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-kind-contradiction",
+                ArchiveSourceArtifact(
+                    artifact_id="kind-contradiction-evidence",
+                    origin="codex-session",
+                    source_path="/data/kind-contradiction.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                ),
+            )
+            conn.commit()
+
+        snapshot = read_raw_failure_lifecycle(tmp_path / "source.db")
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
+            info = _raw_failure_info()
+
+        samples = cast(list[RawFailureSample], info["samples"])
+        by_origin_error = {sample.redacted_error: sample for sample in samples}
+        assert snapshot.unexplained == 2
+        assert info["unexplained_failures"] == 2
+        assert by_origin_error["schema drift"].failure_kind == "schema_violation"
+        assert by_origin_error["parser failed after artifact observation"].failure_kind == "parse_error"
+        assert all(sample.failure_kind != "terminal_corrupt_input" for sample in samples)
 
     def test_daemon_status_lifecycle_counts_match_the_shared_projection(self, tmp_path: Path) -> None:
         """The health/status source is the same lifecycle projection as preflight."""

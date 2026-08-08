@@ -408,6 +408,7 @@ class RawFailureSample(BaseModel):
         "unknown",
         "deferred_hot_jsonl_capture",
         "deferred_claude_code_partial_jsonl",
+        "deferred_cas_frontier",
         "deferred_codex_cas_frontier",
         "terminal_corrupt_input",
         "terminal_unknown_json_decode",
@@ -947,27 +948,25 @@ def _archive_raw_failure_info(
                 for sample in lifecycle_snapshot.samples
                 if sample.get("raw_id") is not None and sample.get("lifecycle") is not None
             }
+            validated_artifact_kind_by_raw_id = {
+                str(sample["raw_id"]): str(sample["artifact_kind"])
+                for sample in lifecycle_snapshot.samples
+                if sample.get("raw_id") is not None
+                and sample.get("lifecycle") in {"deferred", "terminal"}
+                and sample.get("artifact_kind") in RAW_FAILURE_EVIDENCE_KINDS
+            }
             samples: list[RawFailureSample] = []
             rows_by_raw_id: dict[str, sqlite3.Row | tuple[object, ...]] = {}
             if sample_ids:
                 placeholders = ",".join("?" for _ in sample_ids)
-                failure_kind_placeholders = ",".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
                 rows = conn.execute(
                     f"""
-                    SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error,
-                           (
-                               SELECT a.artifact_kind
-                               FROM raw_artifacts AS a
-                               WHERE a.raw_id = r.raw_id
-                                 AND a.artifact_kind IN ({failure_kind_placeholders})
-                               ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
-                               LIMIT 1
-                           ) AS artifact_kind
+                    SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error
                     FROM raw_sessions AS r
                     WHERE r.raw_id IN ({placeholders})
                       AND ((r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '') OR r.validation_status = 'failed')
                     """,
-                    [*sorted(RAW_FAILURE_EVIDENCE_KINDS), *sample_ids],
+                    sample_ids,
                 )
                 rows_by_raw_id = {str(row[0]): row for row in rows}
             for raw_id in sample_ids:
@@ -978,7 +977,7 @@ def _archive_raw_failure_info(
                 val_status = str(row[3] or "") if row[3] else ""
                 val_err = str(row[4] or "") if row[4] else ""
                 origin = str(row[1]) if row[1] else None
-                artifact_kind = str(row[5]) if row[5] is not None else None
+                artifact_kind = validated_artifact_kind_by_raw_id.get(raw_id)
                 if artifact_kind in RAW_FAILURE_EVIDENCE_KINDS:
                     kind = cast(Any, artifact_kind)
                 elif "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():

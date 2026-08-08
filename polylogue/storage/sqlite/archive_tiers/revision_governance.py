@@ -3028,7 +3028,7 @@ def mark_raw_parse_failed(
     store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider, error: BaseException
 ) -> None:
     """Persist a bounded parse/index failure for retained raw evidence."""
-    if provider is Provider.CODEX and isinstance(error, RawCASFrontierError):
+    if isinstance(error, RawCASFrontierError):
         row = (
             store._ensure_source_conn()
             .execute(
@@ -3045,7 +3045,7 @@ def mark_raw_parse_failed(
                 source_path=str(row[0] or raw_id),
                 source_index=int(row[1] or 0),
                 acquired_at_ms=int(row[2] or int(time.time() * 1000)),
-                kind=RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER,
+                kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
             )
     finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, error))
 

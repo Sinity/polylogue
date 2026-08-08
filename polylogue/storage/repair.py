@@ -105,6 +105,17 @@ RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT = 25
 RAW_MATERIALIZATION_COMMIT_BATCH_SIZE = 20
 RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT = 8
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
+# Membership replay conflicts are typed on new writes, so their diagnostic
+# wording is not an authority signal. Keep the prefix as a bounded bridge for
+# rows written before typed evidence was persisted. Removing this bridge needs
+# a backup-gated migration or re-observation receipt for every retained row.
+_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX = "MembershipReplayConflictError:"
+# These complete values are the two legacy CAS refusals observed before the
+# typed exception/evidence path existed. They authorize reconsideration only
+# as exact authority markers, never arbitrary RuntimeError prose. Removal is
+# gated by the same backup-bound migration or re-observation receipt.
+_LEGACY_OLDER_ACCEPTED_FRONTIER_ERROR = "RuntimeError: raw revision CAS rejected an older accepted frontier"
+_LEGACY_UNCONVERTIBLE_BYTE_HEAD_ERROR = "RuntimeError: membership replay cannot replace an unconvertible byte head"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact_byte_and_semantic_proof"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT = 100
 _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
@@ -3840,6 +3851,9 @@ def _raw_materialization_candidate_ids(
                        SELECT a.artifact_kind
                        FROM raw_artifacts AS a
                        WHERE a.raw_id = r.raw_id
+                         AND a.origin IS r.origin
+                         AND a.source_path IS r.source_path
+                         AND a.source_index IS r.source_index
                          AND a.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
                        LIMIT 1
@@ -3924,7 +3938,15 @@ def _raw_materialization_candidate_ids(
                   SELECT 1
                   FROM raw_artifacts AS retry_evidence
                   WHERE retry_evidence.raw_id = r.raw_id
+                    AND retry_evidence.origin IS r.origin
+                    AND retry_evidence.source_path IS r.source_path
+                    AND retry_evidence.source_index IS r.source_index
                     AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
+                )
+                OR r.parse_error LIKE '{_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX}%'
+                OR r.parse_error IN (
+                  '{_LEGACY_OLDER_ACCEPTED_FRONTIER_ERROR}',
+                  '{_LEGACY_UNCONVERTIBLE_BYTE_HEAD_ERROR}'
                 )
               )
               AND NOT (
@@ -4170,8 +4192,15 @@ def _raw_materialization_retryable_missing_blob_error(parse_error: object, durab
         return True
     if not isinstance(parse_error, str):
         return False
-    return parse_error == _TRANSIENT_LOCK_PARSE_ERROR or (
-        parse_error.startswith("decode:") and "No such file or directory" in parse_error
+    return (
+        parse_error == _TRANSIENT_LOCK_PARSE_ERROR
+        or (parse_error.startswith("decode:") and "No such file or directory" in parse_error)
+        or parse_error.startswith(_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX)
+        or parse_error
+        in {
+            _LEGACY_OLDER_ACCEPTED_FRONTIER_ERROR,
+            _LEGACY_UNCONVERTIBLE_BYTE_HEAD_ERROR,
+        }
     )
 
 
@@ -4494,6 +4523,9 @@ def _raw_replay_plan_outcome(
                   SELECT 1
                   FROM raw_artifacts AS retry_evidence
                   WHERE retry_evidence.raw_id = raw_sessions.raw_id
+                    AND retry_evidence.origin IS raw_sessions.origin
+                    AND retry_evidence.source_path IS raw_sessions.source_path
+                    AND retry_evidence.source_index IS raw_sessions.source_index
                     AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
               )
             UNION ALL

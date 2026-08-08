@@ -142,17 +142,17 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
         """
         latest_artifact_join = """
         LEFT JOIN raw_artifacts AS a
-          ON a.raw_id = f.raw_id
-         AND a.origin = f.origin
-         AND a.source_path = f.source_path
-         AND a.source_index = f.source_index
+          ON a.raw_id IS f.raw_id
+         AND a.origin IS f.origin
+         AND a.source_path IS f.source_path
+         AND a.source_index IS f.source_index
          AND NOT EXISTS (
              SELECT 1
              FROM raw_artifacts AS newer
-             WHERE newer.raw_id = a.raw_id
-               AND newer.origin = a.origin
-               AND newer.source_path = a.source_path
-               AND newer.source_index = a.source_index
+              WHERE newer.raw_id IS a.raw_id
+               AND newer.origin IS a.origin
+               AND newer.source_path IS a.source_path
+               AND newer.source_index IS a.source_index
                AND (newer.last_observed_at_ms > a.last_observed_at_ms
                     OR (newer.last_observed_at_ms = a.last_observed_at_ms
                         AND newer.artifact_id > a.artifact_id))

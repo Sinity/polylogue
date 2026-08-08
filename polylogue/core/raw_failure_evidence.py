@@ -17,6 +17,10 @@ class RawFailureEvidenceKind(StrEnum):
 
     DEFERRED_HOT_JSONL_CAPTURE = "deferred_hot_jsonl_capture"
     DEFERRED_CLAUDE_CODE_PARTIAL_JSONL = "deferred_claude_code_partial_jsonl"
+    DEFERRED_CAS_FRONTIER = "deferred_cas_frontier"
+    # Historical rows written before CAS evidence was made provider-neutral.
+    # Keep this token readable until a backup-gated migration or re-observation
+    # receipt has converted every retained row.
     DEFERRED_CODEX_CAS_FRONTIER = "deferred_codex_cas_frontier"
     TERMINAL_CORRUPT_INPUT = "terminal_corrupt_input"
     TERMINAL_UNKNOWN_JSON_DECODE = "terminal_unknown_json_decode"
@@ -28,6 +32,7 @@ class RawFailureEvidenceKind(StrEnum):
         if self in {
             RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
             RawFailureEvidenceKind.DEFERRED_CLAUDE_CODE_PARTIAL_JSONL,
+            RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
             RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER,
         }:
             return ArtifactSupportStatus.PARTIAL_DECODE
@@ -48,6 +53,7 @@ RAW_FAILURE_DEFERRED_EVIDENCE_KINDS = frozenset(
     {
         RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE.value,
         RawFailureEvidenceKind.DEFERRED_CLAUDE_CODE_PARTIAL_JSONL.value,
+        RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
         RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER.value,
     }
 )
