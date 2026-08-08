@@ -340,6 +340,36 @@ recovered state. If an interrupted apply leaves a prepared receipt, rerun the
 same command with that receipt path to record recovery; use a fresh path only
 after reviewing the recovered terminal state.
 
+### `polylogue ops maintenance message-owner-scope-backfill` - pre-reindex user-state compatibility
+
+Read-only by default. It censuses legacy message marks and annotations against
+the exact active `index.db.messages(message_id, session_id)` relation and
+classifies exact owners, existing durable scopes, missing owners, malformed
+scopes, and conflicting scopes. Message IDs are opaque; the operation never
+decodes them or infers an owner from delimiters. Write an immutable plan, then
+apply only the exact subset while the daemon is stopped:
+
+```bash
+polylogue ops maintenance message-owner-scope-backfill \
+  --output-plan /path/to/message-owner-plan.json --output-format json
+polylogue ops maintenance message-owner-scope-backfill --apply \
+  --plan-file /path/to/message-owner-plan.json \
+  --backup-manifest /path/to/verified-user-backup/manifest.json \
+  --receipt-file /path/to/message-owner-backfill-receipt.json
+```
+
+Apply rechecks the plan digest, archive identity, active-index and user schema
+bindings, and authenticated user-tier backup before `BEGIN IMMEDIATE`. The
+receipt is self-hashed and complete only when its unresolved denominator is
+zero; missing owners remain typed blockers. Pass a complete receipt to
+`maintenance rebuild-index` with
+`--message-owner-scope-backfill-receipt` so candidate acceptance consumes the
+pre-reindex proof before replacing the active index. Apply first fsyncs an
+immutable `.prepared` marker, commits the user-tier transaction atomically, and
+fsyncs the terminal receipt before removing that marker; a failed transaction
+rolls back all scope updates and leaves the marker for operator recovery. No
+index or source-tier files are written by this operation.
+
 ### `polylogue ops maintenance preview` — staleness inventory
 
 Read-only. Produces a per-model inventory of stale, missing, orphan,

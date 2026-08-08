@@ -703,6 +703,7 @@ class RebuildIndexRequest:
     candidate_acceptance_checks: tuple[str, ...] | None = None
     operation_id: str | None = None
     schema_inference_receipt_path: Path | None = None
+    message_owner_scope_backfill_receipt_path: Path | None = None
     raw_batch_size: int = 500
     pass_byte_budget_mb: float | None = None
     pass_deadline_seconds: float | None = None
@@ -2050,6 +2051,16 @@ async def _rebuild_index_from_source_owned(
                     index_path_override=Path(generation.index_path),
                 ),
             )
+            if request.message_owner_scope_backfill_receipt_path is not None:
+                from polylogue.maintenance.message_owner_scope_backfill import (
+                    validate_message_owner_scope_backfill_receipt,
+                )
+
+                validate_message_owner_scope_backfill_receipt(
+                    root,
+                    request.message_owner_scope_backfill_receipt_path,
+                    candidate_index_path=Path(generation.index_path),
+                )
             terminal_timings_s["terminal.reindex_acceptance"] = time.perf_counter() - terminal_started_at
             logger.info(
                 "rebuild_terminal_stage_complete",

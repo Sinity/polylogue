@@ -5316,6 +5316,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         max_blob_mb = body.get("max_blob_mb")
         operation_id = body.get("operation_id")
         schema_inference_receipt_path = body.get("schema_inference_receipt_path")
+        message_owner_scope_backfill_receipt_path = body.get("message_owner_scope_backfill_receipt_path")
         raw_batch_size = body.get("raw_batch_size", 500)
         pass_byte_budget_mb = body.get("pass_byte_budget_mb")
         pass_deadline_seconds = body.get("pass_deadline_seconds")
@@ -5332,6 +5333,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         if schema_inference_receipt_path is not None and (
             not isinstance(schema_inference_receipt_path, str) or not schema_inference_receipt_path
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if message_owner_scope_backfill_receipt_path is not None and (
+            not isinstance(message_owner_scope_backfill_receipt_path, str)
+            or not message_owner_scope_backfill_receipt_path
         ):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
@@ -5365,6 +5372,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             operation_id=operation_id,
             schema_inference_receipt_path=(
                 Path(schema_inference_receipt_path) if schema_inference_receipt_path is not None else None
+            ),
+            message_owner_scope_backfill_receipt_path=(
+                Path(message_owner_scope_backfill_receipt_path)
+                if message_owner_scope_backfill_receipt_path is not None
+                else None
             ),
             raw_batch_size=raw_batch_size,
             pass_byte_budget_mb=float(pass_byte_budget_mb) if pass_byte_budget_mb is not None else None,
