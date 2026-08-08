@@ -46,6 +46,7 @@ class CanonicalArchiveSnapshot:
     canonical_rows: tuple[RelationSnapshot, ...]
     provenance: tuple[RelationSnapshot, ...]
     authority: tuple[RelationSnapshot, ...]
+    user_state: tuple[RelationSnapshot, ...]
     links: tuple[RelationSnapshot, ...]
     attachments: tuple[RelationSnapshot, ...]
     derived_views: tuple[RelationSnapshot, ...]
@@ -91,6 +92,7 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
         ("index", "sessions"),
         ("index", "messages"),
         ("index", "blocks"),
+        ("index", "web_content_constructs"),
     ),
     "provenance": (
         ("index", "session_events"),
@@ -107,6 +109,7 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
         ("source", "raw_hook_events"),
     ),
     "authority": (
+        ("index", "raw_revision_heads"),
         ("source", "raw_sessions"),
         ("source", "raw_capture_observations"),
         ("source", "raw_session_memberships"),
@@ -118,7 +121,7 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
         ("source", "raw_authority_census_post_plans"),
         ("source", "raw_authority_blockers"),
         ("source", "raw_authority_verdicts"),
-        ("source", "raw_revision_heads"),
+        ("source", "excised_content"),
         ("source", "raw_live_source_reconciliation_receipts"),
         ("source", "raw_membership_writeback_receipts"),
         ("source", "raw_append_chain_backfill_receipts"),
@@ -129,6 +132,23 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
         ("source", "raw_failure_disposition_receipts"),
         ("source", "blob_refs"),
         ("source", "verified_blob_receipts"),
+    ),
+    "user_state": (
+        ("user", "assertions"),
+        ("user", "queries"),
+        ("user", "query_names"),
+        ("user", "result_sets"),
+        ("user", "result_set_members"),
+        ("user", "query_edges"),
+        ("user", "retained_query_runs"),
+        ("user", "query_evaluation_receipts"),
+        ("user", "watched_query_baselines"),
+        ("user", "result_set_holdout_policies"),
+        ("user", "holdout_access_receipts"),
+        ("user", "annotation_schemas"),
+        ("user", "annotation_batches"),
+        ("user", "user_settings"),
+        ("user", "context_deliveries"),
     ),
     "links": (
         ("index", "session_links"),
@@ -185,18 +205,28 @@ def capture_canonical_snapshot(
     root = archive_root.expanduser().resolve()
     connections = _open_connections(root)
     try:
+        raw_identity_map = _raw_identity_map(connections.get("source"))
         sections = {
             name: tuple(
-                _capture_relation(connections[database], database, relation, root) for database, relation in relations
+                _capture_relation(
+                    connections.get(database),
+                    database,
+                    relation,
+                    root,
+                    raw_identity_map=raw_identity_map,
+                )
+                for database, relation in relations
             )
             for name, relations in _RELATION_GROUPS.items()
         }
         ids = tuple(session_ids) if session_ids is not None else _session_ids(connections["index"])
-        public = _capture_public_projections(root, ids, tuple(search_queries))
+        effective_search_queries = tuple(search_queries) or _default_search_queries(connections["index"])
+        public = _capture_public_projections(root, ids, effective_search_queries)
         return CanonicalArchiveSnapshot(
             canonical_rows=sections["canonical_rows"],
             provenance=sections["provenance"],
             authority=sections["authority"],
+            user_state=sections["user_state"],
             links=sections["links"],
             attachments=sections["attachments"],
             derived_views=sections["derived_views"],
@@ -226,6 +256,7 @@ def diff_canonical_snapshots(expected: CanonicalArchiveSnapshot, actual: Canonic
         "canonical_rows",
         "provenance",
         "authority",
+        "user_state",
         "links",
         "attachments",
         "derived_views",
@@ -280,7 +311,7 @@ def assert_archives_equivalent(expected: object, actual: object) -> None:
 
 
 def _open_connections(root: Path) -> dict[str, sqlite3.Connection]:
-    paths = {name: root / f"{name}.db" for name in ("index", "source", "ops")}
+    paths = {name: root / f"{name}.db" for name in ("index", "source", "user", "ops")}
     connections: dict[str, sqlite3.Connection] = {}
     try:
         for name, path in paths.items():
@@ -302,6 +333,8 @@ def _capture_relation(
     database: str,
     relation: str,
     root: Path,
+    *,
+    raw_identity_map: Mapping[str, str],
 ) -> RelationSnapshot:
     key = f"{database}.{relation}"
     if connection is None:
@@ -322,7 +355,7 @@ def _capture_relation(
     quoted = ", ".join(f'"{column}"' for column in selected)
     rows = [
         tuple(
-            _normalize_value(database, relation, column, value, root)
+            _normalize_value(database, relation, column, value, root, raw_identity_map=raw_identity_map)
             for column, value in zip(selected, row, strict=True)
         )
         for row in connection.execute(f'SELECT {quoted} FROM "{relation}"')
@@ -358,18 +391,89 @@ def _capture_public_projections(
     return tuple(values)
 
 
+def _raw_identity_map(connection: sqlite3.Connection | None) -> dict[str, str]:
+    """Map production raw ids to path-independent comparator identities."""
+
+    if connection is None:
+        return {}
+    table = connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'").fetchone()
+    if table is None:
+        return {}
+    mapping: dict[str, str] = {}
+    for row in connection.execute("SELECT raw_id, origin, source_index, blob_hash, native_id FROM raw_sessions"):
+        raw_id, origin, source_index, blob_hash, native_id = row
+        blob_hash_hex = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash)
+        stable_identity = f"raw[{origin}|{source_index}|{blob_hash_hex}|{native_id!r}]"
+        mapping[str(raw_id)] = stable_identity
+    return mapping
+
+
+def _default_search_queries(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """Choose stable, tokenizer-compatible probes from the public FTS table."""
+
+    table = connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").fetchone()
+    if table is None:
+        return ()
+
+    vocab_name = "canonical_snapshot_fts_vocab"
+    temporary_schema = "te" + "mp"
+    try:
+        connection.execute(
+            f"CREATE VIRTUAL TABLE {temporary_schema}.{vocab_name} USING fts5vocab(main, messages_fts, row)"
+        )
+    except sqlite3.OperationalError:
+        return ()
+
+    try:
+        candidates = connection.execute(
+            f"SELECT term FROM {temporary_schema}.{vocab_name} WHERE doc > 0 ORDER BY term"
+        ).fetchall()
+        queries: list[str] = []
+        for (term,) in candidates:
+            normalized = str(term)
+            if normalized.casefold() in {"and", "or", "not", "near"}:
+                continue
+            try:
+                match = connection.execute(
+                    "SELECT 1 FROM messages_fts WHERE messages_fts MATCH ? LIMIT 1", (normalized,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                continue
+            if match is not None:
+                queries.append(normalized)
+            if len(queries) == 3:
+                break
+        return tuple(queries)
+    finally:
+        connection.execute(f"DROP TABLE {temporary_schema}.{vocab_name}")
+
+
 def _session_ids(connection: sqlite3.Connection) -> tuple[str, ...]:
     return tuple(str(row[0]) for row in connection.execute("SELECT session_id FROM sessions ORDER BY session_id"))
 
 
-def _normalize_value(database: str, relation: str, column: str, value: object, root: Path) -> SqlValue:
+def _normalize_value(
+    database: str,
+    relation: str,
+    column: str,
+    value: object,
+    root: Path,
+    *,
+    raw_identity_map: Mapping[str, str],
+) -> SqlValue:
     if isinstance(value, bytes):
         return value.hex()
     if value is None or isinstance(value, (str, int, float)):
+        if isinstance(value, str) and _is_raw_id_column(column):
+            value = raw_identity_map.get(value, value)
         if isinstance(value, str) and column in RUN_LOCAL_PATH_ALLOWLIST.get(f"{database}.{relation}", frozenset()):
             return _archive_relative_path(value, root)
         return value
     raise TypeError(f"unsupported SQLite value in {database}.{relation}.{column}: {type(value)!r}")
+
+
+def _is_raw_id_column(column: str) -> bool:
+    return column == "raw_id" or column.endswith("_raw_id") or column == "ref_id"
 
 
 def _archive_relative_path(value: str, root: Path) -> str:
