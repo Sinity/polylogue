@@ -312,6 +312,7 @@ def test_affordance_usage_product_fast_path_stays_pinned_across_promotion(
 
     real_open_existing = ArchiveStore.open_existing
     promoted = False
+    opened_index_path: Path | None = None
 
     def promote_before_open(
         root: Path,
@@ -320,10 +321,11 @@ def test_affordance_usage_product_fast_path_stays_pinned_across_promotion(
         read_timeout: float = 5.0,
         index_path: Path | None = None,
     ) -> ArchiveStore:
-        nonlocal promoted
+        nonlocal opened_index_path, promoted
         active.unlink()
         active.symlink_to(new_db)
         promoted = True
+        opened_index_path = index_path
         return real_open_existing(
             root,
             read_only=read_only,
@@ -347,7 +349,9 @@ def test_affordance_usage_product_fast_path_stays_pinned_across_promotion(
     )
 
     assert promoted is True
+    assert opened_index_path == old_db.resolve()
     assert report["index_db"] == str(old_db.resolve())
+    assert report["snapshot_identity"]["sha256"] == affordance_usage._snapshot_observation(old_db)["sha256"]
     assert {row["family"]: row["actions"] for row in report["family_counts"]}["codebase-memory"] == 2
 
 
@@ -549,6 +553,8 @@ def test_affordance_usage_detail_fast_path_splits_mixed_known_families(
     calls: list[tuple[str, ...]] = []
 
     class FakeArchive(AbstractContextManager["FakeArchive"]):
+        index_db_path = archive_root / "index.db"
+
         def __enter__(self) -> FakeArchive:
             return self
 

@@ -915,7 +915,8 @@ def _try_product_detail_report(
 ) -> dict[str, Any] | None:
     if not effective_detail_patterns or args.family:
         return None
-    if config.db_path.resolve() != (config.archive_root / "index.db").resolve():
+    selected_index_db = config.db_path.resolve(strict=True)
+    if selected_index_db != (config.archive_root / "index.db").resolve():
         # ArchiveStore opens exactly <archive-root>/index.db. Any other
         # selected candidate, including a sibling file in the same root, must
         # stay on the direct read-only SQLite fallback so its counts and
@@ -939,7 +940,12 @@ def _try_product_detail_report(
     since_ms = None if args.all_time else recent_cutoff_ms
     action_scope = "product-action-evidence-all-time" if args.all_time else "product-action-evidence-recent-window"
     try:
-        with ArchiveStore.open_existing(config.archive_root, index_path=config.db_path) as archive:
+        with ArchiveStore.open_existing(config.archive_root, index_path=selected_index_db) as archive:
+            opened_index_db = Path(archive.index_db_path).resolve(strict=True)
+            if opened_index_db != selected_index_db:
+                raise RuntimeError(
+                    "ArchiveStore opened a different physical index than the selected affordance evidence database"
+                )
             merged_rows: dict[tuple[str, str, str, str, str, str], dict[str, object]] = {}
             for family, patterns in pattern_groups.items():
                 rows = archive.list_tool_action_evidence_count_rows(
