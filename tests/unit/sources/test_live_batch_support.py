@@ -4010,7 +4010,7 @@ def test_append_parse_failure_retains_typed_raw_failure(
     plan = _append_plan(path, payload, payload_hash="bad")
     owner = _append_owner(tmp_path)
     monkeypatch.setattr(
-        "polylogue.sources.dispatch.parse_payload",
+        "polylogue.sources.dispatch.parse_stream_payload",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected append parse failure")),
     )
 
