@@ -5441,14 +5441,29 @@ class ArchiveStore:
         finally:
             user_conn.close()
 
-    def add_mark(self, target_type: str, target_id: str, mark_type: str) -> bool:
+    def add_mark(
+        self,
+        target_type: str,
+        target_id: str,
+        mark_type: str,
+        *,
+        owner_session_id: str | None = None,
+    ) -> bool:
         """Add one user mark to archive user.db."""
+        if target_type == "message" and not owner_session_id:
+            raise ValueError("message marks require a resolved owner_session_id")
         user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_mark(target_type, target_id, mark_type))
             exists = assertion is not None and assertion.status != "deleted"
             with user_conn:
-                upsert_mark(user_conn, target_type, target_id, mark_type)
+                upsert_mark(
+                    user_conn,
+                    target_type,
+                    target_id,
+                    mark_type,
+                    owner_session_id=owner_session_id,
+                )
             return not exists
         finally:
             user_conn.close()
@@ -5474,6 +5489,7 @@ class ArchiveStore:
         mark_type: str | None = None,
         target_type: str | None = None,
         target_id: str | None = None,
+        session_id: str | None = None,
     ) -> list[dict[str, str]]:
         """List user marks from archive user.db."""
         if not self.user_db_path.exists():
@@ -5486,21 +5502,25 @@ class ArchiveStore:
         out: list[dict[str, str]] = []
         for assertion in assertions:
             found_target_type, found_target_id = _split_user_target_ref(assertion.target_ref)
+            owner_session_id = _user_mark_session_id(
+                found_target_type,
+                found_target_id,
+                durable_scope_ref=assertion.scope_ref,
+                index_conn=self._conn,
+            )
             if mark_type and assertion.key != mark_type:
                 continue
             if target_type and found_target_type != target_type:
                 continue
             if target_id and found_target_id != target_id:
                 continue
+            if session_id and target_id is None and owner_session_id != session_id:
+                continue
             out.append(
                 {
                     "target_type": found_target_type,
                     "target_id": found_target_id,
-                    "session_id": _user_mark_session_id(
-                        found_target_type,
-                        found_target_id,
-                        index_conn=self._conn,
-                    ),
+                    "session_id": owner_session_id,
                     "message_id": found_target_id if found_target_type == "message" else "",
                     "mark_type": str(assertion.key or ""),
                     "created_at": str(assertion.created_at_ms),
@@ -5508,8 +5528,18 @@ class ArchiveStore:
             )
         return out
 
-    def save_annotation(self, annotation_id: str, target_type: str, target_id: str, note_text: str) -> bool:
+    def save_annotation(
+        self,
+        annotation_id: str,
+        target_type: str,
+        target_id: str,
+        note_text: str,
+        *,
+        owner_session_id: str | None = None,
+    ) -> bool:
         """Create or update one annotation in archive user.db."""
+        if target_type == "message" and not owner_session_id:
+            raise ValueError("message annotations require a resolved owner_session_id")
         user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_annotation(annotation_id))
@@ -5520,6 +5550,7 @@ class ArchiveStore:
                     target_type,
                     target_id,
                     note_text,
+                    owner_session_id=owner_session_id,
                     annotation_id=annotation_id,
                 )
             return not exists
@@ -5639,10 +5670,9 @@ class ArchiveStore:
 
         When ``session_id`` is supplied (and no explicit target filter),
         the result includes both the session-target annotation and every
-        message-target annotation whose native message id is prefixed by the
-        session id (``session_id:message_native_id``). This mirrors the read model
-        contract where annotations on messages belonging to a session were
-        listed under that session.
+        message-target annotation whose durable owner scope or exact indexed
+        message ownership matches that session. Legacy message assertions
+        without either authority are intentionally excluded.
         """
         if not self.user_db_path.exists():
             return []
@@ -5658,9 +5688,14 @@ class ArchiveStore:
             if annotation_id and found_annotation_id != annotation_id:
                 continue
             if session_id and target_id is None:
-                belongs_to_session = (found_target_type == "session" and found_target_id == session_id) or (
-                    found_target_type == "message"
-                    and (found_target_id == session_id or found_target_id.startswith(f"{session_id}:"))
+                belongs_to_session = (
+                    _user_mark_session_id(
+                        found_target_type,
+                        found_target_id,
+                        durable_scope_ref=assertion.scope_ref,
+                        index_conn=self._conn,
+                    )
+                    == session_id
                 )
                 if not belongs_to_session:
                     continue
@@ -5676,6 +5711,7 @@ class ArchiveStore:
                     "session_id": _user_mark_session_id(
                         found_target_type,
                         found_target_id,
+                        durable_scope_ref=assertion.scope_ref,
                         index_conn=self._conn,
                     ),
                     "message_id": found_target_id if found_target_type == "message" else "",
@@ -9346,11 +9382,16 @@ def _user_mark_session_id(
     target_type: str,
     target_id: str,
     *,
+    durable_scope_ref: str | None = None,
     index_conn: sqlite3.Connection | None = None,
 ) -> str:
     if target_type == "session":
         return target_id
     if target_type == "message":
+        if durable_scope_ref is not None and durable_scope_ref.startswith("session:"):
+            durable_owner = durable_scope_ref[len("session:") :]
+            if durable_owner:
+                return durable_owner
         # Canonical message IDs are generated from the indexed message row,
         # whose session_id column is the authoritative owner. Provider-native
         # session IDs are opaque and may contain the ``:n:`` or ``:p:`` tokens,
@@ -9362,10 +9403,10 @@ def _user_mark_session_id(
             ).fetchone()
             if row is not None:
                 return str(row["session_id"])
-        # A message assertion can outlive its indexed message. Retain the
-        # historical delimiter fallback for those legacy/unresolved IDs.
-        session_id, _sep, _message_native_id = target_id.rpartition(":")
-        return session_id
+        # Legacy message assertions may have neither durable scope metadata
+        # nor an indexed row. Their opaque ID cannot be decoded exactly, so
+        # expose no owner rather than manufacturing authority from a token.
+        return ""
     return ""
 
 

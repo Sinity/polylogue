@@ -6847,6 +6847,7 @@ class PolylogueArchiveMixin:
                 target_type=str(target["target_type"]),
                 target_id=str(target["target_id"]),
                 mark_type=mark_type,
+                owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
             ),
             capability="archive.add_mark",
         )
@@ -6883,6 +6884,7 @@ class PolylogueArchiveMixin:
                 target_type=str(target["target_type"]),
                 target_id=str(target["target_id"]),
                 mark_type=mark_type,
+                owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
             ),
             capability="archive.remove_mark",
         )
@@ -6900,23 +6902,32 @@ class PolylogueArchiveMixin:
         """List marks, optionally filtered by type, target, session, or message."""
         resolved_target_type = target_type
         resolved_target_id = target_id
+        scope_session_id: str | None = None
         if message_id is not None:
             resolved_target_type = TARGET_MESSAGE
             resolved_target_id = message_id
         elif session_id is not None and target_id is None:
             try:
-                resolved_target_id = await self._resolve_user_state_session_id(session_id)
-                resolved_target_type = TARGET_SESSION
+                scope_session_id = await self._resolve_user_state_session_id(session_id)
             except SessionNotFoundError:
-                return []
+                # A durable user assertion can outlive the rebuildable
+                # session row. Keep the caller's canonical token so the
+                # archive read can use its durable message owner scope.
+                scope_session_id = session_id
         return await run_archive_read(
             _active_archive_root(self.config),
             operation="user_state.marks.list",
-            arguments={"mark_type": mark_type, "target_type": resolved_target_type, "target_id": resolved_target_id},
+            arguments={
+                "mark_type": mark_type,
+                "target_type": resolved_target_type,
+                "target_id": resolved_target_id,
+                "session_id": scope_session_id,
+            },
             work=lambda archive: archive.list_marks(
                 mark_type=mark_type,
                 target_type=resolved_target_type,
                 target_id=resolved_target_id,
+                session_id=scope_session_id,
             ),
             projection="marks",
             stable_order="created_at,target_id",
@@ -6960,6 +6971,7 @@ class PolylogueArchiveMixin:
                 target_type=str(target["target_type"]),
                 target_id=str(target["target_id"]),
                 note_text=note_text,
+                owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
             ),
             capability="archive.save_annotation",
         )
@@ -6994,7 +7006,9 @@ class PolylogueArchiveMixin:
             try:
                 scope_session_id = await self._resolve_user_state_session_id(session_id)
             except SessionNotFoundError:
-                return []
+                # See list_marks: the user tier remains authoritative after
+                # the rebuildable index row is gone.
+                scope_session_id = session_id
         return await run_archive_read(
             _active_archive_root(self.config),
             operation="user_state.annotations.list",

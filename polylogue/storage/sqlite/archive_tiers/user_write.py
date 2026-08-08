@@ -618,17 +618,24 @@ def upsert_mark(
     target_id: str,
     mark_type: str,
     *,
+    owner_session_id: str | None = None,
     label: str | None = None,
     metadata: dict[str, object] | None = None,
     now_ms: int | None = None,
 ) -> ArchiveMarkEnvelope:
-    """Insert-or-update one mark assertion with deterministic ``mark_id``."""
+    """Insert-or-update one mark assertion with deterministic ``mark_id``.
+
+    Message targets carry their resolved owning session in the durable
+    assertion scope.  The indexed message row is rebuildable, so callers that
+    know the owner should pass it before that row can disappear.
+    """
     timestamp = now_ms if now_ms is not None else _now_ms()
     mark_id = _deterministic_id("mark", target_type, target_id, mark_type)
     upsert_assertion(
         conn,
         assertion_id=assertion_id_for_mark(target_type, target_id, mark_type),
         target_ref=f"{target_type}:{target_id}",
+        scope_ref=f"session:{owner_session_id}" if target_type == "message" and owner_session_id else None,
         kind=AssertionKind.MARK,
         key=mark_type,
         value=metadata if metadata else None,
@@ -718,6 +725,7 @@ def upsert_annotation(
     target_id: str,
     body: str,
     *,
+    owner_session_id: str | None = None,
     annotation_id: str | None = None,
     now_ms: int | None = None,
 ) -> ArchiveAnnotationEnvelope:
@@ -741,6 +749,7 @@ def upsert_annotation(
         conn,
         assertion_id=assertion_id_for_annotation(resolved_id),
         target_ref=f"{target_type}:{target_id}",
+        scope_ref=f"session:{owner_session_id}" if target_type == "message" and owner_session_id else None,
         kind=AssertionKind.ANNOTATION,
         key=resolved_id,
         body_text=body,

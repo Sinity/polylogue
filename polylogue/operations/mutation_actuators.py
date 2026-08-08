@@ -665,6 +665,7 @@ class MarkArgs:
     target_type: str
     target_id: str
     mark_type: str
+    owner_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -688,11 +689,21 @@ class MarkAddActuator:
             target_refs=(f"{args.target_type}:{args.target_id}",),
             affected_tiers=("user",),
             reversible=True,
-            context={"target_type": args.target_type, "target_id": args.target_id, "mark_type": args.mark_type},
+            context={
+                "target_type": args.target_type,
+                "target_id": args.target_id,
+                "mark_type": args.mark_type,
+                "owner_session_id": args.owner_session_id,
+            },
         )
 
     def apply(self, plan: MutationPlan, args: MarkArgs) -> MutationReceipt:
-        added = args.archive.add_mark(args.target_type, args.target_id, args.mark_type)
+        added = args.archive.add_mark(
+            args.target_type,
+            args.target_id,
+            args.mark_type,
+            owner_session_id=args.owner_session_id,
+        )
         status: MutationTargetStatus = "applied" if added else "already_satisfied"
         return MutationReceipt(
             operation=self.operation,
@@ -726,7 +737,12 @@ class MarkRemoveActuator:
             target_refs=(f"{args.target_type}:{args.target_id}",),
             affected_tiers=("user",),
             reversible=True,
-            context={"target_type": args.target_type, "target_id": args.target_id, "mark_type": args.mark_type},
+            context={
+                "target_type": args.target_type,
+                "target_id": args.target_id,
+                "mark_type": args.mark_type,
+                "owner_session_id": args.owner_session_id,
+            },
         )
 
     def apply(self, plan: MutationPlan, args: MarkArgs) -> MutationReceipt:
@@ -975,6 +991,7 @@ class AnnotationSaveArgs:
     target_type: str
     target_id: str
     note_text: str
+    owner_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1007,6 +1024,7 @@ class AnnotationSaveActuator:
                 "target_type": args.target_type,
                 "target_id": args.target_id,
                 "note_text": args.note_text,
+                "owner_session_id": args.owner_session_id,
             },
         )
 
@@ -1015,7 +1033,13 @@ class AnnotationSaveActuator:
         target_type = str(plan.context["target_type"])
         target_id = str(plan.context["target_id"])
         note_text = str(plan.context["note_text"])
-        created = args.archive.save_annotation(annotation_id, target_type, target_id, note_text)
+        created = args.archive.save_annotation(
+            annotation_id,
+            target_type,
+            target_id,
+            note_text,
+            owner_session_id=cast(str | None, plan.context.get("owner_session_id")),
+        )
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,

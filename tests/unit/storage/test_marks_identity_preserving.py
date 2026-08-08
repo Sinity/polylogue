@@ -142,7 +142,7 @@ async def test_message_user_state_projects_owner_for_opaque_session_native_ids(
     workspace_env: dict[str, Path],
     opaque_marker: str,
 ) -> None:
-    """Message user state resolves ownership from indexed identity, not delimiters."""
+    """Message user state keeps exact ownership after index rows disappear."""
     db_path = db_setup(workspace_env)
     builder = (
         SessionBuilder(db_path, f"opaque{opaque_marker}session")
@@ -179,10 +179,34 @@ async def test_message_user_state_projects_owner_for_opaque_session_native_ids(
         marks = await poly.list_marks(mark_type="pin")
         annotations = await poly.list_annotations()
 
+        with sqlite3.connect(_user_db_path(workspace_env)) as conn:
+            durable_scopes = conn.execute(
+                """
+                SELECT kind, scope_ref
+                FROM assertions
+                WHERE target_ref = ?
+                ORDER BY kind
+                """,
+                (f"message:{message_id}",),
+            ).fetchall()
+        assert durable_scopes == [
+            ("annotation", f"session:{session_id}"),
+            ("mark", f"session:{session_id}"),
+        ]
+
+        assert await poly.delete_session(session_id) is True
+        with sqlite3.connect(db_path) as conn:
+            assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is None
+            assert conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,)).fetchone() is None
+        filtered_marks = await poly.list_marks(session_id=session_id, mark_type="pin")
+        filtered_annotations = await poly.list_annotations(session_id=session_id)
+
     assert marks[0]["target_id"] == message_id
     assert marks[0]["session_id"] == session_id
     assert annotations[0]["target_id"] == message_id
     assert annotations[0]["session_id"] == session_id
+    assert filtered_marks == [marks[0]]
+    assert filtered_annotations == [annotations[0]]
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +281,7 @@ async def test_message_target_marks_survive_reimport(workspace_env: dict[str, Pa
     )
     builder.save()
     session_id = builder.native_session_id()
-    message_id = f"{session_id}:msg-id"
+    message_id = f"{session_id}:n:msg-id"
 
     async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
         assert (
@@ -298,7 +322,7 @@ async def test_message_target_mark_survives_when_message_disappears(
     )
     builder.save()
     session_id = builder.native_session_id()
-    message_id = f"{session_id}:msg-id"
+    message_id = f"{session_id}:n:msg-id"
 
     async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
         assert (
