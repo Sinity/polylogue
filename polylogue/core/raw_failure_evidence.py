@@ -57,6 +57,13 @@ RAW_FAILURE_DEFERRED_EVIDENCE_KINDS = frozenset(
         RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER.value,
     }
 )
+# Every deferred raw-failure carrier represents a partial decode. Consumers
+# selecting retry authority must validate this companion field as well as the
+# closed kind, or contradictory rows can authorize replay.
+RAW_FAILURE_DEFERRED_SUPPORT_STATUS = ArtifactSupportStatus.PARTIAL_DECODE.value
+RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(
+    sorted((kind.value, kind.support_status.value) for kind in RawFailureEvidenceKind)
+)
 RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
     {
         RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value,
@@ -69,7 +76,9 @@ RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
 
 __all__ = [
     "RAW_FAILURE_DEFERRED_EVIDENCE_KINDS",
+    "RAW_FAILURE_DEFERRED_SUPPORT_STATUS",
     "RAW_FAILURE_EVIDENCE_KINDS",
+    "RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS",
     "RAW_FAILURE_TERMINAL_EVIDENCE_KINDS",
     "RawFailureEvidenceKind",
 ]

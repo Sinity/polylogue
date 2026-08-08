@@ -50,7 +50,11 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_EVIDENCE_KINDS,
+    RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    RawFailureEvidenceKind,
+)
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -3329,6 +3333,9 @@ class LiveBatchProcessor:
         if not source_db.exists():
             return False
         placeholders = ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
+        support_pairs = " OR ".join(
+            "(a.artifact_kind = ? AND a.support_status = ?)" for _ in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS
+        )
         try:
             conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
             try:
@@ -3339,12 +3346,21 @@ class LiveBatchProcessor:
                         FROM raw_sessions AS r
                         JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
                         WHERE r.raw_id = ?
+                          AND r.origin IS a.origin
+                          AND r.source_path IS a.source_path
                           AND r.source_path = ?
+                          AND r.source_index IS a.source_index
                           AND r.parse_error IS NOT NULL
                           AND a.artifact_kind IN ({placeholders})
+                          AND ({support_pairs})
                         LIMIT 1
                         """,
-                        (raw_id, str(path), *sorted(RAW_FAILURE_EVIDENCE_KINDS)),
+                        (
+                            raw_id,
+                            str(path),
+                            *sorted(RAW_FAILURE_EVIDENCE_KINDS),
+                            *[value for pair in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair],
+                        ),
                     ).fetchone()
                     is not None
                 )

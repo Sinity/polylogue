@@ -27,7 +27,10 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.protocols import ProgressCallback
-from polylogue.core.raw_failure_evidence import RAW_FAILURE_DEFERRED_EVIDENCE_KINDS
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
+    RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+)
 from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
@@ -3855,6 +3858,7 @@ def _raw_materialization_candidate_ids(
                          AND a.source_path IS r.source_path
                          AND a.source_index IS r.source_index
                          AND a.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
+                         AND a.support_status = ?
                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
                        LIMIT 1
                    ) AS failure_artifact_kind,
@@ -3942,6 +3946,7 @@ def _raw_materialization_candidate_ids(
                     AND retry_evidence.source_path IS r.source_path
                     AND retry_evidence.source_index IS r.source_index
                     AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
+                    AND retry_evidence.support_status = ?
                 )
                 OR r.parse_error LIKE '{_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX}%'
                 OR r.parse_error IN (
@@ -3961,9 +3966,11 @@ def _raw_materialization_candidate_ids(
             """,
             [
                 *sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS),
+                RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 *sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS),
+                RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
                 *params,
             ],
         ).fetchall()
@@ -4527,6 +4534,7 @@ def _raw_replay_plan_outcome(
                     AND retry_evidence.source_path IS raw_sessions.source_path
                     AND retry_evidence.source_index IS raw_sessions.source_index
                     AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
+                    AND retry_evidence.support_status = ?
               )
             UNION ALL
             SELECT 1
@@ -4542,6 +4550,7 @@ def _raw_replay_plan_outcome(
             *component,
             _TRANSIENT_LOCK_PARSE_ERROR,
             *sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS),
+            RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
             *component,
         ),
     ).fetchone()

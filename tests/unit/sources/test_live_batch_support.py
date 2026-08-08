@@ -3740,6 +3740,72 @@ def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_pa
     assert processor._cursor_references_raw_failure_requiring_full_replay(path, record)
 
 
+def test_raw_failure_cursor_guard_rejects_contradictory_or_mismatched_evidence(tmp_path: Path) -> None:
+    """Append fallback requires the same source coordinate and valid support status."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "guard.jsonl"
+    path.write_bytes(b'{"type":"session_meta","payload":{"id":"guard"}}\n')
+    index_db = tmp_path / "index.db"
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        mismatched_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=path.read_bytes(),
+            source_path=str(path),
+            source_index=1,
+            acquired_at_ms=1,
+        )
+        contradictory_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=path.read_bytes() + b"2",
+            source_path=str(path),
+            source_index=0,
+            acquired_at_ms=2,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = ?",
+            [("mismatched coordinate", mismatched_raw_id), ("contradictory support", contradictory_raw_id)],
+        )
+        upsert_raw_artifact(
+            source_conn,
+            mismatched_raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="mismatched-coordinate-evidence",
+                origin="chatgpt-export",
+                source_path=str(path),
+                source_index=0,
+                artifact_kind="deferred_cas_frontier",
+                classification_reason="deferred_cas_frontier",
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+            ),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            contradictory_raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="contradictory-support-evidence",
+                origin="codex-session",
+                source_path=str(path),
+                source_index=0,
+                artifact_kind="deferred_cas_frontier",
+                classification_reason="deferred_cas_frontier",
+                support_status=ArtifactSupportStatus.DECODE_FAILED,
+            ),
+        )
+        source_conn.commit()
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    assert processor._raw_failure_requires_full_replay(path, mismatched_raw_id) is False
+    assert processor._raw_failure_requires_full_replay(path, contradictory_raw_id) is False
+
+
 def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

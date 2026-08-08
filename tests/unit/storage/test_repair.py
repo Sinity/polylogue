@@ -619,6 +619,47 @@ def test_raw_materialization_retries_only_with_deferred_frontier_evidence(tmp_pa
     )
 
 
+def test_raw_materialization_rejects_contradictory_deferred_evidence(tmp_path: Path) -> None:
+    """A deferred kind with terminal support cannot authorize replay."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"mapping":{"contradictory":true}}',
+            source_path="contradictory.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
+            ("changed wording", raw_id),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="contradictory-deferred-evidence",
+                origin="codex-session",
+                source_path="contradictory.jsonl",
+                source_index=0,
+                artifact_kind="deferred_cas_frontier",
+                classification_reason="deferred_cas_frontier",
+                support_status=ArtifactSupportStatus.DECODE_FAILED,
+                parse_as_session=True,
+                schema_eligible=True,
+            ),
+        )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+
+    assert raw_id not in candidates.raw_ids
+
+
 def test_raw_materialization_repairs_deferred_stale_frontier_failure(tmp_path: Path) -> None:
     """Durable frontier evidence reaches the real replay actuator."""
     from polylogue.core.enums import Provider
