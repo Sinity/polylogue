@@ -285,7 +285,7 @@ def _mark_rebuild_transaction_stale_after_provenance_failure(
     from polylogue.storage.index_generation import IndexGenerationStore
 
     try:
-        store = IndexGenerationStore.for_archive_root(root)
+        store = IndexGenerationStore.for_archive_root(root, repair_anchor=False)
         transaction = store.load_transaction(operation_id)
         transaction = _reconcile_active_generation_transaction(store, transaction)
     except Exception as load_error:
