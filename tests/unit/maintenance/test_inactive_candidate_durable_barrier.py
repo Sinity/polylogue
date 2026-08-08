@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.daemon.bulk_rebuild import resolve_or_start_daemon_bulk_rebuild_transaction
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources.revision_backfill import (
     backfill_historical_revision_evidence,
@@ -281,6 +282,34 @@ def test_candidate_requires_current_parser_census_before_generation_readiness(
                 schema_inference_receipt_path=receipt_path,
                 promote=False,
             )
+        )
+
+    assert _optional_path_evidence(anchor) == anchor_before
+    _assert_no_candidate_bookkeeping(root)
+
+
+@pytest.mark.parametrize("anchor_state", ["missing", "poisoned"])
+def test_daemon_candidate_requires_source_admission_before_transaction_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    anchor_state: str,
+) -> None:
+    root = tmp_path / "archive"
+    build_independent_raw_corpus(root, raw_count=1, avg_payload_bytes=1_000)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "daemon-schema-inference-receipt.json")
+    anchor = root / ".index-active-pointer"
+    if anchor_state == "poisoned":
+        anchor.write_text(
+            str(root / ".index-generations" / "gen-poisoned" / "index.db"),
+            encoding="utf-8",
+        )
+    anchor_before = _optional_path_evidence(anchor)
+
+    with pytest.raises(FrozenSourceRemediationRequiredError, match="complete current-parser source census"):
+        resolve_or_start_daemon_bulk_rebuild_transaction(
+            root,
+            schema_inference_receipt_path=receipt_path,
         )
 
     assert _optional_path_evidence(anchor) == anchor_before

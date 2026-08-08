@@ -53,6 +53,7 @@ from polylogue.maintenance.rebuild_index import (
     RebuildSchemaCurrencyError,
     rebuild_index_from_source_sync,
 )
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.index_generation import (
@@ -111,6 +112,7 @@ def _seed_corpus(root: Path, *, count: int = _RAW_COUNT) -> None:
                 source_path=f"gd6v-corpus-{index}.jsonl",
                 acquired_at_ms=index,
             )
+    backfill_historical_revision_evidence(root)
 
 
 def _connect(path: Path) -> sqlite3.Connection:
