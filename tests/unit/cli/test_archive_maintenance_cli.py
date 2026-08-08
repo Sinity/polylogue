@@ -5,6 +5,7 @@ import hashlib
 import itertools
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -20,6 +21,7 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
 from polylogue.maintenance.replay import rebuild_index_from_source
+from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
@@ -431,6 +433,10 @@ def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:
     archive_root = cli_workspace["archive_root"]
     for name in _ARCHIVE_TIERS:
         (archive_root / name).unlink(missing_ok=True)
+    shutil.rmtree(
+        archive_root / ".maintenance-state" / "durable-change-trains",
+        ignore_errors=True,
+    )
 
 
 def _write_gc_candidate(cli_workspace: dict[str, Path], blob_hash: str) -> Path:
@@ -510,6 +516,38 @@ def _create_user_v3(path: Path) -> None:
             PRAGMA user_version = 3;
             """
         )
+    _refresh_fresh_bootstrap_marker(path.parent)
+
+
+def _refresh_fresh_bootstrap_marker(archive_root: Path) -> None:
+    """Rebind a fixture bootstrap receipt after deliberate durable-tier edits."""
+    marker = archive_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    if not marker.is_file():
+        return
+    from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+
+    marker.unlink()
+    _record_fresh_durable_bootstrap(archive_root)
+
+
+def _freeze_rebuild_fixture_source(archive_root: Path, *, expected_raws: int) -> None:
+    """Census fixture raws, then record their explicit single-revision decision."""
+    census = census_historical_revision_evidence(archive_root)
+    assert census.scanned == expected_raws
+    assert census.classified_full == expected_raws
+    with sqlite3.connect(archive_root / "source.db") as source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET revision_authority = 'byte_proven',
+                revision_kind = 'full',
+                source_revision = raw_id,
+                baseline_raw_id = raw_id,
+                predecessor_raw_id = NULL,
+                acquisition_generation = 0
+            """
+        )
+        source.commit()
 
 
 def _run_verified_backup_cli(cli_runner: CliRunner, output_dir: Path, *, profile: str) -> Path:
@@ -1517,6 +1555,7 @@ def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
         conn.execute("CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
         conn.execute("PRAGMA user_version = 1")
         conn.commit()
+    _refresh_fresh_bootstrap_marker(cli_workspace["archive_root"])
 
     result = cli_runner.invoke(
         cli,
@@ -2618,6 +2657,7 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
             """
         )
         source.commit()
+    _freeze_rebuild_fixture_source(root, expected_raws=2)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
@@ -2626,7 +2666,7 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
         ["--plain", "ops", "maintenance", "rebuild-index", "--raw-batch-size", "1", "--output-format", "json"],
         catch_exceptions=False,
     )
-    assert first.exit_code == 0
+    assert first.exit_code == 0, first.output
     # This pass now also replays a raw page through the shared
     # revision-backfill machinery, which logs "backfill stage timings" to
     # stderr on every call (see the sibling terminal-promotion test for the
@@ -2714,6 +2754,7 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
             """
         )
         source.commit()
+    _freeze_rebuild_fixture_source(root, expected_raws=2)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
@@ -2722,7 +2763,7 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
         ["--plain", "ops", "maintenance", "rebuild-index", "--raw-batch-size", "1", "--output-format", "json"],
         catch_exceptions=False,
     )
-    assert first.exit_code == 0
+    assert first.exit_code == 0, first.output
     # This pass now also replays a raw page through the shared
     # revision-backfill machinery, which logs "backfill stage timings" to
     # stderr on every call (see the sibling terminal-promotion test for the
@@ -2787,6 +2828,7 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    _freeze_rebuild_fixture_source(root, expected_raws=2)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     first = cli_runner.invoke(
@@ -2804,7 +2846,7 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
         ],
         catch_exceptions=False,
     )
-    assert first.exit_code == 0
+    assert first.exit_code == 0, first.output
     # This pass now also replays a raw page through the shared
     # revision-backfill machinery, which logs "backfill stage timings" to
     # stderr on every call (see the sibling terminal-promotion test for the
@@ -2897,6 +2939,7 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
             source_path="deadline.jsonl",
             acquired_at_ms=1,
         )
+    _freeze_rebuild_fixture_source(root, expected_raws=1)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     # `monkeypatch.setattr("polylogue.maintenance.rebuild_index.time.time", ...)`
@@ -2933,7 +2976,7 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
             ],
             catch_exceptions=False,
         )
-    assert first.exit_code == 0
+    assert first.exit_code == 0, first.output
     # This pass replays a raw page through the shared revision-backfill
     # machinery, which logs "backfill stage timings" to stderr on every
     # call; `.stdout` is the actual `--output-format json` contract
