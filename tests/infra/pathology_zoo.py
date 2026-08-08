@@ -115,7 +115,16 @@ _PATHOLOGY_ZOO_MUTATIONS: dict[str, PathologyZooMutation] = {
     ),
     "claude-vintage-live-proof": PathologyZooMutation(
         "source",
-        "DELETE FROM raw_sessions WHERE native_id = ? AND source_path LIKE ?",
+        """
+        UPDATE raw_session_memberships
+        SET decision = 'superseded_prefix'
+        WHERE raw_id = (
+            SELECT r.raw_id
+            FROM raw_sessions AS r
+            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+            WHERE r.native_id = ? AND r.source_path LIKE ? AND m.decision = 'applied'
+        )
+        """,
         ("9ed2056f-b415-4f51-b18e-5265f21a67bf", "%claude-live-proof-new.json"),
     ),
     "lifecycle-anchor-drift": PathologyZooMutation(
