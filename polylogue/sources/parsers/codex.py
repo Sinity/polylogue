@@ -2807,7 +2807,8 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             content_blocks = content_blocks_from_segments(content)
             content_blocks.extend(inline_image_blocks)
             has_structured = any(
-                cb.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT, BlockType.THINKING) for cb in content_blocks
+                cb.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT, BlockType.THINKING, BlockType.IMAGE)
+                for cb in content_blocks
             )
             if not raw_role or raw_role == "unknown":
                 continue
