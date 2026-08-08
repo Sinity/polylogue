@@ -79,6 +79,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
 | [Tracker Authority](tracker-authority.md) | GitHub and Beads authority split, and the reconciliation script that checks it. |
 | [Acceptance Contract Wave](plans/beads-acceptance-contracts-2026-08-07.md) | Guarded structured acceptance contracts for the current Beads execution wave. |
+| [Acceptance Contract Reconciliation](plans/beads-acceptance-reconciliation.md) | Read-only authority reconciliation and guarded targeted import protocol for the acceptance-contract wave. |
 
 ## Demos, Evidence, and Product
 

@@ -228,6 +228,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Guarded structured acceptance contracts for the current Beads execution wave.",
         "operations",
     ),
+    _entry(
+        "Acceptance Contract Reconciliation",
+        "plans/beads-acceptance-reconciliation.md",
+        "Read-only authority reconciliation and guarded targeted import protocol for the acceptance-contract wave.",
+        "operations",
+    ),
     # Evidence and product
     _entry(
         "Demos and Proofs",

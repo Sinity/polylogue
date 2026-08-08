@@ -15,6 +15,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab policy backlog-hygiene",
     "lab policy bead-graph",
     "lab policy acceptance-contracts",
+    "lab policy acceptance-contract-reconcile",
     "lab policy campaign-archive-boundaries",
     "lab policy demo-packet-registry",
     "lab policy demo-tour-freshness",
@@ -1877,6 +1878,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools lab policy acceptance-contracts",
             "devtools lab policy acceptance-contracts --json",
+        ),
+    ),
+    CommandSpec(
+        "lab policy acceptance-contract-reconcile",
+        "verification lab",
+        "Reconcile canonical acceptance contracts with a read-only live Beads export.",
+        "devtools.beads_acceptance_reconciliation",
+        use_when=(
+            "Run this file-level dry run before a coordinator applies acceptance contracts. "
+            "It reports authority differences, refuses source-digest mismatches, and emits "
+            "a targeted wave made from live rows with only acceptance_criteria and "
+            "metadata.acceptance_contract_v1 changed. It never invokes bd or mutates Dolt."
+        ),
+        examples=(
+            "devtools lab policy acceptance-contract-reconcile --repository .beads/issues.jsonl "
+            "--live /path/live.jsonl --wave /path/targeted.jsonl --report /path/report.json",
+            "devtools lab policy acceptance-contract-reconcile --verify-before /path/before.jsonl "
+            "--verify-after /path/after.jsonl --verify-wave /path/targeted.jsonl --json",
         ),
     ),
     CommandSpec(
