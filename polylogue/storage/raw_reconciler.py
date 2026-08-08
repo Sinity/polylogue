@@ -278,7 +278,12 @@ def _validate_raw_authority_frontier_apply_counts(
         raise ValueError("raw authority apply report must contain one outcome reference per selected plan")
 
 
-def validate_raw_authority_frontier_apply_report(report: object) -> RawAuthorityFrontierApplyReport:
+def validate_raw_authority_frontier_apply_report(
+    report: object,
+    *,
+    selected_plan_ids: tuple[str, ...],
+    preview_census_id: str,
+) -> RawAuthorityFrontierApplyReport:
     """Validate and type-check one raw-authority apply response at a boundary."""
     _validate_raw_authority_frontier_apply_counts(
         getattr(report, "selected_plan_count", None),
@@ -288,6 +293,16 @@ def validate_raw_authority_frontier_apply_report(report: object) -> RawAuthority
     )
     if not isinstance(report, RawAuthorityFrontierApplyReport):
         raise TypeError("raw authority actuator returned an untyped apply report")
+    if report.selected_plan_count != len(selected_plan_ids):
+        raise ValueError(
+            "raw authority actuator response selected plan count does not match the request: "
+            f"response={report.selected_plan_count}, request={len(selected_plan_ids)}"
+        )
+    if report.preview_census_id != preview_census_id:
+        raise ValueError(
+            "raw authority actuator response preview census does not match the request: "
+            f"response={report.preview_census_id!r}, request={preview_census_id!r}"
+        )
     return report
 
 

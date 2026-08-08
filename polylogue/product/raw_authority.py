@@ -58,11 +58,20 @@ def inspect_frontier(config: Config) -> RawAuthorityFrontierCensus:
     return inspect_raw_authority_frontier(config)
 
 
-def _validate_frontier_apply_report(report: object) -> RawAuthorityFrontierApplyReport:
+def _validate_frontier_apply_report(
+    report: object,
+    *,
+    selected_plan_ids: tuple[str, ...],
+    preview_census_id: str,
+) -> RawAuthorityFrontierApplyReport:
     """Reject an actuator response that cannot conserve selected plan outcomes."""
     from polylogue.storage.raw_reconciler import validate_raw_authority_frontier_apply_report
 
-    return validate_raw_authority_frontier_apply_report(report)
+    return validate_raw_authority_frontier_apply_report(
+        report,
+        selected_plan_ids=selected_plan_ids,
+        preview_census_id=preview_census_id,
+    )
 
 
 def apply_frontier(
@@ -78,7 +87,11 @@ def apply_frontier(
         preview_census_id=preview_census_id,
         selected_plan_ids=selected_plan_ids,
     )
-    return _validate_frontier_apply_report(report)
+    return _validate_frontier_apply_report(
+        report,
+        selected_plan_ids=selected_plan_ids,
+        preview_census_id=preview_census_id,
+    )
 
 
 def recover_interrupted_frontier(config: Config) -> tuple[str, ...]:
