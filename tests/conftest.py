@@ -736,6 +736,13 @@ def _clone_archive_template(source: Path, destination: Path) -> None:
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         shutil.copytree(source, destination, dirs_exist_ok=True)
 
+    bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    if bootstrap_marker.is_file():
+        from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+
+        bootstrap_marker.unlink()
+        _record_fresh_durable_bootstrap(destination)
+
 
 @pytest.fixture(scope="session")
 def empty_archive_template(

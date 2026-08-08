@@ -236,3 +236,21 @@ def test_archive_template_clone_is_private(tmp_path: Path) -> None:
     (destination / "index.db").write_bytes(b"private-mutation")
 
     assert (source / "index.db").read_bytes() == b"immutable-template"
+
+
+def test_archive_template_clone_rebinds_durable_identity(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    marker_relative = Path(".maintenance-state/durable-change-trains/.bootstrap")
+    with ArchiveStore(source):
+        pass
+    source_marker = (source / marker_relative).read_bytes()
+
+    conftest._clone_archive_template(source, destination)
+
+    assert (destination / marker_relative).read_bytes() != source_marker
+    with ArchiveStore(destination):
+        pass
+    assert (source / marker_relative).read_bytes() == source_marker
