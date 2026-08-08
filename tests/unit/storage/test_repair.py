@@ -660,6 +660,52 @@ def test_raw_materialization_rejects_contradictory_deferred_evidence(tmp_path: P
     assert raw_id not in candidates.raw_ids
 
 
+def test_raw_materialization_requires_exact_failed_artifact_coordinate(tmp_path: Path) -> None:
+    """A deferred neighbor cannot authorize replay for another raw coordinate."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"neighbor":true}',
+            source_path="target.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
+            ("deferred failure", raw_id),
+        )
+        for suffix, origin, source_path, source_index in (
+            ("origin", "claude-code-session", "target.jsonl", 0),
+            ("path", "codex-session", "neighbor.jsonl", 0),
+            ("index", "codex-session", "target.jsonl", 1),
+        ):
+            upsert_raw_artifact(
+                source_conn,
+                raw_id,
+                ArchiveSourceArtifact(
+                    artifact_id=f"neighbor-{suffix}",
+                    origin=origin,
+                    source_path=source_path,
+                    source_index=source_index,
+                    artifact_kind="deferred_cas_frontier",
+                    classification_reason="deferred_cas_frontier",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                ),
+            )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+
+    assert raw_id not in candidates.raw_ids
+
+
 def test_raw_materialization_repairs_deferred_stale_frontier_failure(tmp_path: Path) -> None:
     """Durable frontier evidence reaches the real replay actuator."""
     from polylogue.core.enums import Provider

@@ -3768,6 +3768,16 @@ def _raw_materialization_archive_root(config: Config) -> Path:
     return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
+def _raw_artifact_coordinate_predicate(*, artifact_alias: str, raw_alias: str) -> str:
+    """Correlate evidence with the exact failed artifact observation."""
+    return f"""
+                         AND {artifact_alias}.raw_id IS {raw_alias}.raw_id
+                         AND {artifact_alias}.origin IS {raw_alias}.origin
+                         AND {artifact_alias}.source_path IS {raw_alias}.source_path
+                         AND {artifact_alias}.source_index IS {raw_alias}.source_index
+    """
+
+
 def _raw_materialization_candidate_ids(
     config: Config,
     *,
@@ -3853,10 +3863,8 @@ def _raw_materialization_candidate_ids(
                    (
                        SELECT a.artifact_kind
                        FROM raw_artifacts AS a
-                       WHERE a.raw_id = r.raw_id
-                         AND a.origin IS r.origin
-                         AND a.source_path IS r.source_path
-                         AND a.source_index IS r.source_index
+                       WHERE 1 = 1
+                         {_raw_artifact_coordinate_predicate(artifact_alias="a", raw_alias="r")}
                          AND a.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
                          AND a.support_status = ?
                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
@@ -3941,10 +3949,8 @@ def _raw_materialization_candidate_ids(
                 OR EXISTS (
                   SELECT 1
                   FROM raw_artifacts AS retry_evidence
-                  WHERE retry_evidence.raw_id = r.raw_id
-                    AND retry_evidence.origin IS r.origin
-                    AND retry_evidence.source_path IS r.source_path
-                    AND retry_evidence.source_index IS r.source_index
+                  WHERE 1 = 1
+                    {_raw_artifact_coordinate_predicate(artifact_alias="retry_evidence", raw_alias="r")}
                     AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
                     AND retry_evidence.support_status = ?
                 )
@@ -4529,10 +4535,8 @@ def _raw_replay_plan_outcome(
               AND NOT EXISTS (
                   SELECT 1
                   FROM raw_artifacts AS retry_evidence
-                  WHERE retry_evidence.raw_id = raw_sessions.raw_id
-                    AND retry_evidence.origin IS raw_sessions.origin
-                    AND retry_evidence.source_path IS raw_sessions.source_path
-                    AND retry_evidence.source_index IS raw_sessions.source_index
+                  WHERE 1 = 1
+                    {_raw_artifact_coordinate_predicate(artifact_alias="retry_evidence", raw_alias="raw_sessions")}
                     AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
                     AND retry_evidence.support_status = ?
               )
