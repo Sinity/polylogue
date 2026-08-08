@@ -52,6 +52,8 @@ class BlobPublicationReconciliation:
     retained_referenced: int = 0
     retained_missing: int = 0
     unresolved: int = 0
+    scanned: int = 0
+    last_scanned_publication_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,10 +281,14 @@ def inspect_blob_publication_receipts(
     blob_root: Path,
     *,
     index_db_path: Path | None = None,
+    max_count: int | None = None,
+    after_publication_id: str | None = None,
 ) -> tuple[BlobPublicationInspection, ...]:
-    """Return every receipt with its current path/reference evidence."""
+    """Return receipt evidence, optionally bounded by a stable ID cursor."""
     from polylogue.storage.archive_identity import ArchiveLocation
 
+    if max_count is not None and max_count <= 0:
+        raise ValueError("max_count must be positive when provided")
     source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
     index_conn: sqlite3.Connection | None = None
     try:
@@ -295,13 +301,34 @@ def inspect_blob_publication_receipts(
         store = BlobStore(blob_root)
         if not _table_exists(source_conn, "blob_publication_reservations"):
             return ()
-        rows = source_conn.execute(
-            """
-            SELECT publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
-            FROM blob_publication_reservations
-            ORDER BY reserved_at_ms, publication_id
-            """
-        ).fetchall()
+        if max_count is None and after_publication_id is None:
+            rows = source_conn.execute(
+                """
+                SELECT publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+                FROM blob_publication_reservations
+                ORDER BY reserved_at_ms, publication_id
+                """
+            ).fetchall()
+        else:
+            predicates = ""
+            parameters: list[object] = []
+            if after_publication_id is not None:
+                predicates = "WHERE publication_id > ?"
+                parameters.append(after_publication_id)
+            limit = ""
+            if max_count is not None:
+                limit = "LIMIT ?"
+                parameters.append(max_count)
+            rows = source_conn.execute(
+                f"""
+                SELECT publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+                FROM blob_publication_reservations
+                {predicates}
+                ORDER BY publication_id
+                {limit}
+                """,
+                parameters,
+            ).fetchall()
         return tuple(
             BlobPublicationInspection(
                 publication_id=str(row["publication_id"]),
@@ -326,12 +353,16 @@ def reconcile_blob_publication_reservations(
     *,
     index_db_path: Path | None = None,
     writer_exclusion: ArchiveWriterExclusion | None = None,
+    max_count: int | None = None,
+    after_publication_id: str | None = None,
 ) -> BlobPublicationReconciliation:
     """Classify receipts; clear safe rows only with archive-wide exclusion."""
     inspections = inspect_blob_publication_receipts(
         source_db_path,
         blob_root,
         index_db_path=index_db_path,
+        max_count=max_count,
+        after_publication_id=after_publication_id,
     )
     may_clear = (
         writer_exclusion is not None
@@ -379,6 +410,8 @@ def reconcile_blob_publication_reservations(
         retained_referenced=retained_referenced,
         retained_missing=retained_missing,
         unresolved=unresolved,
+        scanned=len(inspections),
+        last_scanned_publication_id=inspections[-1].publication_id if inspections else None,
     )
 
 
@@ -387,6 +420,8 @@ def reconcile_blob_publication_reservations_under_exclusion(
     blob_root: Path,
     *,
     index_db_path: Path | None = None,
+    max_count: int | None = None,
+    after_publication_id: str | None = None,
 ) -> BlobPublicationReconciliation:
     """Reconcile receipts while holding archive-wide publisher exclusion.
 
@@ -403,6 +438,8 @@ def reconcile_blob_publication_reservations_under_exclusion(
             blob_root,
             index_db_path=index_db_path,
             writer_exclusion=exclusion,
+            max_count=max_count,
+            after_publication_id=after_publication_id,
         )
 
 
