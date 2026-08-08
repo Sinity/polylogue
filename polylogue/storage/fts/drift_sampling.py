@@ -97,13 +97,13 @@ def sample_fts_drift_to_ops_sync(conn: sqlite3.Connection, *, archive_root: Path
     if not rows:
         return 0
 
+    index_db_path = _index_db_path_sync(conn)
+    if index_db_path is not None and _is_owned_inactive_generation_index(index_db_path):
+        return 0
     if archive_root is not None:
         ops_db_path = archive_root / "ops.db"
     else:
-        index_db_path = _index_db_path_sync(conn)
         if index_db_path is None:
-            return 0
-        if _is_owned_inactive_generation_index(index_db_path):
             return 0
         ops_db_path = index_db_path.with_name("ops.db")
     if not ops_db_path.exists():

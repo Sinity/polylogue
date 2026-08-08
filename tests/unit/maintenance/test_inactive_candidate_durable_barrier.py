@@ -13,6 +13,8 @@ from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage.blob_store import PreparedBlob
+from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
+from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
 from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveStore,
@@ -130,6 +132,7 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
     generation_root = Path(generation.index_path).parent
     source_before = _file_evidence(root / "source.db")
     user_before = _file_evidence(root / "user.db")
+    ops_before = _file_evidence(root / "ops.db")
     blobs_before = _blob_evidence(root / "blob")
 
     with ArchiveStore.open_owned_inactive_generation(
@@ -138,6 +141,8 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
         owner_id=generation.owner_id,
     ) as candidate:
         candidate._conn.execute("CREATE TABLE candidate_index_probe (value INTEGER) STRICT")
+        rebuild_fts_index_sync(candidate._conn)
+        assert sample_fts_drift_to_ops_sync(candidate._conn, archive_root=root) == 0
         candidate.commit()
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
             candidate._ensure_source_conn().execute("UPDATE raw_sessions SET parse_error = 'candidate-write'")
@@ -191,6 +196,7 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
 
     assert _file_evidence(root / "source.db") == source_before
     assert _file_evidence(root / "user.db") == user_before
+    assert _file_evidence(root / "ops.db") == ops_before
     assert _blob_evidence(root / "blob") == blobs_before
     with sqlite3.connect(generation.index_path) as candidate_index:
         assert candidate_index.execute(
