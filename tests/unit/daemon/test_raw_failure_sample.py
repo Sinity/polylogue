@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -12,6 +12,11 @@ from pydantic import ValidationError
 
 from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.core.json import JSONDocument
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
+    RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
+    RawFailureEvidenceKind,
+)
 from polylogue.daemon.status import (
     DaemonStatus,
     RawFailureSample,
@@ -49,9 +54,42 @@ class TestRawFailureSampleModel:
             RawFailureSample(failure_kind="invalid_kind")  # type: ignore[arg-type]
 
     def test_all_valid_failure_kinds(self) -> None:
-        for kind in ("decode_error", "parse_error", "schema_violation", "maintenance", "unknown"):
-            sample = RawFailureSample(failure_kind=kind)
+        for kind in (
+            "decode_error",
+            "parse_error",
+            "schema_violation",
+            "maintenance",
+            "unknown",
+            *RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
+            *RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
+        ):
+            sample = RawFailureSample(failure_kind=cast(Any, kind))
             assert sample.failure_kind == kind
+
+    def test_raw_evidence_kinds_have_closed_lifecycle_partition(self) -> None:
+        assert (
+            frozenset(
+                {
+                    "deferred_hot_jsonl_capture",
+                    "deferred_claude_code_partial_jsonl",
+                    "deferred_codex_cas_frontier",
+                }
+            )
+            == RAW_FAILURE_DEFERRED_EVIDENCE_KINDS
+        )
+        assert (
+            frozenset(
+                {
+                    "terminal_corrupt_input",
+                    "terminal_unknown_json_decode",
+                    "terminal_unknown_export_no_session",
+                    "terminal_unsupported_shape",
+                }
+            )
+            == RAW_FAILURE_TERMINAL_EVIDENCE_KINDS
+        )
+        for value in (*RAW_FAILURE_DEFERRED_EVIDENCE_KINDS, *RAW_FAILURE_TERMINAL_EVIDENCE_KINDS):
+            assert RawFailureEvidenceKind(value).lifecycle in {"deferred", "terminal"}
 
     def test_redacts_absolute_file_paths(self) -> None:
         sample = RawFailureSample(
@@ -405,6 +443,10 @@ class TestRawFailureInfoProducesTypedSamples:
         assert info["unexplained_failures"] == 1
         samples = cast(list[RawFailureSample], info["samples"])
         assert {sample.lifecycle for sample in samples} == {"deferred", "terminal", "unexplained"}
+        by_kind = {sample.provider_hint: sample.failure_kind for sample in samples}
+        assert by_kind["claude-code-session"] == "deferred_hot_jsonl_capture"
+        assert by_kind["unknown-export"] == "terminal_unsupported_shape"
+        assert by_kind["codex-session"] == "parse_error"
 
     def test_raw_failure_info_uses_root_source_tier_for_pointer_index(self, tmp_path: Path) -> None:
         generation = tmp_path / "generation"

@@ -21,6 +21,7 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
 from polylogue.core.stats import percentile
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
@@ -399,7 +400,20 @@ class RawFailureSample(BaseModel):
       :attr:`operation_id` and the typed planner :attr:`locator`.
     """
 
-    failure_kind: Literal["decode_error", "parse_error", "schema_violation", "maintenance", "unknown"]
+    failure_kind: Literal[
+        "decode_error",
+        "parse_error",
+        "schema_violation",
+        "maintenance",
+        "unknown",
+        "deferred_hot_jsonl_capture",
+        "deferred_claude_code_partial_jsonl",
+        "deferred_codex_cas_frontier",
+        "terminal_corrupt_input",
+        "terminal_unknown_json_decode",
+        "terminal_unknown_export_no_session",
+        "terminal_unsupported_shape",
+    ]
     provider_hint: str | None = None
     redacted_error: str = ""
     source: Literal["ingest", "maintenance"] = "ingest"
@@ -939,7 +953,14 @@ def _archive_raw_failure_info(
                 placeholders = ",".join("?" for _ in sample_ids)
                 rows = conn.execute(
                     f"""
-                    SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error
+                    SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error,
+                           (
+                               SELECT a.artifact_kind
+                               FROM raw_artifacts AS a
+                               WHERE a.raw_id = r.raw_id
+                               ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
+                               LIMIT 1
+                           ) AS artifact_kind
                     FROM raw_sessions AS r
                     WHERE r.raw_id IN ({placeholders})
                       AND ((r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '') OR r.validation_status = 'failed')
@@ -955,8 +976,11 @@ def _archive_raw_failure_info(
                 val_status = str(row[3] or "") if row[3] else ""
                 val_err = str(row[4] or "") if row[4] else ""
                 origin = str(row[1]) if row[1] else None
-                if "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
-                    kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"] = "decode_error"
+                artifact_kind = str(row[5]) if row[5] is not None else None
+                if artifact_kind in RAW_FAILURE_EVIDENCE_KINDS:
+                    kind = cast(Any, artifact_kind)
+                elif "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
+                    kind = "decode_error"
                 elif val_status == "failed":
                     kind = "schema_violation"
                 elif parse_err:

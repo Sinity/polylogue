@@ -32,6 +32,12 @@ class PolylogueError(Exception):
     http_status_code: int = HTTPStatus.INTERNAL_SERVER_ERROR
 
 
+class RawCASFrontierError(PolylogueError):
+    """Retryable compare-and-swap conflict while advancing raw authority."""
+
+    is_transient = True
+
+
 class DatabaseError(PolylogueError):
     """Base class for database errors."""
 
@@ -93,5 +99,6 @@ __all__ = [
     "DatabaseError",
     "EmbeddingRetrievalNotReadyError",
     "PolylogueError",
+    "RawCASFrontierError",
     "SchemaVersionMismatchError",
 ]

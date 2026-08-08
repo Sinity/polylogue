@@ -12,6 +12,8 @@ from typing import Any, cast
 import pytest
 
 from polylogue.config import Config
+from polylogue.core.enums import ArtifactSupportStatus
+from polylogue.core.errors import RawCASFrontierError
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import repair as repair_mod
@@ -21,6 +23,7 @@ from polylogue.storage.insights.session.repair_assessment import assess_session_
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -512,16 +515,8 @@ def test_raw_materialization_retries_typed_transient_lock_failure(tmp_path: Path
         ).fetchone() == (1, None)
 
 
-def test_raw_materialization_retries_legacy_frontier_authority_failures(tmp_path: Path) -> None:
-    """polylogue-5iz4: a MembershipReplayConflictError parse_error is retryable.
-
-    The durable raw rows use the exact legacy strings observed in the live
-    frontier: a stale accepted-frontier CAS and the old membership-replay
-    guard.  They are authority refusals, so the real repair selector must
-    reconsider them against the current head.  An unrelated RuntimeError
-    remains excluded, which prevents a broad RuntimeError retry from making
-    the check vacuous.
-    """
+def test_raw_materialization_retries_only_with_deferred_frontier_evidence(tmp_path: Path) -> None:
+    """CAS retryability comes from durable evidence, never parse-error prose."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -552,17 +547,28 @@ def test_raw_materialization_retries_legacy_frontier_authority_failures(tmp_path
             UPDATE raw_sessions SET parsed_at_ms = ?, parse_error = ? WHERE raw_id = ?
             """,
             [
-                (
-                    3,
-                    "MembershipReplayConflictError: membership replay cannot replace a head "
-                    "with unresolved byte-append evidence: logical_source_key='codex:whale'",
-                    raw_ids["retryable"],
-                ),
-                (4, "RuntimeError: raw revision CAS rejected an older accepted frontier", raw_ids["cas"]),
-                (4, "RuntimeError: membership replay cannot replace an unconvertible byte head", raw_ids["membership"]),
+                (3, "changed wording for retryable frontier", raw_ids["retryable"]),
+                (4, "another changed wording", raw_ids["cas"]),
+                (4, "third changed wording", raw_ids["membership"]),
                 (4, "RuntimeError: unrelated parser failure", raw_ids["stale"]),
             ],
         )
+        for name in ("retryable", "cas", "membership"):
+            upsert_raw_artifact(
+                source_conn,
+                raw_ids[name],
+                ArchiveSourceArtifact(
+                    artifact_id=f"deferred-{name}",
+                    origin="codex-session",
+                    source_path=f"{name}.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_codex_cas_frontier",
+                    classification_reason="deferred_codex_cas_frontier",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                ),
+            )
         source_conn.commit()
 
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
@@ -573,8 +579,8 @@ def test_raw_materialization_retries_legacy_frontier_authority_failures(tmp_path
     )
 
 
-def test_raw_materialization_repairs_legacy_stale_frontier_failure(tmp_path: Path) -> None:
-    """The legacy CAS failure reaches the real replay actuator and clears only on success."""
+def test_raw_materialization_repairs_deferred_stale_frontier_failure(tmp_path: Path) -> None:
+    """Durable frontier evidence reaches the real replay actuator."""
     from polylogue.core.enums import Provider
     from polylogue.storage.raw_retention import raw_frontier_integrity_projection
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -596,7 +602,22 @@ def test_raw_materialization_repairs_legacy_stale_frontier_failure(tmp_path: Pat
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
             "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
-            ("RuntimeError: raw revision CAS rejected an older accepted frontier", raw_id),
+            ("frontier wording is deliberately arbitrary", raw_id),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="deferred-stale-frontier",
+                origin="codex-session",
+                source_path="legacy-frontier-repair.jsonl",
+                source_index=0,
+                artifact_kind="deferred_codex_cas_frontier",
+                classification_reason="deferred_codex_cas_frontier",
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                parse_as_session=True,
+                schema_eligible=True,
+            ),
         )
         source_conn.commit()
 
@@ -616,6 +637,38 @@ def test_raw_materialization_repairs_legacy_stale_frontier_failure(tmp_path: Pat
     )
     assert frontier.overall_status == "healthy"
     assert frontier.broken_head_count == 0
+
+
+def test_raw_cas_frontier_error_is_typed_transient() -> None:
+    error = RawCASFrontierError("frontier changed")
+
+    assert error.is_transient is True
+
+
+def test_codex_cas_frontier_failure_persists_deferred_evidence(tmp_path: Path) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"cas-frontier"}}\n',
+            source_path="rollout.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CODEX,
+            error=RawCASFrontierError("frontier changed"),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == ("deferred_codex_cas_frontier", "partial_decode", 1)
 
 
 def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_blob(tmp_path: Path) -> None:

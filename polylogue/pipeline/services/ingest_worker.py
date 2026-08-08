@@ -111,6 +111,7 @@ class IngestRecordResult:
     retryable: bool | None = False
     evidence_ref: str | None = None
     remediation: str | None = None
+    diagnostic: str | None = None
     # polylogue-azf7: set when on-demand sidecar-assembly enrichment raised
     # and this record's sessions were materialized unenriched (native-id
     # title etc.) as a result. Distinct from ``error`` -- the record still
@@ -250,6 +251,7 @@ def _record_result(
             retryable=(disposition.retryable if disposition is not None else None),
             evidence_ref=(disposition.evidence_ref if disposition is not None else None),
             remediation=(disposition.remediation if disposition is not None else None),
+            diagnostic=(disposition.diagnostic if disposition is not None else None),
             sessions_unenriched=sessions_unenriched,
         ),
         measure_serialized_size=context.measure_serialized_size,

@@ -129,6 +129,7 @@ from polylogue.archive.revision_replay import (
 )
 from polylogue.archive.session_revision_membership import MembershipClassification, MembershipDecision
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
@@ -181,7 +182,7 @@ class ActiveByteRevisionChainError(RuntimeError):
     """A byte-identical revision chain cannot admit a conflicting sibling."""
 
 
-class MembershipReplayConflictError(RuntimeError):
+class MembershipReplayConflictError(RawCASFrontierError):
     """Membership replay refused to move an accepted head this pass.
 
     Raised by ``apply_raw_membership_classification`` when it cannot safely
@@ -192,17 +193,9 @@ class MembershipReplayConflictError(RuntimeError):
     over the same durable raw bytes can succeed once sibling evidence
     resolves or the accepted head itself changes (polylogue-5iz4).
 
-    A dedicated subclass exists so ``mark_raw_parse_failed``'s ``parse_error``
-    text (``f"{type(exc).__name__}: {exc}"``) carries a stable, matchable
-    marker for retry-eligibility checks (``storage/repair.py``'s raw
-    materialization candidate query) independent of this class's own
-    human-readable message wording, which has already drifted twice (#2718's
-    original "unconvertible byte head" phrasing no longer appears anywhere in
-    this module) and will keep drifting as the guard is refined. A plain
-    ``RuntimeError`` gives the retry-candidate query nothing durable to match
-    on beyond the exact message text, which is how a raw that hit this guard
-    under old wording got silently excluded from every future rebuild even
-    after the guard's conditions no longer applied to it.
+    A dedicated subclass exists so the raw-failure boundary can persist a
+    structured retryable evidence kind. The free-form ``parse_error`` remains
+    a diagnostic only and is not an authorization signal for replay.
     """
 
 
@@ -3035,6 +3028,25 @@ def mark_raw_parse_failed(
     store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider, error: BaseException
 ) -> None:
     """Persist a bounded parse/index failure for retained raw evidence."""
+    if provider is Provider.CODEX and isinstance(error, RawCASFrontierError):
+        row = (
+            store._ensure_source_conn()
+            .execute(
+                "SELECT source_path, source_index, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
+                (raw_id,),
+            )
+            .fetchone()
+        )
+        if row is not None:
+            record_raw_failure_evidence(
+                store,
+                raw_id,
+                provider=provider,
+                source_path=str(row[0] or raw_id),
+                source_index=int(row[1] or 0),
+                acquired_at_ms=int(row[2] or int(time.time() * 1000)),
+                kind=RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER,
+            )
     finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, error))
 
 
@@ -3066,8 +3078,8 @@ def record_raw_failure_evidence(
             artifact_kind=kind.value,
             classification_reason=kind.value,
             support_status=kind.support_status,
-            parse_as_session=kind is RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
-            schema_eligible=kind is RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
+            parse_as_session=kind.lifecycle == "deferred",
+            schema_eligible=kind.lifecycle == "deferred",
             first_observed_at_ms=acquired_at_ms,
             last_observed_at_ms=acquired_at_ms,
         ),

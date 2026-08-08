@@ -1961,7 +1961,7 @@ class LiveBatchProcessor:
             elif path.suffix.lower() == ".jsonl":
                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
                 source_name = provider.value
-                if not parse_as_session:
+                if not parse_as_session and provider is not Provider.UNKNOWN:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
@@ -2026,7 +2026,10 @@ class LiveBatchProcessor:
                     continue
                 provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
                 source_name = provider.value
-                if not _parse_payload_as_session_artifact(path, provider=provider, payload=payload):
+                if (
+                    not _parse_payload_as_session_artifact(path, provider=provider, payload=payload)
+                    and provider is not Provider.UNKNOWN
+                ):
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
@@ -2079,7 +2082,10 @@ class LiveBatchProcessor:
                     continue
                 provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
                 source_name = provider.value
-                if not _parse_payload_as_session_artifact(path, provider=provider, payload=payload):
+                if (
+                    not _parse_payload_as_session_artifact(path, provider=provider, payload=payload)
+                    and provider is not Provider.UNKNOWN
+                ):
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
@@ -2309,6 +2315,7 @@ class LiveBatchProcessor:
                     break
                 provider: Provider | None = None
                 source_raw_id: str | None = None
+                acquired_at_ms = 0
                 try:
                     record_timings: dict[str, float] = {}
                     t0 = time.perf_counter()
@@ -2425,13 +2432,18 @@ class LiveBatchProcessor:
                             blob_hash=blob_hash,
                             blob_size=record.blob_size,
                         ):
+                            evidence_kind = (
+                                RawFailureEvidenceKind.DEFERRED_CLAUDE_CODE_PARTIAL_JSONL
+                                if provider is Provider.CLAUDE_CODE
+                                else RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE
+                            )
                             archive.record_raw_failure_evidence(
                                 source_raw_id,
                                 provider=provider,
                                 source_path=record.source_path,
                                 source_index=record.source_index or 0,
                                 acquired_at_ms=acquired_at_ms,
-                                kind=RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
+                                kind=evidence_kind,
                             )
                             archive.mark_raw_parse_failed(
                                 source_raw_id,
@@ -2560,7 +2572,11 @@ class LiveBatchProcessor:
                             source_path=record.source_path,
                             source_index=record.source_index or 0,
                             acquired_at_ms=acquired_at_ms,
-                            kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE,
+                            kind=(
+                                RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION
+                                if provider is Provider.UNKNOWN
+                                else RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE
+                            ),
                         )
                         archive.mark_raw_parse_failed(
                             source_raw_id,
@@ -2806,6 +2822,15 @@ class LiveBatchProcessor:
                             )
                         raise
                     if provider is not None and source_raw_id is not None:
+                        if provider is Provider.UNKNOWN and isinstance(exc, ValueError):
+                            archive.record_raw_failure_evidence(
+                                source_raw_id,
+                                provider=provider,
+                                source_path=record.source_path,
+                                source_index=record.source_index or 0,
+                                acquired_at_ms=acquired_at_ms,
+                                kind=RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
+                            )
                         archive.mark_raw_parse_failed(source_raw_id, provider=provider, error=exc)
                     logger.warning(
                         "live.watcher: archive full ingest failed for %s: %s: %s",
