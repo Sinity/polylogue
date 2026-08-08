@@ -418,10 +418,10 @@ def test_get_embedding_stats_contract(
     connection = MagicMock()
 
     def execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
-        del params
         if operational_error:
             raise sqlite3.OperationalError("Table not found")
-        if "sqlite_master" in sql and "sessions" in sql:
+        inspected_table = params[0] if "sqlite_master" in sql and params else None
+        if inspected_table == "sessions":
             return MagicMock(fetchone=MagicMock(return_value=None))
         # embedded_message_count_sync (polylogue-q88p) checks
         # message_embedding_refs, then message_embeddings_meta, then
@@ -429,9 +429,7 @@ def test_get_embedding_stats_contract(
         # table this fixture pins its count against -- report the first
         # three as absent so the count query lands on the same
         # "message_embeddings" branch this fixture always exercised.
-        if "sqlite_master" in sql and (
-            "message_embedding_refs" in sql or "message_embeddings_meta" in sql or "message_embeddings_rowids" in sql
-        ):
+        if inspected_table in {"message_embedding_refs", "message_embeddings_meta", "message_embeddings_rowids"}:
             return MagicMock(fetchone=MagicMock(return_value=None))
         if "message_embeddings" in sql:
             return MagicMock(fetchone=MagicMock(return_value=[msg_count]))
