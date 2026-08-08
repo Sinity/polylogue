@@ -2,8 +2,11 @@
 
 Blobs are stored as immutable files under a two-level directory structure:
 ``{root}/{hash[:2]}/{hash[2:]}``, where hash is the SHA-256 hex digest of
-the content. Most raw sources use that digest as ``raw_id`` too; sources whose
-identity requires additional provenance retain it separately as ``blob_hash``.
+the content. ``{root}/.staging`` is a private, same-filesystem workspace for
+publication and SQLite snapshot files. An empty workspace is structural; every
+crash-stranded child remains an explicitly invalid namespace entry. Most raw
+sources use that digest as ``raw_id`` too; sources whose identity requires
+additional provenance retain it separately as ``blob_hash``.
 
 Writes are atomic (tempfile + ``os.replace``). Files are never modified
 after creation. Deduplication is free: identical content produces the
@@ -42,6 +45,7 @@ _CHUNK_SIZE = 1024 * 1024  # 1 MiB
 _VALID_HEX = re.compile(r"[0-9a-f]{64}")
 _VALID_SHARD = re.compile(r"[0-9a-f]{2}")
 _VALID_LEAF = re.compile(r"[0-9a-f]{62}")
+_STAGING_DIRNAME = ".staging"
 
 Heartbeat = Callable[[], None]
 
@@ -81,6 +85,7 @@ class BlobNamespaceIssue(StrEnum):
     INVALID_LEAF_NAME = "invalid_leaf_name"
     NOT_REGULAR_FILE = "not_regular_file"
     STAT_FAILED = "stat_failed"
+    STAGED_WORK_FILE = "staged_work_file"
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +111,87 @@ class BlobStore:
     def __init__(self, root: Path) -> None:
         self.root = root
 
+    @property
+    def staging_root(self) -> Path:
+        """Return the private same-filesystem workspace outside the CAS namespace."""
+        return self.root / _STAGING_DIRNAME
+
+    def _ensure_private_staging_root(self) -> Path:
+        """Create or validate the owner-only staging workspace.
+
+        Staging can contain complete raw session bytes and writable SQLite
+        snapshots. Reject redirects and non-directories, and normalize an
+        existing owner-controlled directory to mode 0700 before any allocator
+        or cleanup path uses it.
+        """
+        self.root.mkdir(parents=True, exist_ok=True)
+        staging_root = self.staging_root
+        with suppress(FileExistsError):
+            os.mkdir(staging_root, mode=0o700)
+
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        try:
+            descriptor = os.open(staging_root, flags)
+        except OSError as exc:
+            raise RuntimeError(f"blob staging root is not a private directory: {staging_root}") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                raise RuntimeError(f"blob staging root is not an owned directory: {staging_root}")
+            if stat.S_IMODE(metadata.st_mode) != 0o700:
+                os.fchmod(descriptor, 0o700)
+                metadata = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+
+        try:
+            path_metadata = staging_root.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"blob staging root disappeared during validation: {staging_root}") from exc
+        if (
+            stat.S_ISLNK(path_metadata.st_mode)
+            or not stat.S_ISDIR(path_metadata.st_mode)
+            or path_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(path_metadata.st_mode) != 0o700
+            or (path_metadata.st_dev, path_metadata.st_ino) != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise RuntimeError(f"blob staging root changed during private-directory validation: {staging_root}")
+        return staging_root
+
+    def allocate_staging_path(self, *, prefix: str, suffix: str = "") -> Path:
+        """Reserve a unique absent path for a private work file.
+
+        The returned path is deliberately removed before return so callers
+        such as SQLite can create their own database at it. Keeping the
+        workspace below ``root`` preserves same-filesystem atomic publication
+        while keeping every work file outside canonical shard paths. The
+        workspace itself is not exempt from namespace verification: a crash
+        that leaves it behind is classified for offline quarantine recovery.
+        """
+        staging_root = self._ensure_private_staging_root()
+        fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=prefix, suffix=suffix)
+        os.close(fd)
+        temporary_path = Path(temporary_name)
+        temporary_path.unlink()
+        return temporary_path
+
+    def discard_staging_path(self, staged_path: Path, *, companion_suffixes: Iterable[str] = ()) -> None:
+        """Remove one private work file and its companions.
+
+        Paths outside this store's staging directory are rejected so cleanup
+        can never turn a caller-supplied path into a deletion primitive. A
+        crash-left child remains visible to namespace verification and the
+        offline quarantine recovery route. The shared directory is retained
+        because removing it can race another writer between mkdir and mkstemp.
+        """
+        if staged_path.parent != self.staging_root:
+            raise ValueError(f"staged path is outside blob staging root: {staged_path}")
+        self._ensure_private_staging_root()
+        staged_path.unlink(missing_ok=True)
+        for suffix in companion_suffixes:
+            staged_path.with_name(f"{staged_path.name}{suffix}").unlink(missing_ok=True)
+
     def blob_path(self, hash_hex: str) -> Path:
         """Return the filesystem path for a blob by its hex digest."""
         if not _VALID_HEX.fullmatch(hash_hex):
@@ -127,13 +213,13 @@ class BlobStore:
         heartbeat: Heartbeat | None = None,
     ) -> PreparedBlob:
         """Stream-hash *source* into a private temporary file."""
-        self.root.mkdir(parents=True, exist_ok=True)
+        staging_root = self._ensure_private_staging_root()
         fd: int | None = None
         temporary_path: Path | None = None
         try:
             hasher = hashlib.sha256()
             size = 0
-            fd, temporary_name = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             with open(source, "rb") as src:
                 while True:
@@ -154,7 +240,7 @@ class BlobStore:
             if fd is not None:
                 os.close(fd)
             if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
+                self.discard_staging_path(temporary_path)
             raise
 
     def prepare_from_fileobj(
@@ -164,13 +250,13 @@ class BlobStore:
         heartbeat: Heartbeat | None = None,
     ) -> PreparedBlob:
         """Stream-hash an open binary object into a private temporary file."""
-        self.root.mkdir(parents=True, exist_ok=True)
+        staging_root = self._ensure_private_staging_root()
         fd: int | None = None
         temporary_path: Path | None = None
         try:
             hasher = hashlib.sha256()
             size = 0
-            fd, temporary_name = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             while True:
                 chunk = source.read(_CHUNK_SIZE)
@@ -190,16 +276,16 @@ class BlobStore:
             if fd is not None:
                 os.close(fd)
             if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
+                self.discard_staging_path(temporary_path)
             raise
 
     def prepare_from_bytes(self, data: bytes) -> PreparedBlob:
         """Stage in-memory bytes without exposing their final hash path."""
-        self.root.mkdir(parents=True, exist_ok=True)
+        staging_root = self._ensure_private_staging_root()
         fd: int | None = None
         temporary_path: Path | None = None
         try:
-            fd, temporary_name = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             _write_all(fd, data)
             os.close(fd)
@@ -210,14 +296,14 @@ class BlobStore:
             if fd is not None:
                 os.close(fd)
             if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
+                self.discard_staging_path(temporary_path)
             raise
 
     def publish_prepared(self, prepared: PreparedBlob) -> tuple[str, int]:
         """Atomically expose one prepared blob, preserving deduplication."""
         dest = self.blob_path(prepared.hash_hex)
         if dest.exists():
-            prepared.temporary_path.unlink(missing_ok=True)
+            self.discard_prepared(prepared)
             return prepared.hash_hex, prepared.size_bytes
         dest.parent.mkdir(parents=True, exist_ok=True)
         os.replace(prepared.temporary_path, dest)
@@ -227,10 +313,9 @@ class BlobStore:
         """Publish a prepared batch in input order."""
         return tuple(self.publish_prepared(item) for item in prepared)
 
-    @staticmethod
-    def discard_prepared(prepared: PreparedBlob) -> None:
+    def discard_prepared(self, prepared: PreparedBlob) -> None:
         """Remove a private staged file that will not be published."""
-        prepared.temporary_path.unlink(missing_ok=True)
+        self.discard_staging_path(prepared.temporary_path)
 
     def write_from_path(
         self,
@@ -355,6 +440,41 @@ class BlobStore:
                     relative_path=shard_path.name,
                     issue=BlobNamespaceIssue.STAT_FAILED,
                 )
+                continue
+
+            if shard_path.name == _STAGING_DIRNAME:
+                if not stat.S_ISDIR(shard_mode):
+                    yield BlobNamespaceEntry(
+                        kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                        path=shard_path,
+                        relative_path=shard_path.name,
+                        issue=BlobNamespaceIssue.NOT_DIRECTORY,
+                    )
+                    continue
+                try:
+                    staged_paths = sorted(shard_path.iterdir(), key=lambda path: path.name)
+                except OSError:
+                    yield BlobNamespaceEntry(
+                        kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                        path=shard_path,
+                        relative_path=shard_path.name,
+                        issue=BlobNamespaceIssue.STAT_FAILED,
+                    )
+                    continue
+                for staged_path in staged_paths:
+                    relative_path = f"{_STAGING_DIRNAME}/{staged_path.name}"
+                    try:
+                        staged_path.stat(follow_symlinks=False)
+                    except OSError:
+                        issue = BlobNamespaceIssue.STAT_FAILED
+                    else:
+                        issue = BlobNamespaceIssue.STAGED_WORK_FILE
+                    yield BlobNamespaceEntry(
+                        kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                        path=staged_path,
+                        relative_path=relative_path,
+                        issue=issue,
+                    )
                 continue
 
             if not _VALID_SHARD.fullmatch(shard_path.name):

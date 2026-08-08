@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import threading
 import time
 from io import BytesIO
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import (
     BlobNamespaceEntryKind,
     BlobNamespaceIssue,
@@ -224,7 +226,7 @@ def test_verify_all_reports_malformed_leaf_without_hash_path_parsing(tmp_path: P
     assert result.failures[0].detail.endswith("invalid_leaf_name")
 
 
-def test_verify_all_reports_sqlite_sidecars_at_namespace_root(tmp_path: Path) -> None:
+def test_verify_all_rejects_foreign_sqlite_sidecars_at_namespace_root(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blobs")
     blob_hash, _ = blob_store.write_from_bytes(b"valid")
     for suffix in ("-wal", "-shm"):
@@ -431,25 +433,68 @@ def test_stats_with_blobs(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_iter_namespace_classifies_interrupted_temp_file_deterministically(tmp_path: Path) -> None:
+def test_pending_publication_is_noncanonical_and_recovers_to_pristine_namespace(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blobs")
     blob_hash, _ = blob_store.write_from_bytes(b"real blob")
-    prepared = blob_store.prepare_from_bytes(b"interrupted write")
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", blob_store.root)
+    pending_hash, _ = publisher.write_from_bytes(b"interrupted write")
+    pending_path = publisher.blob_path(pending_hash)
     try:
         entries = tuple(blob_store.iter_namespace())
         verified = blob_store.verify_all()
 
+        assert pending_path.parent == blob_store.staging_root
+        assert pending_path.exists()
         assert [(entry.relative_path, entry.issue) for entry in entries] == [
-            (prepared.temporary_path.name, BlobNamespaceIssue.INVALID_SHARD_NAME),
+            (f".staging/{pending_path.name}", BlobNamespaceIssue.STAGED_WORK_FILE),
             (blob_hash[:2] + "/" + blob_hash[2:], None),
         ]
-        assert [(failure.reason, failure.path) for failure in verified.failures] == [
-            ("invalid_namespace_entry", prepared.temporary_path.name),
+        assert not verified.passed
+        assert [(failure.path, failure.reason) for failure in verified.failures] == [
+            (f".staging/{pending_path.name}", "invalid_namespace_entry")
         ]
         assert list(blob_store.iter_all()) == [blob_hash]
     finally:
+        publisher.discard_pending()
+    assert not pending_path.exists()
+    assert blob_store.staging_root.is_dir()
+    assert not tuple(blob_store.staging_root.iterdir())
+    assert blob_store.verify_all().passed
+
+
+def test_blob_staging_is_owner_only(tmp_path: Path) -> None:
+    blob_store = BlobStore(tmp_path / "blobs")
+    blob_store.staging_root.mkdir(parents=True, mode=0o755)
+    blob_store.staging_root.chmod(0o755)
+
+    prepared = blob_store.prepare_from_bytes(b"private staging")
+    try:
+        assert stat.S_IMODE(blob_store.staging_root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(prepared.temporary_path.stat().st_mode) == 0o600
+    finally:
         blob_store.discard_prepared(prepared)
-    assert not prepared.temporary_path.exists()
+
+
+def test_blob_staging_rejects_a_preexisting_symlink(tmp_path: Path) -> None:
+    blob_store = BlobStore(tmp_path / "blobs")
+    redirect = tmp_path / "redirect"
+    redirect.mkdir()
+    blob_store.root.mkdir()
+    blob_store.staging_root.symlink_to(redirect, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="not a private directory"):
+        blob_store.prepare_from_bytes(b"must not escape")
+
+    assert not tuple(redirect.iterdir())
+
+
+def test_blob_staging_rejects_a_preexisting_file(tmp_path: Path) -> None:
+    blob_store = BlobStore(tmp_path / "blobs")
+    blob_store.root.mkdir()
+    blob_store.staging_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="not a private directory"):
+        blob_store.allocate_staging_path(prefix="snapshot-", suffix=".db")
 
 
 def test_iter_all_skips_non_prefix_dirs(tmp_path: Path) -> None:

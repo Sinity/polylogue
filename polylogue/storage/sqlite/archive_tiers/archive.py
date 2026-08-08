@@ -1675,6 +1675,19 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
         del data
         self._refuse()
 
+    def allocate_staging_path(self, *, prefix: str, suffix: str = "") -> NoReturn:
+        del prefix, suffix
+        self._refuse()
+
+    def discard_staging_path(
+        self,
+        staged_path: Path,
+        *,
+        companion_suffixes: Iterable[str] = (),
+    ) -> NoReturn:
+        del staged_path, companion_suffixes
+        self._refuse()
+
     def publish_prepared(self, prepared: PreparedBlob) -> NoReturn:
         del prepared
         self._refuse()
