@@ -379,6 +379,12 @@ async def _run_one_tick() -> None:
             await periodic_judgment_automation_sweep()
 
 
+async def _run_ticks(count: int) -> None:
+    with pytest.raises(_StopLoopError):
+        with patch("asyncio.sleep", AsyncMock(side_effect=[None] * count + [_StopLoopError()])):
+            await periodic_judgment_automation_sweep()
+
+
 @pytest.mark.parametrize(
     ("automation_enabled", "judge_enabled"),
     [(False, True), (True, False), (False, False)],
@@ -444,3 +450,134 @@ def test_periodic_sweep_judges_once_both_capability_flags_are_set(tmp_path: Path
         assert status == AssertionStatus.ACCEPTED.value
     finally:
         conn.close()
+
+
+def test_periodic_disabled_receipts_coalesce_until_state_changes(tmp_path: Path) -> None:
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    disabled_cfg = SimpleNamespace(
+        judgment_automation_enabled=False,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={},
+    )
+    enabled_cfg = SimpleNamespace(
+        judgment_automation_enabled=True,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={"pathology": {"auto_accept_min_confidence": 0.9}},
+    )
+    write_coordinator = AsyncMock()
+
+    async def _fake_run_sync(actor, function, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return function(*args, **kwargs)
+
+    with (
+        patch(
+            "polylogue.daemon.judgment_automation.load_polylogue_config",
+            side_effect=[disabled_cfg, disabled_cfg, enabled_cfg, enabled_cfg, enabled_cfg],
+        ),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+    ):
+        write_coordinator.run_sync.side_effect = _fake_run_sync
+        asyncio.run(_run_ticks(3))
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT operation_id, payload_json
+            FROM daemon_events
+            WHERE kind = 'judgment-automation'
+            ORDER BY id ASC
+            """
+        ).fetchall()
+    assert len(rows) == 2
+    receipts = [json.loads(row[1]) for row in rows]
+    assert [receipt["status"] for receipt in receipts] == ["parked", "completed"]
+    assert receipts[0]["reason"] == "capability_gate_disabled"
+    assert receipts[1]["reason"] == "queue_empty"
+    assert rows[0][0] is None
+    assert str(rows[1][0]).startswith("judgment-automation:")
+
+
+def test_periodic_inner_failure_keeps_detailed_receipt_as_authoritative(tmp_path: Path) -> None:
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    _insert_candidate(tmp_path, assertion_id="cand-periodic-failed", kind=AssertionKind.PATHOLOGY, confidence=0.95)
+    cfg = SimpleNamespace(
+        judgment_automation_enabled=True,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={"pathology": {"auto_accept_min_confidence": 0.9}},
+    )
+    write_coordinator = AsyncMock()
+
+    async def _fake_run_sync(actor, function, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return function(*args, **kwargs)
+
+    with (
+        patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+        patch(
+            "polylogue.storage.sqlite.archive_tiers.user_write.judge_assertion_candidates",
+            side_effect=RuntimeError("forced detailed scheduler failure"),
+        ),
+    ):
+        write_coordinator.run_sync.side_effect = _fake_run_sync
+        asyncio.run(_run_one_tick())
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT operation_id, payload_json
+            FROM daemon_events
+            WHERE kind = 'judgment-automation'
+            ORDER BY id DESC
+            """
+        ).fetchall()
+    assert len(rows) == 1
+    receipt = json.loads(rows[0][1])
+    assert receipt["status"] == "failed"
+    assert receipt["reason"] == "sweep_failed:RuntimeError"
+    assert rows[0][0].startswith("judgment-automation:")
+
+
+def test_periodic_coordinator_failure_gets_fallback_receipt(tmp_path: Path) -> None:
+    _init_ops_db(tmp_path / "ops.db")
+    cfg = SimpleNamespace(
+        judgment_automation_enabled=True,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={},
+    )
+    write_coordinator = AsyncMock()
+    write_coordinator.run_sync.side_effect = RuntimeError("coordinator unavailable")
+
+    with (
+        patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+    ):
+        asyncio.run(_run_one_tick())
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT operation_id, payload_json
+            FROM daemon_events
+            WHERE kind = 'judgment-automation'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    receipt = json.loads(row[1])
+    assert receipt["status"] == "failed"
+    assert receipt["reason"] == "sweep_exception"
+    assert row[0].startswith("judgment-automation:")

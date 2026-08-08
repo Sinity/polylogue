@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,7 @@ JUDGMENT_AUTOMATION_AUTHOR_KIND = "automation"
 JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS = 60
 
 JUDGMENT_AUTOMATION_STAGE = "judgment-automation"
+JUDGMENT_AUTOMATION_PARKED_RECEIPT_FRESHNESS_MS = 5 * 60 * 1000
 JudgmentAutomationReceiptStatus = Literal["completed", "parked", "failed"]
 
 JudgmentAutomationDecisionKind = Literal["accept", "reject", "escalate"]
@@ -94,6 +96,18 @@ class JudgmentAutomationSweepResult:
     failed: int = 0
 
 
+@dataclass(slots=True)
+class _JudgmentAutomationReceiptContext:
+    operation_id: str
+    recorded: bool = False
+
+
+def _receipt_state(payload: object) -> tuple[object, ...] | None:
+    if not isinstance(payload, dict):
+        return None
+    return tuple(payload.get(key) for key in ("status", "reason", "retryable", "retry_route", "batch_limit"))
+
+
 def _record_judgment_automation_receipt(
     root: Path,
     *,
@@ -103,12 +117,15 @@ def _record_judgment_automation_receipt(
     batch_limit: int,
     result: JudgmentAutomationSweepResult | None = None,
     retryable: bool,
-) -> None:
+    operation_id: str | None = None,
+    receipt_context: _JudgmentAutomationReceiptContext | None = None,
+    suppress_identical_for_ms: int | None = None,
+) -> bool:
     """Persist one scheduler outcome in the existing daemon event ledger."""
 
     if not (root / "ops.db").exists():
-        return
-    from polylogue.daemon.events import current_epoch_ms, emit_daemon_event
+        return False
+    from polylogue.daemon.events import current_epoch_ms, emit_daemon_event, get_latest_daemon_event
 
     payload: dict[str, object] = {
         "status": status,
@@ -128,14 +145,29 @@ def _record_judgment_automation_receipt(
         )
     observed_at_ms = current_epoch_ms() if now_ms is None else now_ms
     try:
+        if suppress_identical_for_ms is not None:
+            latest = get_latest_daemon_event(JUDGMENT_AUTOMATION_STAGE, archive_root_path=root)
+            latest_ts_ms = latest.get("ts_ms") if latest is not None else None
+            latest_state = _receipt_state(latest.get("payload")) if latest is not None else None
+            if (
+                isinstance(latest_ts_ms, int)
+                and _receipt_state(payload) == latest_state
+                and 0 <= observed_at_ms - latest_ts_ms <= suppress_identical_for_ms
+            ):
+                return False
         emit_daemon_event(
             JUDGMENT_AUTOMATION_STAGE,
+            operation_id=operation_id,
             payload=payload,
             archive_root_path=root,
             observed_at_ms=observed_at_ms,
         )
+        if receipt_context is not None:
+            receipt_context.recorded = True
+        return True
     except Exception:
         logger.warning("judgment_automation: scheduler receipt write failed", exc_info=True)
+        return False
 
 
 def _coerce_confidence(value: object) -> float | None:
@@ -277,6 +309,8 @@ def run_judgment_automation_sweep_once(
     batch_limit: int,
     policy: Mapping[AssertionKind, JudgmentAutomationPolicyRule] | None = None,
     now_ms: int | None = None,
+    operation_id: str | None = None,
+    _receipt_context: _JudgmentAutomationReceiptContext | None = None,
 ) -> JudgmentAutomationSweepResult:
     """Run one bounded judgment-automation sweep against ``<root>/user.db``.
 
@@ -294,30 +328,46 @@ def run_judgment_automation_sweep_once(
     )
     from polylogue.storage.sqlite.connection_profile import open_connection
 
+    def record_receipt(
+        *,
+        status: JudgmentAutomationReceiptStatus,
+        reason: str,
+        now_ms: int | None,
+        retryable: bool,
+        result: JudgmentAutomationSweepResult | None = None,
+    ) -> bool:
+        return _record_judgment_automation_receipt(
+            root,
+            status=status,
+            reason=reason,
+            now_ms=now_ms,
+            batch_limit=batch_limit,
+            result=result,
+            retryable=retryable,
+            operation_id=operation_id,
+            receipt_context=_receipt_context,
+        )
+
     resolved_policy = (
         policy
         if policy is not None
         else parse_judgment_automation_policy(load_polylogue_config().judgment_automation_policy)
     )
     if not resolved_policy:
-        _record_judgment_automation_receipt(
-            root,
+        record_receipt(
             status="parked",
             reason="policy_empty",
             now_ms=now_ms,
-            batch_limit=batch_limit,
             retryable=True,
         )
         return JudgmentAutomationSweepResult()
 
     user_db = root / "user.db"
     if not user_db.exists():
-        _record_judgment_automation_receipt(
-            root,
+        record_receipt(
             status="parked",
             reason="user_db_unavailable",
             now_ms=now_ms,
-            batch_limit=batch_limit,
             retryable=True,
         )
         return JudgmentAutomationSweepResult()
@@ -327,12 +377,10 @@ def run_judgment_automation_sweep_once(
     try:
         candidates = list_assertion_candidates(conn, limit=batch_limit)
         if not candidates:
-            _record_judgment_automation_receipt(
-                root,
+            record_receipt(
                 status="completed",
                 reason="queue_empty",
                 now_ms=now_ms,
-                batch_limit=batch_limit,
                 result=JudgmentAutomationSweepResult(),
                 retryable=False,
             )
@@ -385,24 +433,20 @@ def run_judgment_automation_sweep_once(
             idempotent=idempotent,
             failed=failed,
         )
-        _record_judgment_automation_receipt(
-            root,
+        record_receipt(
             status="failed" if result.failed else "completed",
             reason="candidate_judgment_failures" if result.failed else "sweep_completed",
             now_ms=now_ms,
-            batch_limit=batch_limit,
             result=result,
             retryable=bool(result.failed),
         )
         return result
     except Exception as exc:
         conn.rollback()
-        _record_judgment_automation_receipt(
-            root,
+        record_receipt(
             status="failed",
             reason=f"sweep_failed:{type(exc).__name__}",
             now_ms=now_ms,
-            batch_limit=batch_limit,
             retryable=True,
         )
         raise
@@ -444,14 +488,18 @@ async def periodic_judgment_automation_sweep(
                 now_ms=None,
                 batch_limit=cfg.judgment_automation_batch_limit,
                 retryable=True,
+                suppress_identical_for_ms=JUDGMENT_AUTOMATION_PARKED_RECEIPT_FRESHNESS_MS,
             )
             continue
+        receipt_context = _JudgmentAutomationReceiptContext(operation_id=f"judgment-automation:{uuid.uuid4().hex}")
         try:
             result = await daemon_write_coordinator().run_sync(
                 "maintenance.judgment_automation",
                 run_judgment_automation_sweep_once,
                 root,
                 batch_limit=cfg.judgment_automation_batch_limit,
+                operation_id=receipt_context.operation_id,
+                _receipt_context=receipt_context,
             )
             if result.considered:
                 logger.info(
@@ -465,34 +513,43 @@ async def periodic_judgment_automation_sweep(
                 )
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
+                if not receipt_context.recorded:
+                    _record_judgment_automation_receipt(
+                        root,
+                        status="failed",
+                        reason="transient_sqlite_lock",
+                        now_ms=None,
+                        batch_limit=cfg.judgment_automation_batch_limit,
+                        retryable=True,
+                        operation_id=receipt_context.operation_id,
+                        receipt_context=receipt_context,
+                    )
+                logger.info("judgment_automation: archive busy; retrying on next tick: %s", exc)
+                continue
+            if not receipt_context.recorded:
                 _record_judgment_automation_receipt(
                     root,
                     status="failed",
-                    reason="transient_sqlite_lock",
+                    reason="operational_error",
                     now_ms=None,
                     batch_limit=cfg.judgment_automation_batch_limit,
                     retryable=True,
+                    operation_id=receipt_context.operation_id,
+                    receipt_context=receipt_context,
                 )
-                logger.info("judgment_automation: archive busy; retrying on next tick: %s", exc)
-                continue
-            _record_judgment_automation_receipt(
-                root,
-                status="failed",
-                reason="operational_error",
-                now_ms=None,
-                batch_limit=cfg.judgment_automation_batch_limit,
-                retryable=True,
-            )
             logger.warning("judgment_automation: sweep failed", exc_info=True)
         except Exception:
-            _record_judgment_automation_receipt(
-                root,
-                status="failed",
-                reason="sweep_exception",
-                now_ms=None,
-                batch_limit=cfg.judgment_automation_batch_limit,
-                retryable=True,
-            )
+            if not receipt_context.recorded:
+                _record_judgment_automation_receipt(
+                    root,
+                    status="failed",
+                    reason="sweep_exception",
+                    now_ms=None,
+                    batch_limit=cfg.judgment_automation_batch_limit,
+                    retryable=True,
+                    operation_id=receipt_context.operation_id,
+                    receipt_context=receipt_context,
+                )
             logger.warning("judgment_automation: sweep failed", exc_info=True)
 
 
@@ -500,6 +557,7 @@ __all__ = [
     "JUDGMENT_AUTOMATION_ACTOR_REF",
     "JUDGMENT_AUTOMATION_AUTHOR_KIND",
     "JUDGMENT_AUTOMATION_STAGE",
+    "JUDGMENT_AUTOMATION_PARKED_RECEIPT_FRESHNESS_MS",
     "JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS",
     "JudgmentAutomationDecision",
     "JudgmentAutomationDecisionKind",

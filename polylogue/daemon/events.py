@@ -44,7 +44,7 @@ def _ensure_events_db(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def _open_events_reader() -> sqlite3.Connection | None:
+def _open_events_reader(path: Path | None = None) -> sqlite3.Connection | None:
     """Open the existing event ledger read-only, or return ``None``.
 
     Status, polling, and SSE reads must not turn observation into an ops-tier
@@ -52,7 +52,7 @@ def _open_events_reader() -> sqlite3.Connection | None:
     same documented empty-ledger result without directory creation, tier
     initialization, DDL, or write-profile pragmas.
     """
-    path = _events_db_path()
+    path = _events_db_path() if path is None else path
     if not path.is_file():
         return None
     try:
@@ -132,6 +132,58 @@ def emit_daemon_event(
             ),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_latest_daemon_event(
+    kind: str,
+    *,
+    operation_id: str | None = None,
+    archive_root_path: Path | None = None,
+) -> dict[str, object] | None:
+    """Return the latest structured event for a kind and optional operation."""
+
+    path = (archive_root() if archive_root_path is None else archive_root_path) / "ops.db"
+    conn = _open_events_reader(path)
+    if conn is None:
+        return None
+    try:
+        if operation_id is None:
+            row = conn.execute(
+                """
+                SELECT id, ts_ms, kind, operation_id, payload_json
+                FROM daemon_events
+                WHERE kind = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (kind,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT id, ts_ms, kind, operation_id, payload_json
+                FROM daemon_events
+                WHERE kind = ? AND operation_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (kind, operation_id),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row[4])
+        except (TypeError, ValueError):
+            payload = {}
+        return {
+            "id": row[0],
+            "ts_ms": row[1],
+            "kind": row[2],
+            "operation_id": row[3],
+            "payload": payload if isinstance(payload, dict) else {},
+        }
     finally:
         conn.close()
 
@@ -508,6 +560,7 @@ __all__ = [
     "emit_session_appended",
     "emit_session_updated",
     "emit_daemon_event",
+    "get_latest_daemon_event",
     "emit_message_appended",
     "get_daemon_event_counts",
     "get_last_ingestion_batch",
