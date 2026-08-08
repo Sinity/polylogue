@@ -1543,8 +1543,27 @@ def test_pathology_zoo_contract_is_production_owned_and_registered() -> None:
     from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, pathology_zoo_manifest
 
     registered_manifest = pathology_zoo_manifest()
+    expected_member_ids = (
+        "whale-component",
+        "append-self-describing",
+        "append-opaque",
+        "fork-prefix-tail",
+        "lineage-cycle",
+        "grouped-jsonl",
+        "quarantined-head",
+        "empty-session",
+        "hook-event",
+        "claude-design",
+        "vintage-reorder",
+        "claude-vintage-live-proof",
+        "lifecycle-anchor-drift",
+        "non-stream-safe",
+        "attachment-with-bytes",
+        "attachment-without-bytes",
+        "events-sidecars",
+    )
     assert registered_manifest is PATHOLOGY_ZOO_MANIFEST
-    assert len({member.member_id for member in registered_manifest}) == len(registered_manifest)
+    assert tuple(member.member_id for member in registered_manifest) == expected_member_ids
     assert "pathology-zoo-invariants" in ARCHIVE_VERIFICATION_CHECK_NAMES
 
 
@@ -1808,6 +1827,8 @@ def test_pathology_zoo_invariants_red_twin(tmp_path: Path) -> None:
 def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic_drift(tmp_path: Path) -> None:
     """The Claude registry check fails for hash and either membership verdict drift."""
     zoo = build_pathology_zoo(tmp_path / "zoo")
+    green = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
+    assert _check(green, "pathology-zoo-invariants").status is OutcomeStatus.OK
 
     for drift in ("hash", "applied", "superseded_equivalent"):
         mutated_root = tmp_path / f"claude-vintage-{drift}"

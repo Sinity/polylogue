@@ -118,14 +118,14 @@ _PATHOLOGY_ZOO_MUTATIONS: dict[str, PathologyZooMutation] = {
         """
         UPDATE raw_session_memberships
         SET decision = 'superseded_prefix'
-        WHERE raw_id = (
-            SELECT r.raw_id
+        WHERE raw_id IN (
+            SELECT m.raw_id
             FROM raw_sessions AS r
             JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-            WHERE r.native_id = ? AND r.source_path LIKE ? AND m.decision = 'applied'
+            WHERE r.native_id = ? AND m.decision = 'applied'
         )
         """,
-        ("9ed2056f-b415-4f51-b18e-5265f21a67bf", "%claude-live-proof-new.json"),
+        ("9ed2056f-b415-4f51-b18e-5265f21a67bf",),
     ),
     "lifecycle-anchor-drift": PathologyZooMutation(
         "index",
