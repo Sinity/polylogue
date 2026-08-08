@@ -1442,6 +1442,32 @@ class TestGitContextAndInstructions:
         assert "mime=image/png" in (message.text or "")
         assert "sha256_base64=" in (message.text or "")
 
+    def test_message_preserves_bounded_inline_image_evidence(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "message-image",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "inspect this image"},
+                        {"type": "input_image", "image_url": "data:image/png;base64," + ("a" * 4096)},
+                    ],
+                },
+            }
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        message = result.messages[0]
+        assert "data:image/png;base64" not in (message.text or "")
+        assert "inspect this image" in (message.text or "")
+        assert "mime=image/png" in (message.text or "")
+        assert "sha256_base64=" in (message.text or "")
+        assert any("sha256_base64=" in (block.text or "") for block in message.blocks)
+
 
 # =============================================================================
 # Edge Cases

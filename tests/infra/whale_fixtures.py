@@ -24,6 +24,7 @@ _GIANT_ATTACHMENT_RAW_BYTES: Final = 12 * 1024 * 1024
 _NEAR_TERMINAL_PREDECESSOR_BYTES: Final = 32 * 1024 * 1024
 _ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
 _WHALE_BLOB_LIMIT_BYTES: Final = 8 * 1024 * 1024 * 1024
+_GENERATOR_CHUNK_BYTES: Final = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,8 +60,8 @@ def _wire_target_bytes(revision: int, dimensions: WhaleFixtureDimensions) -> int
     if revision < dimensions.revision_count - 4:
         return 4_096 + revision * 640
     return {
-        dimensions.revision_count - 4: 8 * 1024 * 1024,
-        dimensions.revision_count - 3: 16 * 1024 * 1024,
+        dimensions.revision_count - 4: dimensions.near_terminal_predecessor_bytes // 4,
+        dimensions.revision_count - 3: dimensions.near_terminal_predecessor_bytes // 2,
         dimensions.revision_count - 2: dimensions.near_terminal_predecessor_bytes,
         dimensions.revision_count - 1: dimensions.terminal_wire_bytes,
     }[revision]
@@ -87,6 +88,20 @@ def _write_base64_pattern(handle: BinaryIO, byte_count: int) -> int:
         encoded_bytes += len(encoded)
         remaining -= chunk_size
     return encoded_bytes
+
+
+def _write_repeated_byte(handle: BinaryIO, value: bytes, byte_count: int) -> None:
+    """Write one repeated byte without allocating an outlier-sized buffer."""
+    if len(value) != 1:
+        raise ValueError("value must contain exactly one byte")
+    chunk = value * min(byte_count, _GENERATOR_CHUNK_BYTES)
+    remaining = byte_count
+    while remaining:
+        current = chunk if remaining >= len(chunk) else chunk[:remaining]
+        written = handle.write(current)
+        if written is None or written <= 0:
+            raise OSError("fixture writer made no progress")
+        remaining -= written
 
 
 def _write_terminal_attachment_record(handle: BinaryIO, session_id: str, byte_count: int) -> None:
@@ -119,7 +134,9 @@ def _write_padding_record(handle: BinaryIO, revision: int, target_bytes: int, cu
     padding_size = target_bytes - current_bytes - len(prefix) - len(suffix) - 3
     if padding_size <= 0:
         raise AssertionError(f"padding underflow at revision {revision}: {padding_size}")
-    handle.write(prefix + b'"' + b"x" * padding_size + b'"' + suffix + b"\n")
+    handle.write(prefix + b'"')
+    _write_repeated_byte(handle, b"x", padding_size)
+    handle.write(b'"' + suffix + b"\n")
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,88 +152,92 @@ class CodexRevisionChainFixture:
         source_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = source_path.with_name(f".{source_path.name}.revision-{revision:03d}.tmp")
         previous_size = source_path.stat().st_size if source_path.exists() else 0
-        with temporary_path.open("wb") as handle:
-            if revision:
-                with source_path.open("rb") as previous:
-                    shutil.copyfileobj(previous, handle, length=1024 * 1024)
-            else:
-                _write_record(
-                    handle,
-                    {
-                        "type": "session_meta",
-                        "payload": {
-                            "id": self.session_native_id,
-                            "timestamp": "2026-07-31T04:25:20Z",
-                            "cwd": "/sanitized/codex-804",
+        try:
+            with temporary_path.open("wb") as handle:
+                if revision:
+                    with source_path.open("rb") as previous:
+                        shutil.copyfileobj(previous, handle, length=_GENERATOR_CHUNK_BYTES)
+                else:
+                    _write_record(
+                        handle,
+                        {
+                            "type": "session_meta",
+                            "payload": {
+                                "id": self.session_native_id,
+                                "timestamp": "2026-07-31T04:25:20Z",
+                                "cwd": "/sanitized/codex-804",
+                            },
                         },
-                    },
-                )
-                for message_index, role in enumerate(("user", "assistant")):
+                    )
+                    for message_index, role in enumerate(("user", "assistant")):
+                        _write_record(
+                            handle,
+                            {
+                                "type": "response_item",
+                                "timestamp": "2026-07-31T04:25:20Z",
+                                "payload": {
+                                    "type": "message",
+                                    "id": f"{self.session_native_id}-message-{message_index}",
+                                    "role": role,
+                                    "content": [
+                                        {
+                                            "type": "output_text" if role == "assistant" else "input_text",
+                                            "text": f"sanitized incident witness {role} baseline",
+                                        }
+                                    ],
+                                },
+                            },
+                        )
+                if revision in {1, 800, 801, 802}:
                     _write_record(
                         handle,
                         {
                             "type": "response_item",
-                            "timestamp": "2026-07-31T04:25:20Z",
+                            "timestamp": f"2026-07-31T04:25:{20 + revision % 40:02d}Z",
                             "payload": {
                                 "type": "message",
-                                "id": f"{self.session_native_id}-message-{message_index}",
-                                "role": role,
+                                "id": f"{self.session_native_id}-milestone-{revision:03d}",
+                                "role": "assistant",
                                 "content": [
                                     {
-                                        "type": "output_text" if role == "assistant" else "input_text",
-                                        "text": f"sanitized incident witness {role} baseline",
+                                        "type": "output_text",
+                                        "text": f"sanitized parsed milestone revision {revision}",
                                     }
                                 ],
                             },
                         },
                     )
-            if revision in {1, 800, 801, 802}:
-                _write_record(
-                    handle,
-                    {
-                        "type": "response_item",
-                        "timestamp": f"2026-07-31T04:25:{20 + revision % 40:02d}Z",
-                        "payload": {
-                            "type": "message",
-                            "id": f"{self.session_native_id}-milestone-{revision:03d}",
-                            "role": "assistant",
-                            "content": [
-                                {
-                                    "type": "output_text",
-                                    "text": f"sanitized parsed milestone revision {revision}",
-                                }
-                            ],
+                if revision == self.dimensions.revision_count - 1:
+                    _write_record(
+                        handle,
+                        {
+                            "type": "compacted",
+                            "payload": {
+                                "message": "sanitized compaction summary at the whale boundary",
+                                "replacement_history": [{"role": "user", "content": "sanitized prior context"}],
+                            },
                         },
-                    },
-                )
-            if revision == self.dimensions.revision_count - 1:
-                _write_record(
-                    handle,
-                    {
-                        "type": "compacted",
-                        "payload": {
-                            "message": "sanitized compaction summary at the whale boundary",
-                            "replacement_history": [{"role": "user", "content": "sanitized prior context"}],
-                        },
-                    },
-                )
-                _write_terminal_attachment_record(
-                    handle,
-                    self.session_native_id,
-                    self.dimensions.giant_attachment_raw_bytes,
-                )
-            current_bytes = handle.tell()
-            target_bytes = _wire_target_bytes(revision, self.dimensions)
-            if target_bytes <= max(previous_size, current_bytes):
-                raise AssertionError(
-                    f"revision {revision} is not strictly larger: previous={previous_size}, current={current_bytes}, "
-                    f"target={target_bytes}"
-                )
-            _write_padding_record(handle, revision, target_bytes, current_bytes)
-            final_size = handle.tell()
-        if final_size != target_bytes:
-            raise AssertionError(f"revision {revision} has {final_size} bytes, expected {target_bytes}")
-        os.replace(temporary_path, source_path)
+                    )
+                    _write_terminal_attachment_record(
+                        handle,
+                        self.session_native_id,
+                        self.dimensions.giant_attachment_raw_bytes,
+                    )
+                current_bytes = handle.tell()
+                target_bytes = _wire_target_bytes(revision, self.dimensions)
+                if target_bytes <= max(previous_size, current_bytes):
+                    raise AssertionError(
+                        f"revision {revision} is not strictly larger: previous={previous_size}, "
+                        f"current={current_bytes}, target={target_bytes}"
+                    )
+                _write_padding_record(handle, revision, target_bytes, current_bytes)
+                final_size = handle.tell()
+            if final_size != target_bytes:
+                raise AssertionError(f"revision {revision} has {final_size} bytes, expected {target_bytes}")
+            os.replace(temporary_path, source_path)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
         return final_size
 
     def iter_revisions(self, source_path: Path) -> Iterator[tuple[int, int]]:
@@ -237,6 +258,18 @@ class CodexRevisionChainFixture:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         return path
+
+
+def write_codex_whale_fixture_pack(
+    output_dir: Path,
+    fixture: CodexRevisionChainFixture = CodexRevisionChainFixture(),
+) -> tuple[Path, Path]:
+    """Generate the final wire snapshot and its complete revision manifest."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    source_path = output_dir / "codex-whale.jsonl"
+    sizes = tuple(size for _revision, size in fixture.iter_revisions(source_path))
+    manifest_path = fixture.write_manifest(output_dir / "manifest.json", sizes)
+    return source_path, manifest_path
 
 
 def acquire_codex_revision_chain(
@@ -289,4 +322,5 @@ __all__ = [
     "WhaleFixtureDimensions",
     "acquire_codex_revision_chain",
     "multi_million_codex_stream",
+    "write_codex_whale_fixture_pack",
 ]

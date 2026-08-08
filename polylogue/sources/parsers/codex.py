@@ -2165,6 +2165,23 @@ def _sanitize_codex_data_url(value: str) -> str:
     return f"<inline image omitted; mime={mime}; approx_bytes={approx_bytes}; sha256_base64={digest}>"
 
 
+def _codex_inline_image_summaries(content: object) -> tuple[str, ...]:
+    """Return bounded evidence for inline image segments in ordinary messages."""
+    if not isinstance(content, list):
+        return ()
+    summaries: list[str] = []
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") not in {"input_image", "image"}:
+            continue
+        image_url = item.get("image_url")
+        if not isinstance(image_url, str):
+            continue
+        summary = _sanitize_codex_data_url(image_url)
+        if summary != image_url:
+            summaries.append(summary)
+    return tuple(summaries)
+
+
 def _message_signature(role: Role | str, text: str | None) -> tuple[str, str]:
     role_value = role.value if isinstance(role, Role) else str(role)
     return (role_value, " ".join((text or "").split()))
@@ -2750,10 +2767,16 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             raw_role = _effective_role(message_record)
             content = _effective_content(message_record)
             text = extract_codex_text(content)
+            inline_image_summaries = _codex_inline_image_summaries(content)
+            if inline_image_summaries:
+                text = "\n".join((text, *inline_image_summaries)) if text else "\n".join(inline_image_summaries)
             timestamp_pair = parse_timestamp_pair(_message_timestamp(record, message_record))
             timestamp = timestamp_pair[1] if timestamp_pair is not None else None
 
             content_blocks = content_blocks_from_segments(content)
+            content_blocks.extend(
+                ParsedContentBlock(type=BlockType.TEXT, text=summary) for summary in inline_image_summaries
+            )
             has_structured = any(
                 cb.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT, BlockType.THINKING) for cb in content_blocks
             )
