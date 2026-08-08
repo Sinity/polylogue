@@ -81,6 +81,32 @@ def _canonical_authority_logical_key(logical_key: str) -> str:
     return f"{origin.value}:{native_id}"
 
 
+def _expand_frozen_revision_link_selection(archive_root: Path, raw_ids: Sequence[str]) -> tuple[str, ...]:
+    """Include every predecessor and baseline needed to validate selected APPEND authority."""
+    expanded = set(raw_ids)
+    pending = set(raw_ids)
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+        while pending:
+            current = tuple(sorted(pending))
+            pending.clear()
+            for offset in range(0, len(current), 500):
+                chunk = current[offset : offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = source_conn.execute(
+                    f"""
+                    SELECT predecessor_raw_id, baseline_raw_id
+                    FROM raw_sessions WHERE raw_id IN ({placeholders})
+                    """,
+                    chunk,
+                )
+                for predecessor_raw_id, baseline_raw_id in rows:
+                    for linked_raw_id in (predecessor_raw_id, baseline_raw_id):
+                        if linked_raw_id is not None and str(linked_raw_id) not in expanded:
+                            expanded.add(str(linked_raw_id))
+                            pending.add(str(linked_raw_id))
+    return tuple(sorted(expanded))
+
+
 def _browser_snapshot_fidelity(ingest_flags: Sequence[str]) -> Literal["dom", "native"] | None:
     """Derive membership-classification browser fidelity from parser ingest flags.
 
@@ -833,6 +859,8 @@ def _load_frozen_revision_evidence(
 ) -> _RevisionCensusState:
     """Parse a phase-2 source snapshot without changing its durable ledger."""
     expanded_raw_ids, _logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+    if selected_raw_ids is not None:
+        expanded_raw_ids = _expand_frozen_revision_link_selection(archive.archive_root, expanded_raw_ids)
     recorded_logical_keys = require_current_parser_source_census(
         archive.archive_root,
         selected_raw_ids=expanded_raw_ids if selected_raw_ids is not None else None,
@@ -996,35 +1024,96 @@ def require_current_parser_source_census(
             f"{len(authority_binding_drift)} raw(s) require source remediation (sample: {sample})"
         )
 
-    append_identity_drift: set[str] = set()
+    authority_rows: dict[str, tuple[str | None, str, str, int, str | None, str | None]] = {}
     with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
         for selection in selections:
-            where = "" if selection is None else f"AND a.raw_id IN ({','.join('?' for _ in selection)})"
+            where = "" if selection is None else f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
             params = () if selection is None else selection
             rows = source_conn.execute(
                 f"""
-                SELECT a.raw_id, a.logical_source_key,
-                       predecessor.logical_source_key, baseline.logical_source_key
-                FROM raw_sessions AS a
-                LEFT JOIN raw_sessions AS predecessor ON predecessor.raw_id = a.predecessor_raw_id
-                LEFT JOIN raw_sessions AS baseline ON baseline.raw_id = a.baseline_raw_id
-                WHERE a.revision_kind = 'append' {where}
-                ORDER BY a.raw_id
+                SELECT raw_id, logical_source_key, revision_kind, revision_authority,
+                       source_index, predecessor_raw_id, baseline_raw_id
+                FROM raw_sessions {where}
+                ORDER BY raw_id
                 """,
                 params,
             )
-            for raw_id_value, append_key, predecessor_key, baseline_key in rows:
-                linked_keys = [value for value in (predecessor_key, baseline_key) if value is not None]
-                if append_key is None or not linked_keys:
-                    continue
-                try:
-                    canonical_append_key = _canonical_authority_logical_key(str(append_key))
-                    canonical_linked_keys = {_canonical_authority_logical_key(str(value)) for value in linked_keys}
-                except ValueError:
-                    append_identity_drift.add(str(raw_id_value))
-                    continue
-                if canonical_linked_keys != {canonical_append_key}:
-                    append_identity_drift.add(str(raw_id_value))
+            for raw_id_value, logical_key, revision_kind, authority, source_index, predecessor_id, baseline_id in rows:
+                authority_rows[str(raw_id_value)] = (
+                    str(logical_key) if logical_key is not None else None,
+                    str(revision_kind),
+                    str(authority),
+                    int(source_index),
+                    str(predecessor_id) if predecessor_id is not None else None,
+                    str(baseline_id) if baseline_id is not None else None,
+                )
+
+    append_identity_drift: set[str] = set()
+    for raw_id, (
+        append_key,
+        revision_kind,
+        authority,
+        _source_index,
+        predecessor_id,
+        baseline_id,
+    ) in authority_rows.items():
+        if revision_kind != RawRevisionKind.APPEND.value:
+            continue
+        predecessor = authority_rows.get(predecessor_id or "")
+        baseline = authority_rows.get(baseline_id or "")
+        if (
+            append_key is None
+            or authority != RawRevisionAuthority.BYTE_PROVEN.value
+            or predecessor_id is None
+            or baseline_id is None
+            or predecessor_id == raw_id
+            or baseline_id == raw_id
+            or predecessor is None
+            or baseline is None
+            or predecessor[2] != RawRevisionAuthority.BYTE_PROVEN.value
+            or baseline[1] != RawRevisionKind.FULL.value
+            or baseline[2] != RawRevisionAuthority.BYTE_PROVEN.value
+            or baseline[3] < 0
+        ):
+            append_identity_drift.add(raw_id)
+            continue
+        try:
+            canonical_append_key = _canonical_authority_logical_key(append_key)
+            canonical_predecessor_key = _canonical_authority_logical_key(predecessor[0] or "")
+            canonical_baseline_key = _canonical_authority_logical_key(baseline[0] or "")
+        except ValueError:
+            append_identity_drift.add(raw_id)
+            continue
+        if {canonical_predecessor_key, canonical_baseline_key} != {canonical_append_key}:
+            append_identity_drift.add(raw_id)
+            continue
+
+        seen = {raw_id}
+        cursor_id = predecessor_id
+        while True:
+            if cursor_id in seen:
+                append_identity_drift.add(raw_id)
+                break
+            seen.add(cursor_id)
+            cursor = authority_rows.get(cursor_id)
+            if cursor is None:
+                append_identity_drift.add(raw_id)
+                break
+            if cursor[1] == RawRevisionKind.FULL.value:
+                if cursor_id != baseline_id:
+                    append_identity_drift.add(raw_id)
+                break
+            if cursor[1] != RawRevisionKind.APPEND.value or cursor[4] is None:
+                append_identity_drift.add(raw_id)
+                break
+            try:
+                if _canonical_authority_logical_key(cursor[0] or "") != canonical_append_key:
+                    append_identity_drift.add(raw_id)
+                    break
+            except ValueError:
+                append_identity_drift.add(raw_id)
+                break
+            cursor_id = cursor[4]
     if append_identity_drift:
         sample = ", ".join(sorted(append_identity_drift)[:5])
         raise FrozenSourceRemediationRequiredError(

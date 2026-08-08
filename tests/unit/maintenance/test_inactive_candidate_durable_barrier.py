@@ -424,9 +424,11 @@ def test_candidate_rejects_extra_membership_binding_before_allocation(
     _assert_no_candidate_bookkeeping(root)
 
 
+@pytest.mark.parametrize("link_shape", ["linked", "self-linked"])
 def test_candidate_rejects_poisoned_typed_append_census_before_allocation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    link_shape: str,
 ) -> None:
     root = tmp_path / "archive"
     _prepare_frozen_source(root, monkeypatch)
@@ -458,6 +460,11 @@ def test_candidate_rejects_poisoned_typed_append_census_before_allocation(
             "UPDATE raw_sessions SET logical_source_key = ? WHERE raw_id = ?",
             ("codex-session:poisoned-append-key", append_raw_id),
         )
+        if link_shape == "self-linked":
+            source.execute(
+                "UPDATE raw_sessions SET predecessor_raw_id = raw_id, baseline_raw_id = raw_id WHERE raw_id = ?",
+                (append_raw_id,),
+            )
         source.execute(
             """
             INSERT INTO raw_authority_parser_census (
