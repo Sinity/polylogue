@@ -60,6 +60,7 @@ from polylogue.storage.raw_authority import (
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.revision_governance import FrozenSourceRemediationRequiredError
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -806,6 +807,101 @@ def _census_historical_revision_evidence(
     return state
 
 
+def _load_frozen_revision_evidence(
+    archive: ArchiveStore,
+    spill: _ParsedSessionSpill,
+    *,
+    selected_raw_ids: list[str] | None,
+    max_payload_bytes: int | None,
+    ingest_workers: int,
+    prefetch_cache: RawParsePrefetchCache | None,
+) -> _RevisionCensusState:
+    """Parse a phase-2 source snapshot without changing its durable ledger."""
+    expanded_raw_ids, _logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+    require_current_parser_source_census(
+        archive.archive_root,
+        selected_raw_ids=expanded_raw_ids if selected_raw_ids is not None else None,
+    )
+    rows = archive.raw_membership_census_rows(expanded_raw_ids if selected_raw_ids is not None else None)
+    if max_payload_bytes is not None:
+        payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _source_index in rows])
+        total_payload_bytes = sum(payload_sizes.values())
+        oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
+        if oversized or total_payload_bytes > max_payload_bytes:
+            raise RawRevisionReplayResourceBlockedError(
+                sorted(oversized or payload_sizes), max_payload_bytes, total_payload_bytes
+            )
+    parseable_raw_ids = [raw_id for raw_id, source_index in rows if source_index >= 0]
+    parsed_outcomes = _parse_retained_raws(
+        archive,
+        parseable_raw_ids,
+        ingest_workers=ingest_workers,
+        prefetch_cache=prefetch_cache,
+    )
+    state = _RevisionCensusState(0, 0, 0, set(), {}, {})
+    for raw_id, source_index in rows:
+        state.scanned += 1
+        state.censused.add(raw_id)
+        if source_index < 0:
+            state.quarantined += 1
+            continue
+        outcome = parsed_outcomes[raw_id]
+        if isinstance(outcome, Exception):
+            raise FrozenSourceRemediationRequiredError(
+                f"inactive candidate could not parse frozen raw {raw_id}: {type(outcome).__name__}: {outcome}"
+            ) from outcome
+        sessions, payload_bytes, revision_kind = outcome
+        spill.add(raw_id, sessions, payload_bytes=payload_bytes)
+        state.classified += int(len(sessions) == 1)
+        if revision_kind is RawRevisionKind.UNKNOWN:
+            for session in sessions:
+                logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
+    return state
+
+
+def require_current_parser_source_census(
+    archive_root: Path,
+    *,
+    selected_raw_ids: Sequence[str] | None = None,
+) -> None:
+    """Require phase-2 parser receipts before allocating an index candidate."""
+    stale_raw_ids: list[str] = []
+    selections: tuple[tuple[str, ...] | None, ...]
+    if selected_raw_ids is None:
+        selections = (None,)
+    else:
+        selections = tuple(
+            tuple(selected_raw_ids[offset : offset + 500]) for offset in range(0, len(selected_raw_ids), 500)
+        )
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+        for selection in selections:
+            where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
+            params: tuple[object, ...] = () if selection is None else selection
+            stale_raw_ids.extend(
+                str(row[0])
+                for row in source_conn.execute(
+                    f"""
+                    SELECT r.raw_id
+                    FROM raw_sessions AS r
+                    LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                    {where}
+                      {"WHERE" if selection is None else "AND"} NOT COALESCE(
+                          c.parser_fingerprint = ? AND c.status = 'complete', 0
+                      )
+                    ORDER BY r.raw_id
+                    """,
+                    (*params, RAW_AUTHORITY_PARSER_FINGERPRINT),
+                )
+            )
+    if stale_raw_ids:
+        sample = ", ".join(stale_raw_ids[:5])
+        raise FrozenSourceRemediationRequiredError(
+            "inactive candidate requires a complete current-parser source census; "
+            f"{len(stale_raw_ids)} raw(s) are stale or incomplete (sample: {sample})"
+        )
+
+
 def census_historical_revision_evidence(
     archive_root: Path,
     *,
@@ -1089,15 +1185,25 @@ def backfill_historical_revision_evidence(
         prepare_pool if prepare_pool is not None else nullcontext(),
     ):
         census_started = time.perf_counter()
-        census = _census_historical_revision_evidence(
-            archive,
-            spill,
-            selected_raw_ids=selected_raw_ids,
-            max_payload_bytes=max_payload_bytes,
-            ingest_workers=ingest_workers,
-            commit_batch_size=commit_batch_size,
-            prefetch_cache=prefetch_cache,
-        )
+        if owned_inactive_generation is not None:
+            census = _load_frozen_revision_evidence(
+                archive,
+                spill,
+                selected_raw_ids=selected_raw_ids,
+                max_payload_bytes=max_payload_bytes,
+                ingest_workers=ingest_workers,
+                prefetch_cache=prefetch_cache,
+            )
+        else:
+            census = _census_historical_revision_evidence(
+                archive,
+                spill,
+                selected_raw_ids=selected_raw_ids,
+                max_payload_bytes=max_payload_bytes,
+                ingest_workers=ingest_workers,
+                commit_batch_size=commit_batch_size,
+                prefetch_cache=prefetch_cache,
+            )
         stage_timings["census"] = time.perf_counter() - census_started
         receipt_started = time.perf_counter()
         censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
@@ -1106,7 +1212,8 @@ def backfill_historical_revision_evidence(
         # any index plan. Commit the source census first so the separate
         # durable receipt writer observes one complete source snapshot.
         archive.commit()
-        _record_raw_authority_parser_census(archive_root, tuple(censused_raw_ids))
+        if owned_inactive_generation is None:
+            _record_raw_authority_parser_census(archive_root, tuple(censused_raw_ids))
         stage_timings["census_receipt"] = time.perf_counter() - receipt_started
         membership_candidates = census.membership_candidates
         provisional_full_raw_ids = census.provisional_full_raw_ids
@@ -1181,13 +1288,17 @@ def backfill_historical_revision_evidence(
                 # different session's content, which must not be quarantined
                 # as "divergent evidence".
                 classify_started = time.perf_counter()
-                plan = archive.classify_raw_revision_cohort_for_rebuild_repair(
-                    logical_key,
-                    # Batched replay defers the classification's source.db
-                    # authority updates into the same batch window as the replay
-                    # writes (idempotent, re-derived on resume -- see
-                    # classify_raw_revision_cohort_for_rebuild_repair's docstring).
-                    manage_transaction=not replay_batched,
+                plan = (
+                    archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
+                    if owned_inactive_generation is not None
+                    else archive.classify_raw_revision_cohort_for_rebuild_repair(
+                        logical_key,
+                        # Batched replay defers the classification's source.db
+                        # authority updates into the same batch window as the replay
+                        # writes (idempotent, re-derived on resume -- see
+                        # classify_raw_revision_cohort_for_rebuild_repair's docstring).
+                        manage_transaction=not replay_batched,
+                    )
                 )
                 stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (
                     time.perf_counter() - classify_started
@@ -1197,7 +1308,13 @@ def backfill_historical_revision_evidence(
                     # still carry semantic evidence. Move only that full-only
                     # cohort to membership governance and let parsed-content
                     # prefix rules decide it; append chains remain byte-governed.
-                    for raw_id in archive.convertible_full_revision_raw_ids(logical_key):
+                    convertible = archive.convertible_full_revision_raw_ids(logical_key)
+                    if owned_inactive_generation is not None and convertible:
+                        raise FrozenSourceRemediationRequiredError(
+                            "inactive candidate found a full-revision cohort that still requires membership "
+                            f"remediation in frozen source: {logical_key}"
+                        )
+                    for raw_id in convertible:
                         spill_started = time.perf_counter()
                         sessions, _payload_bytes = spill.for_raw(archive, raw_id)
                         stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
@@ -2710,6 +2827,7 @@ __all__ = [
     "census_historical_revision_evidence",
     "census_parse_worker",
     "record_resource_blocked_revision_census",
+    "require_current_parser_source_census",
     "uncensused_historical_revision_raw_ids",
     "parse_retained_raw_sessions",
 ]

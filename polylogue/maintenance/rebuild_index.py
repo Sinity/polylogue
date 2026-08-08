@@ -1413,7 +1413,10 @@ async def _rebuild_index_from_source_owned(
         verify_archive,
     )
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
-    from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
+    from polylogue.sources.revision_backfill import (
+        RebuildDeadlineExceededError,
+        require_current_parser_source_census,
+    )
     from polylogue.storage.archive_readiness import archive_readiness_status
     from polylogue.storage.index_generation import (
         IndexGenerationStore,
@@ -1458,6 +1461,7 @@ async def _rebuild_index_from_source_owned(
         page = None
         pass_started_at_ms = int(time.time() * 1000)
         if resumable_full_source:
+            require_current_parser_source_census(root)
             if request.operation_id is not None:
                 transaction = generation_store.load_transaction(request.operation_id)
                 transaction = _reconcile_active_generation_transaction(generation_store, transaction)
@@ -1549,6 +1553,7 @@ async def _rebuild_index_from_source_owned(
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
+            require_current_parser_source_census(root, selected_raw_ids=selected_raw_ids)
             provenance.validate()
             generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
         try:

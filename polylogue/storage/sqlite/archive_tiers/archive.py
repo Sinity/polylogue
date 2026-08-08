@@ -11,6 +11,7 @@ contract spanning index and source) moved to
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sqlite3
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, BinaryIO, Literal, TypedDict, cast
+from typing import IO, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
 
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
@@ -134,6 +135,8 @@ from polylogue.insights.temporal_source import time_confidence_for_source
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import Heartbeat
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
@@ -183,6 +186,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     apply_raw_revision_replay,
     bind_raw_revision,
     blob_path_for_hash,
+    classify_raw_revision_cohort_for_frozen_candidate,
     classify_raw_revision_cohort_for_live_watch,
     classify_raw_revision_cohort_for_rebuild_repair,
     classify_untyped_full_revision_groups,
@@ -1637,6 +1641,32 @@ class _SourceTierOnlyIndexConnection:
         )
 
 
+class InactiveCandidateDurableWriteError(RuntimeError):
+    """An inactive generation attempted to mutate read-through durable state."""
+
+
+class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
+    """Read frozen blob bytes while refusing candidate publication attempts."""
+
+    @staticmethod
+    def _refuse() -> NoReturn:
+        raise InactiveCandidateDurableWriteError(
+            "inactive candidate generations may read frozen blobs but may not publish or replace blob bytes"
+        )
+
+    def write_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
+        del source, heartbeat
+        return self._refuse()
+
+    def write_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
+        del source, heartbeat
+        return self._refuse()
+
+    def write_from_bytes(self, data: bytes) -> tuple[str, int]:
+        del data
+        return self._refuse()
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -1653,6 +1683,8 @@ class ArchiveStore:
         if source_tier_acquisition and read_only:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
         self._source_tier_acquisition = source_tier_acquisition
+        self._owned_inactive_generation = owned_inactive_generation
+        self._inactive_candidate_durable_read_only = owned_inactive_generation is not None
         self._active_writer_lease = None
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
@@ -1689,10 +1721,29 @@ class ArchiveStore:
                     or Path(generation.index_path).parent.resolve(strict=True) != archive_root.resolve(strict=True)
                 ):
                     raise RuntimeError("inactive index generation ownership validation failed")
+                declared_archive_root = Path(generation.archive_root).resolve(strict=True)
+                if declared_archive_root != generation_archive_root.resolve(strict=True):
+                    raise RuntimeError("inactive index generation archive-root binding is stale")
+                for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
+                    expected = declared_archive_root / filename
+                    candidate = archive_root / filename
+                    if expected.exists() or expected.is_symlink():
+                        if not candidate.is_symlink() or candidate.resolve(strict=True) != expected.resolve(
+                            strict=True
+                        ):
+                            raise RuntimeError(
+                                f"inactive index generation has an invalid read-through target: {filename}"
+                            )
+                    elif candidate.exists() or candidate.is_symlink():
+                        raise RuntimeError(f"inactive index generation invented a read-through target: {filename}")
         try:
             self._initialize_store(
                 archive_root,
-                initialize=initialize and not source_tier_acquisition,
+                # The generation store already initialized the candidate's
+                # sole owned tier, index.db. Active-root initialization would
+                # reinterpret deliberate source/user read-through symlinks as
+                # writable durable tiers.
+                initialize=initialize and not source_tier_acquisition and owned_inactive_generation is None,
                 read_only=read_only,
                 read_timeout=read_timeout,
                 # polylogue-623q: only ever True for a write connection against
@@ -1753,8 +1804,6 @@ class ArchiveStore:
                         f"source-tier acquisition refused: durable tier {spec.filename} "
                         f"user_version {current} != expected {spec.version}"
                     )
-            from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
             self._conn = cast(sqlite3.Connection, _SourceTierOnlyIndexConnection())
             self._user_tier_attached = False
             self._tags_relation = "session_tags"
@@ -1767,7 +1816,11 @@ class ArchiveStore:
             self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True, timeout=read_timeout)
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
-            self._conn = sqlite3.connect(self.index_db_path)
+            self._conn = (
+                sqlite3.connect(f"file:{self.index_db_path}?mode=rw", uri=True)
+                if self._inactive_candidate_durable_read_only
+                else sqlite3.connect(self.index_db_path)
+            )
             pragma_statements = (
                 BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
                 if bulk_build_profile
@@ -1793,9 +1846,10 @@ class ArchiveStore:
         self._user_tier_attached = False
         self._tags_relation = "session_tags"
         if not read_only:
-            from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-            self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
+            publisher_type = (
+                _InactiveCandidateBlobPublisher if self._inactive_candidate_durable_read_only else ArchiveBlobPublisher
+            )
+            self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
         self._attach_user_tier_if_present()
 
     @classmethod
@@ -1893,7 +1947,11 @@ class ArchiveStore:
     def _ensure_source_conn(self) -> sqlite3.Connection:
         """Return the persistent source.db write connection, opening it lazily."""
         if self._source_conn is None:
-            conn = sqlite3.connect(self.source_db_path)
+            if self._inactive_candidate_durable_read_only:
+                conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
+                conn.execute("PRAGMA query_only = ON")
+            else:
+                conn = sqlite3.connect(self.source_db_path)
             conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
         return self._source_conn
@@ -2019,6 +2077,29 @@ class ArchiveStore:
         acquired: dict[int, tuple[bytes | None, int, str]] = {}
         refs: list[ArchiveSourceBlobRef] = []
         for attachment in session.attachments:
+            if self._inactive_candidate_durable_read_only:
+                if attachment.inline_bytes is not None:
+                    hash_hex = hashlib.sha256(attachment.inline_bytes).hexdigest()
+                    size = len(attachment.inline_bytes)
+                elif attachment.precomputed_blob is not None:
+                    hash_hex, size = attachment.precomputed_blob
+                else:
+                    continue
+                blob_path = self._blob_publisher.blob_path(hash_hex)
+                if not blob_path.is_file() or blob_path.stat().st_size != size:
+                    raise InactiveCandidateDurableWriteError(
+                        "inactive candidate requires attachment bytes to be present in the frozen blob namespace: "
+                        f"{hash_hex}"
+                    )
+                with blob_path.open("rb") as handle:
+                    stored_hash = hashlib.file_digest(handle, "sha256").hexdigest()
+                if stored_hash != hash_hex:
+                    raise InactiveCandidateDurableWriteError(
+                        "inactive candidate found attachment bytes that do not match the frozen blob identity: "
+                        f"{hash_hex}"
+                    )
+                acquired[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
+                continue
             if attachment.inline_bytes is None:
                 continue
             hash_hex, size = self._blob_publisher.write_from_bytes(attachment.inline_bytes)
@@ -2350,6 +2431,9 @@ class ArchiveStore:
             logical_source_key,
             manage_transaction=manage_transaction,
         )
+
+    def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
+        return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
 
     def classify_raw_revision_cohort_for_live_watch(
         self,
@@ -5951,7 +6035,11 @@ class ArchiveStore:
     def _attach_user_tier_if_present(self) -> None:
         if self._user_tier_attached or not self.user_db_path.exists():
             return
-        user_db_uri = f"file:{self.user_db_path}?mode=ro" if self._read_only else str(self.user_db_path)
+        user_db_uri = (
+            f"file:{self.user_db_path}?mode=ro"
+            if self._read_only or self._inactive_candidate_durable_read_only
+            else str(self.user_db_path)
+        )
         self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
         self._user_tier_attached = True
         self._tags_relation = _all_session_tags_sql()

@@ -206,6 +206,15 @@ class MembershipReplayConflictError(RuntimeError):
     """
 
 
+class FrozenSourceRemediationRequiredError(RuntimeError):
+    """Candidate replay found source authority that phase 2 must update."""
+
+
+def _is_frozen_candidate(store: RawRevisionGovernanceHost) -> bool:
+    """Return whether this host is the owned inactive-generation adapter."""
+    return bool(getattr(store, "_inactive_candidate_durable_read_only", False))
+
+
 class RawRevisionGovernanceHost(Protocol):
     """The narrow slice of ``ArchiveStore`` this module is allowed to touch.
 
@@ -982,6 +991,21 @@ def classify_raw_revision_cohort_for_rebuild_repair(
         logical_source_key,
         check_source_path_identity_split=True,
         manage_transaction=manage_transaction,
+        source_effects=True,
+    )
+
+
+def classify_raw_revision_cohort_for_frozen_candidate(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+) -> RevisionReplayPlan:
+    """Re-derive byte authority and require the frozen source to match it."""
+    return _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=True,
+        manage_transaction=False,
+        source_effects=False,
     )
 
 
@@ -1011,6 +1035,7 @@ def classify_raw_revision_cohort_for_live_watch(
         logical_source_key,
         check_source_path_identity_split=False,
         manage_transaction=manage_transaction,
+        source_effects=True,
     )
 
 
@@ -1020,6 +1045,7 @@ def _classify_raw_revision_cohort(
     *,
     check_source_path_identity_split: bool,
     manage_transaction: bool = True,
+    source_effects: bool,
 ) -> RevisionReplayPlan:
     """Promote only a unique byte-prefix full chain and contiguous appends.
 
@@ -1139,28 +1165,59 @@ def _classify_raw_revision_cohort(
     for dup_decision in decisions:
         if dup_decision.relation == "duplicate" and dup_decision.duplicate_of_raw_id is not None:
             generation_by_raw_id[dup_decision.raw_id] = generation_by_raw_id.get(dup_decision.duplicate_of_raw_id, 0)
-    with source_conn if manage_transaction else nullcontext():
+    if source_effects:
+        with source_conn if manage_transaction else nullcontext():
+            for row in full_rows:
+                raw_id = str(row[0])
+                decision = by_raw_id.get(raw_id)
+                authority = decision.authority if decision is not None else RawRevisionAuthority.QUARANTINED
+                predecessor_raw_id = decision.predecessor_raw_id if decision is not None else None
+                source_conn.execute(
+                    """
+                    UPDATE raw_sessions
+                    SET revision_authority = ?, predecessor_raw_id = ?, baseline_raw_id = ?,
+                        acquisition_generation = ?
+                    WHERE raw_id = ?
+                    """,
+                    (
+                        authority.value,
+                        predecessor_raw_id,
+                        baseline_raw_id if authority is RawRevisionAuthority.BYTE_PROVEN else None,
+                        generation_by_raw_id.get(raw_id, 0),
+                        raw_id,
+                    ),
+                )
+            _promote_contiguous_append_evidence(source_conn, logical_source_key)
+    else:
         for row in full_rows:
             raw_id = str(row[0])
             decision = by_raw_id.get(raw_id)
             authority = decision.authority if decision is not None else RawRevisionAuthority.QUARANTINED
             predecessor_raw_id = decision.predecessor_raw_id if decision is not None else None
-            source_conn.execute(
-                """
-                UPDATE raw_sessions
-                SET revision_authority = ?, predecessor_raw_id = ?, baseline_raw_id = ?,
-                    acquisition_generation = ?
-                WHERE raw_id = ?
-                """,
-                (
-                    authority.value,
-                    predecessor_raw_id,
-                    baseline_raw_id if authority is RawRevisionAuthority.BYTE_PROVEN else None,
-                    generation_by_raw_id.get(raw_id, 0),
-                    raw_id,
-                ),
+            expected = (
+                authority.value,
+                predecessor_raw_id,
+                baseline_raw_id if authority is RawRevisionAuthority.BYTE_PROVEN else None,
+                generation_by_raw_id.get(raw_id, 0),
             )
-        _promote_contiguous_append_evidence(source_conn, logical_source_key)
+            persisted = source_conn.execute(
+                """
+                SELECT revision_authority, predecessor_raw_id, baseline_raw_id,
+                       acquisition_generation
+                FROM raw_sessions WHERE raw_id = ?
+                """,
+                (raw_id,),
+            ).fetchone()
+            if persisted is None or tuple(persisted) != expected:
+                raise FrozenSourceRemediationRequiredError(
+                    "inactive candidate re-derived different byte authority for frozen raw "
+                    f"{raw_id}; complete source remediation before candidate construction"
+                )
+        if _contiguous_append_authority_drift_exists(source_conn, logical_source_key):
+            raise FrozenSourceRemediationRequiredError(
+                "inactive candidate found promotable append authority in the frozen source; "
+                "complete source remediation before candidate construction"
+            )
     return raw_revision_replay_plan(store, logical_source_key)
 
 
@@ -1237,10 +1294,11 @@ def classify_untyped_full_revision_groups(
     return groups
 
 
-def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source_key: str) -> None:
-    while True:
-        candidates = conn.execute(
-            """
+def _contiguous_append_authority_candidates(
+    conn: sqlite3.Connection, logical_source_key: str
+) -> tuple[sqlite3.Row | tuple[object, ...], ...]:
+    candidates = conn.execute(
+        """
             SELECT child.raw_id, parent.raw_id, COALESCE(parent.baseline_raw_id, parent.raw_id),
                    parent.acquisition_generation + 1
             FROM raw_sessions AS child
@@ -1262,12 +1320,21 @@ def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source
                   OR child.acquisition_generation != parent.acquisition_generation + 1
               )
             """,
-            (logical_source_key,),
-        ).fetchall()
-        by_child: dict[str, list[sqlite3.Row | tuple[object, ...]]] = {}
-        for row in candidates:
-            by_child.setdefault(str(row[0]), []).append(row)
-        promotable = [rows[0] for rows in by_child.values() if len(rows) == 1]
+        (logical_source_key,),
+    ).fetchall()
+    by_child: dict[str, list[sqlite3.Row | tuple[object, ...]]] = {}
+    for row in candidates:
+        by_child.setdefault(str(row[0]), []).append(row)
+    return tuple(rows[0] for rows in by_child.values() if len(rows) == 1)
+
+
+def _contiguous_append_authority_drift_exists(conn: sqlite3.Connection, logical_source_key: str) -> bool:
+    return bool(_contiguous_append_authority_candidates(conn, logical_source_key))
+
+
+def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source_key: str) -> None:
+    while True:
+        promotable = _contiguous_append_authority_candidates(conn, logical_source_key)
         if not promotable:
             return
         changed = 0
@@ -2272,8 +2339,9 @@ def apply_raw_revision_replay(
             # semantics are identical to a smaller batch.
             store.commit()
         store._blob_publisher.flush()
-    for raw_id, refs in attachment_refs_by_raw_id.items():
-        write_source_blob_refs(store._ensure_source_conn(), raw_id, refs)
+    if not _is_frozen_candidate(store):
+        for raw_id, refs in attachment_refs_by_raw_id.items():
+            write_source_blob_refs(store._ensure_source_conn(), raw_id, refs)
     session_ids: set[str] = set()
     with store._conn if manage_transaction else nullcontext():
         existing_head = store._conn.execute(
@@ -2456,6 +2524,8 @@ def apply_raw_revision_replay(
     }
     for raw_id in terminal_raw_ids:
         provider, _blob_hash, _source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
+        if _is_frozen_candidate(store):
+            continue
         if manage_transaction:
             mark_raw_parse_succeeded(store, raw_id, provider=provider)
         else:
@@ -2553,7 +2623,8 @@ def apply_raw_membership_classification(
                 # a non-empty flush takes its separate source.db write lock.
                 store.commit()
             store._blob_publisher.flush()
-        write_source_blob_refs(conn, accepted_raw_id, refs)
+        if not _is_frozen_candidate(store):
+            write_source_blob_refs(conn, accepted_raw_id, refs)
         with store._conn if manage_transaction else nullcontext():
             existing_head = store._conn.execute(
                 """
@@ -2836,27 +2907,52 @@ def apply_raw_membership_classification(
         if yield_to_head_raw_id is None:
             decisions[accepted_raw_id] = MembershipDecision.APPLIED
 
-    with conn if manage_transaction else nullcontext():
+    if _is_frozen_candidate(store):
         for raw_id, decision in decisions.items():
-            conn.execute(
+            expected = (
+                decision.value,
+                "quarantined"
+                if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
+                else "byte_proven",
+                classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
+            )
+            persisted = conn.execute(
                 """
-                UPDATE raw_session_memberships
-                SET decision = ?, decided_at_ms = ?,
-                    revision_authority = ?,
-                    acquisition_generation = ?
+                SELECT decision, revision_authority, acquisition_generation
+                FROM raw_session_memberships
                 WHERE raw_id = ? AND logical_source_key = ?
                 """,
-                (
-                    decision,
-                    decided_at_ms,
-                    "quarantined"
-                    if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
-                    else "byte_proven",
-                    classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
-                    raw_id,
-                    logical_source_key,
-                ),
-            )
+                (raw_id, logical_source_key),
+            ).fetchone()
+            if persisted is None or tuple(persisted) != expected:
+                raise FrozenSourceRemediationRequiredError(
+                    "inactive candidate re-derived different membership authority for frozen raw "
+                    f"{raw_id}; complete source remediation before candidate construction"
+                )
+    else:
+        with conn if manage_transaction else nullcontext():
+            for raw_id, decision in decisions.items():
+                conn.execute(
+                    """
+                    UPDATE raw_session_memberships
+                    SET decision = ?, decided_at_ms = ?,
+                        revision_authority = ?,
+                        acquisition_generation = ?
+                    WHERE raw_id = ? AND logical_source_key = ?
+                    """,
+                    (
+                        decision,
+                        decided_at_ms,
+                        "quarantined"
+                        if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
+                        else "byte_proven",
+                        classification.accepted_raw_ids.index(raw_id)
+                        if raw_id in classification.accepted_raw_ids
+                        else 0,
+                        raw_id,
+                        logical_source_key,
+                    ),
+                )
     for raw_id in decisions:
         complete = conn.execute(
             """
@@ -2870,6 +2966,13 @@ def apply_raw_membership_classification(
             """,
             (raw_id,),
         ).fetchone()
+        if _is_frozen_candidate(store):
+            if complete is None or not bool(complete[0]):
+                raise FrozenSourceRemediationRequiredError(
+                    "inactive candidate found incomplete frozen membership authority for raw "
+                    f"{raw_id}; complete source remediation before candidate construction"
+                )
+            continue
         if complete is not None and bool(complete[0]):
             provider, _blob_hash, _source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
             if manage_transaction:
@@ -2997,9 +3100,10 @@ def _index_parsed_for_retained_raw(
             prepared=prepared,
         )
     except Exception as exc:
-        finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, exc))
+        if not _is_frozen_candidate(store):
+            finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, exc))
         raise
-    if finalize_raw_parse:
+    if finalize_raw_parse and not _is_frozen_candidate(store):
         success_state = _raw_parse_success_state(provider)
         if manage_transaction:
             finalize_raw_parse_state(store, raw_id, state=success_state)

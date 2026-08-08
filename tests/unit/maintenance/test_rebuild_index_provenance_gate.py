@@ -24,7 +24,7 @@ from polylogue.core.enums import Provider
 from polylogue.daemon import bulk_rebuild as bulk_rebuild_module
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.maintenance.sharded_rebuild import shard_raw_ids
-from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
+from polylogue.sources.revision_backfill import RebuildDeadlineExceededError, census_historical_revision_evidence
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import (
@@ -78,6 +78,8 @@ def _seed(root: Path, count: int = 2) -> None:
     with sqlite3.connect(root / "source.db") as source:
         source.execute("UPDATE raw_sessions SET baseline_raw_id = raw_id, revision_authority = 'byte_proven'")
         source.commit()
+    census = census_historical_revision_evidence(root)
+    assert census.scanned == count
 
 
 def _active_bytes(root: Path) -> bytes:
