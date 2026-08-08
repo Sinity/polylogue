@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -17,13 +18,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Final
 
+from polylogue.product.raw_authority import (
+    RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
+    RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+)
+
 _TERMINAL_WIRE_BYTES: Final = 90_822_451
 _REVISION_COUNT: Final = 804
 _STREAM_EVENT_COUNT: Final = 2_000_000
 _GIANT_ATTACHMENT_RAW_BYTES: Final = 12 * 1024 * 1024
 _NEAR_TERMINAL_PREDECESSOR_BYTES: Final = 32 * 1024 * 1024
-_ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
-_WHALE_BLOB_LIMIT_BYTES: Final = 8 * 1024 * 1024 * 1024
 _GENERATOR_CHUNK_BYTES: Final = 1024 * 1024
 
 
@@ -37,8 +41,8 @@ class WhaleFixtureDimensions:
     near_terminal_predecessor_bytes: int = _NEAR_TERMINAL_PREDECESSOR_BYTES
     stream_event_count: int = _STREAM_EVENT_COUNT
     giant_attachment_raw_bytes: int = _GIANT_ATTACHMENT_RAW_BYTES
-    ordinary_blob_limit_bytes: int = _ORDINARY_BLOB_LIMIT_BYTES
-    whale_blob_limit_bytes: int = _WHALE_BLOB_LIMIT_BYTES
+    ordinary_blob_limit_bytes: int = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
+    whale_blob_limit_bytes: int = RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
 
     def manifest_dimensions(self) -> tuple[tuple[str, int | str], ...]:
         return (
@@ -102,6 +106,14 @@ def _write_repeated_byte(handle: BinaryIO, value: bytes, byte_count: int) -> Non
         if written <= 0:
             raise OSError("fixture writer made no progress")
         remaining -= written
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_GENERATOR_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _write_terminal_attachment_record(handle: BinaryIO, session_id: str, byte_count: int) -> None:
@@ -240,19 +252,23 @@ class CodexRevisionChainFixture:
             raise
         return final_size
 
-    def iter_revisions(self, source_path: Path) -> Iterator[tuple[int, int]]:
+    def iter_revisions(self, source_path: Path) -> Iterator[tuple[int, int, str]]:
         """Write one revision, yielding it before the next replaces the file."""
         for revision in range(self.dimensions.revision_count):
-            yield revision, self.write_revision(source_path, revision)
+            size = self.write_revision(source_path, revision)
+            yield revision, size, _file_sha256(source_path)
 
-    def write_manifest(self, path: Path, sizes: tuple[int, ...]) -> Path:
-        if len(sizes) != self.dimensions.revision_count:
+    def write_manifest(self, path: Path, sizes: tuple[int, ...], sha256s: tuple[str, ...]) -> Path:
+        if len(sizes) != self.dimensions.revision_count or len(sha256s) != self.dimensions.revision_count:
             raise AssertionError("revision manifest does not cover every revision")
+        if any(len(value) != 64 for value in sha256s):
+            raise AssertionError("revision manifest contains an invalid SHA-256 digest")
         payload = {
             "fixture_id": self.dimensions.fixture_id,
             "dimensions": dict(self.dimensions.manifest_dimensions()),
             "session_native_id": self.session_native_id,
             "revision_sizes": list(sizes),
+            "revision_sha256": list(sha256s),
             "terminal_features": ["compaction", "giant-base64-attachment", "codex-stream-dispatch"],
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -267,8 +283,10 @@ def write_codex_whale_fixture_pack(
     """Generate the final wire snapshot and its complete revision manifest."""
     output_dir.mkdir(parents=True, exist_ok=True)
     source_path = output_dir / "codex-whale.jsonl"
-    sizes = tuple(size for _revision, size in fixture.iter_revisions(source_path))
-    manifest_path = fixture.write_manifest(output_dir / "manifest.json", sizes)
+    observations = tuple(fixture.iter_revisions(source_path))
+    sizes = tuple(size for _revision, size, _sha256 in observations)
+    sha256s = tuple(sha256 for _revision, _size, sha256 in observations)
+    manifest_path = fixture.write_manifest(output_dir / "manifest.json", sizes, sha256s)
     return source_path, manifest_path
 
 
@@ -276,19 +294,20 @@ def acquire_codex_revision_chain(
     archive_root: Path,
     fixture: CodexRevisionChainFixture,
     source_path: Path,
-) -> tuple[tuple[str, ...], tuple[int, ...]]:
+) -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
     """Acquire all snapshots through ``AcquisitionService`` with one live path."""
     from polylogue.config import Source
     from polylogue.pipeline.services.acquisition import AcquisitionService
     from polylogue.storage.sqlite import SQLiteBackend
 
-    async def _run() -> tuple[tuple[str, ...], tuple[int, ...]]:
+    async def _run() -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
         backend = SQLiteBackend(db_path=archive_root / "index.db")
         try:
             service = AcquisitionService(backend)
             raw_ids: list[str] = []
             sizes: list[int] = []
-            for revision, size in fixture.iter_revisions(source_path):
+            sha256s: list[str] = []
+            for revision, size, sha256 in fixture.iter_revisions(source_path):
                 result = await service.acquire_sources([Source(name="codex", path=source_path)])
                 if result.errors:
                     raise AssertionError(
@@ -296,7 +315,8 @@ def acquire_codex_revision_chain(
                     )
                 raw_ids.extend(result.raw_ids)
                 sizes.append(size)
-            return tuple(raw_ids), tuple(sizes)
+                sha256s.append(sha256)
+            return tuple(raw_ids), tuple(sizes), tuple(sha256s)
         finally:
             await backend.close()
 
@@ -317,9 +337,8 @@ def multi_million_codex_stream(
             "content": [{"type": "input_text", "text": "sanitized streaming boundary"}],
         },
     }
-    state_record: dict[str, object] = {"record_type": "state"}
-    for _ in range(dimensions.stream_event_count):
-        yield state_record
+    for sequence in range(dimensions.stream_event_count):
+        yield {"record_type": "state", "sequence": sequence}
 
 
 __all__ = [

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pickle
 import re
 import shlex
+import tempfile
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from typing import BinaryIO
 
 from pydantic import ValidationError
 
@@ -76,6 +79,22 @@ _CODE_MODE_RESULT_COLLECTION_KEYS = (
 )
 _STRUCTURAL_PATH_KEYS = frozenset({"path", "file_path", "paths", "file_paths", "image_path"})
 _STRUCTURAL_BYTE_KEYS = frozenset({"bytes", "byte_count", "bytes_written", "size_bytes", "written_bytes"})
+
+
+@dataclass(slots=True)
+class _PickleRecordReplay:
+    """Re-iterable disk spool for preserving parser lookahead without retaining records."""
+
+    handle: BinaryIO
+
+    def __iter__(self) -> Iterator[object]:
+        self.handle.seek(0)
+        while True:
+            try:
+                # This reads only the private spool written immediately above.
+                yield pickle.load(self.handle)
+            except EOFError:
+                return
 
 
 @dataclass(frozen=True, slots=True)
@@ -1555,7 +1574,7 @@ def _response_inner_record(item: object) -> dict[str, object] | None:
     return inner if inner is not None and not _is_message(inner) else None
 
 
-def _code_mode_exec_envelopes(records: Sequence[object]) -> dict[int, _CodexExecEnvelope]:
+def _code_mode_exec_envelopes(records: Iterable[object]) -> dict[int, _CodexExecEnvelope]:
     call_occurrences: dict[str, list[tuple[int, _CodexExecEnvelope]]] = defaultdict(list)
     output_occurrences: dict[str, list[tuple[int, dict[str, object]]]] = defaultdict(list)
     envelopes_by_record: dict[int, _CodexExecEnvelope] = {}
@@ -2160,16 +2179,20 @@ def _sanitize_codex_data_url(value: str) -> str:
         return value
     header, encoded = value.split(",", 1)
     mime = header.removeprefix("data:").split(";", 1)[0] or "image/unknown"
-    digest = hashlib.sha256(encoded.encode("ascii", errors="ignore")).hexdigest()
-    approx_bytes = (len(encoded.rstrip("=")) * 3) // 4
+    digest_builder = hashlib.sha256()
+    for offset in range(0, len(encoded), 1024 * 1024):
+        digest_builder.update(encoded[offset : offset + 1024 * 1024].encode("ascii", errors="ignore"))
+    digest = digest_builder.hexdigest()
+    padding = 2 if encoded.endswith("==") else 1 if encoded.endswith("=") else 0
+    approx_bytes = max(0, (len(encoded) * 3) // 4 - padding)
     return f"<inline image omitted; mime={mime}; approx_bytes={approx_bytes}; sha256_base64={digest}>"
 
 
-def _codex_inline_image_summaries(content: object) -> tuple[str, ...]:
-    """Return bounded evidence for inline image segments in ordinary messages."""
+def _codex_inline_image_blocks(content: object) -> tuple[ParsedContentBlock, ...]:
+    """Return typed, bounded evidence for inline images without authored prose inflation."""
     if not isinstance(content, list):
         return ()
-    summaries: list[str] = []
+    blocks: list[ParsedContentBlock] = []
     for item in content:
         if not isinstance(item, dict) or item.get("type") not in {"input_image", "image"}:
             continue
@@ -2178,8 +2201,10 @@ def _codex_inline_image_summaries(content: object) -> tuple[str, ...]:
             continue
         summary = _sanitize_codex_data_url(image_url)
         if summary != image_url:
-            summaries.append(summary)
-    return tuple(summaries)
+            header = image_url.split(",", 1)[0]
+            mime = header.removeprefix("data:").split(";", 1)[0] or "image/unknown"
+            blocks.append(ParsedContentBlock(type=BlockType.IMAGE, text=summary, media_type=mime))
+    return tuple(blocks)
 
 
 def _message_signature(role: Role | str, text: str | None) -> tuple[str, str]:
@@ -2354,7 +2379,7 @@ def is_supported_session_stream(payload: Sequence[object]) -> bool:
     return has_session_header or has_direct_record or has_envelope_record
 
 
-def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession:
+def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: bool = False) -> ParsedSession:
     """Parse Codex JSONL session file using typed CodexRecord model.
 
     Supports two format generations via CodexRecord.format_type:
@@ -2367,9 +2392,17 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     - text_content: Extracted text from any format
     - format_type: Detected format generation
     """
-    record_list = list(records)
-    code_mode_envelopes = _code_mode_exec_envelopes(record_list)
-    response_signatures = _response_message_signatures(record_list)
+    if not isinstance(records, Sequence) and not _reiterable:
+        # The parser needs two lookahead-derived indexes before the materializing
+        # pass. Persist a private replay spool so a multi-million-record JSONL
+        # stream stays bounded by one decoded record instead of list(records).
+        with tempfile.TemporaryFile(mode="w+b") as spool:
+            for item in records:
+                pickle.dump(item, spool, protocol=pickle.HIGHEST_PROTOCOL)
+            return _parse_records(_PickleRecordReplay(spool), fallback_id, _reiterable=True)
+
+    code_mode_envelopes = _code_mode_exec_envelopes(records)
+    response_signatures = _response_message_signatures(records)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     session_id = fallback_id
@@ -2410,7 +2443,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     session_model_provider: str | None = None
     session_developer_instructions: str | None = None
 
-    for idx, item in enumerate(record_list, start=1):
+    for idx, item in enumerate(records, start=1):
         record = _dict_record(item)
         if record is None:
             continue
@@ -2767,16 +2800,12 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             raw_role = _effective_role(message_record)
             content = _effective_content(message_record)
             text = extract_codex_text(content)
-            inline_image_summaries = _codex_inline_image_summaries(content)
-            if inline_image_summaries:
-                text = "\n".join((text, *inline_image_summaries)) if text else "\n".join(inline_image_summaries)
+            inline_image_blocks = _codex_inline_image_blocks(content)
             timestamp_pair = parse_timestamp_pair(_message_timestamp(record, message_record))
             timestamp = timestamp_pair[1] if timestamp_pair is not None else None
 
             content_blocks = content_blocks_from_segments(content)
-            content_blocks.extend(
-                ParsedContentBlock(type=BlockType.TEXT, text=summary) for summary in inline_image_summaries
-            )
+            content_blocks.extend(inline_image_blocks)
             has_structured = any(
                 cb.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT, BlockType.THINKING) for cb in content_blocks
             )

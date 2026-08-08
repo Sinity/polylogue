@@ -40,7 +40,7 @@ def test_whale_fixture_manifest_pins_all_outlier_axes() -> None:
     assert WHALE_FIXTURE_DIMENSIONS.stream_event_count > WHALE_FIXTURE_DIMENSIONS.revision_count
 
 
-def test_multi_million_stream_keeps_record_identity_bounded() -> None:
+def test_multi_million_stream_emits_realistic_distinct_records() -> None:
     stream = multi_million_codex_stream()
     first = next(stream)
     second = next(stream)
@@ -48,7 +48,9 @@ def test_multi_million_stream_keeps_record_identity_bounded() -> None:
     assert second["type"] == "response_item"
     first_state = next(stream)
     second_state = next(stream)
-    assert first_state is second_state
+    assert first_state is not second_state
+    assert first_state == {"record_type": "state", "sequence": 0}
+    assert second_state == {"record_type": "state", "sequence": 1}
 
 
 def test_padding_generator_never_writes_an_outlier_sized_chunk() -> None:
@@ -88,9 +90,17 @@ def test_fixture_pack_generator_writes_a_complete_manifest(tmp_path: Path) -> No
     assert source_path.stat().st_size == dimensions.terminal_wire_bytes
     assert manifest["fixture_id"] == dimensions.fixture_id
     assert manifest["revision_sizes"] == [4_096, 64 * 1024, 128 * 1024, 256 * 1024, 1024 * 1024]
+    assert len(manifest["revision_sha256"]) == dimensions.revision_count
+    assert all(len(value) == 64 for value in manifest["revision_sha256"])
     assert manifest["terminal_features"] == ["compaction", "giant-base64-attachment", "codex-stream-dispatch"]
 
     rerun_source_path, rerun_manifest_path = write_codex_whale_fixture_pack(tmp_path, fixture)
     assert rerun_source_path == source_path
     assert rerun_source_path.stat().st_size == dimensions.terminal_wire_bytes
     assert json.loads(rerun_manifest_path.read_text(encoding="utf-8")) == manifest
+
+    changed_fixture = CodexRevisionChainFixture(dimensions=dimensions, session_native_id="codex-whale-changed")
+    _changed_source, changed_manifest_path = write_codex_whale_fixture_pack(tmp_path / "changed", changed_fixture)
+    changed_manifest = json.loads(changed_manifest_path.read_text(encoding="utf-8"))
+    assert changed_manifest["revision_sizes"] == manifest["revision_sizes"]
+    assert changed_manifest["revision_sha256"] != manifest["revision_sha256"]

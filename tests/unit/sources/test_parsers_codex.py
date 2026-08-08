@@ -1463,11 +1463,13 @@ class TestGitContextAndInstructions:
         assert len(result.messages) == 1
         message = result.messages[0]
         assert "data:image/png;base64" not in (message.text or "")
-        assert "inspect this image" in (message.text or "")
-        assert "mime=image/png" in (message.text or "")
-        assert "sha256_base64=" in (message.text or "")
+        assert message.text == "inspect this image"
         assert all("data:image/png;base64" not in (block.text or "") for block in message.blocks)
-        assert any("sha256_base64=" in (block.text or "") for block in message.blocks)
+        image_blocks = [block for block in message.blocks if block.type is BlockType.IMAGE]
+        assert len(image_blocks) == 1
+        assert image_blocks[0].media_type == "image/png"
+        assert "mime=image/png" in (image_blocks[0].text or "")
+        assert "sha256_base64=" in (image_blocks[0].text or "")
 
 
 # =============================================================================

@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.config import Config
+from polylogue.product import raw_authority
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadPhaseObservation,
@@ -217,12 +219,12 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
 
     acquire_before = _resource_sample(root)
     acquire_started = time.perf_counter()
-    acquired_raw_ids, sizes = acquire_codex_revision_chain(root, fixture, source_path)
+    acquired_raw_ids, sizes, fixture_sha256s = acquire_codex_revision_chain(root, fixture, source_path)
     with sqlite3.connect(root / "source.db") as conn:
         persisted_sizes = tuple(
             int(row[0]) for row in conn.execute("SELECT blob_size FROM raw_sessions ORDER BY blob_size")
         )
-    manifest_path = fixture.write_manifest(root / "fixture-manifest.json", sizes)
+    manifest_path = fixture.write_manifest(root / "fixture-manifest.json", sizes, fixture_sha256s)
     fixture_manifest = manifest_path.read_text(encoding="utf-8")
     acquire_after = _resource_sample(root)
     phases.append(
@@ -242,6 +244,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     assert manifest_payload["fixture_id"] == WHALE_FIXTURE_DIMENSIONS.fixture_id
     assert manifest_payload["session_native_id"] == SESSION_NATIVE_ID
     assert manifest_payload["revision_sizes"] == list(sizes)
+    assert manifest_payload["revision_sha256"] == list(fixture_sha256s)
     assert manifest_payload["dimensions"] == dict(WHALE_FIXTURE_DIMENSIONS.manifest_dimensions())
     with source_path.open("rb") as handle:
         first_source_bytes = handle.read(8_192)
@@ -266,6 +269,19 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     assert pre_recovery_unresolved_count == REVISION_COUNT
     assert pre_recovery_membership_count == 0
     assert pre_recovery_census_count == 0
+    whale_candidate = raw_authority.whale_pass_candidate(
+        Config(archive_root=root, render_root=root / "render", sources=[]),
+        ordinary_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes,
+        whale_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.whale_blob_limit_bytes,
+    )
+    assert whale_candidate is not None
+    assert whale_candidate == acquired_raw_ids[0]
+    whale_component_bytes = sum(sizes)
+    assert (
+        WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes
+        < whale_component_bytes
+        <= WHALE_FIXTURE_DIMENSIONS.whale_blob_limit_bytes
+    )
     phases.append(
         _phase(
             "census",
@@ -529,11 +545,12 @@ else:
     assert parse_error_count == 0
     assert authorities == ("byte_proven",)
     assert tuple(row[1] for row in raw_rows) == sizes
+    assert tuple(row[4] for row in raw_rows) == fixture_sha256s
     assert raw_rows[-1][1] == TERMINAL_WIRE_BYTES
     assert raw_rows[-2][1] == WHALE_FIXTURE_DIMENSIONS.near_terminal_predecessor_bytes
     terminal_raw_id = raw_rows[-1][2]
     terminal_blob_hash = raw_rows[-1][4]
-    assert raw_rows[-1][4] == _file_sha256(source_path)
+    assert raw_rows[-1][4] == fixture_sha256s[-1] == _file_sha256(source_path)
     with sqlite3.connect(root / "source.db") as conn:
         post_recovery_membership_count = int(
             conn.execute("SELECT COUNT(DISTINCT raw_id) FROM raw_session_memberships").fetchone()[0]
@@ -616,6 +633,11 @@ else:
         attachment_summary_count = int(
             conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text LIKE '%sha256_base64=%'").fetchone()[0]
         )
+        attachment_image_block_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM blocks WHERE block_type = 'image' AND search_text LIKE '%sha256_base64=%'"
+            ).fetchone()[0]
+        )
         selected_heads = conn.execute(
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
             (terminal_logical_source_key,),
@@ -645,6 +667,7 @@ else:
     assert terminal_block_count > 0
     assert compaction_event_count == 1
     assert attachment_summary_count > 0
+    assert attachment_image_block_count > 0
     expected_baseline_timestamps = tuple(
         int(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000)
         for timestamp in _BASELINE_MESSAGE_TIMESTAMPS
