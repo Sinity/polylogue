@@ -213,9 +213,14 @@ def test_component_law_rejects_qsagp_archive_wide_per_item_mutation(
         for archive_size, component_count in ((2, 1), (8, 2), (32, 4))
     ]
 
+    archive_wide = [observation.metric("archive_wide_derived_statements") for observation in observations]
+    assert any(value > _COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET for value in archive_wide), (
+        "red mutation did not exceed the terminal-refresh statement envelope; "
+        f"measured counters={[dict(observation.metrics) for observation in observations]}"
+    )
     with pytest.raises(AssertionError):
         _assert_component_shape(observations)
-    assert all(observation.metric("archive_wide_derived_statements") > 0 for observation in observations), (
+    assert all(value > 0 for value in archive_wide), (
         "red mutation did not reach observed archive-wide SQL; "
         f"measured counters={[dict(observation.metrics) for observation in observations]}"
     )

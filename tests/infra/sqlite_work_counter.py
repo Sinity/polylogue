@@ -53,8 +53,6 @@ def _is_archive_wide_derived_statement(sql: str) -> bool:
         return False
     if " values " in sql:
         return False
-    if sql.startswith("delete from delegation_refresh_scope"):
-        return False
     if sql.startswith("delete from "):
         return " where " not in sql
     if sql.startswith("insert into action_pairs"):
