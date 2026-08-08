@@ -517,7 +517,9 @@ def test_periodic_reloads_config_after_sleep_and_serializes_parked_receipts(tmp_
     ]
 
 
-def test_periodic_coalesces_identical_disabled_receipt_through_default_interval(tmp_path: Path) -> None:
+def test_periodic_coalesces_identical_disabled_receipt_through_default_interval(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """A normal default-interval disabled tick does not duplicate telemetry."""
 
     _init_ops_db(tmp_path / "ops.db")
@@ -556,6 +558,65 @@ def test_periodic_coalesces_identical_disabled_receipt_through_default_interval(
     assert len(rows) == 1
     assert rows[0][0] == base_ms
     assert json.loads(rows[0][1])["reason"] == "capability_gate_disabled"
+    assert "parked receipt was not persisted" not in caplog.text
+
+
+def test_periodic_preserves_sweep_failure_reason_when_receipt_write_fails(tmp_path: Path) -> None:
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    _insert_candidate(
+        tmp_path,
+        assertion_id="cand-sweep-failure-receipt",
+        kind=AssertionKind.PATHOLOGY,
+        confidence=0.95,
+    )
+    cfg = SimpleNamespace(
+        judgment_automation_enabled=True,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={"pathology": {"auto_accept_min_confidence": 0.9}},
+    )
+    write_coordinator = AsyncMock()
+    receipt_writes = 0
+
+    async def _fake_run_sync(actor, function, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return function(*args, **kwargs)
+
+    def _fail_detailed_receipt_once(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal receipt_writes
+        receipt_writes += 1
+        if receipt_writes == 1:
+            raise RuntimeError("forced detailed receipt write failure")
+        return emit_daemon_event(*args, **kwargs)
+
+    with (
+        patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+        patch(
+            "polylogue.storage.sqlite.archive_tiers.user_write.judge_assertion_candidates",
+            side_effect=RuntimeError("forced sweep failure"),
+        ),
+        patch(
+            "polylogue.daemon.events.emit_daemon_event",
+            side_effect=_fail_detailed_receipt_once,
+        ),
+    ):
+        write_coordinator.run_sync.side_effect = _fake_run_sync
+        asyncio.run(_run_one_tick())
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM daemon_events WHERE kind = 'judgment-automation' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    receipt = json.loads(row[0])
+    assert receipt["status"] == "failed"
+    assert receipt["reason"] == "sweep_failed:RuntimeError"
+    assert receipt["retryable"] is True
+    assert receipt_writes == 2
+    assert write_coordinator.run_sync.await_count == 2
 
 
 def test_periodic_inner_failure_keeps_detailed_receipt_as_authoritative(tmp_path: Path) -> None:

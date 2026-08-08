@@ -31,6 +31,7 @@ import sqlite3
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -66,6 +67,14 @@ JUDGMENT_AUTOMATION_RECEIPT_GRACE_MAX_SECONDS = 60 * 60
 JudgmentAutomationReceiptStatus = Literal["completed", "parked", "failed"]
 
 JudgmentAutomationDecisionKind = Literal["accept", "reject", "escalate"]
+
+
+class JudgmentAutomationReceiptOutcome(StrEnum):
+    """Outcome of the scheduler receipt operation."""
+
+    PERSISTED = "persisted"
+    COALESCED = "coalesced"
+    FAILED = "failed"
 
 
 def _judgment_automation_receipt_coalescing_horizon_ms(interval_s: int) -> int:
@@ -155,11 +164,11 @@ def _record_judgment_automation_receipt(
     receipt_context: _JudgmentAutomationReceiptContext | None = None,
     suppress_identical_for_ms: int | None = None,
     receipt_persistence_degraded: bool = False,
-) -> bool:
+) -> JudgmentAutomationReceiptOutcome:
     """Persist one scheduler outcome in the existing daemon event ledger."""
 
     if not (root / "ops.db").exists():
-        return False
+        return JudgmentAutomationReceiptOutcome.FAILED
     from polylogue.daemon.events import current_epoch_ms, emit_daemon_event, get_latest_daemon_event
 
     payload: dict[str, object] = {
@@ -190,7 +199,7 @@ def _record_judgment_automation_receipt(
                 and _receipt_state(payload) == latest_state
                 and 0 <= observed_at_ms - latest_ts_ms <= suppress_identical_for_ms
             ):
-                return False
+                return JudgmentAutomationReceiptOutcome.COALESCED
         emit_daemon_event(
             JUDGMENT_AUTOMATION_STAGE,
             operation_id=operation_id,
@@ -200,11 +209,15 @@ def _record_judgment_automation_receipt(
         )
         if receipt_context is not None:
             receipt_context.recorded = True
-        return True
+        return JudgmentAutomationReceiptOutcome.PERSISTED
     except Exception:
         logger.warning("judgment_automation: scheduler receipt write failed", exc_info=True)
         raise _JudgmentAutomationReceiptPersistenceError(
-            "judgment automation scheduler receipt could not be persisted"
+            "judgment automation scheduler receipt could not be persisted",
+            result=result,
+            status=status,
+            reason=reason,
+            user_tier_committed=result is not None,
         ) from None
 
 
@@ -374,7 +387,7 @@ def run_judgment_automation_sweep_once(
         retryable: bool,
         result: JudgmentAutomationSweepResult | None = None,
         receipt_persistence_degraded: bool = False,
-    ) -> bool:
+    ) -> JudgmentAutomationReceiptOutcome:
         try:
             recorded = _record_judgment_automation_receipt(
                 root,
@@ -397,10 +410,16 @@ def run_judgment_automation_sweep_once(
                     reason=reason,
                     user_tier_committed=True,
                 ) from exc
-            raise
-        if _receipt_context is not None and not recorded:
             raise _JudgmentAutomationReceiptPersistenceError(
-                "judgment automation scheduler receipt could not be persisted"
+                str(exc),
+                status=status,
+                reason=reason,
+            ) from exc
+        if _receipt_context is not None and recorded is JudgmentAutomationReceiptOutcome.FAILED:
+            raise _JudgmentAutomationReceiptPersistenceError(
+                "judgment automation scheduler receipt could not be persisted",
+                status=status,
+                reason=reason,
             )
         return recorded
 
@@ -583,7 +602,10 @@ async def periodic_judgment_automation_sweep(
         except Exception:
             logger.warning("judgment_automation: failure receipt fallback failed", exc_info=True)
             return
-        if recorded is not True:
+        if recorded not in {
+            JudgmentAutomationReceiptOutcome.PERSISTED,
+            JudgmentAutomationReceiptOutcome.COALESCED,
+        }:
             logger.warning("judgment_automation: failure receipt fallback was not persisted")
 
     while True:
@@ -616,7 +638,10 @@ async def periodic_judgment_automation_sweep(
             except Exception:
                 logger.warning("judgment_automation: parked receipt write failed; retrying next tick", exc_info=True)
             else:
-                if recorded is not True:
+                if recorded not in {
+                    JudgmentAutomationReceiptOutcome.PERSISTED,
+                    JudgmentAutomationReceiptOutcome.COALESCED,
+                }:
                     logger.warning("judgment_automation: parked receipt was not persisted; retrying next tick")
             continue
         receipt_context = _JudgmentAutomationReceiptContext(operation_id=f"judgment-automation:{uuid.uuid4().hex}")
@@ -676,6 +701,7 @@ __all__ = [
     "JudgmentAutomationDecision",
     "JudgmentAutomationDecisionKind",
     "JudgmentAutomationPolicyRule",
+    "JudgmentAutomationReceiptOutcome",
     "JudgmentAutomationReceiptStatus",
     "JudgmentAutomationSweepResult",
     "evaluate_candidate",
