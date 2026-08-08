@@ -43,6 +43,7 @@ def test_real_campaign_graph_resolves_all_current_forcing_dependencies() -> None
         "polylogue-6753s",
         "polylogue-foee",
         "polylogue-ix5r",
+        "polylogue-slshy",
         "polylogue-xofj",
     }
     assert LEDGER_PATH.is_file()
