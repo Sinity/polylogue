@@ -1193,10 +1193,14 @@ async def _bridge_catch_up_complete(
 
 
 async def _reconcile_blob_publications(
-    *, actor: str = "startup.blob_publications"
+    *,
+    actor: str = "startup.blob_publications",
+    max_count: int | None = None,
+    after_publication_id: str | None = None,
 ) -> BlobPublicationReconciliation | None:
-    """Classify crash-left publication reservations before source catch-up."""
+    """Classify crash-left publication reservations against the active archive."""
     from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.blob_publication import reconcile_blob_publication_reservations_under_exclusion
 
     root = archive_root()
@@ -1210,7 +1214,9 @@ async def _reconcile_blob_publications(
         reconcile_blob_publication_reservations_under_exclusion,
         root / "source.db",
         root / "blob",
-        index_db_path=root / "index.db",
+        index_db_path=resolve_active_index_path(root),
+        max_count=max_count,
+        after_publication_id=after_publication_id,
     )
     if (
         outcome.cleared_referenced

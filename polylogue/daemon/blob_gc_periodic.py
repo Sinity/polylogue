@@ -29,6 +29,7 @@ logger = get_logger(__name__)
 BLOB_GC_INTERVAL_SECONDS = 900
 BLOB_GC_MAX_BATCH = 200
 BLOB_PUBLICATION_RECONCILIATION_INTERVAL_SECONDS = BLOB_GC_INTERVAL_SECONDS
+BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH = BLOB_GC_MAX_BATCH
 
 
 async def periodic_blob_gc_check(*, catch_up_complete: asyncio.Event | None = None) -> None:
@@ -74,10 +75,19 @@ async def periodic_blob_publication_reconciliation_check(*, catch_up_complete: a
     from polylogue.daemon.cli import _await_catch_up_gate, _reconcile_blob_publications
 
     await _await_catch_up_gate(catch_up_complete, loop_name="blob publication reconciliation")
+    after_publication_id: str | None = None
     while True:
         await asyncio.sleep(BLOB_PUBLICATION_RECONCILIATION_INTERVAL_SECONDS)
         try:
-            await _reconcile_blob_publications(actor="maintenance.blob_publication_reconciliation")
+            outcome = await _reconcile_blob_publications(
+                actor="maintenance.blob_publication_reconciliation",
+                max_count=BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH,
+                after_publication_id=after_publication_id,
+            )
+            if outcome is None or outcome.scanned < BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH:
+                after_publication_id = None
+            else:
+                after_publication_id = outcome.last_scanned_publication_id
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
                 logger.info("blob publication reconciliation: archive busy; retrying on next tick: %s", exc)
@@ -102,6 +112,7 @@ __all__ = [
     "BLOB_GC_INTERVAL_SECONDS",
     "BLOB_GC_MAX_BATCH",
     "BLOB_PUBLICATION_RECONCILIATION_INTERVAL_SECONDS",
+    "BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH",
     "periodic_blob_gc_check",
     "periodic_blob_publication_reconciliation_check",
     "run_blob_gc_once",
