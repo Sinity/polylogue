@@ -116,6 +116,49 @@ class BlobStore:
         """Return the private same-filesystem workspace outside the CAS namespace."""
         return self.root / _STAGING_DIRNAME
 
+    def _ensure_private_staging_root(self) -> Path:
+        """Create or validate the owner-only staging workspace.
+
+        Staging can contain complete raw session bytes and writable SQLite
+        snapshots. Reject redirects and non-directories, and normalize an
+        existing owner-controlled directory to mode 0700 before any allocator
+        or cleanup path uses it.
+        """
+        self.root.mkdir(parents=True, exist_ok=True)
+        staging_root = self.staging_root
+        with suppress(FileExistsError):
+            os.mkdir(staging_root, mode=0o700)
+
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        try:
+            descriptor = os.open(staging_root, flags)
+        except OSError as exc:
+            raise RuntimeError(f"blob staging root is not a private directory: {staging_root}") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                raise RuntimeError(f"blob staging root is not an owned directory: {staging_root}")
+            if stat.S_IMODE(metadata.st_mode) != 0o700:
+                os.fchmod(descriptor, 0o700)
+                metadata = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+
+        try:
+            path_metadata = staging_root.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"blob staging root disappeared during validation: {staging_root}") from exc
+        if (
+            stat.S_ISLNK(path_metadata.st_mode)
+            or not stat.S_ISDIR(path_metadata.st_mode)
+            or path_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(path_metadata.st_mode) != 0o700
+            or (path_metadata.st_dev, path_metadata.st_ino) != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise RuntimeError(f"blob staging root changed during private-directory validation: {staging_root}")
+        return staging_root
+
     def allocate_staging_path(self, *, prefix: str, suffix: str = "") -> Path:
         """Reserve a unique absent path for a private work file.
 
@@ -126,8 +169,8 @@ class BlobStore:
         workspace itself is not exempt from namespace verification: a crash
         that leaves it behind is classified for offline quarantine recovery.
         """
-        self.staging_root.mkdir(parents=True, exist_ok=True)
-        fd, temporary_name = tempfile.mkstemp(dir=self.staging_root, prefix=prefix, suffix=suffix)
+        staging_root = self._ensure_private_staging_root()
+        fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=prefix, suffix=suffix)
         os.close(fd)
         temporary_path = Path(temporary_name)
         temporary_path.unlink()
@@ -144,6 +187,7 @@ class BlobStore:
         """
         if staged_path.parent != self.staging_root:
             raise ValueError(f"staged path is outside blob staging root: {staged_path}")
+        self._ensure_private_staging_root()
         staged_path.unlink(missing_ok=True)
         for suffix in companion_suffixes:
             staged_path.with_name(f"{staged_path.name}{suffix}").unlink(missing_ok=True)
@@ -169,13 +213,13 @@ class BlobStore:
         heartbeat: Heartbeat | None = None,
     ) -> PreparedBlob:
         """Stream-hash *source* into a private temporary file."""
-        self.staging_root.mkdir(parents=True, exist_ok=True)
+        staging_root = self._ensure_private_staging_root()
         fd: int | None = None
         temporary_path: Path | None = None
         try:
             hasher = hashlib.sha256()
             size = 0
-            fd, temporary_name = tempfile.mkstemp(dir=self.staging_root, prefix=".blob.")
+            fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             with open(source, "rb") as src:
                 while True:
@@ -206,13 +250,13 @@ class BlobStore:
         heartbeat: Heartbeat | None = None,
     ) -> PreparedBlob:
         """Stream-hash an open binary object into a private temporary file."""
-        self.staging_root.mkdir(parents=True, exist_ok=True)
+        staging_root = self._ensure_private_staging_root()
         fd: int | None = None
         temporary_path: Path | None = None
         try:
             hasher = hashlib.sha256()
             size = 0
-            fd, temporary_name = tempfile.mkstemp(dir=self.staging_root, prefix=".blob.")
+            fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             while True:
                 chunk = source.read(_CHUNK_SIZE)
@@ -237,11 +281,11 @@ class BlobStore:
 
     def prepare_from_bytes(self, data: bytes) -> PreparedBlob:
         """Stage in-memory bytes without exposing their final hash path."""
-        self.staging_root.mkdir(parents=True, exist_ok=True)
+        staging_root = self._ensure_private_staging_root()
         fd: int | None = None
         temporary_path: Path | None = None
         try:
-            fd, temporary_name = tempfile.mkstemp(dir=self.staging_root, prefix=".blob.")
+            fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             _write_all(fd, data)
             os.close(fd)

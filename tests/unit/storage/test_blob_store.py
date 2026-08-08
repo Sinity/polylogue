@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import threading
 import time
 from io import BytesIO
@@ -459,6 +460,41 @@ def test_pending_publication_is_noncanonical_and_recovers_to_pristine_namespace(
     assert blob_store.staging_root.is_dir()
     assert not tuple(blob_store.staging_root.iterdir())
     assert blob_store.verify_all().passed
+
+
+def test_blob_staging_is_owner_only(tmp_path: Path) -> None:
+    blob_store = BlobStore(tmp_path / "blobs")
+    blob_store.staging_root.mkdir(parents=True, mode=0o755)
+    blob_store.staging_root.chmod(0o755)
+
+    prepared = blob_store.prepare_from_bytes(b"private staging")
+    try:
+        assert stat.S_IMODE(blob_store.staging_root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(prepared.temporary_path.stat().st_mode) == 0o600
+    finally:
+        blob_store.discard_prepared(prepared)
+
+
+def test_blob_staging_rejects_a_preexisting_symlink(tmp_path: Path) -> None:
+    blob_store = BlobStore(tmp_path / "blobs")
+    redirect = tmp_path / "redirect"
+    redirect.mkdir()
+    blob_store.root.mkdir()
+    blob_store.staging_root.symlink_to(redirect, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="not a private directory"):
+        blob_store.prepare_from_bytes(b"must not escape")
+
+    assert not tuple(redirect.iterdir())
+
+
+def test_blob_staging_rejects_a_preexisting_file(tmp_path: Path) -> None:
+    blob_store = BlobStore(tmp_path / "blobs")
+    blob_store.root.mkdir()
+    blob_store.staging_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="not a private directory"):
+        blob_store.allocate_staging_path(prefix="snapshot-", suffix=".db")
 
 
 def test_iter_all_skips_non_prefix_dirs(tmp_path: Path) -> None:
