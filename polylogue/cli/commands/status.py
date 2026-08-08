@@ -2471,13 +2471,18 @@ def _render_assertion_candidate_queue(env: AppEnv, queue: dict[str, Any]) -> Non
     state = str(queue.get("state") or "unavailable")
     pending = _safe_int(queue.get("pending_count"))
     color = "green" if state == "healthy-empty" else "yellow"
-    if state in {"producer-stalled", "stale-pending", "unavailable"}:
+    if state in {"producer-stalled", "scheduler-stalled", "parked-pending", "stale-pending", "unavailable"}:
         color = "red"
     line = f"  Assertion candidate queue: [{color}]{state}, {pending} pending[/{color}]"
     oldest_age = queue.get("oldest_pending_age_ms")
     if isinstance(oldest_age, int | float):
         line += f", oldest={float(oldest_age) / (24 * 60 * 60 * 1000):.1f}d"
     env.ui.console.print(line)
+    receipt_status = queue.get("judgment_scheduler_receipt_status")
+    if receipt_status is not None:
+        receipt_reason = queue.get("judgment_scheduler_receipt_reason")
+        suffix = f" ({receipt_reason})" if receipt_reason else ""
+        env.ui.console.print(f"    judgment scheduler receipt: {receipt_status}{suffix}")
 
 
 def _render_sqlite_maintenance(env: AppEnv, status: dict[str, Any]) -> None:

@@ -59,6 +59,9 @@ JUDGMENT_AUTOMATION_AUTHOR_KIND = "automation"
 #: ``judgment_automation_interval_s`` cannot turn this into a busy loop.
 JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS = 60
 
+JUDGMENT_AUTOMATION_STAGE = "judgment-automation"
+JudgmentAutomationReceiptStatus = Literal["completed", "parked", "failed"]
+
 JudgmentAutomationDecisionKind = Literal["accept", "reject", "escalate"]
 
 
@@ -89,6 +92,50 @@ class JudgmentAutomationSweepResult:
     escalated: int = 0
     idempotent: int = 0
     failed: int = 0
+
+
+def _record_judgment_automation_receipt(
+    root: Path,
+    *,
+    status: JudgmentAutomationReceiptStatus,
+    reason: str,
+    now_ms: int | None,
+    batch_limit: int,
+    result: JudgmentAutomationSweepResult | None = None,
+    retryable: bool,
+) -> None:
+    """Persist one scheduler outcome in the existing daemon event ledger."""
+
+    if not (root / "ops.db").exists():
+        return
+    from polylogue.daemon.events import current_epoch_ms, emit_daemon_event
+
+    payload: dict[str, object] = {
+        "status": status,
+        "reason": reason,
+        "retryable": retryable,
+        "retry_route": "next enabled judgment-automation tick",
+        "batch_limit": batch_limit,
+    }
+    if result is not None:
+        payload.update(
+            considered=result.considered,
+            accepted=result.accepted,
+            rejected=result.rejected,
+            escalated=result.escalated,
+            idempotent=result.idempotent,
+            failed=result.failed,
+        )
+    observed_at_ms = current_epoch_ms() if now_ms is None else now_ms
+    try:
+        emit_daemon_event(
+            JUDGMENT_AUTOMATION_STAGE,
+            payload=payload,
+            archive_root_path=root,
+            observed_at_ms=observed_at_ms,
+        )
+    except Exception:
+        logger.warning("judgment_automation: scheduler receipt write failed", exc_info=True)
 
 
 def _coerce_confidence(value: object) -> float | None:
@@ -253,10 +300,26 @@ def run_judgment_automation_sweep_once(
         else parse_judgment_automation_policy(load_polylogue_config().judgment_automation_policy)
     )
     if not resolved_policy:
+        _record_judgment_automation_receipt(
+            root,
+            status="parked",
+            reason="policy_empty",
+            now_ms=now_ms,
+            batch_limit=batch_limit,
+            retryable=True,
+        )
         return JudgmentAutomationSweepResult()
 
     user_db = root / "user.db"
     if not user_db.exists():
+        _record_judgment_automation_receipt(
+            root,
+            status="parked",
+            reason="user_db_unavailable",
+            now_ms=now_ms,
+            batch_limit=batch_limit,
+            retryable=True,
+        )
         return JudgmentAutomationSweepResult()
 
     conn = open_connection(user_db)
@@ -264,6 +327,15 @@ def run_judgment_automation_sweep_once(
     try:
         candidates = list_assertion_candidates(conn, limit=batch_limit)
         if not candidates:
+            _record_judgment_automation_receipt(
+                root,
+                status="completed",
+                reason="queue_empty",
+                now_ms=now_ms,
+                batch_limit=batch_limit,
+                result=JudgmentAutomationSweepResult(),
+                retryable=False,
+            )
             return JudgmentAutomationSweepResult()
 
         decisions = {f"assertion:{c.assertion_id}": evaluate_candidate(c, resolved_policy) for c in candidates}
@@ -305,7 +377,7 @@ def run_judgment_automation_sweep_once(
             _write_escalation_handoff(conn, candidates_by_ref[ref], decisions[ref], now_ms=now_ms)
         conn.commit()
 
-        return JudgmentAutomationSweepResult(
+        result = JudgmentAutomationSweepResult(
             considered=len(candidates),
             accepted=accepted,
             rejected=rejected,
@@ -313,6 +385,27 @@ def run_judgment_automation_sweep_once(
             idempotent=idempotent,
             failed=failed,
         )
+        _record_judgment_automation_receipt(
+            root,
+            status="failed" if result.failed else "completed",
+            reason="candidate_judgment_failures" if result.failed else "sweep_completed",
+            now_ms=now_ms,
+            batch_limit=batch_limit,
+            result=result,
+            retryable=bool(result.failed),
+        )
+        return result
+    except Exception as exc:
+        conn.rollback()
+        _record_judgment_automation_receipt(
+            root,
+            status="failed",
+            reason=f"sweep_failed:{type(exc).__name__}",
+            now_ms=now_ms,
+            batch_limit=batch_limit,
+            retryable=True,
+        )
+        raise
     finally:
         conn.close()
 
@@ -340,10 +433,18 @@ async def periodic_judgment_automation_sweep(
         cfg = load_polylogue_config()
         interval = max(cfg.judgment_automation_interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)
         await asyncio.sleep(interval)
-        if not (cfg.judgment_automation_enabled and cfg.mcp_judge_enabled):
-            continue
         root = archive_root()
         if not root.exists():
+            continue
+        if not (cfg.judgment_automation_enabled and cfg.mcp_judge_enabled):
+            _record_judgment_automation_receipt(
+                root,
+                status="parked",
+                reason="capability_gate_disabled",
+                now_ms=None,
+                batch_limit=cfg.judgment_automation_batch_limit,
+                retryable=True,
+            )
             continue
         try:
             result = await daemon_write_coordinator().run_sync(
@@ -364,20 +465,46 @@ async def periodic_judgment_automation_sweep(
                 )
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
+                _record_judgment_automation_receipt(
+                    root,
+                    status="failed",
+                    reason="transient_sqlite_lock",
+                    now_ms=None,
+                    batch_limit=cfg.judgment_automation_batch_limit,
+                    retryable=True,
+                )
                 logger.info("judgment_automation: archive busy; retrying on next tick: %s", exc)
                 continue
+            _record_judgment_automation_receipt(
+                root,
+                status="failed",
+                reason="operational_error",
+                now_ms=None,
+                batch_limit=cfg.judgment_automation_batch_limit,
+                retryable=True,
+            )
             logger.warning("judgment_automation: sweep failed", exc_info=True)
         except Exception:
+            _record_judgment_automation_receipt(
+                root,
+                status="failed",
+                reason="sweep_exception",
+                now_ms=None,
+                batch_limit=cfg.judgment_automation_batch_limit,
+                retryable=True,
+            )
             logger.warning("judgment_automation: sweep failed", exc_info=True)
 
 
 __all__ = [
     "JUDGMENT_AUTOMATION_ACTOR_REF",
     "JUDGMENT_AUTOMATION_AUTHOR_KIND",
+    "JUDGMENT_AUTOMATION_STAGE",
     "JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS",
     "JudgmentAutomationDecision",
     "JudgmentAutomationDecisionKind",
     "JudgmentAutomationPolicyRule",
+    "JudgmentAutomationReceiptStatus",
     "JudgmentAutomationSweepResult",
     "evaluate_candidate",
     "parse_judgment_automation_policy",

@@ -34,9 +34,9 @@ def _events_db_path() -> Path:
     return archive_root() / "ops.db"
 
 
-def _ensure_events_db() -> sqlite3.Connection:
+def _ensure_events_db(path: Path | None = None) -> sqlite3.Connection:
     """Open and initialize the daemon events database for an emitter."""
-    path = _events_db_path()
+    path = _events_db_path() if path is None else path
     path.parent.mkdir(parents=True, exist_ok=True)
     initialize_archive_database(path, ArchiveTier.OPS)
     conn = open_daemon_connection(path)
@@ -115,14 +115,17 @@ def emit_daemon_event(
     *,
     operation_id: str | None = None,
     payload: dict[str, object] | None = None,
+    archive_root_path: Path | None = None,
+    observed_at_ms: int | None = None,
 ) -> None:
     """Emit a daemon event to the event ledger."""
-    conn = _ensure_events_db()
+    path = (archive_root() if archive_root_path is None else archive_root_path) / "ops.db"
+    conn = _ensure_events_db(path)
     try:
         conn.execute(
             "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
             (
-                current_epoch_ms(),
+                current_epoch_ms() if observed_at_ms is None else observed_at_ms,
                 kind,
                 operation_id,
                 json.dumps(payload or {}),

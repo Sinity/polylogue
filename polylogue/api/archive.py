@@ -1607,6 +1607,9 @@ def _archive_assertion_candidate_queue_health(
     producer_debt_count = 0
     scheduler_state: Literal["fresh", "stale", "stopped", "unknown"] = "unknown"
     scheduler_heartbeat_at_ms: int | None = None
+    judgment_scheduler_receipt_status: Literal["completed", "parked", "failed", "unknown"] = "unknown"
+    judgment_scheduler_receipt_at_ms: int | None = None
+    judgment_scheduler_receipt_reason: str | None = None
     caveats: list[str] = []
     ops_db = archive_root / "ops.db"
     if not ops_db.exists():
@@ -1661,6 +1664,36 @@ def _archive_assertion_candidate_queue_health(
                             scheduler_state = "fresh"
                         else:
                             scheduler_state = "stale"
+                if ops_conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daemon_events'"
+                ).fetchone():
+                    receipt_row = ops_conn.execute(
+                        """
+                        SELECT ts_ms, payload_json
+                        FROM daemon_events
+                        WHERE kind = 'judgment-automation'
+                        ORDER BY ts_ms DESC, rowid DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    if receipt_row is not None:
+                        try:
+                            receipt_payload = json.loads(str(receipt_row[1]))
+                        except (TypeError, ValueError):
+                            receipt_payload = {}
+                            caveats.append("latest judgment scheduler receipt is malformed")
+                        raw_status = (
+                            str(receipt_payload.get("status", "unknown"))
+                            if isinstance(receipt_payload, dict)
+                            else "unknown"
+                        )
+                        if raw_status in {"completed", "parked", "failed"}:
+                            judgment_scheduler_receipt_status = cast(
+                                Literal["completed", "parked", "failed"], raw_status
+                            )
+                        judgment_scheduler_receipt_at_ms = int(receipt_row[0])
+                        if isinstance(receipt_payload, dict) and receipt_payload.get("reason") is not None:
+                            judgment_scheduler_receipt_reason = str(receipt_payload["reason"])
             finally:
                 ops_conn.close()
         except sqlite3.Error as exc:
@@ -1675,12 +1708,31 @@ def _archive_assertion_candidate_queue_health(
         and producer_age_ms is not None
         and producer_age_ms <= 24 * 60 * 60 * 1000
     )
+    judgment_receipt_age_ms = (
+        None if judgment_scheduler_receipt_at_ms is None else max(0, observed_at_ms - judgment_scheduler_receipt_at_ms)
+    )
+    judgment_receipt_fresh = (
+        judgment_scheduler_receipt_status == "completed"
+        and judgment_receipt_age_ms is not None
+        and judgment_receipt_age_ms <= 24 * 60 * 60 * 1000
+    )
 
     state: AssertionCandidateQueueState
     if producer_debt_count or producer_status in failed_producer_statuses or scheduler_state in {"stale", "stopped"}:
         state = "producer-stalled"
     elif stale_pending_count:
         state = "stale-pending"
+    elif pending_count and judgment_scheduler_receipt_status in {"parked", "unknown"}:
+        state = "parked-pending"
+        if judgment_scheduler_receipt_status == "parked":
+            caveats.append("judgment scheduler is parked; the bounded retry route is the next enabled daemon tick")
+        else:
+            caveats.append("no judgment scheduler receipt is observable; pending candidates are not converged")
+    elif pending_count and (judgment_scheduler_receipt_status == "failed" or not judgment_receipt_fresh):
+        state = "scheduler-stalled"
+        caveats.append(
+            "judgment scheduler has no fresh successful receipt; the bounded retry route is the next daemon tick"
+        )
     elif pending_count:
         state = "pending"
     elif producer_fresh and scheduler_state == "fresh":
@@ -1710,6 +1762,10 @@ def _archive_assertion_candidate_queue_health(
         scheduler_state=scheduler_state,
         scheduler_heartbeat_at_ms=scheduler_heartbeat_at_ms,
         scheduler_heartbeat_age_ms=heartbeat_age_ms,
+        judgment_scheduler_receipt_status=judgment_scheduler_receipt_status,
+        judgment_scheduler_receipt_at_ms=judgment_scheduler_receipt_at_ms,
+        judgment_scheduler_receipt_age_ms=judgment_receipt_age_ms,
+        judgment_scheduler_receipt_reason=judgment_scheduler_receipt_reason,
         producer_debt_count=producer_debt_count,
         caveats=tuple(dict.fromkeys(caveats)),
     )

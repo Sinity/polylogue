@@ -15,6 +15,7 @@ from polylogue import Polylogue
 from polylogue.api.archive import _archive_assertion_candidate_queue_health
 from polylogue.config import Config
 from polylogue.core.enums import AssertionKind
+from polylogue.daemon.events import emit_daemon_event
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     add_convergence_debt,
@@ -105,6 +106,85 @@ def test_old_pending_candidates_remain_durable_and_visible(tmp_path: Path) -> No
         assert conn.execute("SELECT status FROM assertions WHERE assertion_id = 'candidate-old'").fetchone() == (
             "candidate",
         )
+
+
+def test_pending_queue_without_judgment_scheduler_receipt_is_parked(tmp_path: Path) -> None:
+    config = _initialize(tmp_path)
+    now_ms = 1_800_000_000_000
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="candidate-parked",
+            target_ref="session:queue-health",
+            kind=AssertionKind.LESSON,
+            body_text="A pending judgment candidate",
+            author_ref="agent:standing-queries",
+            author_kind="agent",
+            now_ms=now_ms - 25 * _DAY_MS,
+        )
+
+    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
+
+    assert health.state == "parked-pending"
+    assert health.pending_count == 1
+    assert health.judgment_scheduler_receipt_status == "unknown"
+    assert any("not converged" in caveat for caveat in health.caveats)
+
+
+def test_pending_queue_with_fresh_scheduler_receipt_is_active_pending(tmp_path: Path) -> None:
+    config = _initialize(tmp_path)
+    now_ms = 1_800_000_000_000
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="candidate-active",
+            target_ref="session:queue-health",
+            kind=AssertionKind.LESSON,
+            body_text="An actively draining judgment candidate",
+            author_ref="agent:standing-queries",
+            author_kind="agent",
+            now_ms=now_ms - 25 * _DAY_MS,
+        )
+    emit_daemon_event(
+        "judgment-automation",
+        archive_root_path=tmp_path,
+        observed_at_ms=now_ms - 60_000,
+        payload={"status": "completed", "reason": "sweep_completed", "retryable": False},
+    )
+
+    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
+
+    assert health.state == "pending"
+    assert health.judgment_scheduler_receipt_status == "completed"
+    assert health.judgment_scheduler_receipt_age_ms == 60_000
+
+
+def test_failed_scheduler_receipt_is_not_converged(tmp_path: Path) -> None:
+    config = _initialize(tmp_path)
+    now_ms = 1_800_000_000_000
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="candidate-failed",
+            target_ref="session:queue-health",
+            kind=AssertionKind.LESSON,
+            body_text="A retryable judgment candidate",
+            author_ref="agent:standing-queries",
+            author_kind="agent",
+            now_ms=now_ms - 25 * _DAY_MS,
+        )
+    emit_daemon_event(
+        "judgment-automation",
+        archive_root_path=tmp_path,
+        observed_at_ms=now_ms - 60_000,
+        payload={"status": "failed", "reason": "transient_sqlite_lock", "retryable": True},
+    )
+
+    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
+
+    assert health.state == "scheduler-stalled"
+    assert health.judgment_scheduler_receipt_status == "failed"
+    assert any("retry" in caveat for caveat in health.caveats)
 
 
 def test_producer_failure_or_debt_overrides_empty_queue(tmp_path: Path) -> None:

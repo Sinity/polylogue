@@ -17,6 +17,7 @@ independently granted).
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -143,6 +144,15 @@ def _init_user_db(path: Path) -> None:
         conn.close()
 
 
+def _init_ops_db(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _insert_candidate(
     root: Path,
     *,
@@ -262,6 +272,93 @@ def test_sweep_is_a_no_op_without_a_user_db(tmp_path: Path) -> None:
     assert result.considered == 0
 
 
+def test_sweep_receipt_and_bounded_retry_drain(tmp_path: Path) -> None:
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    for index in range(3):
+        _insert_candidate(tmp_path, assertion_id=f"cand-{index}", kind=AssertionKind.PATHOLOGY, confidence=0.95)
+    policy = {AssertionKind.PATHOLOGY: JudgmentAutomationPolicyRule(auto_accept_min_confidence=0.9)}
+
+    first = run_judgment_automation_sweep_once(tmp_path, batch_limit=2, policy=policy, now_ms=1_000)
+    second = run_judgment_automation_sweep_once(tmp_path, batch_limit=2, policy=policy, now_ms=2_000)
+
+    assert (first.accepted, first.considered) == (2, 2)
+    assert (second.accepted, second.considered) == (1, 1)
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT ts_ms, payload_json
+            FROM daemon_events
+            WHERE kind = 'judgment-automation'
+            ORDER BY ts_ms DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    receipt = json.loads(row[1])
+    assert receipt["status"] == "completed"
+    assert row[0] == 2_000
+    assert receipt["accepted"] == 1
+
+
+def test_empty_policy_receipt_parks_pending_queue_for_safe_retry(tmp_path: Path) -> None:
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    _insert_candidate(tmp_path, assertion_id="cand-parked", kind=AssertionKind.PATHOLOGY, confidence=0.95)
+
+    result = run_judgment_automation_sweep_once(tmp_path, batch_limit=200, policy={}, now_ms=3_000)
+
+    assert result.considered == 0
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT ts_ms, payload_json
+            FROM daemon_events
+            WHERE kind = 'judgment-automation'
+            ORDER BY ts_ms DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    receipt = json.loads(row[1])
+    assert receipt["status"] == "parked"
+    assert receipt["reason"] == "policy_empty"
+    assert receipt["retryable"] is True
+
+
+def test_failed_sweep_rolls_back_user_judgment_and_records_retryable_receipt(tmp_path: Path) -> None:
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    _insert_candidate(tmp_path, assertion_id="cand-failed", kind=AssertionKind.PATHOLOGY, confidence=0.95)
+    policy = {AssertionKind.PATHOLOGY: JudgmentAutomationPolicyRule(auto_accept_min_confidence=0.9)}
+
+    with patch(
+        "polylogue.storage.sqlite.archive_tiers.user_write.judge_assertion_candidates",
+        side_effect=RuntimeError("forced scheduler failure"),
+    ):
+        with pytest.raises(RuntimeError, match="forced scheduler failure"):
+            run_judgment_automation_sweep_once(tmp_path, batch_limit=200, policy=policy, now_ms=4_000)
+
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert conn.execute("SELECT status FROM assertions WHERE assertion_id = 'cand-failed'").fetchone() == (
+            AssertionStatus.CANDIDATE.value,
+        )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT ts_ms, payload_json
+            FROM daemon_events
+            WHERE kind = 'judgment-automation'
+            ORDER BY ts_ms DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    receipt = json.loads(row[1])
+    assert receipt["status"] == "failed"
+    assert receipt["retryable"] is True
+
+
 # ---------------------------------------------------------------------------
 # Periodic loop: dual capability gate
 # ---------------------------------------------------------------------------
@@ -287,7 +384,7 @@ async def _run_one_tick() -> None:
     [(False, True), (True, False), (False, False)],
 )
 def test_periodic_sweep_never_judges_without_both_capability_flags(
-    automation_enabled: bool, judge_enabled: bool
+    automation_enabled: bool, judge_enabled: bool, tmp_path: Path
 ) -> None:
     """The sweep must not exercise judge authority on a single flag alone.
 
@@ -308,6 +405,7 @@ def test_periodic_sweep_never_judges_without_both_capability_flags(
     with (
         patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
         patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path / "nonexistent-test-archive"),
     ):
         asyncio.run(_run_one_tick())
 

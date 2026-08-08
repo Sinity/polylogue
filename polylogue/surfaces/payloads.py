@@ -2207,6 +2207,8 @@ AssertionCandidateQueueState: TypeAlias = Literal[
     "healthy-empty",
     "empty-unverified",
     "pending",
+    "parked-pending",
+    "scheduler-stalled",
     "stale-pending",
     "producer-stalled",
     "unavailable",
@@ -2235,6 +2237,10 @@ class AssertionCandidateQueueHealthPayload(SurfacePayloadModel):
     scheduler_state: Literal["fresh", "stale", "stopped", "unknown"] = "unknown"
     scheduler_heartbeat_at_ms: int | None = None
     scheduler_heartbeat_age_ms: int | None = None
+    judgment_scheduler_receipt_status: Literal["completed", "parked", "failed", "unknown"] = "unknown"
+    judgment_scheduler_receipt_at_ms: int | None = None
+    judgment_scheduler_receipt_age_ms: int | None = None
+    judgment_scheduler_receipt_reason: str | None = None
     producer_debt_count: int = 0
     caveats: tuple[str, ...] = ()
 
