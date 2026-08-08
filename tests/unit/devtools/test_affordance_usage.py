@@ -395,6 +395,46 @@ def test_affordance_usage_marks_selected_index_snapshot_unstable_after_change(
     assert identity["no_concurrent_commits"] is False
 
 
+def test_affordance_usage_rejects_unlinked_selected_index_as_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An open SQLite handle does not make an unlinked evidence path citable."""
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    real_observation = affordance_usage._snapshot_observation
+    unlinked = False
+
+    def unlink_before_observation(path: Path) -> dict[str, object]:
+        nonlocal unlinked
+        if not unlinked:
+            path.unlink()
+            unlinked = True
+        return real_observation(path)
+
+    monkeypatch.setattr(affordance_usage, "_snapshot_observation", unlink_before_observation)
+    report = affordance_usage.build_report(
+        affordance_usage.AffordanceUsageArgs(
+            archive_root=archive_root,
+            out_dir=None,
+            days=36500,
+            family=("serena",),
+            detail_pattern=(),
+            sample_limit=10,
+            json=True,
+            all_time=False,
+            index_db=selected_db,
+        )
+    )
+
+    identity = report["snapshot_identity"]
+    assert report["index_schema_version"] == 18
+    assert identity["before"]["present"] is False
+    assert identity["after"]["present"] is False
+    assert identity["before"]["observation_complete"] is False
+    assert identity["after"]["observation_complete"] is False
+    assert identity["stable"] is False
+
+
 def test_affordance_usage_snapshot_includes_a_quiescent_wal_file_set(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     selected_db = _make_index_db(archive_root)

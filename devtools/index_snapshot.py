@@ -32,6 +32,12 @@ def snapshot_index_file_set(index_db: Path) -> dict[str, Any]:
         try:
             metadata_before = path.stat()
         except FileNotFoundError:
+            if path == index_db:
+                # A missing sidecar is a normal quiescent SQLite state; a
+                # missing selected database is not evidence of an observed
+                # snapshot, even when an already-open connection can still
+                # serve reads from the unlinked inode.
+                complete = False
             files.append({"path": str(path), "present": False})
             continue
         try:

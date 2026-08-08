@@ -1401,25 +1401,26 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         assert_owns_archive_location(owned, location)
         require_rebuild_schema_currency(root)
         raw_count = count_source_raw_sessions(root)
+        if initial_provenance_error is not None:
+            # A resumable request that failed admission must retire its
+            # transaction before any empty-source shortcut can turn the same
+            # invalid operation into a successful receipt.
+            with RebuildLease(root):
+                _mark_rebuild_transaction_stale_after_provenance_failure(
+                    root, request.operation_id, initial_provenance_error
+                )
+            raise initial_provenance_error
         if raw_count == 0:
             return _empty_source_receipt(root, consumed_evidence)
-        if initial_provenance_error is None:
-            consumed_evidence = _validate_rebuild_provenance_receipt(
-                root,
-                request.schema_inference_receipt_path,
-                inventory_token=cast(
-                    dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})
-                ),
-            )
+        consumed_evidence = _validate_rebuild_provenance_receipt(
+            root,
+            request.schema_inference_receipt_path,
+            inventory_token=cast(dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})),
+        )
         # The lease is itself lifecycle state guarded by the provenance gate.
         # Revalidate again under the lease immediately before the owned body
         # can create or mutate a candidate/transaction.
         with RebuildLease(root):
-            if initial_provenance_error is not None:
-                _mark_rebuild_transaction_stale_after_provenance_failure(
-                    root, request.operation_id, initial_provenance_error
-                )
-                raise initial_provenance_error
             try:
                 consumed_evidence = _validate_rebuild_provenance_receipt(
                     root,

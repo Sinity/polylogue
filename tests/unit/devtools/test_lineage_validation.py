@@ -499,6 +499,37 @@ def test_lineage_validation_rejects_commit_between_reader_snapshot_and_file_hash
     assert "index received a concurrent commit during the read-only census" in report["verdict"]["reasons"]
 
 
+def test_lineage_validation_rejects_unlinked_selected_index_as_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An open SQLite handle does not make an unlinked evidence path citable."""
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    original_snapshot_identity = lineage_validation._snapshot_identity
+    unlinked = False
+
+    def unlink_before_observation(index_db: Path) -> dict[str, object]:
+        nonlocal unlinked
+        if not unlinked:
+            index_db.unlink()
+            unlinked = True
+        return original_snapshot_identity(index_db)
+
+    monkeypatch.setattr(lineage_validation, "_snapshot_identity", unlink_before_observation)
+    report = lineage_validation.build_report(_args(archive_root))
+
+    identity = report["snapshot_identity"]
+    assert report["index_db"] == str(db.resolve())
+    assert identity["before"]["present"] is False
+    assert identity["after"]["present"] is False
+    assert identity["before"]["observation_complete"] is False
+    assert identity["after"]["observation_complete"] is False
+    assert identity["observation_complete"] is False
+    assert identity["stable"] is False
+    assert report["verdict"]["external_counts_citable"] is False
+    assert "index file-set observation was incomplete" in report["verdict"]["reasons"]
+
+
 def test_lineage_validation_rejects_budget_exhaustion_as_cycle_proof(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     db = _make_index_db(archive_root)

@@ -894,9 +894,14 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
 
         snapshot_after = _snapshot_identity(index_db)
         observer_data_version_after = _data_version(observer)
+        observations_complete = bool(
+            snapshot_before.get("observation_complete") and snapshot_after.get("observation_complete")
+        )
         file_set_stable = snapshot_before["sha256"] == snapshot_after["sha256"]
         no_concurrent_commits = observer_data_version_before == observer_data_version_after
-        snapshot_stable = file_set_stable and no_concurrent_commits
+        snapshot_stable = observations_complete and file_set_stable and no_concurrent_commits
+        if not observations_complete:
+            reasons.append("index file-set observation was incomplete")
         if not file_set_stable:
             reasons.append("index file set changed during the read-only census")
         if not no_concurrent_commits:
@@ -904,6 +909,7 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
         snapshot_identity = {
             "before": snapshot_before,
             "after": snapshot_after,
+            "observation_complete": observations_complete,
             "file_set_stable": file_set_stable,
             "observer_data_version_before": observer_data_version_before,
             "observer_data_version_after": observer_data_version_after,

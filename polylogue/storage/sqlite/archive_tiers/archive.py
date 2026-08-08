@@ -1650,6 +1650,10 @@ class InactiveCandidateDurableWriteError(RuntimeError):
     """An inactive generation attempted to mutate read-through durable state."""
 
 
+class ReadOnlyArchiveError(RuntimeError):
+    """A read-only archive evidence store received a mutation request."""
+
+
 class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
     """Read frozen blob bytes while refusing candidate publication attempts."""
 
@@ -1950,6 +1954,11 @@ class ArchiveStore:
             self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
         self._attach_user_tier_if_present()
 
+    def _require_writable(self, operation: str) -> None:
+        """Reject mutations before they can open or use a writable tier."""
+        if self._read_only:
+            raise ReadOnlyArchiveError(f"read-only archive evidence cannot {operation}")
+
     @classmethod
     def open_existing(
         cls,
@@ -2078,7 +2087,7 @@ class ArchiveStore:
     def _ensure_source_conn(self) -> sqlite3.Connection:
         """Return the persistent source.db write connection, opening it lazily."""
         if self._source_conn is None:
-            if self._inactive_candidate_durable_read_only:
+            if self._read_only or self._inactive_candidate_durable_read_only:
                 conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
                 conn.execute("PRAGMA query_only = ON")
             else:
@@ -2089,6 +2098,7 @@ class ArchiveStore:
 
     def _open_user_write_connection(self, *, initialize: bool = False) -> sqlite3.Connection:
         """Open user.db for mutation unless this store is an inactive candidate."""
+        self._require_writable("mutate user.db")
         if self._inactive_candidate_durable_read_only:
             raise InactiveCandidateDurableWriteError(
                 "inactive candidate generations may read frozen user assertions but may not mutate user.db"
@@ -2134,6 +2144,7 @@ class ArchiveStore:
 
     def write_parsed(self, session: ParsedSession, *, content_hash: str | None = None) -> str:
         """Write a parsed session to index.db."""
+        self._require_writable("write index.db")
         acquired, refs = self._preacquire_attachment_blobs(
             session,
             source_path=f"session:{session.provider_session_id}",
@@ -2303,6 +2314,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
         finalize_raw_parse: bool = True,
     ) -> tuple[str, str]:
+        self._require_writable("write source.db and index.db")
         return write_raw_and_parsed(
             self,
             session,
@@ -2333,6 +2345,7 @@ class ArchiveStore:
         revision: RawRevisionEnvelope | None = None,
         post_parse: bool = False,
     ) -> str:
+        self._require_writable("write source.db raw evidence")
         return write_raw_payload(
             self,
             provider=provider,
@@ -2368,6 +2381,7 @@ class ArchiveStore:
         but NO ``raw_sessions`` row, so a hook can never materialize into a
         standalone empty session (polylogue-31r1).
         """
+        self._require_writable("write source.db hook evidence")
         if self._blob_publisher is None:
             raise RuntimeError("raw archive writes require a writable archive publisher")
         raw_hash, _raw_size = self._blob_publisher.write_from_bytes(payload)
@@ -2395,6 +2409,7 @@ class ArchiveStore:
 
     def delete_hook_event(self, hook_event_id: str) -> bool:
         """Delete a hook event and its source-tier payload reference."""
+        self._require_writable("delete source.db hook evidence")
         return delete_source_hook_event(self._ensure_source_conn(), hook_event_id)
 
     def write_raw_blob_ref(
@@ -2412,6 +2427,7 @@ class ArchiveStore:
         revision: RawRevisionEnvelope | None = None,
         post_parse: bool = False,
     ) -> str:
+        self._require_writable("write source.db blob reference")
         return write_raw_blob_ref(
             self,
             provider=provider,
@@ -2443,6 +2459,7 @@ class ArchiveStore:
 
         See :func:`polylogue.storage.sqlite.archive_tiers.revision_governance.admit_raw_artifact_payload`.
         """
+        self._require_writable("admit source.db artifact")
         return admit_raw_artifact_payload(
             self,
             provider=provider,
@@ -2469,6 +2486,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
     ) -> RawAdmissionResult:
         """Route a prepublished non-conversational blob through typed admission."""
+        self._require_writable("admit source.db artifact blob reference")
         return admit_raw_artifact_blob_ref(
             self,
             provider=provider,
@@ -2496,6 +2514,7 @@ class ArchiveStore:
         finalize_raw_parse: bool = True,
         revision_authoritative: bool = False,
     ) -> tuple[str, str]:
+        self._require_writable("write retained source.db and index.db evidence")
         return write_parsed_for_retained_raw(
             self,
             session,
@@ -2524,6 +2543,7 @@ class ArchiveStore:
         finalize_raw_parse: bool = True,
         revision_authoritative: bool = False,
     ) -> ArchiveRawParsedWriteResult:
+        self._require_writable("write retained source.db and index.db evidence")
         return write_parsed_for_retained_raw_result(
             self,
             session,
@@ -2539,9 +2559,11 @@ class ArchiveStore:
         )
 
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True) -> None:
+        self._require_writable("bind source.db revision")
         return bind_raw_revision(self, raw_id, revision, manage_transaction=manage_transaction)
 
     def release_provisional_full_revisions(self, raw_ids: Sequence[str]) -> None:
+        self._require_writable("release source.db revisions")
         return release_provisional_full_revisions(self, raw_ids)
 
     def raw_full_revision_generation(self, logical_source_key: str) -> int:
@@ -2676,6 +2698,7 @@ class ArchiveStore:
         retire_full_revision_governance: bool = False,
         manage_transaction: bool = True,
     ) -> None:
+        self._require_writable("replace source.db membership census")
         return replace_raw_membership_census(
             self,
             raw_id,
@@ -2742,6 +2765,7 @@ class ArchiveStore:
         raw_ids: Sequence[str],
         sessions: Sequence[ParsedSession],
     ) -> None:
+        self._require_writable("defer source.db revision adoption")
         return defer_raw_revision_adoption(self, logical_source_key, raw_ids, sessions)
 
     def apply_raw_revision_replay(
@@ -2759,6 +2783,7 @@ class ArchiveStore:
         skip_already_applied: bool = False,
         prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
+        self._require_writable("apply source.db revision replay")
         return apply_raw_revision_replay(
             self,
             plan,
@@ -2789,6 +2814,7 @@ class ArchiveStore:
         bulk_build: bool = False,
         defer_fts: bool = False,
     ) -> str | None:
+        self._require_writable("apply source.db membership classification")
         return apply_raw_membership_classification(
             self,
             logical_source_key,
@@ -2805,6 +2831,7 @@ class ArchiveStore:
         )
 
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
+        self._require_writable("finalize source.db parse state")
         return finalize_raw_parse_state(self, raw_id, state=state)
 
     def mark_raw_parse_failed(
@@ -2815,6 +2842,7 @@ class ArchiveStore:
         error: BaseException,
         preserve_existing_failure_evidence: bool = False,
     ) -> None:
+        self._require_writable("mark source.db parse failure")
         return mark_raw_parse_failed(
             self,
             raw_id,
@@ -2833,6 +2861,7 @@ class ArchiveStore:
         acquired_at_ms: int,
         kind: RawFailureEvidenceKind,
     ) -> None:
+        self._require_writable("record source.db failure evidence")
         return record_raw_failure_evidence(
             self,
             raw_id,
@@ -2844,6 +2873,7 @@ class ArchiveStore:
         )
 
     def mark_raw_parse_succeeded(self, raw_id: str, *, provider: Provider) -> None:
+        self._require_writable("mark source.db parse success")
         return mark_raw_parse_succeeded(self, raw_id, provider=provider)
 
     def _flush_pending_raw_parse_states(self) -> None:
@@ -2904,6 +2934,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
         finalize_raw_parse: bool = True,
     ) -> ArchiveRawParsedWriteResult:
+        self._require_writable("write source.db and index.db evidence")
         return write_raw_and_parsed_result(
             self,
             session,
@@ -2943,6 +2974,7 @@ class ArchiveStore:
         ``logical_source_key``); use :meth:`write_raw_and_parsed_result` for
         callers with revision-chain/dedup semantics of their own.
         """
+        self._require_writable("admit source.db and index.db evidence")
         return admit_raw_and_parsed_result(
             self,
             session,
@@ -2976,6 +3008,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
         finalize_raw_parse: bool = True,
     ) -> tuple[str, str]:
+        self._require_writable("write source.db blob and index.db evidence")
         return write_raw_blob_and_parsed(
             self,
             session,
@@ -3008,6 +3041,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
         finalize_raw_parse: bool = True,
     ) -> ArchiveRawParsedWriteResult:
+        self._require_writable("write source.db blob and index.db evidence")
         return write_raw_blob_and_parsed_result(
             self,
             session,
@@ -4527,6 +4561,7 @@ class ArchiveStore:
 
     def rebuild_index(self) -> int:
         """Rebuild the block FTS index from index.db blocks."""
+        self._require_writable("rebuild index.db")
         rebuilt_rows = rebuild_archive_messages_fts(self._conn)
         self._conn.commit()
         return rebuilt_rows
@@ -4587,6 +4622,7 @@ class ArchiveStore:
 
     def remove_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
         """Mark user tag assertions deleted and return deleted row count."""
+        self._require_writable("delete user.db tags")
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids or not self.user_db_path.exists():
             return 0
@@ -6172,6 +6208,7 @@ class ArchiveStore:
         left ungated deliberately rather than folding a third guard in for a
         cost that was never implicated by the incident.
         """
+        self._require_writable("delete index.db sessions")
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids:
             return 0

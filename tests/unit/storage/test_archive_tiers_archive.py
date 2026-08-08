@@ -27,7 +27,13 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
 )
 from polylogue.storage.sqlite.action_relation import action_relation_select_sql
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveQueryUnitAggregateRow, ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive import (
+    ArchiveQueryUnitAggregateRow,
+    ArchiveStore,
+    ReadOnlyArchiveError,
+)
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_metadata,
     assertion_id_for_session_tag,
@@ -72,6 +78,77 @@ def test_open_existing_read_timeout_updates_busy_timeout(tmp_path: Path) -> None
         busy_timeout_ms = facade._conn.execute("PRAGMA busy_timeout").fetchone()[0]
 
     assert busy_timeout_ms == 250
+
+
+def test_pinned_read_only_store_blocks_all_archive_tier_mutations(tmp_path: Path) -> None:
+    """Pinned evidence reads never open writable source, index, or user tiers."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-pinned-read-only",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="pinned evidence")],
+            )
+        ],
+    )
+    hook_event_id = "pinned-hook-event"
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        session_id = archive.write_parsed(session)
+        archive.add_user_tags((session_id,), ("pinned",))
+        archive.write_hook_event(
+            provider=Provider.CODEX,
+            payload=b'{"event":"PostToolUse"}',
+            source_path="hooks/pinned.jsonl",
+            acquired_at_ms=1_700_000_000_000,
+            hook_event=ArchiveHookEvent(
+                hook_event_id=hook_event_id,
+                origin=Origin.CODEX_SESSION,
+                source_path="hooks/pinned.jsonl",
+                event_type="PostToolUse",
+                payload={"event": "PostToolUse"},
+                observed_at_ms=1_700_000_000_000,
+                native_id="pinned-hook-native",
+                session_native_id="codex-pinned-read-only",
+            ),
+        )
+
+    def durable_counts() -> tuple[int, int, int, int, int]:
+        with sqlite3.connect(root / "source.db") as source:
+            source_counts = (
+                int(source.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0]),
+                int(source.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0]),
+            )
+        with sqlite3.connect(root / "user.db") as user:
+            user_count = int(user.execute("SELECT COUNT(*) FROM assertions").fetchone()[0])
+        with sqlite3.connect(root / "index.db") as index:
+            index_counts = (
+                int(index.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]),
+                int(index.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]),
+            )
+        return (*source_counts, user_count, *index_counts)
+
+    before = durable_counts()
+    index_path = (root / "index.db").resolve()
+    with ArchiveStore.open_existing(root, read_only=True, index_path=index_path) as archive:
+        assert archive.read_session(session_id).session_id == session_id
+        assert archive.list_user_tags() == {"pinned": 1}
+        hook_summary = archive.hook_event_summary_for_session(session_id)
+        assert hook_summary is not None
+        assert hook_summary["total"] == 1
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.delete_hook_event(hook_event_id)
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.add_user_tags((session_id,), ("blocked",))
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.delete_sessions((session_id,))
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.rebuild_index()
+
+    assert durable_counts() == before
 
 
 def test_archive_tiers_archive_facade_sorts_search_matches(tmp_path: Path) -> None:
