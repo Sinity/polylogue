@@ -1726,31 +1726,17 @@ class DelegationQueryRowPayload(SurfacePayloadModel):
             evidence_refs.append(f"message:{row.instruction_message_id}")
         if row.artifact_block_id is not None:
             evidence_refs.append(f"block:{row.artifact_block_id}")
-        return cls(
+        return cls._from_row_generic(
+            row,
             delegation_ref=_delegation_ref(row),
-            parent_session_id=row.parent_session_id,
-            child_session_id=row.child_session_id,
-            parent_origin=row.parent_origin,
-            mapping_state=row.mapping_state,
             evidence_basis="action" if row.instruction_tool_use_block_id is not None else "edge",
-            instruction_message_id=row.instruction_message_id,
-            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
             instruction_preview=instruction_preview,
             instruction_sha256=instruction_sha256,
             instruction_truncated=instruction_truncated,
-            artifact_block_id=row.artifact_block_id,
             artifact_preview=artifact_preview,
             artifact_sha256=artifact_sha256,
             artifact_truncated=artifact_truncated,
-            dispatch_turn_model=row.dispatch_turn_model,
-            requested_model=row.requested_model,
-            child_session_dominant_model=row.child_session_dominant_model,
             result_is_error=None if row.result_is_error is None else bool(row.result_is_error),
-            result_exit_code=row.result_exit_code,
-            result_status=row.result_status,
-            link_confidence=row.link_confidence,
-            link_method=row.link_method,
-            inheritance=row.inheritance,
             evidence_refs=tuple(evidence_refs),
         )
 
@@ -2830,15 +2816,7 @@ class DelegationAncestryNodePayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveDelegationAncestryRow) -> DelegationAncestryNodePayload:
-        return cls(
-            session_id=row.session_id,
-            depth=row.depth,
-            child_session_id=row.child_session_id,
-            mapping_state=row.mapping_state,
-            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
-            link_confidence=row.link_confidence,
-            link_method=row.link_method,
-        )
+        return cls._from_row_generic(row)
 
 
 class DelegationSubtreeNodePayload(SurfacePayloadModel):
@@ -2862,15 +2840,7 @@ class DelegationSubtreeNodePayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveDelegationSubtreeRow) -> DelegationSubtreeNodePayload:
-        return cls(
-            session_id=row.session_id,
-            depth=row.depth,
-            parent_session_id=row.parent_session_id,
-            mapping_state=row.mapping_state,
-            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
-            link_confidence=row.link_confidence,
-            link_method=row.link_method,
-        )
+        return cls._from_row_generic(row)
 
 
 class DelegationAncestryPayload(SurfacePayloadModel):
@@ -2972,11 +2942,9 @@ class ObservedEventQueryRowPayload(SurfacePayloadModel):
     @classmethod
     def from_row(cls, row: ArchiveObservedEventQueryRow) -> ObservedEventQueryRowPayload:
         event = row.event
-        return cls(
+        return cls._from_row_generic(
+            row,
             event_ref=event.event_ref.format(),
-            session_id=row.session_id,
-            origin=row.origin,
-            title=row.title,
             kind=event.kind,
             summary=event.summary,
             delivery_state=event.delivery_state,
@@ -3019,11 +2987,9 @@ class ContextSnapshotQueryRowPayload(SurfacePayloadModel):
     @classmethod
     def from_row(cls, row: ArchiveContextSnapshotQueryRow) -> ContextSnapshotQueryRowPayload:
         snapshot = row.snapshot
-        return cls(
+        return cls._from_row_generic(
+            row,
             snapshot_ref=snapshot.snapshot_ref.format(),
-            session_id=row.session_id,
-            origin=row.origin,
-            title=row.title,
             run_ref=snapshot.run_ref.format(),
             boundary=snapshot.boundary,
             inheritance_mode=snapshot.inheritance_mode,
@@ -3080,11 +3046,9 @@ class RunQueryRowPayload(SurfacePayloadModel):
     @classmethod
     def from_row(cls, row: ArchiveRunQueryRow) -> RunQueryRowPayload:
         run = row.run
-        return cls(
+        return cls._from_row_generic(
+            row,
             run_ref=run.run_ref.format(),
-            session_id=row.session_id,
-            origin=row.origin,
-            title=row.title,
             native_session_id=run.native_session_id,
             native_parent_session_id=run.native_parent_session_id,
             parent_run_ref=run.parent_run_ref.format() if run.parent_run_ref is not None else None,
