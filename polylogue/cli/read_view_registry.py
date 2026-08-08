@@ -15,6 +15,12 @@ from polylogue.archive.viewport import read_view_choices
 ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "none"]
 ReadViewOptionName = str
 
+# Selection cardinality is shared by every read projection.  It is carried
+# through the read command for query-set and body-window projections, so it is
+# not a view-owned option even though some handlers consume the resulting
+# value.
+READ_VIEW_GLOBAL_OPTION_NAMES = frozenset({"limit", "offset"})
+
 
 MESSAGE_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset"})
 CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
@@ -22,12 +28,6 @@ CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
     {
         "max_sessions",
         "no_redact",
-        "context_origin",
-        "context_query",
-        "project_path",
-        "project_repo",
-        "since",
-        "until",
     }
 )
 NEIGHBOR_READ_VIEW_OPTION_NAMES = frozenset({"limit", "window_hours"})
@@ -107,6 +107,7 @@ __all__ = [
     "MESSAGE_READ_VIEW_OPTION_NAMES",
     "NEIGHBOR_READ_VIEW_OPTION_NAMES",
     "READ_VIEW_HANDLER_METADATA",
+    "READ_VIEW_GLOBAL_OPTION_NAMES",
     "ReadViewHandlerMetadata",
     "ReadViewOptionName",
     "ReadViewSessionPolicy",

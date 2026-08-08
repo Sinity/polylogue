@@ -10,10 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import pytest
+from click.testing import CliRunner
 
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli import query_verbs, read_view_handlers
+from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
@@ -509,12 +511,6 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "confidence_threshold": 0.3,
         "github_api": True,
         "related_limit": 5,
-        "project_path": None,
-        "project_repo": None,
-        "since": None,
-        "until": None,
-        "context_origin": None,
-        "context_query": None,
         "max_sessions": 5,
         "max_tokens": None,
         "include_assertions": False,
@@ -812,28 +808,29 @@ def test_read_verb_context_image_invokes_pack_view() -> None:
     """read --view context-image compiles a ContextImage via context_image_payload."""
     from polylogue.context.compiler import ContextImage
 
-    _, child = _context_pair(query_terms=())
+    _, child = _context_pair(query_terms=("repo:polylogue",))
     child.obj.polylogue = SimpleNamespace(context_image_payload=MagicMock(name="context_image_payload"))
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
     image = ContextImage(spec=ContextSpec(seed_query="cost", read_views=("messages",)), segments=())
     with (
+        patch("polylogue.cli.query_verbs._resolve_query_action_session_ids", return_value=[]),
         patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=image),
         patch("polylogue.cli.read_views.base.deliver_content") as deliver,
     ):
-        wrapped(child, **_read_verb_kwargs(view="context-image", context_query="cost", max_sessions=3))
+        wrapped(child, **_read_verb_kwargs(view="context-image", max_sessions=3))
 
     child.obj.polylogue.context_image_payload.assert_called_once()
     kwargs = child.obj.polylogue.context_image_payload.call_args.kwargs
-    assert kwargs["query"] == "cost"
+    assert kwargs["query"] == "repo:polylogue"
     assert kwargs["max_sessions"] == 3
     deliver.assert_called_once()
     delivered = deliver.call_args.args[1]
     assert delivered.startswith("context: 0 segment(s), 0 omission(s)")
-    assert "query=cost" in delivered
+    assert "query=repo:polylogue" in delivered
     assert "limit 3" in delivered
-    assert "- Selection query: cost" not in delivered
+    assert "- Selection query: repo:polylogue" not in delivered
 
 
 def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None:
@@ -1305,6 +1302,7 @@ def test_exact_read_summaries_resolves_id_without_query_enumeration(tmp_path: Pa
         session_id="codex-session:abc",
         origin="codex-session",
         title="Exact",
+        display_label="Exact",
         created_at="2026-07-03T09:00:00+00:00",
         updated_at=None,
         working_directories=(),
@@ -1560,6 +1558,27 @@ def test_explicit_read_view_options_reports_command_line_values_only() -> None:
     ctx.set_parameter_source("related_limit", click.core.ParameterSource.DEFAULT)
 
     assert query_verbs._explicit_read_view_options(ctx) == frozenset()
+
+
+def test_read_parser_rejects_inapplicable_view_option_before_dispatch() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        click_cli,
+        ["--plain", "read", "--view", "transcript", "--window-hours", "48"],
+    )
+
+    assert result.exit_code == 2
+    assert "read --view transcript does not expose --window-hours" in result.output
+
+
+def test_read_help_exposes_only_selected_view_options() -> None:
+    runner = CliRunner()
+    result = runner.invoke(query_verbs.read_verb, ["--view", "neighbors", "--help"])
+
+    assert result.exit_code == 0
+    assert "--window-hours" in result.output
+    assert "--confidence-threshold" not in result.output
+    assert "  --max-sessions" not in result.output
 
 
 def test_resolve_target_session_id_uses_explicit_conv_id() -> None:

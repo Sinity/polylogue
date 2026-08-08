@@ -287,7 +287,7 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
       polylogue find id:abc then read --view context --related-limit 5
       polylogue find 'cost tracking' then read --view context-image --max-sessions 5
-      polylogue read --view context-image --project-repo github.com/Sinity/polylogue --since 2026-01-01
+      polylogue find 'repo:github.com/Sinity/polylogue since:2026-01-01' then read --view context-image
       polylogue read --views
       polylogue read --views --format json
       polylogue find 'repo:polylogue' then read --view temporal,chronicle --spec
@@ -337,44 +337,12 @@ Cardinality and pagination:
   --offset INTEGER         Pagination offset.
   --first                  Read the first matched session only.
 
-Context-image projection:
-  --project-path TEXT     Filter by cwd prefix pattern (--view context-image).
-  --project-repo TEXT     Filter by git repo URL or name (--view context-
-                          image).
-  --since TEXT            Start date, ISO 8601 (--view context-image).
-  --until TEXT            End date, ISO 8601 (--view context-image).
-  --context-origin TEXT   Source-origin filter (--view context-image).
-  --query TEXT            Free-text query (--view context-image).
-  --max-sessions INTEGER  Max sessions, 1-20 (--view context-image).
-                          [default: 5]
-  --max-tokens INTEGER    Bound accumulated output to a token budget; over-
-                          budget segments are reported as omissions.
-  --include-assertions    Include context-inject assertion claims in the
-                          compiled context image.
-  --no-redact             Do not redact filesystem paths (--view context-
-                          image).
-
-Context and neighbor views:
-  --window-hours INTEGER   Neighboring time window around the seed session
-                           (--view neighbors).  [default: 24]
-  --related-limit INTEGER  Number of related sessions to include (--view
-                           context).  [default: 5]
-
-Correlation view:
-  --repo-path TEXT                Git repository path for correlation (--view
-                                  correlation). Defaults to the session's
-                                  repo/cwd.
-  --since-hours INTEGER           Hours before/after the session to scan for
-                                  commits (--view correlation).  [default: 2]
-  --confidence-threshold FLOAT    Minimum confidence for file-overlap commit
-                                  detection (--view correlation).  [default:
-                                  0.3]
-  --github-api / --no-github-api  Cross-reference issue/PR refs with the
-                                  GitHub API via gh CLI (--view correlation).
-
 Other options:
-  --full  Read a full single-session body for views that paginate.
-  --help  Show this message and exit.
+  --max-tokens INTEGER  Bound accumulated output to a token budget; over-
+                        budget segments are reported as omissions.
+  --include-assertions  Include context-inject assertion claims in the
+                        compiled context image.
+  --help                Show this message and exit.
 ```
 
 ## Select Verb

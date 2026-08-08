@@ -663,6 +663,28 @@ def test_query_action_read_cardinality_completion_per_shell(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_action_read_view_scopes_view_option_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Selected read views complete only their own view-specific options."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = dict(
+        _run_completion_for_partial(shell, comp_cls, ["find", "id:abc", "then", "read", "--view", "neighbors"], "--")
+    )
+
+    assert "--window-hours" in items
+    assert "--confidence-threshold" not in items
+    assert "--max-sessions" not in items
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 def test_query_action_read_format_completion_uses_selected_view_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],
