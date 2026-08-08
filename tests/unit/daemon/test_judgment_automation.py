@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -38,7 +39,10 @@ from polylogue.daemon.judgment_automation import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ArchiveAssertionBulkJudgmentItemEnvelope,
     ArchiveAssertionEnvelope,
+    judge_assertion_candidates,
+    list_assertion_candidates,
     list_assertion_claims,
     read_assertion_envelope,
     upsert_assertion,
@@ -566,13 +570,40 @@ def test_periodic_receipt_write_failure_uses_one_serialized_fallback(tmp_path: P
     """
     _init_user_db(tmp_path / "user.db")
     _init_ops_db(tmp_path / "ops.db")
-    _insert_candidate(tmp_path, assertion_id="cand-receipt-failure", kind=AssertionKind.PATHOLOGY, confidence=0.95)
+    _insert_candidate(tmp_path, assertion_id="cand-receipt-accept", kind=AssertionKind.PATHOLOGY, confidence=0.95)
+    _insert_candidate(tmp_path, assertion_id="cand-receipt-reject", kind=AssertionKind.PATHOLOGY, confidence=0.05)
+    _insert_candidate(tmp_path, assertion_id="cand-receipt-escalate", kind=AssertionKind.FINDING, confidence=0.5)
+    _insert_candidate(tmp_path, assertion_id="cand-receipt-fail", kind=AssertionKind.NOTE, confidence=0.5)
+    _insert_candidate(tmp_path, assertion_id="cand-receipt-idempotent", kind=AssertionKind.PATHOLOGY, confidence=0.95)
+    idempotent_policy = {AssertionKind.PATHOLOGY: JudgmentAutomationPolicyRule(auto_accept_min_confidence=0.9)}
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        candidate = read_assertion_envelope(conn, "cand-receipt-idempotent")
+        assert candidate is not None
+        decision = evaluate_candidate(candidate, idempotent_policy)
+        judge_result = judge_assertion_candidates(
+            conn,
+            (
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=decision.candidate_ref,
+                    decision=decision.decision,
+                    reason=decision.reason,
+                    actor_ref=JUDGMENT_AUTOMATION_ACTOR_REF,
+                ),
+            ),
+            now_ms=1,
+        )
+        assert judge_result.applied_count == 1
+        conn.commit()
     cfg = SimpleNamespace(
         judgment_automation_enabled=True,
         mcp_judge_enabled=True,
         judgment_automation_interval_s=60,
         judgment_automation_batch_limit=200,
-        judgment_automation_policy={"pathology": {"auto_accept_min_confidence": 0.9}},
+        judgment_automation_policy={
+            "pathology": {"auto_accept_min_confidence": 0.9, "auto_reject_max_confidence": 0.1},
+            "finding": {"auto_accept_min_confidence": 0.9},
+            "note": {"auto_accept_min_confidence": 0.0},
+        },
     )
     write_coordinator = AsyncMock()
 
@@ -581,6 +612,21 @@ def test_periodic_receipt_write_failure_uses_one_serialized_fallback(tmp_path: P
 
     write_coordinator.run_sync.side_effect = _fake_run_sync
     receipt_writes = 0
+    real_judge_assertion_candidates = judge_assertion_candidates
+    real_list_assertion_candidates = list_assertion_candidates
+
+    def _mixed_judge(conn, items, *, now_ms=None):  # type: ignore[no-untyped-def]
+        mutated_items = tuple(
+            replace(item, decision="invalid") if item.candidate_ref == "assertion:cand-receipt-fail" else item
+            for item in items
+        )
+        return real_judge_assertion_candidates(conn, mutated_items, now_ms=now_ms)
+
+    def _mixed_list(conn, *, limit=None, **kwargs):  # type: ignore[no-untyped-def]
+        candidates = real_list_assertion_candidates(conn, limit=limit, **kwargs)
+        idempotent_candidate = read_assertion_envelope(conn, "cand-receipt-idempotent")
+        assert idempotent_candidate is not None
+        return [*candidates, idempotent_candidate]
 
     def _fail_first_receipt_write(*args, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal receipt_writes
@@ -597,6 +643,14 @@ def test_periodic_receipt_write_failure_uses_one_serialized_fallback(tmp_path: P
             "polylogue.daemon.events.emit_daemon_event",
             side_effect=_fail_first_receipt_write,
         ),
+        patch(
+            "polylogue.storage.sqlite.archive_tiers.user_write.judge_assertion_candidates",
+            side_effect=_mixed_judge,
+        ),
+        patch(
+            "polylogue.storage.sqlite.archive_tiers.user_write.list_assertion_candidates",
+            side_effect=_mixed_list,
+        ),
     ):
         asyncio.run(_run_one_tick())
 
@@ -612,7 +666,28 @@ def test_periodic_receipt_write_failure_uses_one_serialized_fallback(tmp_path: P
     assert len(rows) == 1
     receipt = json.loads(rows[0][1])
     assert receipt["status"] == "failed"
-    assert receipt["reason"] == "receipt_persistence_failed"
+    assert receipt["reason"] == "receipt_persistence_degraded"
+    assert receipt["receipt_persistence_degraded"] is True
+    assert receipt["retryable"] is True
+    assert receipt["considered"] == 5
+    assert receipt["accepted"] == 1
+    assert receipt["rejected"] == 1
+    assert receipt["escalated"] == 1
+    assert receipt["idempotent"] == 1
+    assert receipt["failed"] == 1
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        statuses = dict(
+            conn.execute(
+                "SELECT assertion_id, status FROM assertions WHERE assertion_id LIKE 'cand-receipt-%'"
+            ).fetchall()
+        )
+        assert statuses == {
+            "cand-receipt-accept": AssertionStatus.ACCEPTED.value,
+            "cand-receipt-reject": AssertionStatus.REJECTED.value,
+            "cand-receipt-escalate": AssertionStatus.CANDIDATE.value,
+            "cand-receipt-fail": AssertionStatus.CANDIDATE.value,
+            "cand-receipt-idempotent": AssertionStatus.ACCEPTED.value,
+        }
     assert rows[0][0].startswith("judgment-automation:")
     assert receipt_writes == 2
     assert write_coordinator.run_sync.await_count == 2
@@ -663,3 +738,109 @@ def test_periodic_coordinator_failure_gets_one_serialized_fallback_receipt(tmp_p
     assert receipt["reason"] == "sweep_exception"
     assert row[0].startswith("judgment-automation:")
     assert calls == 2
+
+
+def test_periodic_false_coordinator_outcome_uses_retryable_fallback(tmp_path: Path) -> None:
+    _init_ops_db(tmp_path / "ops.db")
+    cfg = SimpleNamespace(
+        judgment_automation_enabled=True,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={},
+    )
+    write_coordinator = AsyncMock()
+    calls = 0
+
+    async def _fake_run_sync(actor, function, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return False
+        return function(*args, **kwargs)
+
+    write_coordinator.run_sync.side_effect = _fake_run_sync
+
+    with (
+        patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+    ):
+        asyncio.run(_run_one_tick())
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM daemon_events WHERE kind = 'judgment-automation' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    receipt = json.loads(row[0])
+    assert receipt["status"] == "failed"
+    assert receipt["reason"] == "sweep_exception"
+    assert receipt["retryable"] is True
+    assert calls == 2
+
+
+def test_periodic_false_fallback_is_logged_as_unpersisted(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    _init_ops_db(tmp_path / "ops.db")
+    cfg = SimpleNamespace(
+        judgment_automation_enabled=True,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={},
+    )
+    write_coordinator = AsyncMock()
+    write_coordinator.run_sync.side_effect = [RuntimeError("coordinator unavailable"), False]
+
+    with (
+        patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+    ):
+        asyncio.run(_run_one_tick())
+
+    assert write_coordinator.run_sync.await_count == 2
+    assert "failure receipt fallback was not persisted" in caplog.text
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM daemon_events").fetchone() == (0,)
+
+
+def test_periodic_disabled_receipt_failure_is_logged_and_retried(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _init_ops_db(tmp_path / "ops.db")
+    cfg = SimpleNamespace(
+        judgment_automation_enabled=False,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={},
+    )
+    write_coordinator = AsyncMock()
+
+    attempts = 0
+
+    async def _run_sync(actor, function, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("ops tier unavailable")
+        return function(*args, **kwargs)
+
+    write_coordinator.run_sync.side_effect = _run_sync
+
+    with (
+        patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+    ):
+        asyncio.run(_run_ticks(2))
+
+    assert write_coordinator.run_sync.await_count == 2
+    assert "parked receipt write failed; retrying next tick" in caplog.text
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM daemon_events WHERE kind = 'judgment-automation' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    assert json.loads(row[0])["reason"] == "capability_gate_disabled"

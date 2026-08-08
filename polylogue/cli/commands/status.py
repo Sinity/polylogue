@@ -2489,7 +2489,11 @@ def _render_assertion_candidate_queue(env: AppEnv, queue: dict[str, Any]) -> Non
                 receipt_details.append(f"at={receipt_timestamp}")
         receipt_age_ms = queue.get("judgment_scheduler_receipt_age_ms")
         if isinstance(receipt_age_ms, int | float) and not isinstance(receipt_age_ms, bool):
-            receipt_details.append(f"age={float(receipt_age_ms) / 1000:.1f}s")
+            receipt_age_s = float(receipt_age_ms) / 1000
+            if receipt_age_s >= 24 * 60 * 60:
+                receipt_details.append(f"age={receipt_age_s / (24 * 60 * 60):.1f}d")
+            else:
+                receipt_details.append(f"age={receipt_age_s:.1f}s")
         receipt_reason = queue.get("judgment_scheduler_receipt_reason")
         if receipt_reason:
             receipt_details.append(f"reason={receipt_reason}")

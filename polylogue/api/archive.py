@@ -289,7 +289,6 @@ _NOISY_REPO_LABELS = {
 
 logger = logging.getLogger(__name__)
 
-_JUDGMENT_AUTOMATION_INTERVAL_FLOOR_SECONDS = 60
 _JUDGMENT_AUTOMATION_RECEIPT_GRACE_MIN_SECONDS = 5 * 60
 _JUDGMENT_AUTOMATION_RECEIPT_GRACE_MAX_SECONDS = 60 * 60
 
@@ -1512,7 +1511,7 @@ def _archive_assertion_candidate_queue_health(
 ) -> AssertionCandidateQueueHealthPayload:
     """Project queue depth, retention, producer telemetry, and scheduler health."""
 
-    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.judgment_automation import JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS
     from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ASSERTION_CANDIDATE_JUDGMENT_KINDS,
@@ -1521,6 +1520,14 @@ def _archive_assertion_candidate_queue_health(
     from polylogue.surfaces.payloads import AssertionCandidateQueueHealthPayload
 
     observed_at_ms = int(datetime.now(UTC).timestamp() * 1000) if now_ms is None else now_ms
+    interval_s = getattr(config, "judgment_automation_interval_s", None)
+    if isinstance(interval_s, bool) or not isinstance(interval_s, int):
+        return AssertionCandidateQueueHealthPayload(
+            state="unavailable",
+            observed_at_ms=observed_at_ms,
+            pending_count=0,
+            caveats=("judgment scheduler interval authority is unavailable; freshness is unverified",),
+        )
     archive_root = _active_archive_root(config)
     user_db = archive_root / "user.db"
     if not user_db.exists():
@@ -1685,13 +1692,18 @@ def _archive_assertion_candidate_queue_health(
                         try:
                             receipt_payload = json.loads(str(receipt_row[1]))
                         except (TypeError, ValueError):
-                            receipt_payload = {}
-                            caveats.append("latest judgment scheduler receipt is malformed")
+                            receipt_payload = None
                         raw_status = (
                             str(receipt_payload.get("status", "unknown"))
                             if isinstance(receipt_payload, dict)
                             else "unknown"
                         )
+                        if not isinstance(receipt_payload, dict) or raw_status not in {
+                            "completed",
+                            "parked",
+                            "failed",
+                        }:
+                            caveats.append("latest judgment scheduler receipt is malformed")
                         if raw_status in {"completed", "parked", "failed"}:
                             judgment_scheduler_receipt_status = cast(
                                 Literal["completed", "parked", "failed"], raw_status
@@ -1716,10 +1728,7 @@ def _archive_assertion_candidate_queue_health(
     judgment_receipt_age_ms = (
         None if judgment_scheduler_receipt_at_ms is None else max(0, observed_at_ms - judgment_scheduler_receipt_at_ms)
     )
-    configured_interval_s = max(
-        load_polylogue_config().judgment_automation_interval_s,
-        _JUDGMENT_AUTOMATION_INTERVAL_FLOOR_SECONDS,
-    )
+    configured_interval_s = max(interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)
     # A successful receipt covers one configured sleep interval. Permit a
     # bounded grace period for scheduling and writer admission, while keeping
     # the grace independent of unusually large operator-selected intervals.

@@ -16,6 +16,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
+from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
@@ -2758,6 +2759,7 @@ def build_daemon_status(
 
 def daemon_status_payload(
     *,
+    config: Config | None = None,
     sources: tuple[WatchSource, ...] | None = None,
     browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
@@ -2773,6 +2775,11 @@ def daemon_status_payload(
     (see its docstring for what this buys: resumable collection across many
     calls instead of a fresh, ephemeral registry per call).
     """
+    if config is None:
+        from polylogue.config import resolve_runtime_config
+
+        config = resolve_runtime_config().as_config()
+
     watch_sources = sources if sources is not None else default_sources()
 
     last_ingestion = None
@@ -2830,7 +2837,7 @@ def daemon_status_payload(
             StatusComponentSpec(
                 name="assertion_candidate_queue",
                 scope="archive",
-                collector=assertion_candidate_queue_status_summary,
+                collector=lambda: assertion_candidate_queue_status_summary(config=config),
                 deadline_s=3.0,
                 cost_class="moderate",
             )
@@ -2926,17 +2933,18 @@ def daemon_status_payload(
     )
 
 
-def assertion_candidate_queue_status_summary() -> dict[str, object]:
+def assertion_candidate_queue_status_summary(*, config: Config | None = None) -> dict[str, object]:
     """Return the shared judgment-queue health product for status surfaces."""
 
     try:
         from polylogue.api.archive import _archive_assertion_candidate_queue_health
-        from polylogue.config import Config
-        from polylogue.paths import render_root
 
-        payload = _archive_assertion_candidate_queue_health(
-            Config(archive_root=archive_root(), render_root=render_root(), sources=[])
-        )
+        if config is None:
+            from polylogue.config import resolve_runtime_config
+
+            config = resolve_runtime_config().as_config()
+
+        payload = _archive_assertion_candidate_queue_health(config)
         return cast(dict[str, object], payload.model_dump(mode="json"))
     except Exception as exc:
         logger.warning("assertion candidate queue health collection failed: %s", exc, exc_info=True)

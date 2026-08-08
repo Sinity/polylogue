@@ -16,9 +16,10 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.api.archive import _archive_assertion_candidate_queue_health
-from polylogue.config import Config
+from polylogue.config import Config, resolve_runtime_config
 from polylogue.core.enums import AssertionKind
 from polylogue.daemon.events import emit_daemon_event
+from polylogue.daemon.status import daemon_status_payload
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     add_convergence_debt,
@@ -134,6 +135,46 @@ def test_pending_queue_without_judgment_scheduler_receipt_is_parked(tmp_path: Pa
     assert any("not converged" in caveat for caveat in health.caveats)
 
 
+@pytest.mark.parametrize("payload_json", ["not-json", "[]", '{"status":"bogus"}'])
+def test_malformed_latest_scheduler_receipt_is_unknown_and_keeps_pending_parked(
+    tmp_path: Path, payload_json: str
+) -> None:
+    config = _initialize(tmp_path)
+    now_ms = 1_800_000_000_000
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="candidate-malformed-receipt",
+            target_ref="session:queue-health",
+            kind=AssertionKind.LESSON,
+            body_text="A pending judgment candidate",
+            author_ref="agent:standing-queries",
+            author_kind="agent",
+            now_ms=now_ms - 25 * _DAY_MS,
+        )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
+            (now_ms - 1_000, "judgment-automation", None, payload_json),
+        )
+
+    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
+
+    assert health.state == "parked-pending"
+    assert health.judgment_scheduler_receipt_status == "unknown"
+    assert any("latest judgment scheduler receipt is malformed" in caveat for caveat in health.caveats)
+
+
+def test_missing_scheduler_interval_authority_is_bounded_as_unavailable(tmp_path: Path) -> None:
+    config = SimpleNamespace(archive_root=tmp_path, db_path=tmp_path / "index.db")
+
+    health = _archive_assertion_candidate_queue_health(config, now_ms=1_800_000_000_000)  # type: ignore[arg-type]
+
+    assert health.state == "unavailable"
+    assert health.pending_count == 0
+    assert any("interval authority is unavailable" in caveat for caveat in health.caveats)
+
+
 def test_pending_queue_with_fresh_scheduler_receipt_is_active_pending(tmp_path: Path) -> None:
     config = _initialize(tmp_path)
     now_ms = 1_800_000_000_000
@@ -196,12 +237,11 @@ def test_latest_scheduler_receipt_uses_ledger_order_when_clock_regresses(tmp_pat
     assert health.state == "scheduler-stalled"
 
 
-def test_scheduler_receipt_freshness_uses_configured_interval_and_bounded_grace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_scheduler_receipt_freshness_uses_configured_interval_and_bounded_grace(tmp_path: Path) -> None:
     config = _initialize(tmp_path)
     now_ms = 1_800_000_000_000
     interval_s = 48 * 60 * 60
+    config.judgment_automation_interval_s = interval_s
     with sqlite3.connect(tmp_path / "user.db") as conn:
         upsert_assertion(
             conn,
@@ -213,10 +253,6 @@ def test_scheduler_receipt_freshness_uses_configured_interval_and_bounded_grace(
             author_kind="agent",
             now_ms=now_ms - 25 * _DAY_MS,
         )
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(judgment_automation_interval_s=interval_s),
-    )
     receipt_age_ms = (interval_s + 60 * 60) * 1000
     emit_daemon_event(
         "judgment-automation",
@@ -232,6 +268,53 @@ def test_scheduler_receipt_freshness_uses_configured_interval_and_bounded_grace(
     assert at_boundary.judgment_scheduler_receipt_age_ms == receipt_age_ms
     assert just_past_boundary.state == "scheduler-stalled"
     assert just_past_boundary.judgment_scheduler_receipt_age_ms == receipt_age_ms + 1
+
+
+def test_scheduler_receipt_freshness_uses_explicit_runtime_projection(tmp_path: Path) -> None:
+    interval_s = 48 * 60 * 60
+    runtime = resolve_runtime_config(
+        cli_overrides={"archive_root": str(tmp_path), "judgment_automation_interval_s": interval_s},
+        environment={"POLYLOGUE_SITE_CONFIG": ""},
+        cwd=tmp_path,
+        home=tmp_path / "home",
+    )
+    initialize_active_archive_root(runtime.paths.archive_root)
+    config = runtime.as_config()
+    now_ms = 1_800_000_000_000
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="candidate-explicit-runtime",
+            target_ref="session:queue-health",
+            kind=AssertionKind.LESSON,
+            body_text="A pending judgment candidate",
+            author_ref="agent:standing-queries",
+            author_kind="agent",
+            now_ms=now_ms - 25 * _DAY_MS,
+        )
+    receipt_age_ms = (interval_s + 60 * 60) * 1000
+    emit_daemon_event(
+        "judgment-automation",
+        archive_root_path=tmp_path,
+        observed_at_ms=now_ms - receipt_age_ms,
+        payload={"status": "completed", "reason": "sweep_completed", "retryable": False},
+    )
+
+    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
+
+    assert config.judgment_automation_interval_s == interval_s
+    assert health.state == "pending"
+
+    status_payload = daemon_status_payload(
+        config=config,
+        sources=(),
+        include_raw_replay_backlog=False,
+        include_exact_raw_materialization_readiness=False,
+        include_archive_debt=False,
+    )
+    queue_health = status_payload["assertion_candidate_queue"]
+    assert isinstance(queue_health, dict)
+    assert queue_health["state"] == "pending"
 
 
 def test_failed_scheduler_receipt_is_not_converged(tmp_path: Path) -> None:

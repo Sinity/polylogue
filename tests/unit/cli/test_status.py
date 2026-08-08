@@ -127,14 +127,15 @@ def _combined_calls(env: AppEnv) -> str:
     return " ".join(console.calls)
 
 
-def test_status_renderer_includes_judgment_scheduler_receipt_time_and_age() -> None:
+@pytest.mark.parametrize("state", ["scheduler-stalled", "parked-pending"])
+def test_status_renderer_includes_red_queue_state_and_receipt_details(state: str) -> None:
     """Human status keeps receipt timing evidence visible with its verdict."""
     env = _make_app_env()
 
     _render_assertion_candidate_queue(
         env,
         {
-            "state": "scheduler-stalled",
+            "state": state,
             "pending_count": 2,
             "judgment_scheduler_receipt_status": "completed",
             "judgment_scheduler_receipt_at_ms": 1_800_000_000_000,
@@ -144,10 +145,30 @@ def test_status_renderer_includes_judgment_scheduler_receipt_time_and_age() -> N
     )
 
     output = _combined_calls(env)
+    assert f"[red]{state}, 2 pending[/red]" in output
     assert "judgment scheduler receipt: completed" in output
     assert "at=2027-01-15T08:00:00+00:00" in output
     assert "age=90.0s" in output
     assert "reason=sweep_completed" in output
+
+
+def test_status_renderer_scales_multi_day_receipt_age_to_days() -> None:
+    env = _make_app_env()
+
+    _render_assertion_candidate_queue(
+        env,
+        {
+            "state": "scheduler-stalled",
+            "pending_count": 2,
+            "judgment_scheduler_receipt_status": "failed",
+            "judgment_scheduler_receipt_age_ms": 2 * 24 * 60 * 60 * 1000,
+            "judgment_scheduler_receipt_reason": "sweep_failed",
+        },
+    )
+
+    output = _combined_calls(env)
+    assert "age=2.0d" in output
+    assert "age=172800.0s" not in output
 
 
 def test_status_command_reads_a_real_daemon_http_status_route() -> None:

@@ -99,6 +99,21 @@ class JudgmentAutomationSweepResult:
 class _JudgmentAutomationReceiptPersistenceError(RuntimeError):
     """The scheduler could not persist the receipt for an attempted tick."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        result: JudgmentAutomationSweepResult | None = None,
+        status: JudgmentAutomationReceiptStatus | None = None,
+        reason: str | None = None,
+        user_tier_committed: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.result = result
+        self.status = status
+        self.reason = reason
+        self.user_tier_committed = user_tier_committed
+
 
 @dataclass(slots=True)
 class _JudgmentAutomationReceiptContext:
@@ -109,7 +124,10 @@ class _JudgmentAutomationReceiptContext:
 def _receipt_state(payload: object) -> tuple[object, ...] | None:
     if not isinstance(payload, dict):
         return None
-    return tuple(payload.get(key) for key in ("status", "reason", "retryable", "retry_route", "batch_limit"))
+    return tuple(
+        payload.get(key)
+        for key in ("status", "reason", "retryable", "retry_route", "batch_limit", "receipt_persistence_degraded")
+    )
 
 
 def _record_judgment_automation_receipt(
@@ -124,6 +142,7 @@ def _record_judgment_automation_receipt(
     operation_id: str | None = None,
     receipt_context: _JudgmentAutomationReceiptContext | None = None,
     suppress_identical_for_ms: int | None = None,
+    receipt_persistence_degraded: bool = False,
 ) -> bool:
     """Persist one scheduler outcome in the existing daemon event ledger."""
 
@@ -137,6 +156,7 @@ def _record_judgment_automation_receipt(
         "retryable": retryable,
         "retry_route": "next enabled judgment-automation tick",
         "batch_limit": batch_limit,
+        "receipt_persistence_degraded": receipt_persistence_degraded,
     }
     if result is not None:
         payload.update(
@@ -341,18 +361,31 @@ def run_judgment_automation_sweep_once(
         now_ms: int | None,
         retryable: bool,
         result: JudgmentAutomationSweepResult | None = None,
+        receipt_persistence_degraded: bool = False,
     ) -> bool:
-        recorded = _record_judgment_automation_receipt(
-            root,
-            status=status,
-            reason=reason,
-            now_ms=now_ms,
-            batch_limit=batch_limit,
-            result=result,
-            retryable=retryable,
-            operation_id=operation_id,
-            receipt_context=_receipt_context,
-        )
+        try:
+            recorded = _record_judgment_automation_receipt(
+                root,
+                status=status,
+                reason=reason,
+                now_ms=now_ms,
+                batch_limit=batch_limit,
+                result=result,
+                retryable=retryable,
+                operation_id=operation_id,
+                receipt_context=_receipt_context,
+                receipt_persistence_degraded=receipt_persistence_degraded,
+            )
+        except _JudgmentAutomationReceiptPersistenceError as exc:
+            if result is not None:
+                raise _JudgmentAutomationReceiptPersistenceError(
+                    str(exc),
+                    result=result,
+                    status=status,
+                    reason=reason,
+                    user_tier_committed=True,
+                ) from exc
+            raise
         if _receipt_context is not None and not recorded:
             raise _JudgmentAutomationReceiptPersistenceError(
                 "judgment automation scheduler receipt could not be persisted"
@@ -444,13 +477,24 @@ def run_judgment_automation_sweep_once(
             idempotent=idempotent,
             failed=failed,
         )
-        record_receipt(
-            status="failed" if result.failed else "completed",
-            reason="candidate_judgment_failures" if result.failed else "sweep_completed",
-            now_ms=now_ms,
-            result=result,
-            retryable=bool(result.failed),
-        )
+        receipt_status: JudgmentAutomationReceiptStatus = "failed" if result.failed else "completed"
+        receipt_reason = "candidate_judgment_failures" if result.failed else "sweep_completed"
+        try:
+            record_receipt(
+                status=receipt_status,
+                reason=receipt_reason,
+                now_ms=now_ms,
+                result=result,
+                retryable=bool(result.failed),
+            )
+        except _JudgmentAutomationReceiptPersistenceError as exc:
+            raise _JudgmentAutomationReceiptPersistenceError(
+                str(exc),
+                result=result,
+                status=receipt_status,
+                reason=receipt_reason,
+                user_tier_committed=True,
+            ) from exc
         return result
     except _JudgmentAutomationReceiptPersistenceError:
         conn.rollback()
@@ -491,6 +535,45 @@ async def periodic_judgment_automation_sweep(
 
     await _await_catch_up_gate(catch_up_complete, loop_name="judgment automation sweep")
     coordinator = daemon_write_coordinator()
+
+    async def persist_failure_fallback(
+        exc: Exception,
+        *,
+        default_reason: str,
+        operation_id: str,
+    ) -> None:
+        result = exc.result if isinstance(exc, _JudgmentAutomationReceiptPersistenceError) else None
+        status = (
+            exc.status
+            if isinstance(exc, _JudgmentAutomationReceiptPersistenceError) and exc.status is not None
+            else "failed"
+        )
+        reason = (
+            exc.reason
+            if isinstance(exc, _JudgmentAutomationReceiptPersistenceError) and exc.reason is not None
+            else default_reason
+        )
+        degraded = isinstance(exc, _JudgmentAutomationReceiptPersistenceError) and exc.user_tier_committed
+        try:
+            recorded = await coordinator.run_sync(
+                "maintenance.judgment_automation.receipt",
+                _record_judgment_automation_receipt,
+                root,
+                status=status,
+                reason=("receipt_persistence_degraded" if degraded else reason),
+                now_ms=None,
+                batch_limit=cfg.judgment_automation_batch_limit,
+                result=result,
+                retryable=bool(result.failed) if result is not None else True,
+                operation_id=operation_id,
+                receipt_persistence_degraded=degraded,
+            )
+        except Exception:
+            logger.warning("judgment_automation: failure receipt fallback failed", exc_info=True)
+            return
+        if recorded is not True:
+            logger.warning("judgment_automation: failure receipt fallback was not persisted")
+
     while True:
         cfg = load_polylogue_config()
         interval = max(cfg.judgment_automation_interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)
@@ -504,17 +587,23 @@ async def periodic_judgment_automation_sweep(
         if not root.exists():
             continue
         if not (cfg.judgment_automation_enabled and cfg.mcp_judge_enabled):
-            await coordinator.run_sync(
-                "maintenance.judgment_automation.receipt",
-                _record_judgment_automation_receipt,
-                root,
-                status="parked",
-                reason="capability_gate_disabled",
-                now_ms=None,
-                batch_limit=cfg.judgment_automation_batch_limit,
-                retryable=True,
-                suppress_identical_for_ms=JUDGMENT_AUTOMATION_PARKED_RECEIPT_FRESHNESS_MS,
-            )
+            try:
+                recorded = await coordinator.run_sync(
+                    "maintenance.judgment_automation.receipt",
+                    _record_judgment_automation_receipt,
+                    root,
+                    status="parked",
+                    reason="capability_gate_disabled",
+                    now_ms=None,
+                    batch_limit=cfg.judgment_automation_batch_limit,
+                    retryable=True,
+                    suppress_identical_for_ms=JUDGMENT_AUTOMATION_PARKED_RECEIPT_FRESHNESS_MS,
+                )
+            except Exception:
+                logger.warning("judgment_automation: parked receipt write failed; retrying next tick", exc_info=True)
+            else:
+                if recorded is not True:
+                    logger.warning("judgment_automation: parked receipt was not persisted; retrying next tick")
             continue
         receipt_context = _JudgmentAutomationReceiptContext(operation_id=f"judgment-automation:{uuid.uuid4().hex}")
         try:
@@ -526,6 +615,12 @@ async def periodic_judgment_automation_sweep(
                 operation_id=receipt_context.operation_id,
                 _receipt_context=receipt_context,
             )
+            if isinstance(result, bool):
+                if not result:
+                    raise RuntimeError("judgment automation coordinator returned false without running the sweep")
+                raise RuntimeError("judgment automation coordinator returned an invalid sweep result")
+            if not isinstance(result, JudgmentAutomationSweepResult):
+                raise RuntimeError("judgment automation coordinator returned an invalid sweep result")
             if result.considered:
                 logger.info(
                     "judgment_automation: considered=%d accepted=%d rejected=%d escalated=%d idempotent=%d failed=%d",
@@ -539,47 +634,23 @@ async def periodic_judgment_automation_sweep(
         except sqlite3.OperationalError as exc:
             reason = "transient_sqlite_lock" if is_transient_sqlite_lock(exc) else "operational_error"
             if not receipt_context.recorded:
-                try:
-                    await coordinator.run_sync(
-                        "maintenance.judgment_automation.receipt",
-                        _record_judgment_automation_receipt,
-                        root,
-                        status="failed",
-                        reason=reason,
-                        now_ms=None,
-                        batch_limit=cfg.judgment_automation_batch_limit,
-                        retryable=True,
-                        operation_id=receipt_context.operation_id,
-                        receipt_context=receipt_context,
-                    )
-                except Exception as receipt_exc:
-                    raise _JudgmentAutomationReceiptPersistenceError(
-                        "judgment automation scheduler failure receipt could not be persisted"
-                    ) from receipt_exc
+                await persist_failure_fallback(
+                    exc,
+                    default_reason=reason,
+                    operation_id=receipt_context.operation_id,
+                )
             logger.info("judgment_automation: archive busy; retrying on next tick: %s", exc)
         except Exception as exc:
             if not receipt_context.recorded:
-                try:
-                    await coordinator.run_sync(
-                        "maintenance.judgment_automation.receipt",
-                        _record_judgment_automation_receipt,
-                        root,
-                        status="failed",
-                        reason=(
-                            "receipt_persistence_failed"
-                            if isinstance(exc, _JudgmentAutomationReceiptPersistenceError)
-                            else "sweep_exception"
-                        ),
-                        now_ms=None,
-                        batch_limit=cfg.judgment_automation_batch_limit,
-                        retryable=True,
-                        operation_id=receipt_context.operation_id,
-                        receipt_context=receipt_context,
-                    )
-                except Exception as receipt_exc:
-                    raise _JudgmentAutomationReceiptPersistenceError(
-                        "judgment automation scheduler failure receipt could not be persisted"
-                    ) from receipt_exc
+                await persist_failure_fallback(
+                    exc,
+                    default_reason=(
+                        "receipt_persistence_failed"
+                        if isinstance(exc, _JudgmentAutomationReceiptPersistenceError)
+                        else "sweep_exception"
+                    ),
+                    operation_id=receipt_context.operation_id,
+                )
             logger.warning("judgment_automation: sweep failed", exc_info=True)
 
 

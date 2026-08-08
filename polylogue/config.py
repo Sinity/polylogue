@@ -102,6 +102,7 @@ class Config:
     index_config: IndexConfig | None = None
     embedding_model: str = "voyage-4-lite"
     embedding_dimension: int = 1024
+    judgment_automation_interval_s: int = 3600
 
     def __init__(
         self,
@@ -113,6 +114,7 @@ class Config:
         index_config: IndexConfig | None = None,
         embedding_model: str = "voyage-4-lite",
         embedding_dimension: int = 1024,
+        judgment_automation_interval_s: int = 3600,
     ) -> None:
         self.archive_root = archive_root
         self.render_root = render_root
@@ -122,12 +124,15 @@ class Config:
         self.index_config = index_config
         self.embedding_model = embedding_model
         self.embedding_dimension = embedding_dimension
+        self.judgment_automation_interval_s = judgment_automation_interval_s
         for attr in ("archive_root", "render_root", "db_path"):
             value = getattr(self, attr)
             if not isinstance(value, Path):
                 raise ConfigError(f"Config.{attr} must be a Path, got {type(value).__name__}")
             if not value.is_absolute():
                 raise ConfigError(f"Config.{attr} must be an absolute path, got {value!r}")
+        if isinstance(judgment_automation_interval_s, bool) or not isinstance(judgment_automation_interval_s, int):
+            raise ConfigError("Config.judgment_automation_interval_s must be an integer")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Config):
@@ -141,6 +146,7 @@ class Config:
             and self.index_config == other.index_config
             and self.embedding_model == other.embedding_model
             and self.embedding_dimension == other.embedding_dimension
+            and self.judgment_automation_interval_s == other.judgment_automation_interval_s
         )
 
     def __repr__(self) -> str:
@@ -148,7 +154,8 @@ class Config:
             f"Config(archive_root={self.archive_root!r}, render_root={self.render_root!r}, "
             f"sources={self.sources!r}, db_path={self.db_path!r}, "
             f"drive_config={self.drive_config!r}, index_config={self.index_config!r}, "
-            f"embedding_model={self.embedding_model!r}, embedding_dimension={self.embedding_dimension!r})"
+            f"embedding_model={self.embedding_model!r}, embedding_dimension={self.embedding_dimension!r}, "
+            f"judgment_automation_interval_s={self.judgment_automation_interval_s!r})"
         )
 
     def with_sources(self, sources: list[Source]) -> Config:
@@ -161,6 +168,7 @@ class Config:
             index_config=self.index_config,
             embedding_model=self.embedding_model,
             embedding_dimension=self.embedding_dimension,
+            judgment_automation_interval_s=self.judgment_automation_interval_s,
         )
 
 
@@ -2173,6 +2181,7 @@ class ResolvedRuntimeConfig:
             index_config=self.index_config,
             embedding_model=self.settings.embedding_model,
             embedding_dimension=self.settings.embedding_dimension,
+            judgment_automation_interval_s=self.settings.judgment_automation_interval_s,
         )
 
 
