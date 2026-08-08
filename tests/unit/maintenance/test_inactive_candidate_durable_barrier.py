@@ -128,10 +128,9 @@ def test_resumed_candidate_validates_only_selected_raw_page(
         archive_root: Path,
         *,
         selected_raw_ids: list[str] | None = None,
-        **kwargs: object,
     ) -> None:
         selections.append(None if selected_raw_ids is None else tuple(selected_raw_ids))
-        original_validate(archive_root, selected_raw_ids=selected_raw_ids, **kwargs)
+        original_validate(archive_root, selected_raw_ids=selected_raw_ids)
 
     monkeypatch.setattr(revision_backfill_module, "validate_frozen_source_authority", record_validation)
     first = rebuild_index_from_source_sync(
