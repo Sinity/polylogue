@@ -1439,6 +1439,7 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
     from polylogue.storage.sqlite.archive_tiers.write import apply_insight_materialization
 
     profile = bundle.profile_record
+    latency = bundle.latency_profile_record
     session_id = str(profile.session_id)
     materialized_at_ms = _epoch_ms_or_none(profile.materialized_at) or 0
     source_updated_at_ms = _epoch_ms_or_none(profile.source_updated_at)
@@ -1452,7 +1453,7 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
     provider_usage_row_count = _refresh_provider_usage_rollup(conn, session_id)
     for insight_type, materializer_version, input_row_count in (
         ("session_profile", profile.materializer_version, profile.input_row_count),
-        ("latency", profile.materializer_version, bundle.latency_profile_record.input_row_count),
+        ("latency", latency.materializer_version, latency.input_row_count),
         ("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.work_event_records)),
         ("phases", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.phase_records)),
         ("runs", SESSION_INSIGHT_MATERIALIZER_VERSION, bundle.run_count),
@@ -1461,16 +1462,27 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
         ("thread", SESSION_INSIGHT_MATERIALIZER_VERSION, 1),
         ("provider_usage", SESSION_INSIGHT_MATERIALIZER_VERSION, provider_usage_row_count),
     ):
+        stamp_source_updated_at_ms = source_updated_at_ms
+        stamp_source_sort_key_ms = source_sort_key_ms
+        stamp_input_high_water_mark_ms = input_high_water_mark_ms
+        stamp_input_high_water_mark_source = profile.input_high_water_mark_source
+        if insight_type == "latency":
+            stamp_source_updated_at_ms = _epoch_ms_or_none(latency.source_updated_at)
+            stamp_source_sort_key_ms = (
+                int(latency.source_sort_key * 1000) if latency.source_sort_key is not None else None
+            )
+            stamp_input_high_water_mark_ms = _epoch_ms_or_none(latency.input_high_water_mark)
+            stamp_input_high_water_mark_source = latency.input_high_water_mark_source
         apply_insight_materialization(
             conn,
             insight_type=insight_type,
             session_id=session_id,
             materializer_version=materializer_version,
             materialized_at_ms=materialized_at_ms,
-            source_updated_at_ms=source_updated_at_ms,
-            source_sort_key_ms=source_sort_key_ms,
-            input_high_water_mark_ms=input_high_water_mark_ms,
-            input_high_water_mark_source=profile.input_high_water_mark_source,
+            source_updated_at_ms=stamp_source_updated_at_ms,
+            source_sort_key_ms=stamp_source_sort_key_ms,
+            input_high_water_mark_ms=stamp_input_high_water_mark_ms,
+            input_high_water_mark_source=stamp_input_high_water_mark_source,
             input_row_count=input_row_count,
         )
 

@@ -123,6 +123,47 @@ def test_manifest_can_bind_every_selection_to_the_exact_wire_support_receipt() -
     }
 
 
+def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(tmp_path: Path) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipts = [
+        build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
+        for provider in registry.list_providers()
+    ]
+    package_receipt = package_receipts[0]
+    for other in package_receipts[1:]:
+        package_receipt = package_receipt.merged_with(other)
+    wire_support = build_wire_support_receipt(registry=registry)
+
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+
+    antigravity_entries = [entry for entry in manifest.entries if entry.key.provider == "antigravity"]
+    assert antigravity_entries
+    assert all(entry.unsupported is not None for entry in antigravity_entries)
+    assert all(
+        entry.unsupported.reason == "unsupported_wire_route" for entry in antigravity_entries if entry.unsupported
+    )
+
+    path = tmp_path / "all-provider-campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+    restored = read_inferred_corpus_manifest(
+        path,
+        campaign_mode=True,
+        registry=registry,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    assert restored == manifest
+    assert restored.wire_support_receipt == wire_support.to_dict()
+
+
 def test_manifest_refuses_a_selection_missing_from_bound_wire_support_receipt() -> None:
     registry = _registry()
     support = build_wire_support_receipt(registry=registry)

@@ -78,13 +78,21 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
     assert all(entry.schema_valid is True for entry in supported)
     assert all(entry.parsed_session_count > 0 for entry in supported)
     assert all(entry.parsed_message_count > 0 for entry in supported)
-    assert all(entry.construct_coverage is not None and entry.construct_coverage.complete for entry in supported)
+    complete_supported = [
+        entry for entry in supported if not (entry.provider == "chatgpt" and entry.package_version == "v1")
+    ]
+    assert all(
+        entry.construct_coverage is not None and entry.construct_coverage.complete for entry in complete_supported
+    )
     assert all(
         any(witness.artifact_kind == "baseline" and witness.healthy for witness in entry.parser_witnesses)
         for entry in supported
     )
     assert all(all(witness.artifact_evidence for witness in entry.parser_witnesses) for entry in supported)
-    assert receipt.complete
+    assert not receipt.complete
+    chatgpt_v1 = next(entry for entry in supported if entry.provider == "chatgpt" and entry.package_version == "v1")
+    assert chatgpt_v1.construct_coverage is not None
+    assert not chatgpt_v1.construct_coverage.complete
 
 
 def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -524,6 +532,50 @@ def test_claude_code_route_only_waives_unrepresentable_nested_content() -> None:
         "$.properties.message.properties.content.anyOf[1].items[*].properties.content.anyOf[1]" in keyword
         for keyword in entry.construct_coverage.nonrepresentable_keywords
     )
+
+
+def test_chatgpt_v1_media_waiver_does_not_hide_parser_relevant_omissions() -> None:
+    registry = SchemaRegistry()
+    selection = select_synthetic_schema("chatgpt", version="v1", registry_factory=lambda: registry)
+    corpus = SyntheticCorpus.from_selection(selection)
+    payload = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=20260805).raw_items[0]
+    payloads: tuple[JSONValue, ...] = (json.loads(payload),)
+    witnessed = wire_formats.construct_coverage(selection.schema, payloads)
+    parser_relevant = next(
+        keyword
+        for keyword in witnessed.missing_keywords
+        if keyword.startswith("type:null@") and ".properties.message.anyOf[0]" in keyword
+    )
+    reasons = wire_formats._route_nonrepresentable_reasons(
+        "chatgpt",
+        witnessed.missing_keywords,
+        package_version="v1",
+    )
+    media = next(
+        keyword
+        for keyword in witnessed.missing_keywords
+        if ".properties.content.properties.parts.items[*].anyOf[1]" in keyword
+    )
+
+    assert media in reasons
+    assert parser_relevant not in reasons
+    final = wire_formats.construct_coverage(
+        selection.schema,
+        payloads,
+        nonrepresentable_keywords=reasons,
+        nonrepresentable_reasons=reasons,
+    )
+    assert parser_relevant in final.missing_keywords
+    assert not final.complete
+
+    receipt = wire_formats.build_wire_support_receipt(registry=registry)
+    receipt_entry = next(
+        entry for entry in receipt.entries if (entry.provider, entry.package_version) == ("chatgpt", "v1")
+    )
+    assert receipt_entry.construct_coverage is not None
+    assert parser_relevant in receipt_entry.construct_coverage.missing_keywords
+    assert not receipt_entry.healthy
+    assert not receipt.complete
 
 
 def test_unmatched_union_does_not_count_as_exercised() -> None:

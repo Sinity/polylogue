@@ -393,13 +393,13 @@ def append_capability_receipt(
             status="unsupported",
             reason="live append route supports only Codex and Claude Code JSONL identity contracts",
         )
-    if provider == "codex" and not stable_session_identity:
+    if not stable_session_identity:
         return AppendCapabilityReceipt(
             provider=provider,
             package_version=package_version,
             element_kind=element_kind,
             status="unsupported",
-            reason="Codex append delta requires a stable persisted session identity sidecar",
+            reason="append delta requires a stable persisted session identity",
         )
     return AppendCapabilityReceipt(
         provider=provider,

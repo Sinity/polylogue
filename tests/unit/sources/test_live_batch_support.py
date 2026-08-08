@@ -62,7 +62,8 @@ from polylogue.storage.sqlite.archive_tiers import revision_governance as archiv
     [
         ("codex", False, "unsupported"),
         ("codex", True, "supported"),
-        ("claude-code", False, "supported"),
+        ("claude-code", False, "unsupported"),
+        ("claude-code", True, "supported"),
         ("chatgpt", True, "unsupported"),
     ],
 )
@@ -86,6 +87,8 @@ def test_append_capability_receipt_is_keyed_to_live_identity_contract(
         "session_record_stream",
     )
     assert payload["capability_source"] == "LiveBatchProcessor.append"
+    if provider in {"codex", "claude-code"} and not stable_session_identity:
+        assert payload["reason"] == "append delta requires a stable persisted session identity"
 
 
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

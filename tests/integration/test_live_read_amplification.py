@@ -185,6 +185,38 @@ def _seed_initial_ingest(proc: LiveBatchProcessor, path: Path, *, session_id: st
     cast(Any, proc)._test_existing_ids[path] = session_id
 
 
+def test_claude_code_append_plan_consumes_identity_capability_gate(
+    processor: tuple[LiveBatchProcessor, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production planner must consume the identity receipt before tail matching."""
+    from polylogue.sources.live import batch as live_batch
+
+    proc, root, _ = processor
+    path = root / "session-abc.jsonl"
+    _write_jsonl(path, [_claude_code_record(session_id="abc", uuid="message-0")])
+    _seed_initial_ingest(proc, path, session_id="abc")
+    _append_jsonl(path, [_claude_code_record(session_id="abc", uuid="message-1", role="assistant", text="tail")])
+
+    seen: list[tuple[str, bool]] = []
+    original_receipt = live_batch.append_capability_receipt
+
+    def capture_receipt(**kwargs: object) -> object:
+        seen.append((str(kwargs["provider"]), bool(kwargs["stable_session_identity"])))
+        return original_receipt(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(live_batch, "append_capability_receipt", capture_receipt)
+    monkeypatch.setattr(proc, "_existing_provider_session_id", lambda _path: None)
+    monkeypatch.setattr(
+        proc,
+        "_claude_code_tail_matches_existing_identity",
+        lambda *_args: pytest.fail("tail matching ran before the identity capability gate"),
+    )
+
+    assert proc._append_plan(path) is None
+    assert seen == [("claude-code", False)]
+
+
 # ---------------------------------------------------------------------------
 # Scenario 1 — active Claude Code session appended to
 # ---------------------------------------------------------------------------

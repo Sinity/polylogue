@@ -387,12 +387,15 @@ def _route_nonrepresentable_reasons(
         "$.properties.chunkedPrompt.properties.chunks.items[*].properties.text",
         "$.properties.chunkedPrompt.properties.chunks.items[*].properties.createTime",
     }
+    chatgpt_v1_media_prefix = (
+        "$.properties.mapping.additionalProperties.*.properties.message.anyOf[1].properties.content."
+        "properties.parts.items[*].anyOf[1]"
+    )
     for keyword in missing_keywords:
         path = keyword.split("@", 1)[1] if "@" in keyword else "$"
-        if provider == "chatgpt" and package_version == "v1":
+        if provider == "chatgpt" and package_version == "v1" and path.startswith(chatgpt_v1_media_prefix):
             reasons[keyword] = (
-                "ChatGPT v1 parser route retains normalized conversation fields but does not represent "
-                "export-only media metadata at this exact package selection"
+                "ChatGPT v1 wire shaping discards only the export-only media branch at this exact package selection"
             )
             continue
         if (
