@@ -14,6 +14,7 @@ from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.core.json import JSONDocument
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
+    RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS,
     RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
     RawFailureEvidenceKind,
 )
@@ -502,6 +503,52 @@ class TestRawFailureInfoProducesTypedSamples:
         assert by_kind["claude-code-session"] == "deferred_hot_jsonl_capture"
         assert by_kind["unknown-export"] == "terminal_unsupported_shape"
         assert by_kind["codex-session"] == "parse_error"
+
+    def test_lifecycle_sampling_prioritizes_every_valid_typed_evidence_pair(self, tmp_path: Path) -> None:
+        """Every closed typed kind remains inspectable before unexplained rows."""
+        for index, (kind, support_status) in enumerate(RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS):
+            _seed_archive_raw_session(
+                tmp_path,
+                raw_id=f"raw-typed-{index}",
+                origin="codex-session",
+                native_id=f"typed-{index}",
+                source_path=f"/data/typed-{index}.jsonl",
+                parse_error=f"typed failure {index}",
+                acquired_at_ms=1_770_000_000_000 + index,
+            )
+            with sqlite3.connect(tmp_path / "source.db") as conn:
+                upsert_raw_artifact(
+                    conn,
+                    f"raw-typed-{index}",
+                    ArchiveSourceArtifact(
+                        artifact_id=f"typed-evidence-{index}",
+                        origin="codex-session",
+                        source_path=f"/data/typed-{index}.jsonl",
+                        source_index=0,
+                        artifact_kind=kind,
+                        classification_reason=kind,
+                        support_status=ArtifactSupportStatus(support_status),
+                    ),
+                )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-unexplained-newest",
+            origin="codex-session",
+            native_id="unexplained-newest",
+            source_path="/data/unexplained-newest.jsonl",
+            parse_error="unexplained failure",
+            acquired_at_ms=1_770_000_000_999,
+        )
+
+        snapshot = read_raw_failure_lifecycle(
+            tmp_path / "source.db",
+            sample_limit=len(RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS),
+        )
+
+        assert {sample["artifact_kind"] for sample in snapshot.samples} == {
+            kind for kind, _support_status in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS
+        }
+        assert all(sample["lifecycle"] in {"deferred", "terminal"} for sample in snapshot.samples)
 
     def test_raw_failure_info_uses_root_source_tier_for_pointer_index(self, tmp_path: Path) -> None:
         generation = tmp_path / "generation"

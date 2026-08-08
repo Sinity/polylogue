@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS,
     RawFailureEvidenceKind,
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -159,6 +160,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
          )
         """
         if has_artifacts:
+            typed_priority_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS)
             summary_sql = (
                 failed_cte
                 + """
@@ -184,11 +186,9 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                 + """
                     ORDER BY CASE
                         WHEN f.validation_status = 'failed' THEN 0
-                        WHEN (a.artifact_kind, a.support_status) IN (
-                            ('deferred_hot_jsonl_capture', 'partial_decode'),
-                            ('terminal_corrupt_input', 'decode_failed'),
-                            ('terminal_unsupported_shape', 'unsupported_parseable')
-                        ) THEN 1
+                        WHEN (a.artifact_kind, a.support_status) IN ("""
+                + typed_priority_placeholders
+                + """) THEN 1
                         ELSE 2
                     END,
                     f.acquired_at_ms DESC, f.raw_id DESC
@@ -218,7 +218,12 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                 """
             )
         summary_rows = conn.execute(summary_sql).fetchall()
-        sample_rows = conn.execute(sample_sql, (sample_limit,)).fetchall()
+        sample_params: tuple[object, ...] = (
+            tuple(value for pair in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair) + (sample_limit,)
+            if has_artifacts
+            else (sample_limit,)
+        )
+        sample_rows = conn.execute(sample_sql, sample_params).fetchall()
     except sqlite3.Error as exc:
         logger.warning("could not read raw failure lifecycle", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not read raw failure lifecycle: {exc}")
