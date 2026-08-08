@@ -301,6 +301,23 @@ def _mark_rebuild_transaction_stale_after_provenance_failure(
         error.add_note(f"could not persist stale rebuild transaction: {checkpoint_error}")
 
 
+def _retire_empty_source_resume_transaction(root: Path, operation_id: str) -> None:
+    """Retire a resumable transaction when its source archive is now empty."""
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    store = IndexGenerationStore.for_archive_root(root, repair_anchor=False)
+    transaction = _reconcile_active_generation_transaction(store, store.load_transaction(operation_id))
+    if transaction.status in {"promoted", "promoted-attestation-failed", "stale"}:
+        raise RuntimeError(
+            f"rebuild operation {transaction.operation_id} is {transaction.status}; start a new operation"
+        )
+    store.checkpoint_transaction(
+        transaction,
+        status="stale",
+        error="rebuild source is empty; resumable transaction cannot continue",
+    )
+
+
 def _validate_before_derived_state(
     provenance: RebuildProvenanceContext,
     *,
@@ -1411,6 +1428,9 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 )
             raise initial_provenance_error
         if raw_count == 0:
+            if request.operation_id is not None:
+                with RebuildLease(root):
+                    _retire_empty_source_resume_transaction(root, request.operation_id)
             return _empty_source_receipt(root, consumed_evidence)
         consumed_evidence = _validate_rebuild_provenance_receipt(
             root,

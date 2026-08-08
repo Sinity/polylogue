@@ -28,6 +28,7 @@ from polylogue.sources.revision_backfill import census_historical_revision_evide
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -376,18 +377,27 @@ def test_empty_source_rebuild_retains_consumed_evidence_for_resumed_request(tmp_
     root = tmp_path / "archive"
     _init_empty_source(root)
     receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
+    store = IndexGenerationStore.for_archive_root(root)
+    transaction = store.create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root),
+        operation_id="empty-source-resume",
+    )
 
     receipt = rebuild_index_from_source_sync(
         RebuildIndexRequest(
             archive_root=root,
-            operation_id="empty-source-resume",
+            operation_id=transaction.operation_id,
             schema_inference_receipt_path=receipt_path,
         )
     )
 
     assert receipt.status == "empty-source"
     assert receipt.consumed_evidence["receipt_path"] == str(receipt_path)
-    assert not (root / ".index-rebuild-transactions").exists()
+    checkpoint = IndexGenerationStore.for_archive_root(root, repair_anchor=False).load_transaction(
+        transaction.operation_id
+    )
+    assert checkpoint.status == "stale"
+    assert checkpoint.error == "rebuild source is empty; resumable transaction cannot continue"
 
 
 def test_empty_source_rebuild_does_not_bypass_archive_ownership(
