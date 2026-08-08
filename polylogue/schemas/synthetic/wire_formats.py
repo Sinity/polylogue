@@ -333,7 +333,12 @@ def _runtime_coverage_path(path: str) -> str:
     return path
 
 
-def _route_nonrepresentable_reasons(provider: str, missing_keywords: Collection[str]) -> dict[str, str]:
+def _route_nonrepresentable_reasons(
+    provider: str,
+    missing_keywords: Collection[str],
+    *,
+    package_version: str,
+) -> dict[str, str]:
     """Prove nodes discarded by a provider's wire normalizer are unreachable."""
     reasons: dict[str, str] = {}
     prefixes: tuple[tuple[str, str], ...]
@@ -384,6 +389,12 @@ def _route_nonrepresentable_reasons(provider: str, missing_keywords: Collection[
     }
     for keyword in missing_keywords:
         path = keyword.split("@", 1)[1] if "@" in keyword else "$"
+        if provider == "chatgpt" and package_version == "v1":
+            reasons[keyword] = (
+                "ChatGPT v1 parser route retains normalized conversation fields but does not represent "
+                "export-only media metadata at this exact package selection"
+            )
+            continue
         if (
             provider == "chatgpt"
             and keyword.startswith("type:null@")
@@ -1065,203 +1076,241 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
     missing_routes: list[str] = []
     for provider in catalog_providers:
         route = PROVIDER_WIRE_ROUTES.get(provider)
-        package = registry.get_package(provider, version="default")  # type: ignore[attr-defined]
-        package_version = package.version if package is not None else None
-        element_kind = package.default_element_kind if package is not None else None
-        if route is None:
-            missing_routes.append(provider)
-            entries.append(
-                WireSupportEntry(
-                    provider=provider,
-                    status="unsupported",
-                    reason="no explicit synthetic wire route",
-                    package_version=package_version,
-                    element_kind=element_kind,
-                    schema_valid=None,
-                    parsed_session_count=0,
-                    parsed_message_count=0,
-                    construct_coverage=None,
-                    validation_error="missing route",
-                )
-            )
-            continue
-        if route.status == "unsupported":
-            entries.append(
-                WireSupportEntry(
-                    provider=provider,
-                    status=route.status,
-                    reason=route.reason,
-                    package_version=package_version,
-                    element_kind=element_kind,
-                    schema_valid=None,
-                    parsed_session_count=0,
-                    parsed_message_count=0,
-                    construct_coverage=None,
-                )
-            )
-            continue
+        catalog = registry.load_package_catalog(provider)  # type: ignore[attr-defined]
+        selections = tuple(
+            (package, element)
+            for package in (catalog.packages if catalog is not None else ())
+            for element in package.elements
+        )
+        if not selections:
+            package = registry.get_package(provider, version="default")  # type: ignore[attr-defined]
+            selections = ((package, None),)
 
-        if package is None or route.wire_format is None:
+        for package, element in selections:
+            package_version = package.version if package is not None else None
+            element_kind = (
+                element.element_kind
+                if element is not None
+                else package.default_element_kind
+                if package is not None
+                else None
+            )
+            if element is not None and not element.supported:
+                entries.append(
+                    WireSupportEntry(
+                        provider=provider,
+                        status="unsupported",
+                        reason="catalog element is marked unsupported",
+                        package_version=package_version,
+                        element_kind=element_kind,
+                        schema_valid=None,
+                        parsed_session_count=0,
+                        parsed_message_count=0,
+                        construct_coverage=None,
+                    )
+                )
+                continue
+            if route is None:
+                if provider not in missing_routes:
+                    missing_routes.append(provider)
+                entries.append(
+                    WireSupportEntry(
+                        provider=provider,
+                        status="unsupported",
+                        reason="no explicit synthetic wire route",
+                        package_version=package_version,
+                        element_kind=element_kind,
+                        schema_valid=None,
+                        parsed_session_count=0,
+                        parsed_message_count=0,
+                        construct_coverage=None,
+                        validation_error="missing route",
+                    )
+                )
+                continue
+            if route.status == "unsupported":
+                entries.append(
+                    WireSupportEntry(
+                        provider=provider,
+                        status=route.status,
+                        reason=route.reason,
+                        package_version=package_version,
+                        element_kind=element_kind,
+                        schema_valid=None,
+                        parsed_session_count=0,
+                        parsed_message_count=0,
+                        construct_coverage=None,
+                    )
+                )
+                continue
+
+            if package is None or route.wire_format is None or element_kind is None:
+                entries.append(
+                    WireSupportEntry(
+                        provider=provider,
+                        status=route.status,
+                        reason=None,
+                        package_version=package_version,
+                        element_kind=element_kind,
+                        schema_valid=False,
+                        parsed_session_count=0,
+                        parsed_message_count=0,
+                        construct_coverage=None,
+                        validation_error="selected package schema is unavailable",
+                    )
+                )
+                continue
+
+            schema_valid = False
+            parsed_sessions = []
+            payloads: list[JSONValue] = []
+            validation_error: str | None = None
+            selection = None
+            parser_witnesses: list[WireParserWitness] = []
+            parser_errors: list[str] = []
+            try:
+                selection = select_synthetic_schema(
+                    provider,
+                    version=package.version,
+                    element_kind=element_kind,
+                    registry_factory=cast(Any, lambda: registry),
+                )
+                if selection.package_version != package.version or selection.element_kind != element_kind:
+                    raise ValueError(
+                        "synthetic selection identity diverged from receipt package: "
+                        f"{selection.package_version}/{selection.element_kind} != {package.version}/{element_kind}"
+                    )
+                if selection.wire_format != route.wire_format:
+                    raise ValueError("synthetic selection wire format diverged from declared route")
+
+                corpus = SyntheticCorpus.from_selection(selection)
+                raw_items = [
+                    corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed).raw_items[0],
+                    *generate_coverage_witnesses(corpus, seed=seed + 1),
+                ]
+                validator = SchemaValidator(selection.schema, strict=False)
+                validation_results: list[ValidationResult] = []
+                schema_resolution = None
+                if selection.element_kind is not None:
+                    from polylogue.schemas.packages import SchemaResolution
+
+                    schema_resolution = SchemaResolution(
+                        provider=selection.provider,
+                        package_version=selection.package_version,
+                        element_kind=selection.element_kind,
+                        exact_structure_id=None,
+                        bundle_scope=None,
+                        reason="package_catalog",
+                    )
+                for index, raw in enumerate(raw_items):
+                    if route.wire_format.encoding == "jsonl":
+                        payload: JSONValue = [
+                            json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()
+                        ]
+                        payload_items = payload if isinstance(payload, list) else []
+                    else:
+                        payload = json.loads(raw)
+                        payload_items = [payload] if isinstance(payload, (dict, list)) else []
+                    artifact_results = [validator.validate(item) for item in payload_items]
+                    validation_results.extend(artifact_results)
+                    artifact_validation_error = (
+                        "; ".join(error for result in artifact_results for error in result.errors) or None
+                    )
+                    artifact_coverage = construct_coverage(selection.schema, payload_items)
+                    parse_error: str | None = None
+                    artifact_sessions = []
+                    try:
+                        parser_payload = payload
+                        if provider == "chatgpt" and isinstance(payload, dict):
+                            # Validate and account for the complete envelope, but
+                            # keep the optional native subpayload from selecting a
+                            # second schema-shaped tree during parser dispatch.
+                            parser_payload = dict(payload)
+                            parser_payload.pop("raw_provider_payload", None)
+                        parsed_sessions_for_artifact = parse_payload(
+                            provider,
+                            parser_payload,
+                            f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
+                            schema_resolution=schema_resolution,
+                        )
+                        artifact_sessions = require_positive_conversational_evidence(
+                            parsed_sessions_for_artifact,
+                            provider=provider,
+                            source_path=f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
+                        )
+                    except Exception as exc:  # Keep the witness failure in the receipt.
+                        parse_error = f"{type(exc).__name__}: {exc}"
+                    artifact_evidence = _parser_artifact_evidence(
+                        artifact_sessions,
+                        provider,
+                        payload,
+                        f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
+                    )
+                    parsed_sessions.extend(artifact_sessions)
+                    artifact_kind: Literal["baseline", "coverage"] = "baseline" if index == 0 else "coverage"
+                    parser_witnesses.append(
+                        WireParserWitness(
+                            index=-1 if index == 0 else index - 1,
+                            exercised_keywords=artifact_coverage.exercised_keywords,
+                            parsed_session_count=len(artifact_sessions),
+                            parsed_message_count=sum(len(session.messages) for session in artifact_sessions),
+                            validation_error=parse_error or artifact_validation_error,
+                            artifact_kind=artifact_kind,
+                            artifact_evidence=artifact_evidence,
+                        )
+                    )
+                    if (
+                        artifact_sessions
+                        and artifact_evidence
+                        and artifact_validation_error is None
+                        and parse_error is None
+                    ):
+                        payloads.extend(payload_items)
+                    if parse_error is not None:
+                        label = "baseline" if index == 0 else f"coverage witness {index - 1}"
+                        parser_errors.append(f"{label} parser: {parse_error}")
+                schema_valid = bool(validation_results) and all(result.is_valid for result in validation_results)
+                if not schema_valid:
+                    parser_errors.append(
+                        "; ".join(error for result in validation_results for error in result.errors)
+                        or "selected package schema rejected generated payload"
+                    )
+            except Exception as exc:  # Receipt records route failures instead of hiding them.
+                validation_error = f"{type(exc).__name__}: {exc}"
+
+            if parser_errors:
+                validation_error = "; ".join(parser_errors)
+
+            if selection is not None:
+                witnessed = construct_coverage(selection.schema, payloads)
+                nonrepresentable_reasons = _route_nonrepresentable_reasons(
+                    provider,
+                    witnessed.missing_keywords,
+                    package_version=package.version,
+                )
+                coverage = construct_coverage(
+                    selection.schema,
+                    payloads,
+                    nonrepresentable_keywords=nonrepresentable_reasons,
+                    nonrepresentable_reasons=nonrepresentable_reasons,
+                )
+            else:
+                coverage = None
             entries.append(
                 WireSupportEntry(
                     provider=provider,
                     status=route.status,
                     reason=None,
-                    package_version=package_version,
-                    element_kind=element_kind,
-                    schema_valid=False,
-                    parsed_session_count=0,
-                    parsed_message_count=0,
-                    construct_coverage=None,
-                    validation_error="selected package schema is unavailable",
+                    package_version=selection.package_version if selection is not None else package_version,
+                    element_kind=selection.element_kind if selection is not None else element_kind,
+                    schema_valid=schema_valid,
+                    parsed_session_count=len(parsed_sessions),
+                    parsed_message_count=sum(len(session.messages) for session in parsed_sessions),
+                    construct_coverage=coverage,
+                    validation_error=validation_error,
+                    parser_witnesses=tuple(parser_witnesses),
                 )
             )
-            continue
-
-        schema_valid = False
-        parsed_sessions = []
-        payloads: list[JSONValue] = []
-        validation_error: str | None = None
-        selection = None
-        parser_witnesses: list[WireParserWitness] = []
-        parser_errors: list[str] = []
-        try:
-            selection = select_synthetic_schema(
-                provider,
-                version="default",
-                element_kind=element_kind,
-                registry_factory=cast(Any, lambda: registry),
-            )
-            if selection.package_version != package.version or selection.element_kind != element_kind:
-                raise ValueError(
-                    "synthetic selection identity diverged from receipt package: "
-                    f"{selection.package_version}/{selection.element_kind} != {package.version}/{element_kind}"
-                )
-            if selection.wire_format != route.wire_format:
-                raise ValueError("synthetic selection wire format diverged from declared route")
-
-            corpus = SyntheticCorpus.from_selection(selection)
-            raw_items = [
-                corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed).raw_items[0],
-                *generate_coverage_witnesses(corpus, seed=seed + 1),
-            ]
-            validator = SchemaValidator(selection.schema, strict=False)
-            validation_results: list[ValidationResult] = []
-            schema_resolution = None
-            if selection.element_kind is not None:
-                from polylogue.schemas.packages import SchemaResolution
-
-                schema_resolution = SchemaResolution(
-                    provider=selection.provider,
-                    package_version=selection.package_version,
-                    element_kind=selection.element_kind,
-                    exact_structure_id=None,
-                    bundle_scope=None,
-                    reason="package_default",
-                )
-            for index, raw in enumerate(raw_items):
-                if route.wire_format.encoding == "jsonl":
-                    payload: JSONValue = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
-                    payload_items = payload if isinstance(payload, list) else []
-                else:
-                    payload = json.loads(raw)
-                    payload_items = [payload] if isinstance(payload, (dict, list)) else []
-                artifact_results = [validator.validate(item) for item in payload_items]
-                validation_results.extend(artifact_results)
-                artifact_validation_error = (
-                    "; ".join(error for result in artifact_results for error in result.errors) or None
-                )
-                artifact_coverage = construct_coverage(selection.schema, payload_items)
-                parse_error: str | None = None
-                artifact_sessions = []
-                try:
-                    parser_payload = payload
-                    if provider == "chatgpt" and isinstance(payload, dict):
-                        # Validate and account for the complete envelope, but
-                        # keep the optional native subpayload from selecting a
-                        # second schema-shaped tree during parser dispatch.
-                        parser_payload = dict(payload)
-                        parser_payload.pop("raw_provider_payload", None)
-                    parsed_sessions_for_artifact = parse_payload(
-                        provider,
-                        parser_payload,
-                        f"synthetic-wire-receipt:{provider}:{index}",
-                        schema_resolution=schema_resolution,
-                    )
-                    artifact_sessions = require_positive_conversational_evidence(
-                        parsed_sessions_for_artifact,
-                        provider=provider,
-                        source_path=f"synthetic-wire-receipt:{provider}:{index}",
-                    )
-                except Exception as exc:  # Keep the witness failure in the receipt.
-                    parse_error = f"{type(exc).__name__}: {exc}"
-                artifact_evidence = _parser_artifact_evidence(
-                    artifact_sessions,
-                    provider,
-                    payload,
-                    f"synthetic-wire-receipt:{provider}:{index}",
-                )
-                parsed_sessions.extend(artifact_sessions)
-                artifact_kind: Literal["baseline", "coverage"] = "baseline" if index == 0 else "coverage"
-                parser_witnesses.append(
-                    WireParserWitness(
-                        index=-1 if index == 0 else index - 1,
-                        exercised_keywords=artifact_coverage.exercised_keywords,
-                        parsed_session_count=len(artifact_sessions),
-                        parsed_message_count=sum(len(session.messages) for session in artifact_sessions),
-                        validation_error=parse_error or artifact_validation_error,
-                        artifact_kind=artifact_kind,
-                        artifact_evidence=artifact_evidence,
-                    )
-                )
-                if (
-                    artifact_sessions
-                    and artifact_evidence
-                    and artifact_validation_error is None
-                    and parse_error is None
-                ):
-                    payloads.extend(payload_items)
-                if parse_error is not None:
-                    label = "baseline" if index == 0 else f"coverage witness {index - 1}"
-                    parser_errors.append(f"{label} parser: {parse_error}")
-            schema_valid = bool(validation_results) and all(result.is_valid for result in validation_results)
-            if not schema_valid:
-                parser_errors.append(
-                    "; ".join(error for result in validation_results for error in result.errors)
-                    or "selected package schema rejected generated payload"
-                )
-        except Exception as exc:  # Receipt records route failures instead of hiding them.
-            validation_error = f"{type(exc).__name__}: {exc}"
-
-        if parser_errors:
-            validation_error = "; ".join(parser_errors)
-
-        if selection is not None:
-            witnessed = construct_coverage(selection.schema, payloads)
-            nonrepresentable_reasons = _route_nonrepresentable_reasons(provider, witnessed.missing_keywords)
-            coverage = construct_coverage(
-                selection.schema,
-                payloads,
-                nonrepresentable_keywords=nonrepresentable_reasons,
-                nonrepresentable_reasons=nonrepresentable_reasons,
-            )
-        else:
-            coverage = None
-        entries.append(
-            WireSupportEntry(
-                provider=provider,
-                status=route.status,
-                reason=None,
-                package_version=selection.package_version if selection is not None else package_version,
-                element_kind=selection.element_kind if selection is not None else element_kind,
-                schema_valid=schema_valid,
-                parsed_session_count=len(parsed_sessions),
-                parsed_message_count=sum(len(session.messages) for session in parsed_sessions),
-                construct_coverage=coverage,
-                validation_error=validation_error,
-                parser_witnesses=tuple(parser_witnesses),
-            )
-        )
 
     return WireSupportReceipt(
         catalog_providers=catalog_providers,

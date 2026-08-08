@@ -38,6 +38,7 @@ def _string_int_dict(value: object) -> dict[str, int]:
 SchemaResolutionReason: TypeAlias = Literal[
     "bundle_scope",
     "exact_structure",
+    "package_catalog",
     "package_default",
     "profile_family",
 ]

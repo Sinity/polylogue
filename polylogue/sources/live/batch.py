@@ -352,6 +352,64 @@ LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 LiveBatchSyncRunner = Callable[..., Awaitable[Any]]
 P = ParamSpec("P")
 T = TypeVar("T")
+
+
+@dataclass(frozen=True, slots=True)
+class AppendCapabilityReceipt:
+    """Production append-route capability for one resolved wire selection."""
+
+    provider: str
+    package_version: str
+    element_kind: str
+    status: Literal["supported", "unsupported"]
+    reason: str | None
+    capability_source: str = "LiveBatchProcessor.append"
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "provider": self.provider,
+            "package_version": self.package_version,
+            "element_kind": self.element_kind,
+            "operation": "append_prefix",
+            "status": self.status,
+            "reason": self.reason,
+            "capability_source": self.capability_source,
+        }
+
+
+def append_capability_receipt(
+    *,
+    provider: str,
+    package_version: str,
+    element_kind: str,
+    stable_session_identity: bool,
+) -> AppendCapabilityReceipt:
+    """Resolve append support from the live route's identity contract."""
+    if provider not in {"codex", "claude-code"}:
+        return AppendCapabilityReceipt(
+            provider=provider,
+            package_version=package_version,
+            element_kind=element_kind,
+            status="unsupported",
+            reason="live append route supports only Codex and Claude Code JSONL identity contracts",
+        )
+    if provider == "codex" and not stable_session_identity:
+        return AppendCapabilityReceipt(
+            provider=provider,
+            package_version=package_version,
+            element_kind=element_kind,
+            status="unsupported",
+            reason="Codex append delta requires a stable persisted session identity sidecar",
+        )
+    return AppendCapabilityReceipt(
+        provider=provider,
+        package_version=package_version,
+        element_kind=element_kind,
+        status="supported",
+        reason=None,
+    )
+
+
 _ARCHIVE_RUNTIME_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 _ARCHIVE_NATIVE_WRITE_TIERS = "source,index"
 _FULL_CAPTURE_PREFIX_PROOF_ATTEMPTS = 2
@@ -3575,10 +3633,19 @@ class LiveBatchProcessor:
         NEW writes going forward, per polylogue-u19l's scope.
         """
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
-        if provider is Provider.CODEX:
+        if provider in {Provider.CODEX, Provider.CLAUDE_CODE}:
             identity = self._existing_provider_session_id(path)
-            if identity is None:
+            capability = append_capability_receipt(
+                provider=provider.value,
+                package_version="live",
+                element_kind="session_record_stream",
+                stable_session_identity=identity is not None,
+            )
+            if capability.status != "supported":
                 return None
+        else:
+            identity = None
+        if provider is Provider.CODEX:
             # A Codex append-mode delta is the file's tail bytes only -- the
             # real `session_meta` header that carries native-session identity
             # was already consumed by an earlier full/append observation and
@@ -3835,5 +3902,20 @@ class LiveBatchProcessor:
 
 
 # fmt: off
-__all__ = ["LiveBatchMetrics", "LiveBatchProcessor", "_FullIngestResult", "_LARGE_FULL_PARSE_PROGRESS_BYTES", "_MAX_APPEND_PLAN_PAYLOAD_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_FILES", "_STREAMING_FULL_INGEST_BYTES", "_full_ingest_worker_count", "_full_parse_progress_groups", "fingerprint_file", "last_complete_newline_from_tail"]
+__all__ = [
+    "AppendCapabilityReceipt",
+    "LiveBatchMetrics",
+    "LiveBatchProcessor",
+    "_FullIngestResult",
+    "_LARGE_FULL_PARSE_PROGRESS_BYTES",
+    "_MAX_APPEND_PLAN_PAYLOAD_BYTES",
+    "_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES",
+    "_SMALL_FULL_PARSE_PROGRESS_MAX_FILES",
+    "_STREAMING_FULL_INGEST_BYTES",
+    "_full_ingest_worker_count",
+    "_full_parse_progress_groups",
+    "append_capability_receipt",
+    "fingerprint_file",
+    "last_complete_newline_from_tail",
+]
 # fmt: on

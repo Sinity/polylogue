@@ -30,11 +30,19 @@ from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatal
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.classification import ConstructSupport, classify_schema_constructs
 from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticSchemaSelection
-from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS, WireFormat
+from polylogue.schemas.synthetic.wire_formats import (
+    PROVIDER_WIRE_FORMATS,
+    WireFormat,
+    WireSupportEntry,
+    WireSupportReceipt,
+)
 
 INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION = 1
 UnsupportedCorpusReason: TypeAlias = Literal[
     "provider_without_wire_format",
+    "wire_support_selection_unwitnessed",
+    "wire_support_receipt_incomplete",
+    "unsupported_wire_route",
     "unsupported_element",
     "missing_schema",
     "unsupported_json_schema_construct",
@@ -370,6 +378,9 @@ def _manifest_entry_from_payload(payload: object) -> InferredCorpusManifestEntry
         raise ValueError("manifest unsupported record fields changed")
     valid_reasons = {
         "provider_without_wire_format",
+        "wire_support_selection_unwitnessed",
+        "wire_support_receipt_incomplete",
+        "unsupported_wire_route",
         "unsupported_element",
         "missing_schema",
         "unsupported_json_schema_construct",
@@ -550,7 +561,35 @@ def _unsupported_reason(
     schema: SchemaRecord | None,
     wire_format: WireFormat | None,
     construct_support: tuple[ConstructSupport, ...],
+    support_entry: WireSupportEntry | None,
+    support_receipt_bound: bool,
 ) -> UnsupportedCorpusRecord | None:
+    if support_entry is not None:
+        if support_entry.status == "unsupported":
+            reason: UnsupportedCorpusReason = (
+                "unsupported_element"
+                if support_entry.reason == "catalog element is marked unsupported"
+                else "unsupported_wire_route"
+            )
+            return UnsupportedCorpusRecord(
+                reason,
+                (support_entry.reason or "route is explicitly unsupported",),
+            )
+        if not support_entry.healthy:
+            details = tuple(
+                detail
+                for detail in (
+                    support_entry.validation_error,
+                    *(witness.validation_error for witness in support_entry.parser_witnesses),
+                )
+                if detail
+            )
+            return UnsupportedCorpusRecord("wire_support_receipt_incomplete", details)
+    elif support_receipt_bound:
+        return UnsupportedCorpusRecord(
+            "wire_support_selection_unwitnessed",
+            (f"no exact parser witness for {element.schema_file!r}",),
+        )
     if not element.supported:
         return UnsupportedCorpusRecord("unsupported_element")
     if schema is None or element.schema_file is None:
@@ -570,6 +609,8 @@ def _compile_entry(
     element: SchemaElementManifest,
     registry: RuntimeSchemaRegistryLike,
     wire_formats: Mapping[str, WireFormat],
+    support_entry: WireSupportEntry | None,
+    support_receipt_bound: bool,
 ) -> InferredCorpusManifestEntry:
     key_without_constructs = CorpusManifestKey(provider, package.version, element.element_kind)
     schema = registry.get_element_schema(
@@ -585,6 +626,8 @@ def _compile_entry(
         schema=schema if isinstance(schema, dict) else None,
         wire_format=wire_format,
         construct_support=construct_support,
+        support_entry=support_entry,
+        support_receipt_bound=support_receipt_bound,
     )
     if unsupported is not None:
         return InferredCorpusManifestEntry(key=key, unsupported=unsupported)
@@ -661,6 +704,7 @@ def compile_inferred_corpus_manifest(
     registry: RuntimeSchemaRegistryLike,
     package_receipt: PackageReceipt | None = None,
     wire_formats: Mapping[str, WireFormat] | None = None,
+    wire_support_receipt: WireSupportReceipt | None = None,
     providers: Sequence[str] | None = None,
     campaign_mode: bool = False,
     gate_receipt_path: Path | None = None,
@@ -669,6 +713,11 @@ def compile_inferred_corpus_manifest(
     """Compile every persisted package/version/element into a typed manifest."""
 
     formats = PROVIDER_WIRE_FORMATS if wire_formats is None else wire_formats
+    support_entries = (
+        {(entry.provider, entry.package_version, entry.element_kind): entry for entry in wire_support_receipt.entries}
+        if wire_support_receipt is not None
+        else {}
+    )
     if campaign_mode and package_receipt is None:
         raise ValueError("campaign mode requires a persisted schema-inference handoff")
     entries = tuple(
@@ -678,6 +727,8 @@ def compile_inferred_corpus_manifest(
             element=element,
             registry=registry,
             wire_formats=formats,
+            support_entry=support_entries.get((provider, package.version, element.element_kind)),
+            support_receipt_bound=wire_support_receipt is not None,
         )
         for provider, catalog, package, element in _catalog_entries(registry, providers)
     )
@@ -763,6 +814,8 @@ def _validate_inference_handoff(
             schema=live_schema if isinstance(live_schema, dict) else None,
             wire_format=PROVIDER_WIRE_FORMATS.get(provider),
             construct_support=live_constructs,
+            support_entry=None,
+            support_receipt_bound=False,
         )
         if (live_entry.unsupported is None) != (live_unsupported is None):
             raise ValueError("schema-inference manifest executable support changed")

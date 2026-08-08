@@ -3,21 +3,38 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 import shutil
 import sqlite3
+import subprocess
+import sys
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.daemon.fts_startup import record_fts_freshness_snapshot_sync
 from polylogue.maintenance.archive_verification import verify_archive
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.schemas.synthetic.models import SyntheticSchemaSelection
+from polylogue.schemas.synthetic.wire_formats import build_wire_support_receipt
+from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_canonical_snapshot import archive_snapshot, assert_archives_equivalent
+from tests.infra.convergence_harness import rebuild_retained_raw_index, set_debt_retry_at
 from tests.infra.inferred_corpus import (
     assert_inferred_corpus_convergence_handoff_complete,
     build_inferred_corpus_convergence_handoff,
@@ -51,12 +68,163 @@ def _assert_fts_match(conn: sqlite3.Connection, token: str) -> None:
     assert rows, f"FTS MATCH returned no blocks for generated token {token!r}"
 
 
+def _run_retry_in_fresh_process(index_db: Path) -> int:
+    """Exercise the production debt drain after a real interpreter restart."""
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(repo_root) if not existing_pythonpath else f"{repo_root}{os.pathsep}{existing_pythonpath}"
+    env["POLYLOGUE_ARCHIVE_ROOT"] = str(index_db.parent)
+    script = (
+        "from pathlib import Path\n"
+        "from polylogue.daemon.cli import _drain_convergence_debt_once\n"
+        f"print('RETRIED=' + str(_drain_convergence_debt_once(Path({str(index_db)!r}))))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, (
+        f"fresh-process convergence retry failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    for line in reversed(completed.stdout.splitlines()):
+        if line.startswith("RETRIED="):
+            return int(line.removeprefix("RETRIED="))
+    raise AssertionError(f"fresh-process convergence retry emitted no result marker: {completed.stdout!r}")
+
+
+def _inferred_selection() -> tuple[CorpusSpec, SyntheticSchemaSelection]:
+    registry = SchemaRegistry(storage_root=SCHEMA_DIR)
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        wire_support_receipt=build_wire_support_receipt(registry=registry),
+    )
+    handoff = build_inferred_corpus_convergence_handoff(manifest)
+    for spec, selection in zip(handoff.specs, handoff.selections, strict=True):
+        if spec.provider == "codex":
+            return spec, selection
+    raise AssertionError("the persisted inferred corpus has no Codex selection")
+
+
+def _ingest_and_converge_sources(
+    archive_root: Path,
+    sources: Sequence[Source],
+) -> tuple[str, ...]:
+    initialize_active_archive_root(archive_root)
+    raw_ids: list[str] = []
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        for source_index, source in enumerate(sources):
+            if source.path is None:
+                raise AssertionError(f"source path required for inferred fixture: {source.name}")
+            raw_ids.append(
+                archive.write_raw_payload(
+                    provider=Provider.from_string(source.name),
+                    payload=source.path.read_bytes(),
+                    source_path=str(source.path),
+                    source_index=source_index,
+                    acquired_at_ms=source_index + 1,
+                )
+            )
+    backfill = backfill_historical_revision_evidence(archive_root, selected_raw_ids=raw_ids, ingest_workers=1)
+    assert backfill.scanned == backfill.classified_full > 0
+    assert backfill.quarantined == 0
+    assert backfill.adoption_deferred == 0
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
+    states, _timings = DaemonConverger(
+        (make_fts_stage(archive_root / "index.db"), make_insights_stage(archive_root / "index.db"))
+    ).converge_sessions(session_ids)
+    assert states and all(state.converged and state.last_error is None for state in states.values())
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        record_fts_freshness_snapshot_sync(conn)
+    return session_ids
+
+
+def _converge_existing_archive(archive_root: Path) -> None:
+    """Run post-reindex convergence over the promoted generation."""
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
+    states, _timings = DaemonConverger(
+        (make_fts_stage(archive_root / "index.db"), make_insights_stage(archive_root / "index.db"))
+    ).converge_sessions(session_ids)
+    assert states and all(state.converged and state.last_error is None for state in states.values())
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        record_fts_freshness_snapshot_sync(conn)
+
+
+def _lineage_material() -> tuple[bytes, bytes, str, str]:
+    spec, selection = _inferred_selection()
+    parent_spec = replace(
+        spec,
+        count=1,
+        messages_min=3,
+        messages_max=3,
+        seed=101,
+        session_native_ids=("inferred-lineage-parent",),
+        style="demo-attachments",
+    )
+    child_spec = replace(
+        spec,
+        count=1,
+        messages_min=3,
+        messages_max=3,
+        seed=202,
+        session_native_ids=("inferred-lineage-child",),
+        style="demo-attachments",
+    )
+    parent_raw = SyntheticCorpus.generate_batch_for_selection(selection, parent_spec).artifacts[0].raw_bytes
+    child_raw = SyntheticCorpus.generate_batch_for_selection(selection, child_spec).artifacts[0].raw_bytes
+    parent_records = [json.loads(line) for line in parent_raw.decode().splitlines() if line]
+    child_records = [json.loads(line) for line in child_raw.decode().splitlines() if line]
+    child_meta = next(record for record in child_records if record.get("type") == "session_meta")
+    child_meta.setdefault("payload", {})["forked_from_id"] = "inferred-lineage-parent"
+    child_records = [
+        child_meta,
+        *(record for record in parent_records if record.get("type") != "session_meta"),
+        *(record for record in child_records if record.get("type") != "session_meta"),
+    ]
+    return (
+        ("\n".join(json.dumps(record, sort_keys=True) for record in parent_records) + "\n").encode(),
+        ("\n".join(json.dumps(record, sort_keys=True) for record in child_records) + "\n").encode(),
+        "codex-session:inferred-lineage-parent",
+        "codex-session:inferred-lineage-child",
+    )
+
+
+def _build_lineage_archive(
+    archive_root: Path,
+    parent_raw: bytes,
+    child_raw: bytes,
+) -> tuple[str, ...]:
+    source_root = archive_root.parent / "inferred-lineage-material"
+    source_root.mkdir(parents=True, exist_ok=True)
+    parent_path = source_root / "parent.jsonl"
+    child_path = source_root / "child.jsonl"
+    parent_path.write_bytes(parent_raw)
+    child_path.write_bytes(child_raw)
+    return _ingest_and_converge_sources(
+        archive_root,
+        (
+            Source(name="codex", path=source_root / "parent.jsonl"),
+            Source(name="codex", path=source_root / "child.jsonl"),
+        ),
+    )
+
+
 def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = SchemaRegistry(storage_root=SCHEMA_DIR)
-    manifest = compile_inferred_corpus_manifest(registry=registry)
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        wire_support_receipt=build_wire_support_receipt(registry=registry),
+    )
     manifest_path = tmp_path / "manifest.json"
     write_inferred_corpus_manifest(manifest, manifest_path)
     persisted = read_inferred_corpus_manifest(manifest_path)
@@ -165,7 +333,10 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
     """
 
     registry = SchemaRegistry(storage_root=SCHEMA_DIR)
-    manifest = compile_inferred_corpus_manifest(registry=registry)
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        wire_support_receipt=build_wire_support_receipt(registry=registry),
+    )
     manifest_path = tmp_path / "manifest.json"
     write_inferred_corpus_manifest(manifest, manifest_path)
     persisted = read_inferred_corpus_manifest(manifest_path)
@@ -234,3 +405,124 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
     red = verify_archive(broken_root, checks=("message-count-projection",))
     check = next(item for item in red.checks if item.name == "message-count-projection")
     assert check.status is OutcomeStatus.ERROR
+
+
+@pytest.mark.frozen_clock_modules("polylogue.storage.sqlite.archive_tiers.revision_governance")
+def test_inferred_selection_retained_raw_reindex_matches_canonical_snapshot(
+    tmp_path: Path,
+    frozen_clock: object,
+) -> None:
+    spec, selection = _inferred_selection()
+    source_root = tmp_path / "retained-source"
+    written = SyntheticCorpus.write_selection_artifacts(selection, spec, source_root, prefix="retained")
+    archive_root = tmp_path / "archive"
+    session_ids = _ingest_and_converge_sources(
+        archive_root,
+        (Source(name=spec.provider, path=written.files[0]),),
+    )
+    before = archive_snapshot(archive_root, session_ids=session_ids)
+
+    receipt = rebuild_retained_raw_index(archive_root)
+    _converge_existing_archive(archive_root)
+
+    assert receipt.raw_session_count == receipt.selected_raw_count > 0
+    assert archive_snapshot(archive_root, session_ids=session_ids) == before
+
+
+def test_inferred_selection_debt_recovers_in_a_fresh_process(tmp_path: Path) -> None:
+    spec, selection = _inferred_selection()
+    source_root = tmp_path / "recovery-source"
+    written = SyntheticCorpus.write_selection_artifacts(selection, spec, source_root, prefix="recovery")
+    archive_root = tmp_path / "archive"
+    session_ids = _ingest_and_converge_sources(
+        archive_root,
+        (Source(name=spec.provider, path=written.files[0]),),
+    )
+    baseline = archive_snapshot(archive_root, session_ids=session_ids)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute(
+            "DELETE FROM session_profiles WHERE session_id IN ({})".format(",".join("?" for _ in session_ids)),
+            session_ids,
+        )
+        conn.commit()
+    cursor = CursorStore(archive_root / "index.db")
+    for session_id in session_ids:
+        cursor.record_convergence_debt(
+            stage="insights",
+            subject_type="session_id",
+            subject_id=session_id,
+            error="inferred-corpus convergence interruption",
+        )
+        set_debt_retry_at(
+            archive_root / "ops.db",
+            stage="insights",
+            subject_type="session_id",
+            subject_id=session_id,
+            retry_at="1970-01-01T00:00:00+00:00",
+        )
+
+    assert _run_retry_in_fresh_process(archive_root / "index.db") == len(session_ids)
+    assert CursorStore(archive_root / "index.db").list_convergence_debt(limit=100) == []
+    assert archive_snapshot(archive_root, session_ids=session_ids) == baseline
+
+
+@pytest.mark.frozen_clock_modules("polylogue.storage.sqlite.archive_tiers.revision_governance")
+def test_inferred_lineage_reindex_preserves_composition_and_detects_tail_mutation(
+    tmp_path: Path,
+    frozen_clock: object,
+) -> None:
+    parent_raw, child_raw, parent_id, child_id = _lineage_material()
+    canonical_root = tmp_path / "canonical"
+    canonical_ids = _build_lineage_archive(canonical_root, parent_raw, child_raw)
+
+    assert set(canonical_ids) == {parent_id, child_id}
+    with sqlite3.connect(canonical_root / "index.db") as conn:
+        parent = conn.execute(
+            "SELECT root_session_id, message_count FROM sessions WHERE session_id = ?",
+            (parent_id,),
+        ).fetchone()
+        child = conn.execute(
+            "SELECT parent_session_id, root_session_id, message_count FROM sessions WHERE session_id = ?",
+            (child_id,),
+        ).fetchone()
+        link = conn.execute(
+            "SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status "
+            "FROM session_links WHERE src_session_id = ?",
+            (child_id,),
+        ).fetchone()
+    assert parent is not None and child is not None and link is not None
+    assert parent[0] == parent_id
+    assert child[0] == parent_id and child[1] == parent_id and int(child[2]) == 3
+    assert link[0] == parent_id and link[1] is not None and link[2] == "prefix-sharing" and link[3] is None
+    with ArchiveStore.open_existing(canonical_root) as archive:
+        composed = archive.read_session(child_id)
+    assert len(composed.messages) > int(parent[1])
+    assert any(message.message_id.startswith(parent_id + ":") for message in composed.messages)
+
+    rebuilt_root = tmp_path / "rebuilt"
+    _build_lineage_archive(rebuilt_root, parent_raw, child_raw)
+    rebuild_retained_raw_index(rebuilt_root)
+    _converge_existing_archive(rebuilt_root)
+    assert archive_snapshot(rebuilt_root) == archive_snapshot(canonical_root)
+
+    mutated_records = [json.loads(line) for line in child_raw.decode().splitlines() if line]
+    mutated_message = mutated_records[-1].get("payload", mutated_records[-1])
+    assert isinstance(mutated_message, dict)
+    mutated_message["content"] = [{"type": "output_text", "text": "mutation-sensitive inferred lineage tail"}]
+    mutated_raw = ("\n".join(json.dumps(record, sort_keys=True) for record in mutated_records) + "\n").encode()
+    mutated_root = tmp_path / "mutated"
+    _build_lineage_archive(mutated_root, parent_raw, mutated_raw)
+    with pytest.raises(AssertionError, match="canonical archive snapshots differ"):
+        assert_archives_equivalent(canonical_root, mutated_root)
+    with sqlite3.connect(mutated_root / "index.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM blocks WHERE session_id = ? AND text = ?",
+                (child_id, "mutation-sensitive inferred lineage tail"),
+            ).fetchone()
+            is not None
+        )
+        assert conn.execute(
+            "SELECT resolved_dst_session_id, inheritance, status FROM session_links WHERE src_session_id = ?",
+            (child_id,),
+        ).fetchone() == (parent_id, "prefix-sharing", None)

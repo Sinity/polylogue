@@ -18,7 +18,7 @@ from polylogue.schemas.operator.receipt import (
 )
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.models import SchemaRecord
-from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
+from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS, build_wire_support_receipt
 from tests.infra.inferred_corpus import (
     CorpusManifestKey,
     InferredCorpusManifest,
@@ -108,6 +108,46 @@ def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path
     write_inferred_corpus_manifest(manifest, path)
 
     assert read_inferred_corpus_manifest(path) == manifest
+
+
+def test_manifest_can_bind_every_selection_to_the_exact_wire_support_receipt() -> None:
+    registry = _registry()
+    support = build_wire_support_receipt(registry=registry)
+
+    manifest = compile_inferred_corpus_manifest(registry=registry, wire_support_receipt=support)
+
+    assert manifest.entries
+    assert all(entry.unsupported is None for entry in manifest.entries if entry.spec is not None)
+    assert {(entry.key.provider, entry.key.package_version, entry.key.element_kind) for entry in manifest.entries} == {
+        (entry.provider, entry.package_version, entry.element_kind) for entry in support.entries
+    }
+
+
+def test_manifest_refuses_a_selection_missing_from_bound_wire_support_receipt() -> None:
+    registry = _registry()
+    support = build_wire_support_receipt(registry=registry)
+    missing = next(entry for entry in support.entries if entry.status == "supported")
+    reduced_support = replace(
+        support,
+        entries=tuple(
+            entry
+            for entry in support.entries
+            if (entry.provider, entry.package_version, entry.element_kind)
+            != (missing.provider, missing.package_version, missing.element_kind)
+        ),
+    )
+
+    manifest = compile_inferred_corpus_manifest(registry=registry, wire_support_receipt=reduced_support)
+
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (missing.provider, missing.package_version, missing.element_kind)
+    )
+    assert target.spec is None
+    assert target.unsupported is not None
+    assert target.unsupported.reason == "wire_support_selection_unwitnessed"
 
 
 def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) -> None:

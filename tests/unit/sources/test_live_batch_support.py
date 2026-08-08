@@ -28,7 +28,12 @@ from polylogue.pipeline.ids import session_content_hash, session_revision_projec
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
-from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor, _ArchiveFullWriteResult
+from polylogue.sources.live.batch import (
+    _MAX_APPEND_PLAN_PAYLOAD_BYTES,
+    LiveBatchProcessor,
+    _ArchiveFullWriteResult,
+    append_capability_receipt,
+)
 from polylogue.sources.live.batch_support import (
     _BROWSER_CAPTURE_PREFIX_PROBE_BYTES,
     _DEFER_APPEND,
@@ -50,6 +55,39 @@ from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
+
+
+@pytest.mark.parametrize(
+    ("provider", "stable_session_identity", "status"),
+    [
+        ("codex", False, "unsupported"),
+        ("codex", True, "supported"),
+        ("claude-code", False, "supported"),
+        ("chatgpt", True, "unsupported"),
+    ],
+)
+def test_append_capability_receipt_is_keyed_to_live_identity_contract(
+    provider: str,
+    stable_session_identity: bool,
+    status: str,
+) -> None:
+    receipt = append_capability_receipt(
+        provider=provider,
+        package_version="v1",
+        element_kind="session_record_stream",
+        stable_session_identity=stable_session_identity,
+    )
+
+    assert receipt.status == status
+    payload = receipt.to_dict()
+    assert (payload["provider"], payload["package_version"], payload["element_kind"]) == (
+        provider,
+        "v1",
+        "session_record_stream",
+    )
+    assert payload["capability_source"] == "LiveBatchProcessor.append"
+
+
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,

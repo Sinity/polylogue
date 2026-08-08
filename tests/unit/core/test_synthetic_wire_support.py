@@ -33,13 +33,41 @@ def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> No
 
     assert set(receipt.catalog_providers) == set(registry.list_providers())
     assert not receipt.missing_routes
+    catalog_entries: list[tuple[str, str, str, bool, str]] = []
+    for provider in registry.list_providers():
+        catalog = registry.load_package_catalog(provider)
+        assert catalog is not None
+        for package in catalog.packages:
+            for element in package.elements:
+                catalog_entries.append(
+                    (
+                        provider,
+                        package.version,
+                        element.element_kind,
+                        element.supported,
+                        wire_formats.PROVIDER_WIRE_ROUTES[provider].status,
+                    )
+                )
+    assert {(entry.provider, entry.package_version, entry.element_kind) for entry in receipt.entries} == {
+        (provider, version, element) for provider, version, element, *_rest in catalog_entries
+    }
     assert receipt.supported_count == sum(
-        route.status == "supported" for route in wire_formats.PROVIDER_WIRE_ROUTES.values()
+        supported and route_status == "supported"
+        for _provider, _version, _element, supported, route_status in catalog_entries
     )
     assert receipt.unsupported_count == sum(
-        route.status == "unsupported" for route in wire_formats.PROVIDER_WIRE_ROUTES.values()
+        not supported or route_status == "unsupported"
+        for _provider, _version, _element, supported, route_status in catalog_entries
     )
     assert all(entry.reason for entry in receipt.entries if entry.status == "unsupported")
+
+
+def test_support_receipt_does_not_substitute_a_default_selection() -> None:
+    registry = SchemaRegistry()
+    receipt = wire_formats.build_wire_support_receipt(registry=registry)
+
+    assert all(entry.package_version is not None and entry.element_kind is not None for entry in receipt.entries)
+    assert len(receipt.entries) > len(receipt.catalog_providers)
 
 
 def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> None:

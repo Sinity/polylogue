@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import polylogue.daemon.convergence_stages as convergence_stages
 from polylogue.archive.message.roles import Role
@@ -64,6 +64,9 @@ from tests.infra.pathology_composer import (
     compose_pathologies,
     compose_quarantined_head_arrangement,
 )
+
+if TYPE_CHECKING:
+    from polylogue.maintenance.rebuild_index import RebuildIndexReceipt
 
 SqlValue = str | int | float | bytes | None
 FactRow = tuple[SqlValue, ...]
@@ -168,6 +171,35 @@ def build_converged_archive(
         converge_convergence_archive(archive)
     assert_archive_verification_green(archive.root)
     return archive
+
+
+def rebuild_retained_raw_index(archive: ConvergenceArchive | Path) -> RebuildIndexReceipt:
+    """Run the production source.db-retained reindex route for this archive."""
+    from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+    from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+
+    root = archive.root if isinstance(archive, ConvergenceArchive) else archive
+    with sqlite3.connect(root / "source.db") as conn:
+        raw_session_count = int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
+    receipt_path = write_valid_rebuild_receipt(
+        root,
+        root.parent / f"{root.name}-test-schema-inference-receipt.json",
+    )
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            promote=True,
+            raw_batch_size=max(1, raw_session_count),
+            schema_inference_receipt_path=receipt_path,
+        )
+    )
+    if receipt.status != "replayed" or not receipt.materialized:
+        raise AssertionError(f"retained-raw production reindex did not materialize a generation: {receipt!r}")
+    if receipt.selected_raw_count != receipt.raw_session_count or receipt.raw_session_count == 0:
+        raise AssertionError(f"retained-raw reindex did not select every source raw row: {receipt!r}")
+    if receipt.operation.get("recovery_state") != "promoted":
+        raise AssertionError(f"retained-raw reindex did not record promotion recovery state: {receipt!r}")
+    return receipt
 
 
 def initialize_active_archive(root: Path) -> None:
@@ -876,6 +908,7 @@ __all__ = [
     "make_messages_fts_stale",
     "messages_fts_match_count",
     "raw_authority_facts",
+    "rebuild_retained_raw_index",
     "rich_convergence_pathology",
     "replay_convergence_archive",
     "rotated_session_order",
