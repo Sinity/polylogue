@@ -316,6 +316,75 @@ def test_daemon_candidate_requires_source_admission_before_transaction_allocatio
     _assert_no_candidate_bookkeeping(root)
 
 
+@pytest.mark.parametrize("route", ["offline", "daemon"])
+@pytest.mark.parametrize("anchor_state", ["missing", "poisoned"])
+def test_valid_candidate_admission_does_not_repair_active_pointer_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    anchor_state: str,
+) -> None:
+    root = tmp_path / "archive"
+    receipt_path = _prepare_frozen_source(root, monkeypatch)
+    anchor = root / ".index-active-pointer"
+    if anchor.exists() or anchor.is_symlink():
+        anchor.unlink()
+    if anchor_state == "poisoned":
+        anchor.write_text(
+            str(root / ".index-generations" / "gen-poisoned" / "index.db"),
+            encoding="utf-8",
+        )
+    anchor_before = _optional_path_evidence(anchor)
+
+    if route == "offline":
+        result = rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                promote=False,
+            )
+        )
+        assert result.transaction is not None
+        assert result.transaction["status"] == "ready"
+    else:
+        transaction = resolve_or_start_daemon_bulk_rebuild_transaction(
+            root,
+            schema_inference_receipt_path=receipt_path,
+        )
+        assert transaction.status == "running"
+
+    assert _optional_path_evidence(anchor) == anchor_before
+
+
+def test_candidate_rejects_poisoned_current_parser_logical_keys_before_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "archive"
+    _prepare_frozen_source(root, monkeypatch)
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute(
+            "UPDATE raw_authority_parser_census SET logical_keys_json = ?",
+            (json.dumps(["codex-session:poisoned-census-key"]),),
+        )
+        source.commit()
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "poisoned-census-receipt.json")
+    anchor = root / ".index-active-pointer"
+    anchor_before = _optional_path_evidence(anchor)
+
+    with pytest.raises(FrozenSourceRemediationRequiredError, match="re-derived different current-parser logical keys"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                promote=False,
+            )
+        )
+
+    assert _optional_path_evidence(anchor) == anchor_before
+    _assert_no_candidate_bookkeeping(root)
+
+
 def test_candidate_requires_complete_source_authority_before_generation_readiness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

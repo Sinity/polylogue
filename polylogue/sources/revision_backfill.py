@@ -818,7 +818,7 @@ def _load_frozen_revision_evidence(
 ) -> _RevisionCensusState:
     """Parse a phase-2 source snapshot without changing its durable ledger."""
     expanded_raw_ids, _logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
-    require_current_parser_source_census(
+    recorded_logical_keys = require_current_parser_source_census(
         archive.archive_root,
         selected_raw_ids=expanded_raw_ids if selected_raw_ids is not None else None,
     )
@@ -851,6 +851,14 @@ def _load_frozen_revision_evidence(
                 f"inactive candidate could not parse frozen raw {raw_id}: {type(outcome).__name__}: {outcome}"
             ) from outcome
         sessions, payload_bytes, revision_kind = outcome
+        parsed_logical_keys = tuple(
+            sorted({f"{session.source_name.value}:{session.provider_session_id}" for session in sessions})
+        )
+        if recorded_logical_keys[raw_id] != parsed_logical_keys:
+            raise FrozenSourceRemediationRequiredError(
+                "inactive candidate re-derived different current-parser logical keys for frozen raw "
+                f"{raw_id}: recorded={recorded_logical_keys[raw_id]!r}, parsed={parsed_logical_keys!r}"
+            )
         spill.add(raw_id, sessions, payload_bytes=payload_bytes)
         state.classified += int(len(sessions) == 1)
         if revision_kind is RawRevisionKind.UNKNOWN:
@@ -864,9 +872,10 @@ def require_current_parser_source_census(
     archive_root: Path,
     *,
     selected_raw_ids: Sequence[str] | None = None,
-) -> None:
+) -> dict[str, tuple[str, ...]]:
     """Require phase-2 parser receipts before allocating an index candidate."""
     stale_raw_ids: list[str] = []
+    recorded_logical_keys: dict[str, tuple[str, ...]] = {}
     selections: tuple[tuple[str, ...] | None, ...]
     if selected_raw_ids is None:
         selections = (None,)
@@ -878,22 +887,34 @@ def require_current_parser_source_census(
         for selection in selections:
             where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             params: tuple[object, ...] = () if selection is None else selection
-            stale_raw_ids.extend(
-                str(row[0])
-                for row in source_conn.execute(
-                    f"""
-                    SELECT r.raw_id
-                    FROM raw_sessions AS r
-                    LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
-                    {where}
-                      {"WHERE" if selection is None else "AND"} NOT COALESCE(
-                          c.parser_fingerprint = ? AND c.status = 'complete', 0
-                      )
-                    ORDER BY r.raw_id
-                    """,
-                    (*params, RAW_AUTHORITY_PARSER_FINGERPRINT),
-                )
+            rows = source_conn.execute(
+                f"""
+                SELECT r.raw_id, c.parser_fingerprint, c.status, c.logical_keys_json
+                FROM raw_sessions AS r
+                LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                {where}
+                ORDER BY r.raw_id
+                """,
+                params,
             )
+            for raw_id_value, fingerprint, status, logical_keys_json in rows:
+                raw_id = str(raw_id_value)
+                if fingerprint != RAW_AUTHORITY_PARSER_FINGERPRINT or status != "complete":
+                    stale_raw_ids.append(raw_id)
+                    continue
+                try:
+                    decoded_keys = json.loads(str(logical_keys_json))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    stale_raw_ids.append(raw_id)
+                    continue
+                if not isinstance(decoded_keys, list) or not all(isinstance(value, str) for value in decoded_keys):
+                    stale_raw_ids.append(raw_id)
+                    continue
+                normalized_keys = tuple(sorted(set(decoded_keys)))
+                if tuple(decoded_keys) != normalized_keys:
+                    stale_raw_ids.append(raw_id)
+                    continue
+                recorded_logical_keys[raw_id] = normalized_keys
     if stale_raw_ids:
         sample = ", ".join(stale_raw_ids[:5])
         raise FrozenSourceRemediationRequiredError(
@@ -932,6 +953,7 @@ def require_current_parser_source_census(
             "inactive candidate requires complete frozen source authority; "
             f"{len(unresolved_raw_ids)} raw(s) remain quarantined or undecided (sample: {sample})"
         )
+    return recorded_logical_keys
 
 
 def validate_frozen_source_authority(

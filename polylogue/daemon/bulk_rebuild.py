@@ -212,7 +212,7 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
         # external-corpus drift cannot reach generation bookkeeping.
         _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
         validate_rebuild_source_admission(root, location)
-        store = IndexGenerationStore(location)
+        store = IndexGenerationStore(location, repair_anchor=False)
         transaction: IndexRebuildTransaction | None
         try:
             transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
@@ -381,7 +381,7 @@ async def run_daemon_bulk_rebuild_pass(
         # Recheck before consuming the receipt or selecting source material.
         await asyncio.to_thread(require_rebuild_schema_currency, root)
         await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
-        store = IndexGenerationStore(location)
+        store = IndexGenerationStore(location, repair_anchor=False)
         await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
         page = await asyncio.to_thread(store.next_raw_page, transaction, limit=batch_size)
     finally:

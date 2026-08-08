@@ -1476,7 +1476,7 @@ async def _rebuild_index_from_source_owned(
                 root,
                 active_index_path=canonical_active_index_path(owned.location),
             )
-            generation_store = IndexGenerationStore(owned.location)
+            generation_store = IndexGenerationStore(owned.location, repair_anchor=request.promote)
             if request.operation_id is not None:
                 transaction = generation_store.load_transaction(request.operation_id)
                 transaction = _reconcile_active_generation_transaction(generation_store, transaction)
@@ -1573,7 +1573,7 @@ async def _rebuild_index_from_source_owned(
                 active_index_path=canonical_active_index_path(owned.location),
                 selected_raw_ids=selected_raw_ids,
             )
-            generation_store = IndexGenerationStore(owned.location)
+            generation_store = IndexGenerationStore(owned.location, repair_anchor=request.promote)
             provenance.validate()
             generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
         try:
