@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument
@@ -60,29 +60,9 @@ def inspect_frontier(config: Config) -> RawAuthorityFrontierCensus:
 
 def _validate_frontier_apply_report(report: object) -> RawAuthorityFrontierApplyReport:
     """Reject an actuator response that cannot conserve selected plan outcomes."""
-    selected = getattr(report, "selected_plan_count", None)
-    executed = getattr(report, "executed_plan_count", None)
-    retryable = getattr(report, "retryable_plan_count", None)
-    if any(type(count) is not int for count in (selected, executed, retryable)):
-        raise TypeError("raw authority actuator returned non-integer plan counts")
-    selected_count = cast(int, selected)
-    executed_count = cast(int, executed)
-    retryable_count = cast(int, retryable)
-    if selected_count <= 0 or executed_count < 0 or retryable_count < 0:
-        raise ValueError("raw authority actuator returned invalid plan counts")
-    if executed_count + retryable_count != selected_count:
-        raise ValueError(
-            "raw authority actuator returned incoherent plan counts: "
-            "executed_plan_count + retryable_plan_count must equal selected_plan_count"
-        )
-    outcome_refs = getattr(report, "outcome_refs", None)
-    if not isinstance(outcome_refs, tuple) or len(outcome_refs) != selected_count:
-        raise ValueError("raw authority actuator must return one outcome reference per selected plan")
-    from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport
+    from polylogue.storage.raw_reconciler import validate_raw_authority_frontier_apply_report
 
-    if not isinstance(report, RawAuthorityFrontierApplyReport):
-        raise TypeError("raw authority actuator returned an untyped apply report")
-    return report
+    return validate_raw_authority_frontier_apply_report(report)
 
 
 def apply_frontier(

@@ -238,24 +238,12 @@ class RawAuthorityFrontierApplyReport:
     outcome_refs: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        counts = (
+        _validate_raw_authority_frontier_apply_counts(
             self.selected_plan_count,
             self.executed_plan_count,
             self.retryable_plan_count,
+            self.outcome_refs,
         )
-        if any(type(count) is not int for count in counts):
-            raise TypeError("raw authority apply report plan counts must be integers")
-        if self.selected_plan_count <= 0:
-            raise ValueError("raw authority apply report must contain at least one selected plan")
-        if self.executed_plan_count < 0 or self.retryable_plan_count < 0:
-            raise ValueError("raw authority apply report plan counts must be non-negative")
-        if self.executed_plan_count + self.retryable_plan_count != self.selected_plan_count:
-            raise ValueError(
-                "raw authority apply report plan counts are incoherent: "
-                "executed_plan_count + retryable_plan_count must equal selected_plan_count"
-            )
-        if len(self.outcome_refs) != self.selected_plan_count:
-            raise ValueError("raw authority apply report must contain one outcome reference per selected plan")
 
     @property
     def success(self) -> bool:
@@ -263,6 +251,44 @@ class RawAuthorityFrontierApplyReport:
 
     def to_dict(self) -> JSONDocument:
         return json_document(dataclasses.asdict(self) | {"success": self.success})
+
+
+def _validate_raw_authority_frontier_apply_counts(
+    selected: object,
+    executed: object,
+    retryable: object,
+    outcome_refs: object,
+) -> None:
+    counts = (selected, executed, retryable)
+    if any(type(count) is not int for count in counts):
+        raise TypeError("raw authority apply report plan counts must be integers")
+    selected_count = cast(int, selected)
+    executed_count = cast(int, executed)
+    retryable_count = cast(int, retryable)
+    if selected_count <= 0:
+        raise ValueError("raw authority apply report must contain at least one selected plan")
+    if executed_count < 0 or retryable_count < 0:
+        raise ValueError("raw authority apply report plan counts must be non-negative")
+    if executed_count + retryable_count != selected_count:
+        raise ValueError(
+            "raw authority apply report has incoherent plan counts: "
+            "executed_plan_count + retryable_plan_count must equal selected_plan_count"
+        )
+    if not isinstance(outcome_refs, tuple) or len(outcome_refs) != selected_count:
+        raise ValueError("raw authority apply report must contain one outcome reference per selected plan")
+
+
+def validate_raw_authority_frontier_apply_report(report: object) -> RawAuthorityFrontierApplyReport:
+    """Validate and type-check one raw-authority apply response at a boundary."""
+    _validate_raw_authority_frontier_apply_counts(
+        getattr(report, "selected_plan_count", None),
+        getattr(report, "executed_plan_count", None),
+        getattr(report, "retryable_plan_count", None),
+        getattr(report, "outcome_refs", None),
+    )
+    if not isinstance(report, RawAuthorityFrontierApplyReport):
+        raise TypeError("raw authority actuator returned an untyped apply report")
+    return report
 
 
 def _archive_root(config: Config) -> Path:
@@ -1743,4 +1769,5 @@ __all__ = [
     "apply_raw_authority_frontier",
     "inspect_raw_authority_frontier",
     "recover_interrupted_raw_authority_frontier",
+    "validate_raw_authority_frontier_apply_report",
 ]
