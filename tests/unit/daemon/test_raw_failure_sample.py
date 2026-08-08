@@ -374,6 +374,60 @@ class TestRawFailureInfoProducesTypedSamples:
         # Non-JSON parse error → "parse_error" (the error IS a parse error, just not JSON-specific)
         assert sample.failure_kind == "parse_error"
 
+    def test_raw_failure_info_prefers_failure_evidence_over_newer_artifact(self, tmp_path: Path) -> None:
+        index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-multi-artifact",
+            origin="claude-code-session",
+            native_id="native-multi-artifact",
+            source_path="/data/failure.jsonl",
+            parse_error="captured JSONL payload ends before a complete record boundary",
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            upsert_raw_artifact(
+                conn,
+                "raw-multi-artifact",
+                ArchiveSourceArtifact(
+                    artifact_id="failure-evidence",
+                    origin="claude-code-session",
+                    source_path="/data/failure.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_claude_code_partial_jsonl",
+                    classification_reason="deferred_claude_code_partial_jsonl",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                    first_observed_at_ms=100,
+                    last_observed_at_ms=100,
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-multi-artifact",
+                ArchiveSourceArtifact(
+                    artifact_id="newer-unrelated-artifact",
+                    origin="claude-code-session",
+                    source_path="/data/newer.sqlite",
+                    source_index=0,
+                    artifact_kind="sqlite_state_database",
+                    classification_reason="sqlite_state_database",
+                    support_status=ArtifactSupportStatus.UNKNOWN,
+                    first_observed_at_ms=200,
+                    last_observed_at_ms=200,
+                ),
+            )
+
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
+            info = _raw_failure_info()
+
+        samples = cast(list[RawFailureSample], info["samples"])
+        assert len(samples) == 1
+        assert samples[0].failure_kind == "deferred_claude_code_partial_jsonl"
+        assert samples[0].lifecycle == "deferred"
+
     def test_raw_failure_info_separates_closed_lifecycle_evidence(self, tmp_path: Path) -> None:
         index_db = _seed_archive_raw_session(
             tmp_path,

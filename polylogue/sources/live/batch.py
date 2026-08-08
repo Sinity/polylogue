@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
+from json import JSONDecodeError as StdlibJSONDecodeError
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
@@ -59,6 +60,7 @@ from polylogue.pipeline.ingest_outcomes import (
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
@@ -336,6 +338,10 @@ def _write_codex_thread_state_evidence(
                 session_native_id=edge.parent_thread_id,
             ),
         )
+
+
+def _is_json_stream_decode_error(error: BaseException) -> bool:
+    return isinstance(error, (StdlibJSONDecodeError, UnicodeDecodeError, PartialJsonStreamError))
 
 
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
@@ -2822,7 +2828,7 @@ class LiveBatchProcessor:
                             )
                         raise
                     if provider is not None and source_raw_id is not None:
-                        if provider is Provider.UNKNOWN and isinstance(exc, ValueError):
+                        if provider is Provider.UNKNOWN and _is_json_stream_decode_error(exc):
                             archive.record_raw_failure_evidence(
                                 source_raw_id,
                                 provider=provider,

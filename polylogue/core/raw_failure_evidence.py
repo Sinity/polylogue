@@ -40,7 +40,7 @@ class RawFailureEvidenceKind(StrEnum):
 
     @property
     def lifecycle(self) -> str:
-        return "deferred" if self in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS else "terminal"
+        return "deferred" if self.value in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS else "terminal"
 
 
 RAW_FAILURE_EVIDENCE_KINDS = frozenset(kind.value for kind in RawFailureEvidenceKind)

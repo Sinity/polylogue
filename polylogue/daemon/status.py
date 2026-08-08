@@ -951,6 +951,7 @@ def _archive_raw_failure_info(
             rows_by_raw_id: dict[str, sqlite3.Row | tuple[object, ...]] = {}
             if sample_ids:
                 placeholders = ",".join("?" for _ in sample_ids)
+                failure_kind_placeholders = ",".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
                 rows = conn.execute(
                     f"""
                     SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error,
@@ -958,6 +959,7 @@ def _archive_raw_failure_info(
                                SELECT a.artifact_kind
                                FROM raw_artifacts AS a
                                WHERE a.raw_id = r.raw_id
+                                 AND a.artifact_kind IN ({failure_kind_placeholders})
                                ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
                                LIMIT 1
                            ) AS artifact_kind
@@ -965,7 +967,7 @@ def _archive_raw_failure_info(
                     WHERE r.raw_id IN ({placeholders})
                       AND ((r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '') OR r.validation_status = 'failed')
                     """,
-                    sample_ids,
+                    [*sorted(RAW_FAILURE_EVIDENCE_KINDS), *sample_ids],
                 )
                 rows_by_raw_id = {str(row[0]): row for row in rows}
             for raw_id in sample_ids:

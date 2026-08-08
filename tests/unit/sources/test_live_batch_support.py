@@ -23,6 +23,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import ArtifactSupportStatus, Provider
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -46,6 +47,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -448,6 +450,58 @@ def test_full_ingest_unknown_json_decode_records_terminal_decode_evidence(tmp_pa
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
+
+
+def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "export.json"
+    path.write_bytes(b"\xff")
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
+
+
+def test_full_ingest_unknown_semantic_value_error_remains_unexplained(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "export.json"
+    path.write_bytes(b'{"unrelated": "payload"}')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    def raise_semantic_value_error(*_args: object, **_kwargs: object) -> list[ParsedSession]:
+        raise ValueError("semantic parser rejection")
+
+    monkeypatch.setattr("polylogue.sources.live.batch.parse_payload", raise_semantic_value_error)
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact_kinds = {row[0] for row in conn.execute("SELECT artifact_kind FROM raw_artifacts")}
+    assert not artifact_kinds & RAW_FAILURE_EVIDENCE_KINDS
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.unexplained == 1
 
 
 def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
