@@ -36,7 +36,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.sources import provider_from_origin
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
 from polylogue.pipeline.services.process_pool import (
@@ -64,6 +64,21 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import FrozenSou
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
+
+
+def _canonical_authority_logical_key(logical_key: str) -> str:
+    """Normalize transitional provider and public-origin authority prefixes."""
+    prefix, separator, native_id = logical_key.partition(":")
+    if not separator or not native_id:
+        raise ValueError(f"invalid logical source key: {logical_key!r}")
+    try:
+        origin = Origin(prefix)
+    except ValueError:
+        try:
+            origin = origin_from_provider(Provider(prefix))
+        except ValueError as exc:
+            raise ValueError(f"unknown logical source key prefix: {prefix!r}") from exc
+    return f"{origin.value}:{native_id}"
 
 
 def _browser_snapshot_fidelity(ingest_flags: Sequence[str]) -> Literal["dom", "native"] | None:
@@ -852,7 +867,12 @@ def _load_frozen_revision_evidence(
             ) from outcome
         sessions, payload_bytes, revision_kind = outcome
         parsed_logical_keys = tuple(
-            sorted({f"{session.source_name.value}:{session.provider_session_id}" for session in sessions})
+            sorted(
+                {
+                    f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                    for session in sessions
+                }
+            )
         )
         if recorded_logical_keys[raw_id] != parsed_logical_keys:
             raise FrozenSourceRemediationRequiredError(
@@ -910,8 +930,15 @@ def require_current_parser_source_census(
                 if not isinstance(decoded_keys, list) or not all(isinstance(value, str) for value in decoded_keys):
                     stale_raw_ids.append(raw_id)
                     continue
-                normalized_keys = tuple(sorted(set(decoded_keys)))
-                if tuple(decoded_keys) != normalized_keys:
+                if tuple(decoded_keys) != tuple(sorted(set(decoded_keys))):
+                    stale_raw_ids.append(raw_id)
+                    continue
+                try:
+                    normalized_keys = tuple(sorted({_canonical_authority_logical_key(value) for value in decoded_keys}))
+                except ValueError:
+                    stale_raw_ids.append(raw_id)
+                    continue
+                if len(normalized_keys) != len(decoded_keys):
                     stale_raw_ids.append(raw_id)
                     continue
                 recorded_logical_keys[raw_id] = normalized_keys
