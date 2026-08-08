@@ -18,7 +18,7 @@ from typing import Literal, TypeAlias, cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent, fill_linear_parent_chain
@@ -695,10 +695,12 @@ def _parse_session_row(
         (message.provider_message_id for message in reversed(messages) if message.is_active_path),
         None,
     )
+    provider_title = _optional_text(_row_value(row, "title"))
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=session_id,
-        title=_optional_text(_row_value(row, "title")) or raw_session_id,
+        title=provider_title or raw_session_id,
+        title_source=TitleSource.ORIGIN if provider_title else None,
         created_at=_epoch_iso(row["started_at"]),
         updated_at=_epoch_iso(_row_value(row, "ended_at")) or _latest_message_timestamp(messages),
         messages=messages,

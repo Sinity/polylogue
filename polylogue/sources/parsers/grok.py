@@ -40,7 +40,7 @@ from collections.abc import Mapping
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.timestamps import canonical_timestamp_text
 
 from .base import (
@@ -132,7 +132,8 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
     responses = responses_raw if isinstance(responses_raw, list) else []
 
     title_raw = conversation.get("title")
-    title = title_raw if isinstance(title_raw, str) and title_raw else fallback_id
+    provider_title = title_raw if isinstance(title_raw, str) and title_raw else None
+    title = provider_title or fallback_id
     created_at = _timestamp_text(conversation.get("create_time"))
 
     messages: list[ParsedMessage] = []
@@ -186,6 +187,7 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
         source_name=Provider.GROK,
         provider_session_id=fallback_id,
         title=title,
+        title_source=TitleSource.ORIGIN if provider_title else None,
         created_at=created_at,
         updated_at=updated_at,
         messages=messages,

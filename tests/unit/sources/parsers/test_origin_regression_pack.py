@@ -56,7 +56,7 @@ from typing import Any
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.core.enums import BlockType, Origin, Provider, TitleSource
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
@@ -132,6 +132,7 @@ class OriginFixture:
 
     # Optional contract items — use _NA to skip
     expected_title: Any = _NA  # str | None | _NA
+    expected_title_source: Any = _NA  # TitleSource | None | _NA
     has_tool_use: bool | object = _NA  # True/False or _NA
     has_thinking: bool | object = _NA  # True/False or _NA
     has_paste: bool | object = _NA  # True/False or _NA
@@ -581,6 +582,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         payload=_chatgpt_payload(),
         parse_fn=chatgpt_parse,
         expected_title="ChatGPT regression fixture",
+        expected_title_source=TitleSource.ORIGIN,
         # bd polylogue-4fm3: code-interpreter calls are TOOL_USE (paired with
         # their execution_output TOOL_RESULT via a shared tool_id), not
         # CODE -- CODE-typed calls were invisible to action_pairs (which
@@ -715,6 +717,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         parse_fn=_ag_parse,
         dispatch_payload=markdown_export_payload(_AG_SUMMARY, _AG_MARKDOWN),
         expected_title="Antigravity regression fixture",
+        expected_title_source=TitleSource.ORIGIN,
         has_tool_use=False,
         has_thinking=False,
         has_paste=False,
@@ -737,6 +740,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         payload=_hermes_payload(),
         parse_fn=parse_hermes,
         expected_title=_NA,  # hermes titles session_id
+        expected_title_source=None,  # the session id is a parser fallback
         has_tool_use=True,
         has_thinking=True,
         has_paste=False,
@@ -759,6 +763,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         parse_fn=grok_parse,
         dispatch_payload={"conversations": [_grok_payload()]},
         expected_title="Grok regression fixture",
+        expected_title_source=TitleSource.ORIGIN,
         has_tool_use=False,
         has_thinking=False,
         has_paste=False,
@@ -929,7 +934,14 @@ def test_origin_contract(fixture: OriginFixture) -> None:
             f"[{fixture.label}] title mismatch: expected {fixture.expected_title!r}, got {session.title!r}"
         )
 
-    # --- 10. Block-type assertions -------------------------------------
+    # --- 10. Optional title-provenance assertion -----------------------
+    if fixture.expected_title_source is not _NA:
+        assert session.title_source == fixture.expected_title_source, (
+            f"[{fixture.label}] title_source mismatch: expected {fixture.expected_title_source!r}, "
+            f"got {session.title_source!r}"
+        )
+
+    # --- 11. Block-type assertions -------------------------------------
     block_types = _block_types(session)
 
     if fixture.has_tool_use is not _NA:
@@ -1045,6 +1057,7 @@ def test_browser_capture_snapshot_dispatches_to_chatgpt_export_origin() -> None:
     assert sessions[0].source_name is Provider.CHATGPT
     assert sessions[0].provider_session_id == "browser-snapshot-reg-1"
     assert origin_from_provider(sessions[0].source_name) is Origin.CHATGPT_EXPORT
+    assert sessions[0].title_source is TitleSource.ORIGIN
 
 
 # ---------------------------------------------------------------------------

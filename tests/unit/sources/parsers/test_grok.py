@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.core.enums import BlockType, Origin, Provider, TitleSource
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.dispatch import detect_provider, parse_payload
@@ -89,6 +89,7 @@ def test_parse_conversation_nested_response_shape() -> None:
     assert session.source_name is Provider.GROK
     assert session.provider_session_id == "grok-1"
     assert session.title == "Debugging a React hook"
+    assert session.title_source is TitleSource.ORIGIN
     assert session.created_at == "2024-04-01T19:33:20+00:00"
     assert len(session.messages) == 2
     assert [m.role for m in session.messages] == [Role.USER, Role.ASSISTANT]
@@ -118,6 +119,7 @@ def test_parse_conversation_missing_title_falls_back_to_id() -> None:
     payload: dict[str, Any] = {"conversation": {}, "responses": []}
     session = grok.parse_conversation(payload, "fallback-id")
     assert session.title == "fallback-id"
+    assert session.title_source is None
 
 
 def test_parse_conversation_empty_responses_yields_no_messages() -> None:

@@ -22,7 +22,7 @@ from polylogue.browser_capture.models import (
     BrowserCaptureTurn,
     looks_like_browser_capture,
 )
-from polylogue.core.enums import BlockType, Provider, SessionKind
+from polylogue.core.enums import BlockType, Provider, SessionKind, TitleSource
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
@@ -342,6 +342,7 @@ def _merge_envelope_native_metadata(parsed: ParsedSession, envelope: BrowserCapt
     fallback_titles = {None, "", parsed.provider_session_id, envelope.session.provider_session_id}
     if parsed.title in fallback_titles and envelope.session.title:
         updates["title"] = envelope.session.title
+        updates["title_source"] = TitleSource.ORIGIN
     if parsed.created_at is None and envelope.session.created_at is not None:
         updates["created_at"] = envelope.session.created_at
     if parsed.updated_at is None and envelope.session.updated_at is not None:
@@ -465,6 +466,7 @@ def _parse_claude_fallback_envelope(
         source_name=Provider.CLAUDE_AI,
         provider_session_id=provider_session_id,
         title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
+        title_source=TitleSource.ORIGIN if envelope.session.title else None,
         session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
         created_at=created_at,
         updated_at=updated_at,
@@ -640,7 +642,10 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
 
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
-                _merge_envelope_attachments(parse_chatgpt(raw_provider_payload, provider_session_id), envelope),
+                _merge_envelope_attachments(
+                    _merge_envelope_native_metadata(parse_chatgpt(raw_provider_payload, provider_session_id), envelope),
+                    envelope,
+                ),
                 envelope,
                 provider_session_id,
                 has_native_payload=True,
@@ -729,6 +734,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         source_name=provider,
         provider_session_id=provider_session_id,
         title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
+        title_source=TitleSource.ORIGIN if envelope.session.title else None,
         session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
         created_at=envelope.session.created_at,
         updated_at=envelope.session.updated_at,
