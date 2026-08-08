@@ -289,6 +289,10 @@ _NOISY_REPO_LABELS = {
 
 logger = logging.getLogger(__name__)
 
+_JUDGMENT_AUTOMATION_INTERVAL_FLOOR_SECONDS = 60
+_JUDGMENT_AUTOMATION_RECEIPT_GRACE_MIN_SECONDS = 5 * 60
+_JUDGMENT_AUTOMATION_RECEIPT_GRACE_MAX_SECONDS = 60 * 60
+
 
 class SessionNotFoundError(PolylogueError):
     """Raised when a requested session does not exist in the archive."""
@@ -1508,6 +1512,7 @@ def _archive_assertion_candidate_queue_health(
 ) -> AssertionCandidateQueueHealthPayload:
     """Project queue depth, retention, producer telemetry, and scheduler health."""
 
+    from polylogue.config import load_polylogue_config
     from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ASSERTION_CANDIDATE_JUDGMENT_KINDS,
@@ -1672,7 +1677,7 @@ def _archive_assertion_candidate_queue_health(
                         SELECT ts_ms, payload_json
                         FROM daemon_events
                         WHERE kind = 'judgment-automation'
-                        ORDER BY ts_ms DESC, rowid DESC
+                        ORDER BY id DESC
                         LIMIT 1
                         """
                     ).fetchone()
@@ -1711,10 +1716,22 @@ def _archive_assertion_candidate_queue_health(
     judgment_receipt_age_ms = (
         None if judgment_scheduler_receipt_at_ms is None else max(0, observed_at_ms - judgment_scheduler_receipt_at_ms)
     )
+    configured_interval_s = max(
+        load_polylogue_config().judgment_automation_interval_s,
+        _JUDGMENT_AUTOMATION_INTERVAL_FLOOR_SECONDS,
+    )
+    # A successful receipt covers one configured sleep interval. Permit a
+    # bounded grace period for scheduling and writer admission, while keeping
+    # the grace independent of unusually large operator-selected intervals.
+    receipt_grace_s = min(
+        max(configured_interval_s // 10, _JUDGMENT_AUTOMATION_RECEIPT_GRACE_MIN_SECONDS),
+        _JUDGMENT_AUTOMATION_RECEIPT_GRACE_MAX_SECONDS,
+    )
+    receipt_freshness_window_ms = (configured_interval_s + receipt_grace_s) * 1000
     judgment_receipt_fresh = (
         judgment_scheduler_receipt_status == "completed"
         and judgment_receipt_age_ms is not None
-        and judgment_receipt_age_ms <= 24 * 60 * 60 * 1000
+        and judgment_receipt_age_ms <= receipt_freshness_window_ms
     )
 
     state: AssertionCandidateQueueState

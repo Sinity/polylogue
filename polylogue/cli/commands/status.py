@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -2480,9 +2481,19 @@ def _render_assertion_candidate_queue(env: AppEnv, queue: dict[str, Any]) -> Non
     env.ui.console.print(line)
     receipt_status = queue.get("judgment_scheduler_receipt_status")
     if receipt_status is not None:
+        receipt_details = [str(receipt_status)]
+        receipt_at_ms = queue.get("judgment_scheduler_receipt_at_ms")
+        if isinstance(receipt_at_ms, int | float) and not isinstance(receipt_at_ms, bool):
+            with suppress(OverflowError, OSError, ValueError):
+                receipt_timestamp = datetime.fromtimestamp(float(receipt_at_ms) / 1000, tz=UTC).isoformat()
+                receipt_details.append(f"at={receipt_timestamp}")
+        receipt_age_ms = queue.get("judgment_scheduler_receipt_age_ms")
+        if isinstance(receipt_age_ms, int | float) and not isinstance(receipt_age_ms, bool):
+            receipt_details.append(f"age={float(receipt_age_ms) / 1000:.1f}s")
         receipt_reason = queue.get("judgment_scheduler_receipt_reason")
-        suffix = f" ({receipt_reason})" if receipt_reason else ""
-        env.ui.console.print(f"    judgment scheduler receipt: {receipt_status}{suffix}")
+        if receipt_reason:
+            receipt_details.append(f"reason={receipt_reason}")
+        env.ui.console.print(f"    judgment scheduler receipt: {', '.join(receipt_details)}")
 
 
 def _render_sqlite_maintenance(env: AppEnv, status: dict[str, Any]) -> None:

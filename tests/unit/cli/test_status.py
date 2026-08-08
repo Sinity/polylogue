@@ -24,6 +24,7 @@ from polylogue.cli.commands.status import (
     _direct_claim_guard,
     _direct_status_ok,
     _ops_workload_status,
+    _render_assertion_candidate_queue,
     _render_raw_replay_backlog,
     _show_daemon_status,
     _show_direct_json,
@@ -124,6 +125,29 @@ def _combined_calls(env: AppEnv) -> str:
     """Get combined output from the capturing console."""
     console: Any = env.ui.console
     return " ".join(console.calls)
+
+
+def test_status_renderer_includes_judgment_scheduler_receipt_time_and_age() -> None:
+    """Human status keeps receipt timing evidence visible with its verdict."""
+    env = _make_app_env()
+
+    _render_assertion_candidate_queue(
+        env,
+        {
+            "state": "scheduler-stalled",
+            "pending_count": 2,
+            "judgment_scheduler_receipt_status": "completed",
+            "judgment_scheduler_receipt_at_ms": 1_800_000_000_000,
+            "judgment_scheduler_receipt_age_ms": 90_000,
+            "judgment_scheduler_receipt_reason": "sweep_completed",
+        },
+    )
+
+    output = _combined_calls(env)
+    assert "judgment scheduler receipt: completed" in output
+    assert "at=2027-01-15T08:00:00+00:00" in output
+    assert "age=90.0s" in output
+    assert "reason=sweep_completed" in output
 
 
 def test_status_command_reads_a_real_daemon_http_status_route() -> None:
