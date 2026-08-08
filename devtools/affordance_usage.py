@@ -203,31 +203,91 @@ def _file_sha256(path: Path) -> str:
 
 
 def _snapshot_observation(index_db: Path) -> dict[str, object]:
-    """Capture the selected index file's stat identity and content hash."""
-    try:
-        metadata = index_db.stat()
-        return {
-            "path": str(index_db),
-            "present": True,
-            "size": metadata.st_size,
-            "mtime_ns": metadata.st_mtime_ns,
-            "inode": metadata.st_ino,
-            "sha256": _file_sha256(index_db),
-        }
-    except FileNotFoundError:
-        return {"path": str(index_db), "present": False}
+    """Capture the complete SQLite file-set identity for the selected index."""
+    paths = (index_db, Path(f"{index_db}-wal"), Path(f"{index_db}-shm"), Path(f"{index_db}-journal"))
+    files: list[dict[str, object]] = []
+    complete = True
+    for path in paths:
+        try:
+            metadata_before = path.stat()
+        except FileNotFoundError:
+            files.append({"path": str(path), "present": False})
+            continue
+        try:
+            digest = _file_sha256(path)
+            metadata_after = path.stat()
+        except FileNotFoundError:
+            complete = False
+            files.append({"path": str(path), "present": False, "changed_during_observation": True})
+            continue
+        unchanged = (
+            metadata_before.st_dev,
+            metadata_before.st_ino,
+            metadata_before.st_size,
+            metadata_before.st_mtime_ns,
+        ) == (
+            metadata_after.st_dev,
+            metadata_after.st_ino,
+            metadata_after.st_size,
+            metadata_after.st_mtime_ns,
+        )
+        complete = complete and unchanged
+        files.append(
+            {
+                "path": str(path),
+                "present": True,
+                "size": metadata_after.st_size,
+                "mtime_ns": metadata_after.st_mtime_ns,
+                "inode": metadata_after.st_ino,
+                "sha256": digest,
+                "changed_during_observation": not unchanged,
+            }
+        )
+    encoded = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    main = files[0]
+    return {
+        "path": str(index_db),
+        "present": main["present"],
+        "size": main.get("size"),
+        "files": files,
+        "observation_complete": complete,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
-def _snapshot_identity(index_db: Path, before: dict[str, object], after: dict[str, object]) -> dict[str, object]:
+def _snapshot_identity(
+    index_db: Path,
+    before: dict[str, object],
+    after: dict[str, object],
+    *,
+    observer_data_version_before: int,
+    observer_data_version_after: int,
+) -> dict[str, object]:
     """Bind report evidence to the selected database, including instability."""
+    file_set_stable = before["sha256"] == after["sha256"]
+    no_concurrent_commits = observer_data_version_before == observer_data_version_after
     return {
         "index_db": str(index_db),
         "sha256": before.get("sha256"),
         "size": before.get("size"),
         "before": before,
         "after": after,
-        "stable": before == after,
+        "file_set_stable": file_set_stable,
+        "observer_data_version_before": observer_data_version_before,
+        "observer_data_version_after": observer_data_version_after,
+        "no_concurrent_commits": no_concurrent_commits,
+        "stable": bool(
+            before.get("observation_complete")
+            and after.get("observation_complete")
+            and file_set_stable
+            and no_concurrent_commits
+        ),
     }
+
+
+def _data_version(conn: Connection) -> int:
+    row = conn.execute("PRAGMA data_version").fetchone()
+    return int(row[0]) if row else 0
 
 
 def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
@@ -237,6 +297,7 @@ def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
         "artifact": "agent-affordance-usage",
         "updated_at": report["captured_at"],
         "archive_root": report["archive_root"],
+        "evidence_root": report["evidence_root"],
         "index_db": report["index_db"],
         "snapshot_identity": report["snapshot_identity"],
         "index_schema_version": report["index_schema_version"],
@@ -1240,13 +1301,18 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         drive_config=config.drive_config,
         index_config=config.index_config,
     )
-    snapshot_before = _snapshot_observation(index_db)
     where_sql, where_params = _where_for_filters(args.family, args.detail_pattern, alias="a")
     effective_tool_patterns = _clean_patterns(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS))
     effective_detail_patterns = _clean_patterns(args.detail_pattern)
     recent_cutoff_ms = _recent_cutoff_ms(args.days)
     conn = open_readonly_connection(index_db)
+    observer: Connection | None = None
     try:
+        observer = open_readonly_connection(index_db)
+        observer_data_version_before = _data_version(observer)
+        conn.execute("BEGIN")
+        index_schema_version = _user_version(conn)
+        snapshot_before = _snapshot_observation(index_db)
         origin_counts = _rows(
             conn,
             "SELECT origin, COUNT(*) AS sessions FROM sessions GROUP BY origin ORDER BY sessions DESC",
@@ -1325,7 +1391,7 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
                 "command": "devtools workspace affordance-usage",
                 "archive_root": str(config.archive_root),
                 "index_db": str(index_db),
-                "index_schema_version": _user_version(conn),
+                "index_schema_version": index_schema_version,
                 "patterns": list(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS)),
                 "detail_patterns": list(args.detail_pattern),
                 "action_scope": action_scope,
@@ -1343,11 +1409,22 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         surface_summary = _surface_inventory_summary(surface_inventory)
         report["surface_inventory"] = surface_inventory
         report["surface_inventory_summary"] = surface_summary
+        snapshot_after = _snapshot_observation(index_db)
+        observer_data_version_after = _data_version(observer)
     finally:
+        if observer is not None:
+            observer.close()
         conn.close()
-    snapshot_after = _snapshot_observation(index_db)
+    report["archive_root"] = str(config.archive_root)
+    report["evidence_root"] = str(index_db.parent)
     report["index_db"] = str(index_db)
-    report["snapshot_identity"] = _snapshot_identity(index_db, snapshot_before, snapshot_after)
+    report["snapshot_identity"] = _snapshot_identity(
+        index_db,
+        snapshot_before,
+        snapshot_after,
+        observer_data_version_before=observer_data_version_before,
+        observer_data_version_after=observer_data_version_after,
+    )
     if args.out_dir is not None:
         out_dir = args.out_dir.expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1382,7 +1459,11 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "# Agent Affordance Usage",
         "",
         f"Generated: {report['captured_at']}",
-        f"Archive root: `{report['archive_root']}`",
+        f"Configured archive root: `{report['archive_root']}`",
+        f"Evidence root: `{report['evidence_root']}`",
+        f"Evidence index: `{report['index_db']}`",
+        f"Evidence snapshot SHA-256: `{report['snapshot_identity']['sha256']}`",
+        f"Evidence snapshot stable: `{str(report['snapshot_identity']['stable']).lower()}`",
         f"Index schema: v{report['index_schema_version']}",
         f"Action scope: `{report['action_scope']}`",
         "",

@@ -123,6 +123,7 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     report = affordance_usage.build_report(args)
 
     assert report["archive_root"] == str(archive_root.resolve())
+    assert report["evidence_root"] == str(archive_root.resolve())
     assert report["index_db"] == str((archive_root / "index.db").resolve())
     assert report["index_schema_version"] == 18
     assert report["snapshot_identity"]["stable"] is True
@@ -160,6 +161,7 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     assert written_report["family_counts"] == report["family_counts"]
     written_summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert written_summary["artifact"] == "agent-affordance-usage"
+    assert written_summary["evidence_root"] == report["evidence_root"]
     assert written_summary["index_db"] == report["index_db"]
     assert written_summary["snapshot_identity"] == report["snapshot_identity"]
     assert written_summary["index_schema_version"] == report["index_schema_version"]
@@ -171,8 +173,11 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     with (out_dir / "surface-inventory.csv").open(encoding="utf-8", newline="") as handle:
         inventory_rows = list(csv.DictReader(handle))
     assert len(inventory_rows) == len(EXPECTED_TOOL_NAMES) + len(command_paths)
-    assert "recent" in (out_dir / "README.md").read_text(encoding="utf-8").lower()
-    assert "surface inventory" in (out_dir / "README.md").read_text(encoding="utf-8").lower()
+    readme = (out_dir / "README.md").read_text(encoding="utf-8")
+    assert "recent" in readme.lower()
+    assert "surface inventory" in readme.lower()
+    assert f"Evidence index: `{report['index_db']}`" in readme
+    assert f"Evidence snapshot SHA-256: `{report['snapshot_identity']['sha256']}`" in readme
     assert "`summary.json`" in (out_dir / "README.md").read_text(encoding="utf-8")
 
 
@@ -200,9 +205,11 @@ def test_affordance_usage_selected_external_index_is_the_report_evidence_source(
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert report["index_db"] == str(selected_db.resolve())
     assert report["index_db"] != str(configured_root.resolve())
+    assert report["evidence_root"] == str(selected_root.resolve())
     assert report["snapshot_identity"]["index_db"] == str(selected_db.resolve())
     assert report["snapshot_identity"]["size"] == selected_db.stat().st_size
     assert summary["index_db"] == str(selected_db.resolve())
+    assert summary["evidence_root"] == str(selected_root.resolve())
     assert summary["snapshot_identity"]["index_db"] == str(selected_db.resolve())
 
 
@@ -211,6 +218,9 @@ def test_affordance_usage_marks_selected_index_snapshot_unstable_after_change(
 ) -> None:
     archive_root = tmp_path / "archive"
     selected_db = _make_index_db(archive_root)
+    writer = sqlite3.connect(selected_db)
+    assert writer.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
+    writer.execute("PRAGMA wal_autocheckpoint = 0")
     real_observation = affordance_usage._snapshot_observation
     calls = 0
 
@@ -218,29 +228,66 @@ def test_affordance_usage_marks_selected_index_snapshot_unstable_after_change(
         nonlocal calls
         calls += 1
         if calls == 2:
-            with path.open("ab") as stream:
-                stream.write(b"concurrent-change")
+            writer.execute("INSERT INTO sessions VALUES ('concurrent', 'codex-session', 'change', 1)")
+            writer.commit()
         return real_observation(path)
 
     monkeypatch.setattr(affordance_usage, "_snapshot_observation", observe_with_change)
-    report = affordance_usage.build_report(
-        affordance_usage.AffordanceUsageArgs(
-            archive_root=archive_root,
-            out_dir=None,
-            days=36500,
-            family=("serena",),
-            detail_pattern=(),
-            sample_limit=10,
-            json=True,
-            all_time=False,
-            index_db=selected_db,
+    try:
+        report = affordance_usage.build_report(
+            affordance_usage.AffordanceUsageArgs(
+                archive_root=archive_root,
+                out_dir=None,
+                days=36500,
+                family=("serena",),
+                detail_pattern=(),
+                sample_limit=10,
+                json=True,
+                all_time=False,
+                index_db=selected_db,
+            )
         )
-    )
+    finally:
+        writer.close()
 
     identity = report["snapshot_identity"]
     assert identity["stable"] is False
-    assert identity["before"]["size"] != identity["after"]["size"]
     assert identity["before"]["sha256"] != identity["after"]["sha256"]
+    assert identity["file_set_stable"] is False
+    assert identity["no_concurrent_commits"] is False
+
+
+def test_affordance_usage_snapshot_includes_a_quiescent_wal_file_set(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    writer = sqlite3.connect(selected_db)
+    try:
+        assert writer.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute("INSERT INTO sessions VALUES ('wal-row', 'codex-session', 'WAL', 1)")
+        writer.commit()
+        assert Path(f"{selected_db}-wal").is_file()
+
+        report = affordance_usage.build_report(
+            affordance_usage.AffordanceUsageArgs(
+                archive_root=archive_root,
+                out_dir=None,
+                days=36500,
+                family=("serena",),
+                detail_pattern=(),
+                sample_limit=10,
+                json=True,
+                all_time=False,
+                index_db=selected_db,
+            )
+        )
+    finally:
+        writer.close()
+
+    identity = report["snapshot_identity"]
+    assert identity["stable"] is True
+    before_files = {Path(row["path"]).name: row for row in identity["before"]["files"]}
+    assert before_files["index.db-wal"]["present"] is True
 
 
 def test_affordance_usage_rejects_nonpositive_recent_window(tmp_path: Path) -> None:
