@@ -49,12 +49,12 @@ from polylogue.maintenance.archive_verification import read_raw_failure_lifecycl
 from polylogue.maintenance.rebuild_index import (
     _REBUILD_TERMINAL_NOT_RESUMABLE,
     _reconcile_active_generation_transaction,
+    validate_rebuild_source_admission,
 )
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.index_generation import (
     IndexGenerationStore,
     IndexRebuildTransaction,
-    canonical_active_index_path,
     rebuild_source_evidence_snapshot,
 )
 
@@ -190,7 +190,6 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
     archive location before touching disk, not just the eventual write pass.
     """
     from polylogue.maintenance.rebuild_index import require_rebuild_schema_currency
-    from polylogue.sources.revision_backfill import validate_frozen_source_authority
 
     require_rebuild_schema_currency(root)
     _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
@@ -212,10 +211,7 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
         # after ownership acquisition so receipt expiry, source revision, or
         # external-corpus drift cannot reach generation bookkeeping.
         _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
-        validate_frozen_source_authority(
-            root,
-            active_index_path=canonical_active_index_path(location),
-        )
+        validate_rebuild_source_admission(root, location)
         store = IndexGenerationStore(location)
         transaction: IndexRebuildTransaction | None
         try:

@@ -131,6 +131,17 @@ def require_rebuild_schema_currency(root: Path) -> dict[str, object]:
     return diagnostic
 
 
+def validate_rebuild_source_admission(root: Path, location: ArchiveLocation) -> None:
+    """Validate frozen source authority through the owned active-index identity."""
+    from polylogue.sources.revision_backfill import validate_frozen_source_authority
+    from polylogue.storage.index_generation import canonical_active_index_path
+
+    validate_frozen_source_authority(
+        root,
+        active_index_path=canonical_active_index_path(location),
+    )
+
+
 @dataclass(slots=True)
 class RebuildProvenanceContext:
     """Validated evidence shared by every mutation in one rebuild pass.
