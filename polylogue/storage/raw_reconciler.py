@@ -237,6 +237,26 @@ class RawAuthorityFrontierApplyReport:
     post_plan_count: int
     outcome_refs: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        counts = (
+            self.selected_plan_count,
+            self.executed_plan_count,
+            self.retryable_plan_count,
+        )
+        if any(type(count) is not int for count in counts):
+            raise TypeError("raw authority apply report plan counts must be integers")
+        if self.selected_plan_count <= 0:
+            raise ValueError("raw authority apply report must contain at least one selected plan")
+        if self.executed_plan_count < 0 or self.retryable_plan_count < 0:
+            raise ValueError("raw authority apply report plan counts must be non-negative")
+        if self.executed_plan_count + self.retryable_plan_count != self.selected_plan_count:
+            raise ValueError(
+                "raw authority apply report plan counts are incoherent: "
+                "executed_plan_count + retryable_plan_count must equal selected_plan_count"
+            )
+        if len(self.outcome_refs) != self.selected_plan_count:
+            raise ValueError("raw authority apply report must contain one outcome reference per selected plan")
+
     @property
     def success(self) -> bool:
         return self.retryable_plan_count == 0

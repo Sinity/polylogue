@@ -1830,7 +1830,6 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
         assert removed not in result.output
 
 
-<<<<<<< HEAD
 def test_cursor_authority_reconcile_cli_exposes_only_scoped_inputs(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(
         cli,

@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport, RawAuthorityFrontierCensus
 
 
 RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
@@ -51,20 +52,53 @@ class RawMaterializationCounts:
         return self.repaired_sessions > 0 or self.executed_plans > 0 or self.censused_components > 0
 
 
-def inspect_frontier(config: Config) -> Any:
+def inspect_frontier(config: Config) -> RawAuthorityFrontierCensus:
     from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 
     return inspect_raw_authority_frontier(config)
 
 
-def apply_frontier(config: Config, *, preview_census_id: str, selected_plan_ids: tuple[str, ...]) -> Any:
+def _validate_frontier_apply_report(report: object) -> RawAuthorityFrontierApplyReport:
+    """Reject an actuator response that cannot conserve selected plan outcomes."""
+    selected = getattr(report, "selected_plan_count", None)
+    executed = getattr(report, "executed_plan_count", None)
+    retryable = getattr(report, "retryable_plan_count", None)
+    if any(type(count) is not int for count in (selected, executed, retryable)):
+        raise TypeError("raw authority actuator returned non-integer plan counts")
+    selected_count = cast(int, selected)
+    executed_count = cast(int, executed)
+    retryable_count = cast(int, retryable)
+    if selected_count <= 0 or executed_count < 0 or retryable_count < 0:
+        raise ValueError("raw authority actuator returned invalid plan counts")
+    if executed_count + retryable_count != selected_count:
+        raise ValueError(
+            "raw authority actuator returned incoherent plan counts: "
+            "executed_plan_count + retryable_plan_count must equal selected_plan_count"
+        )
+    outcome_refs = getattr(report, "outcome_refs", None)
+    if not isinstance(outcome_refs, tuple) or len(outcome_refs) != selected_count:
+        raise ValueError("raw authority actuator must return one outcome reference per selected plan")
+    from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport
+
+    if not isinstance(report, RawAuthorityFrontierApplyReport):
+        raise TypeError("raw authority actuator returned an untyped apply report")
+    return report
+
+
+def apply_frontier(
+    config: Config,
+    *,
+    preview_census_id: str,
+    selected_plan_ids: tuple[str, ...],
+) -> RawAuthorityFrontierApplyReport:
     from polylogue.storage.raw_reconciler import apply_raw_authority_frontier
 
-    return apply_raw_authority_frontier(
+    report = apply_raw_authority_frontier(
         config,
         preview_census_id=preview_census_id,
         selected_plan_ids=selected_plan_ids,
     )
+    return _validate_frontier_apply_report(report)
 
 
 def recover_interrupted_frontier(config: Config) -> tuple[str, ...]:
