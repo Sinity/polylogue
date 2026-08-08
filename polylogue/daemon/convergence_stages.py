@@ -880,8 +880,12 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path) -> int:
     try:
         conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
     except sqlite3.Error:
-        logger.warning("raw_parse_recovery: could not open source.db for %s; treating as no pending work", path)
-        return 0
+        logger.warning(
+            "raw_parse_recovery: could not open source.db for %s; refusing to classify as no pending work",
+            path,
+            exc_info=True,
+        )
+        raise
     try:
         if index_db.exists():
             conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
@@ -910,8 +914,12 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path) -> int:
         ).fetchone()
         return int(row[0] or 0) if row is not None else 0
     except sqlite3.Error:
-        logger.warning("raw_parse_recovery: pending-count probe failed for %s; treating as no pending work", path)
-        return 0
+        logger.warning(
+            "raw_parse_recovery: pending-count probe failed for %s; refusing to classify as no pending work",
+            path,
+            exc_info=True,
+        )
+        raise
     finally:
         conn.close()
 

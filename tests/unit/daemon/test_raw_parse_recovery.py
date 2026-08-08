@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
-from polylogue.daemon.convergence import DaemonConverger
+from polylogue.daemon.convergence import DaemonConverger, StageState
 from polylogue.daemon.convergence_stages import make_raw_parse_recovery_stage
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -165,6 +165,80 @@ def test_raw_parse_recovery_stage_blocks_unproven_cursor_authority(
 
 def test_raw_parse_recovery_stage_is_false_means_pending() -> None:
     assert make_raw_parse_recovery_stage(Path("/nonexistent/index.db")).false_means_pending is True
+
+
+def test_raw_parse_recovery_missing_source_is_no_backlog(tmp_path: Path) -> None:
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+    converger = DaemonConverger(stages=(stage,))
+
+    states, _timings = converger.converge_batch([tmp_path / "missing.json"])
+
+    state = states[tmp_path / "missing.json"]
+    assert state.stages["raw_parse_recovery"] is StageState.DONE
+    assert state.converged is True
+    assert state.error_count == 0
+
+
+def test_raw_parse_recovery_source_open_failure_is_failed_and_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "unavailable.json"
+    calls = 0
+
+    def fail_connect(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise sqlite3.OperationalError("source tier unavailable")
+
+    monkeypatch.setattr("polylogue.daemon.convergence_stages.sqlite3.connect", fail_connect)
+
+    converger = DaemonConverger(stages=(make_raw_parse_recovery_stage(tmp_path / "index.db"),))
+    states, _timings = converger.converge_batch([source_path])
+
+    state = states[source_path]
+    assert state.stages["raw_parse_recovery"] is StageState.FAILED
+    assert state.converged is False
+    assert state.error_count == 1
+
+    states, _timings = converger.converge_batch([source_path])
+    assert states[source_path].stages["raw_parse_recovery"] is StageState.FAILED
+    assert states[source_path].error_count == 2
+    assert calls == 2
+
+
+@pytest.mark.parametrize("failure", ["attach", "query"])
+def test_raw_parse_recovery_sqlite_probe_failure_is_failed_and_closes_connection(
+    failure: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / f"{failure}-failed.json"
+
+    class FailingConnection:
+        closed = False
+
+        def execute(self, sql: str, *_args: object, **_kwargs: object) -> object:
+            if failure == "attach" or sql.lstrip().startswith("SELECT"):
+                raise sqlite3.OperationalError(f"{failure} failed")
+            return self
+
+        def fetchone(self) -> tuple[int]:
+            raise AssertionError("failed probe should not fetch a row")
+
+        def close(self) -> None:
+            self.closed = True
+
+    connection = FailingConnection()
+    monkeypatch.setattr("polylogue.daemon.convergence_stages.sqlite3.connect", lambda *_args, **_kwargs: connection)
+
+    converger = DaemonConverger(stages=(make_raw_parse_recovery_stage(tmp_path / "index.db"),))
+    states, _timings = converger.converge_batch([source_path])
+
+    state = states[source_path]
+    assert state.stages["raw_parse_recovery"] is StageState.FAILED
+    assert state.converged is False
+    assert state.error_count == 1
+    assert connection.closed is True
 
 
 def test_daemon_restart_resumes_parsing_of_an_interrupted_batch(tmp_path: Path) -> None:
