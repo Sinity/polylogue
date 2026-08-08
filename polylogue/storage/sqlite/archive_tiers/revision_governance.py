@@ -225,6 +225,7 @@ class RawRevisionGovernanceHost(Protocol):
 
     _conn: sqlite3.Connection
     _blob_publisher: ArchiveBlobPublisher | None
+    _inactive_candidate_durable_read_only: bool
     _pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]]
 
     def _ensure_source_conn(self) -> sqlite3.Connection: ...
@@ -2522,14 +2523,13 @@ def apply_raw_revision_replay(
             ApplicationDecision.SUPERSEDED,
         }
     }
-    for raw_id in terminal_raw_ids:
-        provider, _blob_hash, _source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
-        if _is_frozen_candidate(store):
-            continue
-        if manage_transaction:
-            mark_raw_parse_succeeded(store, raw_id, provider=provider)
-        else:
-            store._pending_raw_parse_states.append((raw_id, _raw_parse_success_state(provider)))
+    if not _is_frozen_candidate(store):
+        for raw_id in terminal_raw_ids:
+            provider, _blob_hash, _source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
+            if manage_transaction:
+                mark_raw_parse_succeeded(store, raw_id, provider=provider)
+            else:
+                store._pending_raw_parse_states.append((raw_id, _raw_parse_success_state(provider)))
     return session_id, plan.accepted_raw_ids
 
 
@@ -2967,30 +2967,28 @@ def apply_raw_membership_classification(
 
     if _is_frozen_candidate(store):
         require_frozen_membership_authority(store, logical_source_key, classification, decisions)
-    else:
-        with conn if manage_transaction else nullcontext():
-            for raw_id, decision in decisions.items():
-                conn.execute(
-                    """
-                    UPDATE raw_session_memberships
-                    SET decision = ?, decided_at_ms = ?,
-                        revision_authority = ?,
-                        acquisition_generation = ?
-                    WHERE raw_id = ? AND logical_source_key = ?
-                    """,
-                    (
-                        decision,
-                        decided_at_ms,
-                        "quarantined"
-                        if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
-                        else "byte_proven",
-                        classification.accepted_raw_ids.index(raw_id)
-                        if raw_id in classification.accepted_raw_ids
-                        else 0,
-                        raw_id,
-                        logical_source_key,
-                    ),
-                )
+        return session_id
+    with conn if manage_transaction else nullcontext():
+        for raw_id, decision in decisions.items():
+            conn.execute(
+                """
+                UPDATE raw_session_memberships
+                SET decision = ?, decided_at_ms = ?,
+                    revision_authority = ?,
+                    acquisition_generation = ?
+                WHERE raw_id = ? AND logical_source_key = ?
+                """,
+                (
+                    decision,
+                    decided_at_ms,
+                    "quarantined"
+                    if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
+                    else "byte_proven",
+                    classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
+                    raw_id,
+                    logical_source_key,
+                ),
+            )
     for raw_id in decisions:
         complete = conn.execute(
             """
@@ -3004,8 +3002,6 @@ def apply_raw_membership_classification(
             """,
             (raw_id,),
         ).fetchone()
-        if _is_frozen_candidate(store):
-            continue
         if complete is not None and bool(complete[0]):
             provider, _blob_hash, _source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
             if manage_transaction:

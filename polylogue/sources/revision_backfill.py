@@ -12,7 +12,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from io import BytesIO
 from itertools import chain, islice
@@ -85,7 +85,7 @@ def _expand_frozen_revision_link_selection(archive_root: Path, raw_ids: Sequence
     """Include every predecessor and baseline needed to validate selected APPEND authority."""
     expanded = set(raw_ids)
     pending = set(raw_ids)
-    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
         while pending:
             current = tuple(sorted(pending))
             pending.clear()
@@ -897,6 +897,8 @@ def _load_frozen_revision_evidence(
         parsed_logical_keys = tuple(
             sorted(
                 {
+                    # Parser output uses Provider internally, while the
+                    # persisted census is normalized to public Origin keys.
                     f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
                     for session in sessions
                 }
@@ -911,6 +913,8 @@ def _load_frozen_revision_evidence(
         state.classified += int(len(sessions) == 1)
         if revision_kind is RawRevisionKind.UNKNOWN:
             for session in sessions:
+                # Membership rows intentionally retain their provider-wire
+                # identity until durable authority comparison normalizes it.
                 logical_key = f"{session.source_name.value}:{session.provider_session_id}"
                 state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
     return state
@@ -931,7 +935,7 @@ def require_current_parser_source_census(
         selections = tuple(
             tuple(selected_raw_ids[offset : offset + 500]) for offset in range(0, len(selected_raw_ids), 500)
         )
-    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
         for selection in selections:
             where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             params: tuple[object, ...] = () if selection is None else selection
@@ -979,7 +983,7 @@ def require_current_parser_source_census(
 
     durable_logical_keys: dict[str, set[str]] = {raw_id: set() for raw_id in recorded_logical_keys}
     invalid_durable_bindings: set[str] = set()
-    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
         for selection in selections:
             where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             params = () if selection is None else selection
@@ -1025,7 +1029,7 @@ def require_current_parser_source_census(
         )
 
     authority_rows: dict[str, tuple[str | None, str, str, int, str | None, str | None]] = {}
-    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
         for selection in selections:
             where = "" if selection is None else f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
             params = () if selection is None else selection
@@ -1122,7 +1126,7 @@ def require_current_parser_source_census(
         )
 
     unresolved_raw_ids: list[str] = []
-    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
         for selection in selections:
             authority_where = "" if selection is None else f"AND r.raw_id IN ({','.join('?' for _ in selection)})"
             authority_params: tuple[object, ...] = () if selection is None else selection
