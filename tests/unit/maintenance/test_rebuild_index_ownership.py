@@ -17,6 +17,8 @@ from typing import cast
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import (
     RebuildIndexRequest,
     RebuildSchemaCurrencyError,
@@ -26,6 +28,7 @@ from polylogue.sources.revision_backfill import census_historical_revision_evide
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
@@ -36,6 +39,34 @@ def _init_empty_source(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
         initialize_archive_database(root / f"{tier.value}.db", tier)
+
+
+def _init_nonempty_source(root: Path) -> None:
+    initialize_active_archive_root(root)
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"owned-session"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"owned"}]}}\n'
+    )
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="current/owned.jsonl",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_source_key="codex-session:owned-session",
+                kind=RawRevisionKind.FULL,
+                source_revision="owned-revision",
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.ASSERTED,
+            ),
+        )
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET baseline_raw_id = raw_id, revision_authority = 'byte_proven'")
+        conn.commit()
+    census = census_historical_revision_evidence(root)
+    assert census.scanned == 1
 
 
 def test_rebuild_rejects_source_schema_behind_runtime_before_candidate_creation(tmp_path: Path) -> None:
@@ -163,7 +194,7 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
     (a different, rebuild-specific lock) racing to the same conclusion.
     """
     root = tmp_path / "archive"
-    _init_empty_source(root)
+    _init_nonempty_source(root)
     receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
     location = ArchiveLocation.resolve(root)
     owned = OwnedArchiveLocation.acquire(location, owner_id="concurrent-campaign")
@@ -174,6 +205,7 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
             )
         # Failure happened before any generation bookkeeping was created.
         assert not (root / ".index-generations").exists()
+        assert not (root / ".index-rebuild-transactions").exists()
         # The rebuild lease is now deliberately acquired before the general
         # archive-location ownership attempt.  Its released lock file may
         # remain as a diagnostic artifact, but no generation may be created.
@@ -184,7 +216,7 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
     receipt = rebuild_index_from_source_sync(
         RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=receipt_path)
     )
-    assert receipt.status == "empty-source"
+    assert receipt.status == "replayed"
 
 
 def test_rebuild_blocks_unsafe_cursor_authority_before_generation_creation(
@@ -338,6 +370,24 @@ def test_rebuild_releases_ownership_lock_after_completion(tmp_path: Path) -> Non
         assert (root / ".archive-ownership.lock").exists()
     finally:
         owned.release()
+
+
+def test_empty_source_rebuild_retains_consumed_evidence_for_resumed_request(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
+
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            operation_id="empty-source-resume",
+            schema_inference_receipt_path=receipt_path,
+        )
+    )
+
+    assert receipt.status == "empty-source"
+    assert receipt.consumed_evidence["receipt_path"] == str(receipt_path)
+    assert not (root / ".index-rebuild-transactions").exists()
 
 
 def test_empty_source_rebuild_does_not_bypass_archive_ownership(

@@ -13,6 +13,7 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
 
+from devtools.index_snapshot import snapshot_index_file_set
 from polylogue.config import Config, get_config
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -23,7 +24,17 @@ REQUIRED_TOPOLOGY_LINK_COLUMNS = frozenset(
     {"dst_native_id", "evidence_json", "link_type", "method", "resolved_dst_session_id", "status"}
 )
 TOPOLOGY_EFFECTIVE_STATES = frozenset({"resolved", "unresolved", "repaired", "quarantined"})
-_SNAPSHOT_HASH_CHUNK_BYTES = 1024 * 1024
+_EFFECTIVE_UNRESOLVED_LINK_PREDICATE = """
+    l.resolved_dst_session_id IS NULL
+    AND COALESCE(NULLIF(TRIM(l.status), ''), 'unresolved') = 'unresolved'
+    AND NOT EXISTS (
+        SELECT 1
+        FROM session_links resolved
+        WHERE resolved.src_session_id = l.src_session_id
+          AND resolved.resolved_dst_session_id IS NOT NULL
+          AND COALESCE(NULLIF(TRIM(resolved.status), ''), 'unresolved') != 'quarantined'
+    )
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,39 +49,8 @@ class LineageValidationArgs:
 
 
 def _snapshot_identity(index_db: Path) -> dict[str, Any]:
-    """Describe the database files that make up one read-only index snapshot."""
-    paths = [index_db, Path(f"{index_db}-wal"), Path(f"{index_db}-shm"), Path(f"{index_db}-journal")]
-    files: list[dict[str, Any]] = []
-    for path in paths:
-        if not path.is_file():
-            files.append({"path": str(path), "present": False})
-            continue
-        stat = path.stat()
-        digest = _file_sha256(path)
-        files.append(
-            {
-                "path": str(path),
-                "present": True,
-                "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
-                "inode": stat.st_ino,
-                "sha256": digest,
-            }
-        )
-    encoded = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return {
-        "index_db": str(index_db),
-        "files": files,
-        "sha256": hashlib.sha256(encoded).hexdigest(),
-    }
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(_SNAPSHOT_HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Describe the selected index using the shared SQLite file-set contract."""
+    return snapshot_index_file_set(index_db)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -330,23 +310,15 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
     )
     effective_unresolved_count = _scalar_int(
         conn,
-        """
+        f"""
         SELECT COUNT(*)
         FROM session_links l
-        WHERE l.resolved_dst_session_id IS NULL
-          AND COALESCE(NULLIF(TRIM(l.status), ''), 'unresolved') = 'unresolved'
-          AND NOT EXISTS (
-              SELECT 1
-              FROM session_links resolved
-              WHERE resolved.src_session_id = l.src_session_id
-                AND resolved.resolved_dst_session_id IS NOT NULL
-                AND COALESCE(NULLIF(TRIM(resolved.status), ''), 'unresolved') != 'quarantined'
-          )
+        WHERE {_EFFECTIVE_UNRESOLVED_LINK_PREDICATE}
         """,
     )
     rows = _rows(
         conn,
-        """
+        f"""
         SELECT l.src_session_id AS session_id,
                l.dst_origin AS parent_origin,
                l.dst_native_id AS parent_native_id,
@@ -354,15 +326,7 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
                COUNT(DISTINCT m.message_id) AS stored_messages
         FROM session_links l
         LEFT JOIN messages m ON m.session_id = l.src_session_id
-        WHERE l.resolved_dst_session_id IS NULL
-          AND COALESCE(NULLIF(TRIM(l.status), ''), 'unresolved') = 'unresolved'
-          AND NOT EXISTS (
-              SELECT 1
-              FROM session_links resolved
-              WHERE resolved.src_session_id = l.src_session_id
-                AND resolved.resolved_dst_session_id IS NOT NULL
-                AND COALESCE(NULLIF(TRIM(resolved.status), ''), 'unresolved') != 'quarantined'
-          )
+        WHERE {_EFFECTIVE_UNRESOLVED_LINK_PREDICATE}
         GROUP BY l.src_session_id, l.dst_origin, l.dst_native_id, l.link_type
         ORDER BY l.src_session_id, l.dst_origin, l.dst_native_id, l.link_type
         LIMIT ?
@@ -920,9 +884,10 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
                     f"{topology['quarantined_with_stale_projection_count']} quarantined topology links retain a parent projection"
                 )
             if topology["unresolved_read_sample"]["status"] == "not_observed":
+                effective_count = int(topology["effective_unresolved_count"])
+                link_word = "link was" if effective_count == 1 else "links were"
                 reasons.append(
-                    f"{topology['effective_unresolved_count']} effective unresolved-parent links were not exercised "
-                    "through the reader"
+                    f"{effective_count} effective unresolved-parent {link_word} not exercised through the reader"
                 )
             elif topology["unresolved_read_sample"]["status"] == "unsafe":
                 reasons.append("sampled unresolved-parent reads did not remain child-local")

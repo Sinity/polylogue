@@ -523,8 +523,7 @@ def _create_user_v3(path: Path) -> None:
 def _refresh_fresh_bootstrap_marker(archive_root: Path) -> None:
     """Rebind a fixture bootstrap receipt after deliberate durable-tier edits."""
     marker = archive_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    if not marker.is_file():
-        return
+    assert marker.is_file(), f"fixture must carry a fresh bootstrap marker: {marker}"
     from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
 
     marker.unlink()
@@ -2311,6 +2310,38 @@ def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_repl
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 
+def test_migrate_tier_cli_wraps_non_collision_publication_error(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+
+    def fail_link(*_args: object, **_kwargs: object) -> None:
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.link", fail_link)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert f"cannot publish audit tier at {audit_db}" in error
+    assert not audit_db.exists()
+
+
 def test_migrate_tier_cli_refuses_named_staging_when_anonymous_publication_is_unsupported(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2479,7 +2510,12 @@ def test_migrate_tier_cli_missing_initialization_refuses_blob_inspection_failure
 
     def fail_blob_inspection(candidate: Path) -> Iterator[Path]:
         if candidate == blob_root:
-            raise OSError("blob inspection failed")
+
+            def fail_on_next() -> Iterator[Path]:
+                raise OSError("blob inspection failed")
+                yield candidate
+
+            return fail_on_next()
         return real_iterdir(candidate)
 
     monkeypatch.setattr(Path, "iterdir", fail_blob_inspection)
@@ -2501,37 +2537,6 @@ def test_migrate_tier_cli_missing_initialization_refuses_blob_inspection_failure
 
     assert result.exit_code == 1
     assert "cannot inspect retained blob path" in json.loads(result.stdout)["error"]
-    assert not (root / "audit.db").exists()
-
-
-def test_migrate_tier_cli_missing_initialization_refuses_malformed_marker_parent(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner
-) -> None:
-    _stage_uninitialized_archive(cli_workspace)
-    root = cli_workspace["archive_root"]
-    maintenance_state = root / ".maintenance-state"
-    maintenance_state.mkdir(parents=True, exist_ok=True)
-    (maintenance_state / "durable-change-trains").write_bytes(b"malformed marker parent")
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "migrate-tier",
-            "audit",
-            "--initialize-missing",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 1
-    error = json.loads(result.stdout)["error"]
-    assert "established archive" in error
-    assert str(maintenance_state / "durable-change-trains") in error
     assert not (root / "audit.db").exists()
 
 

@@ -247,9 +247,9 @@ def test_nonresumable_rebuild_persists_refreshed_inventory_evidence_after_detect
     original_select = rebuild_index_module.select_rebuild_raw_ids
     inventory_calls_before_refresh: int | None = None
 
-    def select_then_touch(request: RebuildIndexRequest) -> tuple[int, list[str], int]:
+    def select_then_touch(request: RebuildIndexRequest, **kwargs: object) -> tuple[int, list[str], int]:
         nonlocal inventory_calls_before_refresh
-        selected = original_select(request)
+        selected = original_select(request, **kwargs)  # type: ignore[arg-type]
         stat = external_path.stat()
         os.utime(external_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         inventory_calls_before_refresh = full_inventory_calls

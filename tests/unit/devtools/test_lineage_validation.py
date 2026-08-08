@@ -182,6 +182,7 @@ def _args(
     out_dir: Path | None = None,
     *,
     index_db: Path | None = None,
+    sample_unresolved: int = 10,
 ) -> lineage_validation.LineageValidationArgs:
     return lineage_validation.LineageValidationArgs(
         archive_root=archive_root,
@@ -190,6 +191,7 @@ def _args(
         max_sample_stored_messages=500,
         json=True,
         index_db=index_db,
+        sample_unresolved=sample_unresolved,
     )
 
 
@@ -394,7 +396,27 @@ def test_lineage_validation_rejects_unobserved_unresolved_reader_sample(tmp_path
     assert sample["status"] == "not_observed"
     assert sample["safe"] is False
     assert report["verdict"]["external_counts_citable"] is False
-    assert "1 effective unresolved-parent links were not exercised through the reader" in report["verdict"]["reasons"]
+    assert "1 effective unresolved-parent link was not exercised through the reader" in report["verdict"]["reasons"]
+
+
+def test_lineage_validation_uses_plural_unresolved_reader_reason_for_multiple_links(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root, with_unresolved=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_links
+                (src_session_id, dst_origin, dst_native_id, link_type, status,
+                 resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
+            VALUES ('orphan', 'codex-session', 'another-missing-parent', 'continuation', NULL,
+                    NULL, 'parser-parent', '{}', NULL, 'spawned-fresh')
+            """
+        )
+        conn.commit()
+
+    report = lineage_validation.build_report(_args(archive_root, sample_unresolved=0))
+
+    assert "2 effective unresolved-parent links were not exercised through the reader" in report["verdict"]["reasons"]
 
 
 @pytest.mark.frozen_clock_modules("devtools.lineage_validation")

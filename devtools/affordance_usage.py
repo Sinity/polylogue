@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import re
 import sys
@@ -15,6 +14,7 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
 
+from devtools.index_snapshot import snapshot_index_file_set
 from polylogue.config import Config, get_config
 from polylogue.insights.affordance_usage import (
     DEFAULT_FAMILY_PATTERNS,
@@ -191,68 +191,8 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-_SNAPSHOT_HASH_CHUNK_BYTES = 1024 * 1024
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(_SNAPSHOT_HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _snapshot_observation(index_db: Path) -> dict[str, object]:
-    """Capture the complete SQLite file-set identity for the selected index."""
-    paths = (index_db, Path(f"{index_db}-wal"), Path(f"{index_db}-shm"), Path(f"{index_db}-journal"))
-    files: list[dict[str, object]] = []
-    complete = True
-    for path in paths:
-        try:
-            metadata_before = path.stat()
-        except FileNotFoundError:
-            files.append({"path": str(path), "present": False})
-            continue
-        try:
-            digest = _file_sha256(path)
-            metadata_after = path.stat()
-        except FileNotFoundError:
-            complete = False
-            files.append({"path": str(path), "present": False, "changed_during_observation": True})
-            continue
-        unchanged = (
-            metadata_before.st_dev,
-            metadata_before.st_ino,
-            metadata_before.st_size,
-            metadata_before.st_mtime_ns,
-        ) == (
-            metadata_after.st_dev,
-            metadata_after.st_ino,
-            metadata_after.st_size,
-            metadata_after.st_mtime_ns,
-        )
-        complete = complete and unchanged
-        files.append(
-            {
-                "path": str(path),
-                "present": True,
-                "size": metadata_after.st_size,
-                "mtime_ns": metadata_after.st_mtime_ns,
-                "inode": metadata_after.st_ino,
-                "sha256": digest,
-                "changed_during_observation": not unchanged,
-            }
-        )
-    encoded = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    main = files[0]
-    return {
-        "path": str(index_db),
-        "present": main["present"],
-        "size": main.get("size"),
-        "files": files,
-        "observation_complete": complete,
-        "sha256": hashlib.sha256(encoded).hexdigest(),
-    }
+def _snapshot_observation(index_db: Path) -> dict[str, Any]:
+    return snapshot_index_file_set(index_db)
 
 
 def _snapshot_identity(

@@ -1210,7 +1210,7 @@ def count_source_raw_sessions(root: Path) -> int:
     return int(row[0]) if row is not None else 0
 
 
-def _empty_source_receipt(root: Path) -> RebuildIndexReceipt:
+def _empty_source_receipt(root: Path, consumed_evidence: dict[str, object]) -> RebuildIndexReceipt:
     return RebuildIndexReceipt(
         archive_root=str(root),
         raw_session_count=0,
@@ -1223,7 +1223,7 @@ def _empty_source_receipt(root: Path) -> RebuildIndexReceipt:
         readiness={},
         replay={},
         operation=_operation_evidence(root, generation=None, transaction=None, recovery_state="empty-source"),
-        consumed_evidence={},
+        consumed_evidence=consumed_evidence,
     )
 
 
@@ -1293,10 +1293,11 @@ def filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb:
     return [str(row[0]) for row in rows]
 
 
-def select_rebuild_raw_ids(request: RebuildIndexRequest) -> tuple[int, list[str], int]:
+def select_rebuild_raw_ids(request: RebuildIndexRequest, *, raw_count: int | None = None) -> tuple[int, list[str], int]:
     """Select source rows deterministically before the replay starts."""
     root = request.archive_root
-    raw_count = count_source_raw_sessions(root)
+    if raw_count is None:
+        raw_count = count_source_raw_sessions(root)
     raw_ids = (
         list(dict.fromkeys(request.raw_ids))
         if request.raw_ids
@@ -1339,7 +1340,8 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     # validation rather than accidentally reusing another archive/pass.
     _ACTIVE_EXTERNAL_INVENTORY_TOKEN.set(None)
     require_rebuild_schema_currency(root)
-    receipt_free_empty_probe = request.operation_id is None and count_source_raw_sessions(root) == 0
+    pre_ownership_raw_count = count_source_raw_sessions(root)
+    receipt_free_empty_probe = request.operation_id is None and pre_ownership_raw_count == 0
     initial_provenance_error: RebuildProvenanceError | None = None
     consumed_evidence: dict[str, object] = {}
     if not receipt_free_empty_probe:
@@ -1358,7 +1360,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     # index. A split-root canary intentionally points that index elsewhere and
     # validates the selected active generation through its own receipt-bound
     # route below, so a missing root/index.db must not masquerade as raw debt.
-    if count_source_raw_sessions(root) and location.active_index_path.parent == root:
+    if pre_ownership_raw_count and location.active_index_path.parent == root:
         from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
         from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 
@@ -1398,8 +1400,9 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     try:
         assert_owns_archive_location(owned, location)
         require_rebuild_schema_currency(root)
-        if request.operation_id is None and count_source_raw_sessions(root) == 0:
-            return _empty_source_receipt(root)
+        raw_count = count_source_raw_sessions(root)
+        if raw_count == 0:
+            return _empty_source_receipt(root, consumed_evidence)
         if initial_provenance_error is None:
             consumed_evidence = _validate_rebuild_provenance_receipt(
                 root,
@@ -1429,7 +1432,11 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 _mark_rebuild_transaction_stale_after_provenance_failure(root, request.operation_id, exc)
                 raise
             return await _rebuild_index_from_source_owned(
-                request, root=root, owned=owned, consumed_evidence=consumed_evidence
+                request,
+                root=root,
+                owned=owned,
+                consumed_evidence=consumed_evidence,
+                raw_count=raw_count,
             )
     finally:
         owned.release()
@@ -1441,6 +1448,7 @@ async def _rebuild_index_from_source_owned(
     root: Path,
     owned: OwnedArchiveLocation,
     consumed_evidence: dict[str, object],
+    raw_count: int,
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
@@ -1473,22 +1481,8 @@ async def _rebuild_index_from_source_owned(
     # to preserve the body's indentation and make the outer ownership boundary
     # explicit at the public entry point.
     with contextlib.nullcontext():
-        raw_count = count_source_raw_sessions(root)
         if raw_count == 0:
-            return RebuildIndexReceipt(
-                archive_root=str(root),
-                raw_session_count=0,
-                selected_raw_count=0,
-                skipped_by_blob_limit_count=0,
-                status="empty-source",
-                materialized=False,
-                materialization={},
-                generation={},
-                readiness={},
-                replay={},
-                operation=_operation_evidence(root, generation=None, transaction=None, recovery_state="empty-source"),
-                consumed_evidence=consumed_evidence,
-            )
+            return _empty_source_receipt(root, consumed_evidence)
         resumable_full_source = not request.raw_ids and not request.only_missing and request.max_blob_mb is None
         transaction = None
         transaction_created_here = False
@@ -1590,7 +1584,9 @@ async def _rebuild_index_from_source_owned(
                 )
         else:
             selection_started_at = time.perf_counter()
-            raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
+            raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(
+                request, raw_count=raw_count
+            )
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
             validate_frozen_source_authority(

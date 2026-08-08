@@ -181,6 +181,10 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             raise MigrationError(
                 f"{tier.value} tier appeared during initialization; refusing to replace it: {path}"
             ) from exc
+        except OSError as exc:
+            raise MigrationError(
+                f"cannot publish {tier.value} tier at {path} via anonymous durable publication"
+            ) from exc
         published_metadata = path.lstat()
         if (
             not stat.S_ISREG(published_metadata.st_mode)
