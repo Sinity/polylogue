@@ -3840,6 +3840,7 @@ def _raw_materialization_candidate_ids(
                        SELECT a.artifact_kind
                        FROM raw_artifacts AS a
                        WHERE a.raw_id = r.raw_id
+                         AND a.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
                        LIMIT 1
                    ) AS failure_artifact_kind,
@@ -3937,6 +3938,7 @@ def _raw_materialization_candidate_ids(
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
             """,
             [
+                *sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS),
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 *sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS),

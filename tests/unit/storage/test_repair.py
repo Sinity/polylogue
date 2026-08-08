@@ -567,9 +567,29 @@ def test_raw_materialization_retries_only_with_deferred_frontier_evidence(tmp_pa
                     support_status=ArtifactSupportStatus.PARTIAL_DECODE,
                     parse_as_session=True,
                     schema_eligible=True,
+                    first_observed_at_ms=100,
+                    last_observed_at_ms=100,
                 ),
             )
+        upsert_raw_artifact(
+            source_conn,
+            raw_ids["cas"],
+            ArchiveSourceArtifact(
+                artifact_id="newer-unrelated-cas-artifact",
+                origin="codex-session",
+                source_path="cas.sqlite",
+                source_index=0,
+                artifact_kind="sqlite_state_database",
+                classification_reason="sqlite_state_database",
+                support_status=ArtifactSupportStatus.UNKNOWN,
+                first_observed_at_ms=200,
+                last_observed_at_ms=200,
+            ),
+        )
         source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(config)
+    assert raw_ids["cas"] in candidates.raw_ids
 
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
 
