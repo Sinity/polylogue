@@ -1181,6 +1181,11 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
         parse_error=ir.parse_error,
         error=ir.error,
         had_sessions=bool(ir.sessions),
+        outcome_code=ir.outcome_code,
+        retryable=ir.retryable,
+        evidence_ref=ir.evidence_ref,
+        remediation=ir.remediation,
+        diagnostic=ir.diagnostic,
     )
     if ir.serialized_size_bytes is not None:
         summary.total_result_bytes += ir.serialized_size_bytes
@@ -2266,9 +2271,10 @@ def _failed_raw_state_update(
             parse_error=error,
             detection_warnings=error[:500] if error else None,
         )
+    diagnostic = outcome.diagnostic or outcome.parse_error
     return RawSessionStateUpdate(
         parse_error=outcome.parse_error,
-        detection_warnings=outcome.parse_error[:500] if outcome.parse_error else None,
+        detection_warnings=diagnostic[:500] if diagnostic else None,
         payload_provider=outcome.payload_provider,
         validation_status=outcome.validation_status,
         validation_error=outcome.validation_error or error,

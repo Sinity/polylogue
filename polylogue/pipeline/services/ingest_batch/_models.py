@@ -54,6 +54,14 @@ class _RawIngestOutcome:
     parse_error: str | None
     error: str | None
     had_sessions: bool
+    # Keep the worker's typed disposition intact through the batch summary so
+    # the raw-state persistence boundary can retain the same evidence instead
+    # of reconstructing it from free-form error text.
+    outcome_code: str = "success"
+    retryable: bool | None = False
+    evidence_ref: str | None = None
+    remediation: str | None = None
+    diagnostic: str | None = None
 
 
 @dataclass(slots=True)

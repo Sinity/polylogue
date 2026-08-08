@@ -198,6 +198,29 @@ def test_primary_mode_keeps_unconfirmed_revision_out_of_index_and_fts(
     assert summary.publication_payload_bytes == 0
 
 
+def test_batch_projection_preserves_worker_disposition_fields() -> None:
+    summary = _IngestBatchSummary()
+    ingest_batch_core._record_outcome(
+        summary,
+        IngestRecordResult(
+            raw_id="raw-worker-failure",
+            error="schema rejected",
+            outcome_code="validation_rejected",
+            retryable=False,
+            evidence_ref="schema_validation_strict",
+            remediation="repair source schema",
+            diagnostic="missing required field: messages",
+        ),
+    )
+
+    outcome = summary.outcomes["raw-worker-failure"]
+    assert outcome.outcome_code == "validation_rejected"
+    assert outcome.retryable is False
+    assert outcome.evidence_ref == "schema_validation_strict"
+    assert outcome.remediation == "repair source schema"
+    assert outcome.diagnostic == "missing required field: messages"
+
+
 def test_primary_transport_resolution_precedes_index_connection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3494,6 +3517,31 @@ def test_failed_raw_state_update_keeps_validation_only_failure_out_of_parse_erro
         validation_mode="strict",
         detection_warnings=None,
     )
+
+
+def test_failed_raw_state_update_persists_worker_diagnostic_at_boundary() -> None:
+    outcome = _RawIngestOutcome(
+        raw_id="raw-1",
+        payload_provider="chatgpt",
+        validation_status="failed",
+        validation_error="schema mismatch",
+        parse_error="parse failed",
+        error="parse failed",
+        had_sessions=False,
+        outcome_code="validation_rejected",
+        retryable=False,
+        evidence_ref="schema_validation_strict",
+        remediation="repair source schema",
+        diagnostic="missing required field: messages",
+    )
+
+    state = _failed_raw_state_update(
+        outcome=outcome,
+        error="parse failed",
+        validation_mode="strict",
+    )
+
+    assert state.detection_warnings == "missing required field: messages"
 
 
 def test_unattributed_batch_elapsed_subtracts_setup_and_teardown() -> None:
