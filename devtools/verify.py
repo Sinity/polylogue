@@ -31,7 +31,6 @@ import selectors
 import shlex
 import shutil
 import signal
-import sqlite3
 import stat
 import subprocess
 import sys
@@ -59,6 +58,13 @@ from devtools.pytest_supervisor import (
     write_termination_request,
 )
 from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
+from devtools.testmon_state import (
+    TestmonSeedStamp,
+    inspect_testmon_database,
+    refresh_stamp,
+    stamp_from_attempt,
+    validate_stamp,
+)
 from devtools.verify_runs import (
     CURRENT_CONTAINMENT_PATH,
     CURRENT_EVENTS_DIR,
@@ -190,7 +196,7 @@ TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
 TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
-TESTMON_SEED_PROTOCOL_VERSION = 3
+TESTMON_SEED_PROTOCOL_VERSION = 4
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -2072,16 +2078,24 @@ def _testmon_coverage_identity(executable_paths: Sequence[str]) -> dict[str, Any
 def _matching_testmon_coverage(executable_paths: Sequence[str]) -> str | None:
     """Return the receipt kind proving that zero new selection is legitimate."""
     identity = _testmon_coverage_identity(executable_paths)
-    seed = _read_json_artifact(TESTMON_SEED_STAMP)
-    if isinstance(seed, dict):
-        seed_identity = seed.get("identity")
-        if (
-            seed.get("protocol_version") == TESTMON_SEED_PROTOCOL_VERSION
-            and seed.get("status") == "complete"
-            and isinstance(seed_identity, dict)
-            and seed_identity.get("worktree_fingerprint") == identity["worktree_fingerprint"]
-        ):
-            return "complete_seed"
+    seed = validate_stamp(
+        TESTMON_SEED_STAMP,
+        TESTMON_DATA,
+        checkout_root=ROOT,
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+    )
+    if seed is not None and seed.affected_selection_allowed:
+        return "validated_seed_graph"
+    attempt = _read_testmon_seed_attempt()
+    if attempt is not None:
+        recovered = stamp_from_attempt(
+            attempt,
+            TESTMON_DATA,
+            checkout_root=ROOT,
+            protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+        )
+        if recovered is not None and recovered.affected_selection_allowed:
+            return "validated_seed_attempt_graph"
     affected = _read_json_artifact(TESTMON_AFFECTED_STAMP)
     if isinstance(affected, dict) and affected.get("identity") == identity:
         return "successful_affected_run"
@@ -2111,36 +2125,36 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
         "to create .cache/testmon/testmondata and .cache/testmon/seed.json "
         "before using the default affected-test path.\n"
     )
-    if not TESTMON_DATA.exists() or not TESTMON_SEED_STAMP.exists():
+    if not TESTMON_DATA.exists():
         return seed_message
-    try:
-        stamp = json.loads(TESTMON_SEED_STAMP.read_text())
-    except (OSError, json.JSONDecodeError):
+    if not TESTMON_SEED_STAMP.exists():
+        attempt = _read_testmon_seed_attempt()
+        if (
+            attempt is not None
+            and stamp_from_attempt(
+                attempt,
+                TESTMON_DATA,
+                checkout_root=ROOT,
+                protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+            )
+            is not None
+        ):
+            sys.stderr.write(
+                "verify: using a validated complete pytest-testmon graph from a red seed attempt; "
+                "the release baseline remains red.\n"
+            )
+            return None
+        return seed_message
+    stamp = validate_stamp(
+        TESTMON_SEED_STAMP,
+        TESTMON_DATA,
+        checkout_root=ROOT,
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+    )
+    if stamp is None:
         return (
-            "verify: pytest-testmon seed stamp is unreadable; run `devtools verify --seed-testmon` "
-            "to refresh .cache/testmon/testmondata and .cache/testmon/seed.json.\n"
-        )
-    if not isinstance(stamp, dict):
-        return (
-            "verify: pytest-testmon seed stamp has an invalid shape; run `devtools verify --seed-testmon` "
-            "to refresh .cache/testmon/testmondata and .cache/testmon/seed.json.\n"
-        )
-    if stamp.get("protocol_version") != TESTMON_SEED_PROTOCOL_VERSION or stamp.get("status") != "complete":
-        return (
-            "verify: pytest-testmon has no validated complete seed receipt; run "
-            "`devtools verify --seed-testmon` to resume or rebuild the dependency baseline.\n"
-        )
-    current_head = _git_head()
-    stamped_head = stamp.get("git_head")
-    if current_head is not None and stamped_head != current_head:
-        sys.stderr.write(
-            "verify: pytest-testmon seed was recorded for a different git head; "
-            "continuing with the existing dependency database and recording affected-test evidence.\n"
-        )
-    if stamp.get("testmon_data") != _file_fingerprint(TESTMON_DATA):
-        sys.stderr.write(
-            "verify: pytest-testmon database changed after the seed stamp; "
-            "continuing because testmon updates its dependency database during normal affected runs.\n"
+            "verify: pytest-testmon seed state is unreadable, stale, malformed, or not graph-complete; run "
+            "`devtools verify --seed-testmon` to rebuild the dependency baseline.\n"
         )
     return None
 
@@ -2280,50 +2294,23 @@ def _prepare_testmon_seed_attempt(
 
 
 def _testmon_database_state(expected_nodeids: Sequence[str]) -> dict[str, Any]:
-    if not TESTMON_DATA.exists():
-        return {
-            "recorded_count": 0,
-            "failed_count": 0,
-            "missing_nodeids": list(expected_nodeids),
-            "failed_nodeids": [],
-            "node_outcomes": dict.fromkeys(expected_nodeids, "missing"),
-            "error": "missing",
-        }
-    try:
-        with sqlite3.connect(TESTMON_DATA) as conn:
-            rows = conn.execute(
-                """
-                SELECT current.test_name, current.failed
-                FROM test_execution AS current
-                JOIN (
-                    SELECT test_name, MAX(id) AS latest_id
-                    FROM test_execution
-                    GROUP BY test_name
-                ) AS latest ON latest.latest_id = current.id
-                """
-            ).fetchall()
-    except sqlite3.Error as exc:
-        return {
-            "recorded_count": 0,
-            "failed_count": 0,
-            "missing_nodeids": list(expected_nodeids),
-            "failed_nodeids": [],
-            "node_outcomes": dict.fromkeys(expected_nodeids, "missing"),
-            "error": str(exc),
-        }
-    recorded = {str(name): bool(failed) for name, failed in rows}
+    graph = inspect_testmon_database(TESTMON_DATA, expected_nodeids)
     expected = set(expected_nodeids)
-    failed = sorted(nodeid for nodeid in expected if recorded.get(nodeid) is True)
+    failed = list(graph.failed_nodeids)
     return {
-        "recorded_count": len(recorded),
-        "failed_count": sum(recorded.values()),
-        "missing_nodeids": sorted(expected - recorded.keys()),
+        "recorded_count": graph.recorded_count,
+        "failed_count": len(failed),
+        "dependency_edge_count": graph.dependency_edge_count,
+        "missing_nodeids": list(graph.missing_nodeids),
         "failed_nodeids": failed,
         "node_outcomes": {
-            nodeid: ("failed" if recorded.get(nodeid) is True else "passed" if nodeid in recorded else "missing")
+            nodeid: ("failed" if nodeid in failed else "passed" if nodeid not in graph.missing_nodeids else "missing")
             for nodeid in sorted(expected)
         },
-        "error": None,
+        "error": graph.error,
+        "graph_status": graph.status.value,
+        "orphan_execution_edges": graph.orphan_execution_edges,
+        "orphan_fingerprint_edges": graph.orphan_fingerprint_edges,
     }
 
 
@@ -2447,7 +2434,7 @@ def _finalize_testmon_seed_attempt(
     unsuccessful_nodeids = [
         str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
     ]
-    complete = (
+    green_complete = (
         exit_code == 0
         and bool(expected)
         and (bool(prepared.get("resume")) or omitted == 0)
@@ -2456,9 +2443,35 @@ def _finalize_testmon_seed_attempt(
         and not database["failed_nodeids"]
         and not unsuccessful_nodeids
     )
+    attempt_candidate = {
+        **dict(prepared),
+        "exit_code": exit_code,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "selection": {
+            **selection,
+            # A resumed run inherits the complete collection ledger from its
+            # original selection. The current pytest step may select only a
+            # subset while it repairs missing graph edges.
+            "selected_count": len(expected) if prepared.get("resume") else selection.get("selected_count"),
+            "selected_nodeids_omitted": 0 if prepared.get("resume") else omitted,
+        },
+        "node_outcomes": node_outcomes,
+        "identity": prepared.get("identity"),
+        "run_id": prepared.get("run_id"),
+        "artifact_dir": prepared.get("artifact_dir"),
+    }
+    reusable_stamp = stamp_from_attempt(
+        attempt_candidate,
+        TESTMON_DATA,
+        checkout_root=ROOT,
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+    )
+    reusable = reusable_stamp is not None
+    attempt_status = "complete" if green_complete else "reusable" if reusable else "incomplete"
     payload = {
         **dict(prepared),
-        "status": "complete" if complete else "incomplete",
+        "status": attempt_status,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "exit_code": exit_code,
         "expected_nodeids": expected,
@@ -2489,25 +2502,8 @@ def _finalize_testmon_seed_attempt(
         "pytest_step": dict(pytest_step) if pytest_step is not None else None,
     }
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
-    if complete:
-        stamp = {
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "complete",
-            "timestamp": payload["finished_at"],
-            "checkout_root": str(ROOT.resolve()),
-            "git_head": dict(prepared["identity"]).get("git_head"),
-            "identity": prepared["identity"],
-            "expected_count": payload["expected_count"],
-            "expected_digest": payload["expected_digest"],
-            "testmon_data": payload["testmon_data"],
-            "database": {
-                "recorded_count": database["recorded_count"],
-                "failed_count": database["failed_count"],
-            },
-            "run_id": payload["run_id"],
-            "artifact_dir": payload["artifact_dir"],
-        }
-        _atomic_write_json(TESTMON_SEED_STAMP, stamp)
+    if reusable_stamp is not None:
+        _atomic_write_json(TESTMON_SEED_STAMP, reusable_stamp.as_dict())
     return payload
 
 
@@ -2649,6 +2645,19 @@ def main(argv: list[str] | None = None) -> int:
             _warn_low_memory()  # check again right before the heavy step
         rc, elapsed, metadata = _run(label, cmd, run=verify_run)
         if rc == 0 and label in {"pytest testmon", "pytest testmon (broad)"}:
+            raw_stamp = _read_json_artifact(TESTMON_SEED_STAMP)
+            try:
+                current_stamp = (
+                    TestmonSeedStamp.from_mapping(raw_stamp, protocol_version=TESTMON_SEED_PROTOCOL_VERSION)
+                    if isinstance(raw_stamp, Mapping)
+                    else None
+                )
+            except ValueError:
+                current_stamp = None
+            if current_stamp is not None:
+                refreshed_stamp = refresh_stamp(current_stamp, TESTMON_DATA)
+                if refreshed_stamp is not None:
+                    _atomic_write_json(TESTMON_SEED_STAMP, refreshed_stamp.as_dict())
             executable_paths = _changed_executable_paths()
             selected_count = metadata.get("selected_count")
             if selected_count == 0 and executable_paths:
@@ -2721,7 +2730,7 @@ def main(argv: list[str] | None = None) -> int:
             "resume": seed_receipt["resume"],
             "expected_count": seed_receipt["expected_count"],
             "attempt_path": str(TESTMON_SEED_ATTEMPT),
-            "stamp_path": str(TESTMON_SEED_STAMP) if seed_receipt["status"] == "complete" else None,
+            "stamp_path": str(TESTMON_SEED_STAMP) if seed_receipt["status"] in {"complete", "reusable"} else None,
         }
 
     if use_json:

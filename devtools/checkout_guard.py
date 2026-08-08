@@ -68,6 +68,8 @@ from pathlib import Path
 
 import tomllib
 
+from devtools.testmon_state import validate_stamp
+
 
 class CheckoutImportMismatchError(RuntimeError):
     """``import polylogue`` resolved to a package outside the invoking checkout."""
@@ -130,6 +132,7 @@ class CheckoutEnvironmentFingerprint:
 _TESTMON_STATE_DIR = Path(".cache/testmon")
 _TESTMON_STATE_MARKER = _TESTMON_STATE_DIR / "seed.json"
 _TESTMON_SEED_ATTEMPT = _TESTMON_STATE_DIR / "seed-attempt.json"
+_TESTMON_SEED_PROTOCOL_VERSION = 4
 _VERIFY_STATE_DIR = Path(".cache/verify")
 _VERIFY_STATE_MARKER = _VERIFY_STATE_DIR / "current-run.json"
 
@@ -250,6 +253,10 @@ def _marker_origin(marker: Path) -> Path | None:
         return None
     raw = payload.get("checkout_root")
     if raw is None:
+        binding = payload.get("binding")
+        if isinstance(binding, Mapping):
+            raw = binding.get("checkout_root")
+    if raw is None:
         fingerprint = payload.get("environment_fingerprint")
         if isinstance(fingerprint, Mapping):
             raw = fingerprint.get("checkout_root")
@@ -331,6 +338,28 @@ def _cache_artifact(
     marker_path = repo_root / marker
     origin = _marker_origin(marker_path)
     if origin == repo_root:
+        if (
+            state_dir == _TESTMON_STATE_DIR
+            and validate_stamp(
+                marker_path,
+                state_path / "testmondata",
+                checkout_root=repo_root,
+                protocol_version=_TESTMON_SEED_PROTOCOL_VERSION,
+            )
+            is None
+        ):
+            return (
+                origin,
+                EnvironmentArtifact(
+                    kind="invalid_testmon_seed",
+                    path=marker_path,
+                    detail="testmon seed marker is stale, malformed, or its SQLite graph is incomplete",
+                    remediation=(
+                        f"remove {state_path} and run `devtools verify --seed-testmon` "
+                        "to rebuild the typed testmon state"
+                    ),
+                ),
+            )
         return origin, None
     if (
         origin is None

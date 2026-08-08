@@ -17,12 +17,19 @@ copied verbatim from main is immediately meaningful there: any file that
 differs between the worktree and the main checkout at copy time
 self-invalidates (its ``fsha`` won't match), and testmon correctly treats the
 tests that depend on it as affected on the very next run. No merge or rewrite
-is needed -- a straight copy is a valid seed.
+is needed for the relative file fingerprints.
+
+The reusable stamp is typed. It records collection completeness, graph
+completeness, baseline color, and whether the graph is exact or rebound to a
+new checkout. A red graph is allowed for affected selection only. Bootstrap
+revalidates the SQLite graph after the online backup and recomputes its file
+fingerprint because SQLite backup can produce a byte-different equivalent
+database.
 
 This module owns exactly one decision and one action:
 
-- :func:`decide_testmon_bootstrap` -- pure decision, no I/O beyond reading the
-  two candidate seed files (local + main). Testable with plain tmp dirs.
+- :func:`decide_testmon_bootstrap` -- pure decision, no subprocess beyond the
+  caller. It validates the main stamp or a complete red seed attempt.
 - :func:`bootstrap_testmon_seed_files` -- the copy action once bootstrapping
   has been decided.
 - :func:`maybe_bootstrap_testmon_seed` -- the orchestrator `devtools verify`
@@ -38,8 +45,8 @@ open, actively-written file can capture a torn, inconsistent snapshot. This
 copies it through :meth:`sqlite3.Connection.backup`, sqlite's own online-backup
 API -- built for copying a live database without an exclusive lock, immune to
 concurrent writers by design. ``seed.json`` is a small file written atomically
-by ``verify.py`` (write-temp-then-rename), so a plain read-then-atomic-write
-copy is enough for it; there is no partial-write window to observe.
+by ``verify.py`` (write-temp-then-rename), so bootstrap writes its newly bound
+stamp atomically after the copied graph has been revalidated.
 
 This module NEVER writes to the main checkout's copy of either file --
 only reads from main, only writes to ``repo_root``.
@@ -54,8 +61,16 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from devtools.testmon_state import (
+    TestmonSeedStamp,
+    refresh_stamp,
+    stamp_from_attempt,
+    validate_stamp,
+)
+
 TESTMON_DATA_RELPATH = ".cache/testmon/testmondata"
 TESTMON_SEED_STAMP_RELPATH = ".cache/testmon/seed.json"
+TESTMON_SEED_ATTEMPT_RELPATH = ".cache/testmon/seed-attempt.json"
 
 
 @dataclass(frozen=True)
@@ -66,19 +81,27 @@ class BootstrapDecision:
     reason: str
     main_testmon_data: Path | None = None
     main_seed_stamp: Path | None = None
+    main_seed_attempt: Path | None = None
+    protocol_version: int = 4
 
 
-def _is_valid_complete_seed_stamp(seed_stamp: Path, *, protocol_version: int) -> bool:
-    """Mirror the validity check `devtools.verify._testmon_preflight` applies."""
-    if not seed_stamp.is_file():
-        return False
-    try:
-        stamp = json.loads(seed_stamp.read_text())
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(stamp, dict):
-        return False
-    return stamp.get("protocol_version") == protocol_version and stamp.get("status") == "complete"
+def _is_valid_complete_seed_stamp(
+    seed_stamp: Path,
+    testmon_data: Path,
+    *,
+    protocol_version: int,
+    checkout_root: Path,
+) -> bool:
+    """Validate both the typed stamp and the real SQLite graph it describes."""
+    return (
+        validate_stamp(
+            seed_stamp,
+            testmon_data,
+            checkout_root=checkout_root,
+            protocol_version=protocol_version,
+        )
+        is not None
+    )
 
 
 def decide_testmon_bootstrap(
@@ -89,6 +112,8 @@ def decide_testmon_bootstrap(
     main_testmon_data: Path,
     main_seed_stamp: Path,
     protocol_version: int,
+    main_seed_attempt: Path | None = None,
+    main_checkout_root: Path | None = None,
 ) -> BootstrapDecision:
     """Decide whether to copy the main checkout's testmon seed into a worktree.
 
@@ -100,55 +125,63 @@ def decide_testmon_bootstrap(
         return BootstrapDecision(False, "repo_root is not a linked worktree; nothing to bootstrap")
     if local_testmon_data.is_file() and local_seed_stamp.is_file():
         return BootstrapDecision(False, "local .cache/testmon already has a testmondata + seed stamp")
-    if not _is_valid_complete_seed_stamp(main_seed_stamp, protocol_version=protocol_version):
-        return BootstrapDecision(
-            False,
-            "main checkout has no valid complete testmon seed stamp to bootstrap from",
-        )
     if not main_testmon_data.is_file():
         return BootstrapDecision(
             False,
-            "main checkout seed stamp is valid but its testmondata file is missing",
+            "main checkout has no valid testmon graph because its testmondata file is missing",
         )
+    root = main_checkout_root or main_testmon_data.parents[2]
+    if _is_valid_complete_seed_stamp(
+        main_seed_stamp,
+        main_testmon_data,
+        protocol_version=protocol_version,
+        checkout_root=root,
+    ):
+        return BootstrapDecision(
+            True,
+            f"main checkout has a validated testmon graph ({main_seed_stamp}); bootstrapping worktree cache",
+            main_testmon_data=main_testmon_data,
+            main_seed_stamp=main_seed_stamp,
+            protocol_version=protocol_version,
+        )
+    if main_seed_attempt is not None and main_seed_attempt.is_file():
+        try:
+            attempt = json.loads(main_seed_attempt.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            attempt = None
+        if (
+            isinstance(attempt, dict)
+            and stamp_from_attempt(
+                attempt,
+                main_testmon_data,
+                checkout_root=root,
+                protocol_version=protocol_version,
+            )
+            is not None
+        ):
+            return BootstrapDecision(
+                True,
+                "main checkout has a validated complete graph from a red seed attempt; bootstrapping worktree cache",
+                main_testmon_data=main_testmon_data,
+                main_seed_attempt=main_seed_attempt,
+                protocol_version=protocol_version,
+            )
+    if main_seed_stamp.is_file():
+        return BootstrapDecision(False, "main checkout seed stamp is stale, malformed, or graph-incomplete")
     return BootstrapDecision(
-        True,
-        f"main checkout has a valid complete testmon seed ({main_seed_stamp}); bootstrapping worktree cache",
-        main_testmon_data=main_testmon_data,
-        main_seed_stamp=main_seed_stamp,
+        False,
+        "main checkout has no validated reusable testmon state",
     )
 
 
-def _atomic_copy_bytes(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(f"{dst.name}.{os.getpid()}.tmp")
-    tmp.write_bytes(src.read_bytes())
-    tmp.replace(dst)
-
-
-def _stamp_seed_checkout_origin(
-    seed_stamp: Path,
-    *,
-    checkout_root: Path,
-    inherited_from: Path | None = None,
-) -> bool:
-    """Mark a copied seed with its destination checkout and source provenance."""
-    try:
-        payload = json.loads(seed_stamp.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, dict):
-        return False
-    payload["checkout_root"] = str(checkout_root.resolve())
-    if inherited_from is not None:
-        payload["inherited_from"] = str(inherited_from.resolve())
+def _atomic_write_stamp(seed_stamp: Path, stamp: TestmonSeedStamp) -> None:
+    seed_stamp.parent.mkdir(parents=True, exist_ok=True)
     tmp = seed_stamp.with_name(f"{seed_stamp.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.write_text(json.dumps(stamp.as_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         tmp.replace(seed_stamp)
-    except OSError:
+    finally:
         tmp.unlink(missing_ok=True)
-        return False
-    return True
 
 
 def _atomic_copy_sqlite_db(src: Path, dst: Path) -> None:
@@ -187,11 +220,40 @@ def bootstrap_testmon_seed_files(
     if not decision.should_bootstrap:
         return True
     assert decision.main_testmon_data is not None
-    assert decision.main_seed_stamp is not None
+    if decision.main_seed_stamp is None and decision.main_seed_attempt is None:
+        return False
+    stamp: TestmonSeedStamp | None = None
+    try:
+        source_root = decision.main_testmon_data.parents[2]
+        if decision.main_seed_stamp is not None:
+            source = json.loads(decision.main_seed_stamp.read_text(encoding="utf-8"))
+            if not isinstance(source, dict):
+                return False
+            stamp = TestmonSeedStamp.from_mapping(source, protocol_version=decision.protocol_version)
+        else:
+            assert decision.main_seed_attempt is not None
+            source = json.loads(decision.main_seed_attempt.read_text(encoding="utf-8"))
+            if not isinstance(source, dict):
+                return False
+            stamp = stamp_from_attempt(
+                source,
+                decision.main_testmon_data,
+                checkout_root=source_root,
+                protocol_version=decision.protocol_version,
+            )
+            if stamp is None:
+                return False
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return False
+    if stamp is None:
+        return False
     _atomic_copy_sqlite_db(decision.main_testmon_data, local_testmon_data)
-    _atomic_copy_bytes(decision.main_seed_stamp, local_seed_stamp)
     if checkout_root is not None and inherited_from is not None:
-        return _stamp_seed_checkout_origin(local_seed_stamp, checkout_root=checkout_root, inherited_from=inherited_from)
+        stamp = stamp.rebound(checkout_root=checkout_root, inherited_from=inherited_from)
+    stamp = refresh_stamp(stamp, local_testmon_data)
+    if stamp is None:
+        return False
+    _atomic_write_stamp(local_seed_stamp, stamp)
     return True
 
 
@@ -250,6 +312,7 @@ def maybe_bootstrap_testmon_seed(
     local_seed_stamp = repo_root / seed_stamp_relpath
     main_testmon_data = main_checkout / testmon_data_relpath
     main_seed_stamp = main_checkout / seed_stamp_relpath
+    main_seed_attempt = main_checkout / TESTMON_SEED_ATTEMPT_RELPATH
     decision = decide_testmon_bootstrap(
         is_linked_worktree=is_linked_worktree,
         local_testmon_data=local_testmon_data,
@@ -257,21 +320,10 @@ def maybe_bootstrap_testmon_seed(
         main_testmon_data=main_testmon_data,
         main_seed_stamp=main_seed_stamp,
         protocol_version=protocol_version,
+        main_seed_attempt=main_seed_attempt,
+        main_checkout_root=main_checkout,
     )
     if not decision.should_bootstrap:
-        if local_testmon_data.is_file() and _is_valid_complete_seed_stamp(
-            local_seed_stamp, protocol_version=protocol_version
-        ):
-            try:
-                local_payload = json.loads(local_seed_stamp.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                return None
-            if (
-                isinstance(local_payload, dict)
-                and not local_payload.get("checkout_root")
-                and _stamp_seed_checkout_origin(local_seed_stamp, checkout_root=repo_root)
-            ):
-                return f"verify: migrated legacy pytest-testmon seed marker in {local_seed_stamp.parent}"
         return None
     stamped = bootstrap_testmon_seed_files(
         decision,
@@ -294,6 +346,7 @@ def maybe_bootstrap_testmon_seed(
 __all__ = [
     "TESTMON_DATA_RELPATH",
     "TESTMON_SEED_STAMP_RELPATH",
+    "TESTMON_SEED_ATTEMPT_RELPATH",
     "BootstrapDecision",
     "decide_testmon_bootstrap",
     "bootstrap_testmon_seed_files",
