@@ -99,7 +99,7 @@ def _write_repeated_byte(handle: BinaryIO, value: bytes, byte_count: int) -> Non
     while remaining:
         current = chunk if remaining >= len(chunk) else chunk[:remaining]
         written = handle.write(current)
-        if written is None or written <= 0:
+        if written <= 0:
             raise OSError("fixture writer made no progress")
         remaining -= written
 
@@ -311,7 +311,7 @@ def multi_million_codex_stream(
             "content": [{"type": "input_text", "text": "sanitized streaming boundary"}],
         },
     }
-    state_record = {"record_type": "state"}
+    state_record: dict[str, object] = {"record_type": "state"}
     for _ in range(dimensions.stream_event_count):
         yield state_record
 
