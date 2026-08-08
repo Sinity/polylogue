@@ -46,8 +46,8 @@ def create_vector_provider(
         config: Application configuration with optional index_config
         voyage_api_key: Voyage AI API key (overrides config and env var)
         db_path: Optional database path override
-        model: Embedding model name (defaults to voyage-4 if None)
-        dimension: Embedding dimension (defaults to 1024 if None)
+        model: Embedding model name (defaults to the configured model)
+        dimension: Embedding dimension (defaults to the configured dimension)
 
     Returns:
         SqliteVecProvider if configured and available, None otherwise
@@ -56,7 +56,7 @@ def create_vector_provider(
 
     # Resolve Voyage key with priority: explicit arg > config > env
     voyage_key = voyage_api_key
-    if voyage_key is None and config and config.index_config:
+    if voyage_key is None and config is not None and config.index_config is not None:
         voyage_key = config.index_config.voyage_api_key
     if voyage_key is None:
         from polylogue.config import load_polylogue_config
@@ -65,6 +65,12 @@ def create_vector_provider(
 
     if not voyage_key:
         return None
+
+    if config is not None:
+        if model is None:
+            model = config.embedding_model
+        if dimension is None:
+            dimension = config.embedding_dimension
 
     if not _sqlite_vec_available():
         if not _sqlite_vec_missing_warned:

@@ -208,7 +208,7 @@ roots = ["/home/user/.claude/projects", "/home/user/.codex/sessions"]
 
 [embedding]
 enabled = false
-model = "voyage-4"
+model = "voyage-4-lite"
 dimension = 1024
 max_cost_usd = 5.0   # soft monthly cap; 0 = unlimited
 # voyage_api_key = "..." # prefer VOYAGE_API_KEY from a secret manager

@@ -10,6 +10,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.api import ArchiveStats
 from polylogue.archive.message.roles import Role
+from polylogue.config import Config
 from polylogue.insights.archive import (
     ArchiveCoverageInsightQuery,
     ArchiveDebtInsightQuery,
@@ -109,6 +110,24 @@ class TestPolylogueInitialization:
         archive = Polylogue(archive_root=tmp_path / "archive")
         assert "Polylogue" in repr(archive)
         assert "archive" in repr(archive)
+
+    def test_open_preserves_supplied_config(self: object, tmp_path: Path) -> None:
+        config = Config(
+            archive_root=tmp_path / "archive",
+            render_root=tmp_path / "render",
+            sources=[],
+            embedding_model="configured-model",
+            embedding_dimension=512,
+        )
+
+        archive = Polylogue.open(config=config)
+
+        assert archive.config is config
+        assert archive.config.embedding_model == "configured-model"
+        assert archive.config.embedding_dimension == 512
+
+        with pytest.raises(ValueError, match="config cannot be combined"):
+            Polylogue.open(config=config, archive_root=tmp_path / "other-archive")
 
 
 class TestArchiveStatsCreation:

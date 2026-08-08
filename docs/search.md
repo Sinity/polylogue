@@ -700,7 +700,7 @@ a concrete lane — see below).
 | `dialogue` | FTS5 over message text (`messages_fts` virtual table, `unicode61` tokenizer). Default lexical lane. | `bm25` |
 | `actions` | FTS5 over tool-use/tool-result block text in `messages_fts`. Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score. | `null` |
 | `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings). | `rrf` |
-| `semantic` | Pure vector similarity over Voyage-4 embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
+| `semantic` | Pure vector similarity over configured Voyage embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
 
 Implementation: `polylogue/storage/search/query_builders.py`,
 `polylogue/storage/search_providers/hybrid.py`,
@@ -774,7 +774,7 @@ Implementation: `polylogue/storage/search/query_builders.py`,
 
 #### `semantic` (vector-only)
 
-- Pure k-nearest-neighbor over Voyage-4 1024-dim embeddings via
+- Pure k-nearest-neighbor over the configured Voyage embedding recipe via
   sqlite-vec's `vec0` virtual table.
 - Triggered by `--similar <text>` or `--semantic` (which promotes the
   positional query string into `similar_text`; no FTS leg runs).

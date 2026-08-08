@@ -10,7 +10,7 @@ from polylogue.logging import get_logger
 logger = get_logger(__name__)
 
 VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
-DEFAULT_MODEL = "voyage-4"
+DEFAULT_MODEL = "voyage-4-lite"
 DEFAULT_DIMENSION = 1024
 BATCH_SIZE = 128
 

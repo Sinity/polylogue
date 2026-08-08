@@ -50,7 +50,16 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
         db_path: str | Path | None = None,
         *,
         runtime: ResolvedRuntimeConfig | None = None,
+        config: Config | None = None,
     ) -> None:
+        if config is not None and (runtime is not None or archive_root is not None or db_path is not None):
+            raise ValueError("config cannot be combined with runtime, archive_root, or db_path")
+        if config is not None:
+            self._runtime = None
+            self._config = config
+            self._services = build_runtime_services(config=config, db_path=config.db_path)
+            return
+
         explicit_archive = Path(archive_root).expanduser().resolve() if archive_root is not None else None
         explicit_db = Path(db_path).expanduser().resolve() if db_path is not None else None
 
@@ -89,11 +98,9 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
         runtime: ResolvedRuntimeConfig | None = None,
         **kwargs: object,
     ) -> Polylogue:
-        if runtime is not None:
-            return cls(runtime=runtime)
-        archive_root: str | Path | None = config.archive_root if config else kwargs.get("archive_root")  # type: ignore[assignment]
-        db_path: str | Path | None = config.db_path if config else kwargs.get("db_path")  # type: ignore[assignment]
-        return cls(archive_root=archive_root, db_path=db_path)
+        archive_root: str | Path | None = kwargs.get("archive_root")  # type: ignore[assignment]
+        db_path: str | Path | None = kwargs.get("db_path")  # type: ignore[assignment]
+        return cls(archive_root=archive_root, db_path=db_path, runtime=runtime, config=config)
 
     async def __aenter__(self) -> Polylogue:
         return self
