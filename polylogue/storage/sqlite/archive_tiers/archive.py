@@ -5496,7 +5496,11 @@ class ArchiveStore:
                 {
                     "target_type": found_target_type,
                     "target_id": found_target_id,
-                    "session_id": _user_mark_session_id(found_target_type, found_target_id),
+                    "session_id": _user_mark_session_id(
+                        found_target_type,
+                        found_target_id,
+                        index_conn=self._conn,
+                    ),
                     "message_id": found_target_id if found_target_type == "message" else "",
                     "mark_type": str(assertion.key or ""),
                     "created_at": str(assertion.created_at_ms),
@@ -5669,7 +5673,11 @@ class ArchiveStore:
                     "annotation_id": found_annotation_id,
                     "target_type": found_target_type,
                     "target_id": found_target_id,
-                    "session_id": _user_mark_session_id(found_target_type, found_target_id),
+                    "session_id": _user_mark_session_id(
+                        found_target_type,
+                        found_target_id,
+                        index_conn=self._conn,
+                    ),
                     "message_id": found_target_id if found_target_type == "message" else "",
                     "note_text": assertion.body_text or "",
                     "created_at": str(assertion.created_at_ms),
@@ -9334,18 +9342,28 @@ def _active_assertion_by_kind_key(
     return None
 
 
-def _user_mark_session_id(target_type: str, target_id: str) -> str:
+def _user_mark_session_id(
+    target_type: str,
+    target_id: str,
+    *,
+    index_conn: sqlite3.Connection | None = None,
+) -> str:
     if target_type == "session":
         return target_id
     if target_type == "message":
-        # Message identities use tagged local components (``:n:<native>`` or
-        # ``:p:<position>.<variant>``). Splitting at the final colon used to
-        # work only while native IDs were untagged; with ``session:n:native``
-        # it incorrectly reports ``session:n`` as the owning session.
-        for marker in (":n:", ":p:"):
-            marker_index = target_id.find(marker)
-            if marker_index > 0:
-                return target_id[:marker_index]
+        # Canonical message IDs are generated from the indexed message row,
+        # whose session_id column is the authoritative owner. Provider-native
+        # session IDs are opaque and may contain the ``:n:`` or ``:p:`` tokens,
+        # so those tokens cannot safely delimit the owning session.
+        if index_conn is not None:
+            row = index_conn.execute(
+                "SELECT session_id FROM messages WHERE message_id = ?",
+                (target_id,),
+            ).fetchone()
+            if row is not None:
+                return str(row["session_id"])
+        # A message assertion can outlive its indexed message. Retain the
+        # historical delimiter fallback for those legacy/unresolved IDs.
         session_id, _sep, _message_native_id = target_id.rpartition(":")
         return session_id
     return ""

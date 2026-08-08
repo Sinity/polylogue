@@ -136,6 +136,55 @@ async def test_list_marks_projects_session_vocabulary(workspace_env: dict[str, P
     assert {(row["target_type"], row["target_id"]) for row in rows} == {("session", session_id)}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opaque_marker", [":n:", ":p:"])
+async def test_message_user_state_projects_owner_for_opaque_session_native_ids(
+    workspace_env: dict[str, Path],
+    opaque_marker: str,
+) -> None:
+    """Message user state resolves ownership from indexed identity, not delimiters."""
+    db_path = db_setup(workspace_env)
+    builder = (
+        SessionBuilder(db_path, f"opaque{opaque_marker}session")
+        .provider("claude-code")
+        .add_message(
+            message_id="message-native",
+            text="hello",
+        )
+    )
+    builder.save()
+    session_id = builder.native_session_id()
+    message_id = f"{session_id}:n:message-native"
+
+    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+        assert (
+            await poly.add_mark(
+                session_id,
+                "pin",
+                target_type="message",
+                message_id=message_id,
+            )
+            is True
+        )
+        assert (
+            await poly.save_annotation(
+                "opaque-session-message-note",
+                session_id,
+                "important",
+                target_type="message",
+                message_id=message_id,
+            )
+            is True
+        )
+        marks = await poly.list_marks(mark_type="pin")
+        annotations = await poly.list_annotations()
+
+    assert marks[0]["target_id"] == message_id
+    assert marks[0]["session_id"] == session_id
+    assert annotations[0]["target_id"] == message_id
+    assert annotations[0]["session_id"] == session_id
+
+
 # ---------------------------------------------------------------------------
 # The core #1114 acceptance: marks survive hard delete and rebind on reimport
 # ---------------------------------------------------------------------------
