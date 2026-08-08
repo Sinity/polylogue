@@ -108,6 +108,8 @@
         ? "temporary"
         : "standard";
     const now = new Date().toISOString();
+    const sessionTitle = title || document.title || stableProviderSessionId;
+    const sessionTitleSource = title ? "provider" : document.title ? "page" : "session-id";
     const envelope = {
       polylogue_capture_kind: CAPTURE_KIND,
       schema_version: SCHEMA_VERSION,
@@ -126,7 +128,8 @@
         provider,
         provider_session_id: stableProviderSessionId,
         session_kind: stableSessionKind,
-        title: title || document.title || stableProviderSessionId,
+        title: sessionTitle,
+        title_source: sessionTitleSource,
         created_at: createdAt,
         updated_at: updatedAt || now,
         model,

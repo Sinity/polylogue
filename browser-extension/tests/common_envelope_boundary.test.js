@@ -128,6 +128,40 @@ function maximalTurn() {
 }
 
 describe("common.js buildEnvelope boundary contract (real source, not a copy)", () => {
+  it("types provider, page, and session-id title evidence", () => {
+    const providerDom = installCommon();
+    const providerEnvelope = providerDom.window.polylogueCapture.buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-native-v1",
+      turns: [maximalTurn()],
+      providerSessionId: "conversation-1",
+      title: "Provider conversation title",
+    });
+    expect(providerEnvelope.session.title).toBe("Provider conversation title");
+    expect(providerEnvelope.session.title_source).toBe("provider");
+
+    const pageDom = installCommon();
+    const pageEnvelope = pageDom.window.polylogueCapture.buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-dom-v1",
+      turns: [maximalTurn()],
+      providerSessionId: "conversation-1",
+    });
+    expect(pageEnvelope.session.title).toBe("Boundary contract fixture");
+    expect(pageEnvelope.session.title_source).toBe("page");
+
+    const sessionIdDom = installCommon();
+    sessionIdDom.window.document.title = "";
+    const sessionIdEnvelope = sessionIdDom.window.polylogueCapture.buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-dom-v1",
+      turns: [maximalTurn()],
+      providerSessionId: "conversation-1",
+    });
+    expect(sessionIdEnvelope.session.title).toBe("conversation-1");
+    expect(sessionIdEnvelope.session.title_source).toBe("session-id");
+  });
+
   it("carries every BrowserCaptureTurn field from a maximal turn into the envelope", () => {
     const dom = installCommon();
     const envelope = dom.window.polylogueCapture.buildEnvelope({

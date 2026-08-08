@@ -444,7 +444,11 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # positional coordinates in the generated message_id expression. Existing
 # derived rows remain readable as opaque legacy ids, but new materialization
 # must replay raw sessions to regenerate message/block/reference identities.
-INDEX_SCHEMA_VERSION = 66
+# polylogue-o5smo: v67 assigns typed origin provenance to provider-authored
+# Grok, Antigravity, browser-capture, and Hermes titles. Existing parsed rows
+# require raw replay because an in-place schema operation cannot recover title
+# authorship from the stored untyped title text.
+INDEX_SCHEMA_VERSION = 67
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

@@ -19,6 +19,7 @@ BROWSER_CAPTURE_API_SCHEMA: Literal["polylogue-browser-capture/v1"] = "polylogue
 BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD: Literal["chrome-extension://*"] = "chrome-extension://*"
 BrowserCaptureArchiveLifecycle = Literal["missing", "spooled_only", "ingest_pending", "archived", "stale", "failed"]
 BrowserCaptureSessionKind = Literal["standard", "temporary"]
+BrowserCaptureTitleSource = Literal["provider", "page", "session-id"]
 
 
 class BrowserCaptureAttachment(BaseModel):
@@ -168,6 +169,7 @@ class BrowserCaptureSession(BaseModel):
     provider_session_id: str
     session_kind: BrowserCaptureSessionKind = "standard"
     title: str | None = None
+    title_source: BrowserCaptureTitleSource | None = None
     created_at: str | None = None
     updated_at: str | None = None
     model: str | None = None

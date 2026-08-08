@@ -819,6 +819,7 @@ def _browser_capture_snapshot_payload() -> JSONDocument:
             "provider": "chatgpt",
             "provider_session_id": "browser-snapshot-reg-1",
             "title": "Browser snapshot regression fixture",
+            "title_source": "provider",
             "turns": [
                 {"provider_turn_id": "u1", "role": "user", "text": "Capture this page.", "ordinal": 0},
                 {"provider_turn_id": "a1", "role": "assistant", "text": "Captured.", "ordinal": 1},

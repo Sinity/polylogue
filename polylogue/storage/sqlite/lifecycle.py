@@ -894,6 +894,14 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # by raw replay under the new expression.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=67,
+        # Parser-authored title provenance changes stored session semantics.
+        # Existing untyped title text cannot distinguish provider evidence
+        # from page-title and native-id fallbacks, so only raw replay can
+        # produce trustworthy title_source values.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

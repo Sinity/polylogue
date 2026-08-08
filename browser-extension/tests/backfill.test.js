@@ -107,6 +107,7 @@ describe("background backfill coordinator", () => {
     expect(status.progress.complete).toBe(2);
     expect(h.adapter.fetchCalls).toEqual(["one", "two"]);
     expect(h.receiver).toHaveBeenCalledTimes(2);
+    expect(h.receiver.mock.calls[0][0].session.title_source).toBe("provider");
   });
 
   it("recovers the durable job, queue, revision, and ACK ledgers from real IndexedDB after a worker restart", async () => {
