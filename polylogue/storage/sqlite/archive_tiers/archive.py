@@ -1753,8 +1753,8 @@ class ArchiveStore:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
         if frozen_source_validation and (not read_only or owned_inactive_generation is not None):
             raise ValueError("frozen source validation requires a read-only active archive")
-        if frozen_index_path is not None and not frozen_source_validation:
-            raise ValueError("a frozen index path is valid only for frozen source validation")
+        if frozen_index_path is not None and not read_only:
+            raise ValueError("a pinned index path is valid only for read-only archive access")
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_source_validation = frozen_source_validation
@@ -1951,15 +1951,32 @@ class ArchiveStore:
         self._attach_user_tier_if_present()
 
     @classmethod
-    def open_existing(cls, archive_root: Path, *, read_only: bool = True, read_timeout: float = 5.0) -> ArchiveStore:
+    def open_existing(
+        cls,
+        archive_root: Path,
+        *,
+        read_only: bool = True,
+        read_timeout: float = 5.0,
+        index_path: Path | None = None,
+    ) -> ArchiveStore:
         """Open archive tier files.
 
         Read-only opens never bootstrap missing tiers; read/status surfaces must
         not create an empty archive and then report it as usable. Writers opt
-        into bootstrap by passing ``read_only=False``.
+        into bootstrap by passing ``read_only=False``. Read-only evidence tools
+        may pass an already-resolved ``index_path`` to remain pinned to one
+        physical generation across an active-pointer promotion.
         """
+        if index_path is not None and not read_only:
+            raise ValueError("index_path is valid only for read-only archive access")
         initialize = not read_only
-        return cls(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
+        return cls(
+            archive_root,
+            initialize=initialize,
+            read_only=read_only,
+            read_timeout=read_timeout,
+            frozen_index_path=index_path,
+        )
 
     @classmethod
     def open_source_tier_acquisition(cls, archive_root: Path) -> ArchiveStore:

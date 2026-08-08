@@ -999,7 +999,7 @@ def _try_product_detail_report(
     since_ms = None if args.all_time else recent_cutoff_ms
     action_scope = "product-action-evidence-all-time" if args.all_time else "product-action-evidence-recent-window"
     try:
-        with ArchiveStore.open_existing(config.archive_root) as archive:
+        with ArchiveStore.open_existing(config.archive_root, index_path=config.db_path) as archive:
             merged_rows: dict[tuple[str, str, str, str, str, str], dict[str, object]] = {}
             for family, patterns in pattern_groups.items():
                 rows = archive.list_tool_action_evidence_count_rows(

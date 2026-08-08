@@ -252,7 +252,7 @@ def test_affordance_usage_selected_sibling_index_bypasses_archive_store_fast_pat
 
     monkeypatch.setattr(
         "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda _root: DivergentArchive(),
+        lambda _root, **_kwargs: DivergentArchive(),
     )
 
     report = affordance_usage.build_report(
@@ -273,6 +273,66 @@ def test_affordance_usage_selected_sibling_index_bypasses_archive_store_fast_pat
     assert report["index_db"] == str(selected_db.resolve())
     assert {row["family"]: row["actions"] for row in report["family_counts"]}["codebase-memory"] == 2
     assert report["samples"]
+
+
+def test_affordance_usage_product_fast_path_stays_pinned_across_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    old_db = _make_index_db(tmp_path / "old-generation")
+    new_db = _make_index_db(tmp_path / "new-generation")
+    with sqlite3.connect(new_db) as conn:
+        conn.execute(
+            "INSERT INTO blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "s1",
+                "m1",
+                "tool_use",
+                "functions.exec_command",
+                "promoted-extra",
+                None,
+                "codebase-memory extra",
+                "",
+                "",
+                None,
+                None,
+            ),
+        )
+    active = archive_root / "index.db"
+    active.symlink_to(old_db)
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    real_open_existing = ArchiveStore.open_existing
+    promoted = False
+
+    def promote_before_open(root: Path, **kwargs: object) -> ArchiveStore:
+        nonlocal promoted
+        active.unlink()
+        active.symlink_to(new_db)
+        promoted = True
+        return real_open_existing(root, **kwargs)
+
+    monkeypatch.setattr(ArchiveStore, "open_existing", promote_before_open)
+
+    report = affordance_usage.build_report(
+        affordance_usage.AffordanceUsageArgs(
+            archive_root=archive_root,
+            out_dir=None,
+            days=36500,
+            family=(),
+            detail_pattern=("codebase-memory",),
+            sample_limit=10,
+            json=True,
+            all_time=False,
+        )
+    )
+
+    assert promoted is True
+    assert report["index_db"] == str(old_db.resolve())
+    assert {row["family"]: row["actions"] for row in report["family_counts"]}["codebase-memory"] == 2
 
 
 def test_affordance_usage_marks_selected_index_snapshot_unstable_after_change(
@@ -482,7 +542,7 @@ def test_affordance_usage_detail_fast_path_splits_mixed_known_families(
 
     monkeypatch.setattr(
         "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda _root: FakeArchive(),
+        lambda _root, **_kwargs: FakeArchive(),
     )
     args = affordance_usage.AffordanceUsageArgs(
         archive_root=archive_root,

@@ -2394,6 +2394,67 @@ def test_migrate_tier_cli_refuses_to_initialize_a_tier_in_an_established_archive
     assert (root / sibling_name).exists()
 
 
+def test_migrate_tier_cli_missing_initialization_refuses_dangling_active_pointer(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    pointer = root / ".index-active-pointer"
+    pointer.symlink_to(root / ".index-generations" / "missing" / "index.db")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert "established archive" in error
+    assert str(pointer) in error
+    assert not (root / "audit.db").exists()
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_malformed_train_marker(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    marker = root / ".maintenance-state" / "durable-change-trains"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("not a marker directory", encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert "established archive" in error
+    assert str(marker) in error
+    assert not (root / "audit.db").exists()
+
+
 def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
     cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:

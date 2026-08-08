@@ -74,14 +74,38 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
         except FileNotFoundError:
             continue
         existing_siblings.append(sibling)
+    adoption_markers: list[Path] = []
+    active_pointer_marker = path.parent / ".index-active-pointer"
+    try:
+        active_pointer_marker.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        # Presence is enough. ArchiveLocation intentionally ignores a dangling
+        # symlink via Path.exists(), but missing-tier initialization must treat
+        # malformed or dangling adoption evidence as established and fail
+        # closed rather than publishing an empty durable database.
+        adoption_markers.append(active_pointer_marker)
     train_marker_root = path.parent / ".maintenance-state" / "durable-change-trains"
-    train_marker = train_marker_root.is_dir() and any(train_marker_root.iterdir())
-    if existing_siblings or location.active_pointer is not None or train_marker:
-        details = ", ".join(str(item) for item in existing_siblings)
-        if location.active_pointer is not None:
-            details = f"{details}, {location.active_pointer}" if details else str(location.active_pointer)
-        if train_marker:
-            details = f"{details}, {train_marker_root}" if details else str(train_marker_root)
+    try:
+        train_marker_metadata = train_marker_root.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISLNK(train_marker_metadata.st_mode) or not stat.S_ISDIR(train_marker_metadata.st_mode):
+            adoption_markers.append(train_marker_root)
+        else:
+            try:
+                if any(train_marker_root.iterdir()):
+                    adoption_markers.append(train_marker_root)
+            except OSError as exc:
+                raise MigrationError(
+                    f"cannot inspect durable change-train adoption marker: {train_marker_root}"
+                ) from exc
+    if location.active_pointer is not None and active_pointer_marker not in adoption_markers:
+        adoption_markers.append(active_pointer_marker)
+    if existing_siblings or adoption_markers:
+        details = ", ".join(str(item) for item in (*existing_siblings, *adoption_markers))
         raise MigrationError(
             f"cannot initialize missing {tier.value} tier in an established archive; adoption marker(s): {details}"
         )
