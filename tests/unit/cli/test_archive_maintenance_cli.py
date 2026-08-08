@@ -2342,6 +2342,90 @@ def test_migrate_tier_cli_wraps_non_collision_publication_error(
     assert not audit_db.exists()
 
 
+@pytest.mark.parametrize("failure_stage", ["image_fsync", "published_lstat", "directory_open", "directory_fsync"])
+def test_migrate_tier_cli_cleans_up_after_publication_failure(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    """The real publication route leaves no owned target after a failure."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    module_name = "polylogue.operations.durable_change_train"
+
+    real_fsync = os.fsync
+    fsync_calls = 0
+
+    def fail_fsync(descriptor: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if (failure_stage == "image_fsync" and fsync_calls == 2) or (
+            failure_stage == "directory_fsync" and fsync_calls == 3
+        ):
+            raise OSError(f"{failure_stage} failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(f"{module_name}.os.fsync", fail_fsync)
+
+    real_lstat = Path.lstat
+    lstat_failure_pending = True
+
+    def fail_published_lstat(candidate: Path) -> os.stat_result:
+        nonlocal lstat_failure_pending
+        if (
+            failure_stage == "published_lstat"
+            and candidate == audit_db
+            and candidate.exists()
+            and lstat_failure_pending
+        ):
+            lstat_failure_pending = False
+            raise OSError("published lstat failed")
+        return real_lstat(candidate)
+
+    monkeypatch.setattr(Path, "lstat", fail_published_lstat)
+
+    real_open = os.open
+
+    def fail_directory_open(
+        file: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if (
+            failure_stage == "directory_open"
+            and Path(file) == root
+            and flags & getattr(os, "O_DIRECTORY", 0)
+            and flags & getattr(os, "O_TMPFILE", 0) != getattr(os, "O_TMPFILE", 0)
+        ):
+            raise OSError("directory open failed")
+        return real_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(f"{module_name}.os.open", fail_directory_open)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert f"cannot publish audit tier at {audit_db}" in json.loads(result.stdout)["error"]
+    assert not audit_db.exists()
+
+
 def test_migrate_tier_cli_refuses_named_staging_when_anonymous_publication_is_unsupported(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

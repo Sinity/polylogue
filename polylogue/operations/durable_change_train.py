@@ -139,6 +139,30 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             f"cannot initialize missing {tier.value} tier: durable publication requires anonymous O_TMPFILE support"
         )
     publication_descriptor: int | None = None
+    publication_identity: tuple[int, int] | None = None
+    published_target = False
+
+    def cleanup_published_target(primary: BaseException) -> None:
+        """Remove only our inode after a post-link publication failure."""
+        if not published_target or publication_identity is None:
+            return
+        try:
+            published_metadata = path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            primary.add_note(f"could not inspect published durable tier during recovery: {path}: {exc}")
+            return
+        if (published_metadata.st_dev, published_metadata.st_ino) != publication_identity:
+            primary.add_note(f"published durable tier changed before recovery; preserving foreign target: {path}")
+            return
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            primary.add_note(f"could not remove partially published durable tier during recovery: {path}: {exc}")
+
     try:
         try:
             publication_descriptor = os.open(
@@ -181,26 +205,33 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             raise MigrationError(
                 f"{tier.value} tier appeared during initialization; refusing to replace it: {path}"
             ) from exc
-        except OSError as exc:
-            raise MigrationError(
-                f"cannot publish {tier.value} tier at {path} via anonymous durable publication"
-            ) from exc
+        published_target = True
         published_metadata = path.lstat()
         if (
             not stat.S_ISREG(published_metadata.st_mode)
             or (published_metadata.st_dev, published_metadata.st_ino) != publication_identity
         ):
-            if (published_metadata.st_dev, published_metadata.st_ino) == publication_identity:
-                path.unlink(missing_ok=True)
             raise MigrationError(f"published durable tier identity does not match the staged database: {path}")
         directory_descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory_descriptor)
         finally:
             os.close(directory_descriptor)
+    except MigrationError as exc:
+        cleanup_published_target(exc)
+        raise
+    except OSError as exc:
+        cleanup_published_target(exc)
+        raise MigrationError(f"cannot publish {tier.value} tier at {path} via anonymous durable publication") from exc
     finally:
         if publication_descriptor is not None:
-            os.close(publication_descriptor)
+            try:
+                os.close(publication_descriptor)
+            except OSError as exc:
+                cleanup_published_target(exc)
+                raise MigrationError(
+                    f"cannot close {tier.value} tier publication at {path} after anonymous durable publication"
+                ) from exc
 
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 
