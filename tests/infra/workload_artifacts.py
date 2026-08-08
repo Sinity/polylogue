@@ -529,6 +529,12 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
     for path in destination.rglob("*"):
         path.chmod(path.stat().st_mode | stat.S_IWUSR)
     destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+    bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    if bootstrap_marker.is_file():
+        from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+
+        bootstrap_marker.unlink()
+        _record_fresh_durable_bootstrap(destination)
     return SeededArchiveClone(
         root=destination,
         source_manifest_id=artifact.manifest.manifest_id,

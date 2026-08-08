@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import os
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from typing import Any
 import pytest
 
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainError
 from tests.infra.workload_artifacts import (
     _journal_mode_delete_with_retry,
     build_seeded_archive,
@@ -41,16 +44,43 @@ def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_pat
 def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: Path) -> None:
     artifact = build_seeded_archive(cache_root=tmp_path / "cache")
     base_manifest = artifact.root.joinpath("manifest.json").read_bytes()
+    marker_relative = Path(".maintenance-state/durable-change-trains/.bootstrap")
+    base_marker = artifact.root.joinpath(marker_relative).read_bytes()
 
     clone = clone_seeded_archive(artifact, tmp_path / "clone")
     clone.root.joinpath("private-mutation.txt").write_text("private")
+    with ArchiveStore.open_existing(clone.root, read_only=False) as archive:
+        assert archive.count_sessions() == 64
 
     assert clone.clone_method in {"reflink", "copy"}
     assert clone.source_manifest_id == artifact.manifest.manifest_id
     assert clone.root.joinpath("source.db").exists()
     assert clone.root.joinpath("index.db").exists()
     assert artifact.root.joinpath("manifest.json").read_bytes() == base_manifest
+    assert artifact.root.joinpath(marker_relative).read_bytes() == base_marker
+    assert clone.root.joinpath(marker_relative).read_bytes() != base_marker
     assert not artifact.root.joinpath("private-mutation.txt").exists()
+
+    clone.root.joinpath(marker_relative).write_bytes(base_marker)
+    with pytest.raises(DurableChangeTrainError, match="durable identity mismatch"):
+        ArchiveStore.open_existing(clone.root, read_only=False)
+
+
+def test_seeded_archive_copy_fallback_rebinds_durable_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+
+    def reject_reflink(*args: object, **kwargs: object) -> None:
+        raise subprocess.CalledProcessError(1, ["cp"])
+
+    monkeypatch.setattr(subprocess, "run", reject_reflink)
+    clone = clone_seeded_archive(artifact, tmp_path / "clone")
+
+    assert clone.clone_method == "copy"
+    with ArchiveStore.open_existing(clone.root, read_only=False) as archive:
+        assert archive.count_sessions() == 64
 
 
 def test_seeded_archive_rejects_corrupt_published_cache_and_rebuilds(tmp_path: Path) -> None:
