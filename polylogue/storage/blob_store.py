@@ -2,10 +2,11 @@
 
 Blobs are stored as immutable files under a two-level directory structure:
 ``{root}/{hash[:2]}/{hash[2:]}``, where hash is the SHA-256 hex digest of
-the content. ``{root}/.staging`` is a private, non-addressable workspace for
-publication and SQLite snapshot files. Most raw sources use that digest as
-``raw_id`` too; sources whose identity requires additional provenance retain
-it separately as ``blob_hash``.
+the content. ``{root}/.staging`` is a private, same-filesystem workspace for
+publication and SQLite snapshot files. An empty workspace is structural; every
+crash-stranded child remains an explicitly invalid namespace entry. Most raw
+sources use that digest as ``raw_id`` too; sources whose identity requires
+additional provenance retain it separately as ``blob_hash``.
 
 Writes are atomic (tempfile + ``os.replace``). Files are never modified
 after creation. Deduplication is free: identical content produces the
@@ -84,6 +85,7 @@ class BlobNamespaceIssue(StrEnum):
     INVALID_LEAF_NAME = "invalid_leaf_name"
     NOT_REGULAR_FILE = "not_regular_file"
     STAT_FAILED = "stat_failed"
+    STAGED_WORK_FILE = "staged_work_file"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +122,9 @@ class BlobStore:
         The returned path is deliberately removed before return so callers
         such as SQLite can create their own database at it. Keeping the
         workspace below ``root`` preserves same-filesystem atomic publication
-        while keeping every work file outside the addressable blob namespace.
+        while keeping every work file outside canonical shard paths. The
+        workspace itself is not exempt from namespace verification: a crash
+        that leaves it behind is classified for offline quarantine recovery.
         """
         self.staging_root.mkdir(parents=True, exist_ok=True)
         fd, temporary_name = tempfile.mkstemp(dir=self.staging_root, prefix=prefix, suffix=suffix)
@@ -128,6 +132,21 @@ class BlobStore:
         temporary_path = Path(temporary_name)
         temporary_path.unlink()
         return temporary_path
+
+    def discard_staging_path(self, staged_path: Path, *, companion_suffixes: Iterable[str] = ()) -> None:
+        """Remove one private work file and its companions.
+
+        Paths outside this store's staging directory are rejected so cleanup
+        can never turn a caller-supplied path into a deletion primitive. A
+        crash-left child remains visible to namespace verification and the
+        offline quarantine recovery route. The shared directory is retained
+        because removing it can race another writer between mkdir and mkstemp.
+        """
+        if staged_path.parent != self.staging_root:
+            raise ValueError(f"staged path is outside blob staging root: {staged_path}")
+        staged_path.unlink(missing_ok=True)
+        for suffix in companion_suffixes:
+            staged_path.with_name(f"{staged_path.name}{suffix}").unlink(missing_ok=True)
 
     def blob_path(self, hash_hex: str) -> Path:
         """Return the filesystem path for a blob by its hex digest."""
@@ -177,7 +196,7 @@ class BlobStore:
             if fd is not None:
                 os.close(fd)
             if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
+                self.discard_staging_path(temporary_path)
             raise
 
     def prepare_from_fileobj(
@@ -213,7 +232,7 @@ class BlobStore:
             if fd is not None:
                 os.close(fd)
             if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
+                self.discard_staging_path(temporary_path)
             raise
 
     def prepare_from_bytes(self, data: bytes) -> PreparedBlob:
@@ -233,14 +252,14 @@ class BlobStore:
             if fd is not None:
                 os.close(fd)
             if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
+                self.discard_staging_path(temporary_path)
             raise
 
     def publish_prepared(self, prepared: PreparedBlob) -> tuple[str, int]:
         """Atomically expose one prepared blob, preserving deduplication."""
         dest = self.blob_path(prepared.hash_hex)
         if dest.exists():
-            prepared.temporary_path.unlink(missing_ok=True)
+            self.discard_prepared(prepared)
             return prepared.hash_hex, prepared.size_bytes
         dest.parent.mkdir(parents=True, exist_ok=True)
         os.replace(prepared.temporary_path, dest)
@@ -250,10 +269,9 @@ class BlobStore:
         """Publish a prepared batch in input order."""
         return tuple(self.publish_prepared(item) for item in prepared)
 
-    @staticmethod
-    def discard_prepared(prepared: PreparedBlob) -> None:
+    def discard_prepared(self, prepared: PreparedBlob) -> None:
         """Remove a private staged file that will not be published."""
-        prepared.temporary_path.unlink(missing_ok=True)
+        self.discard_staging_path(prepared.temporary_path)
 
     def write_from_path(
         self,
@@ -381,14 +399,38 @@ class BlobStore:
                 continue
 
             if shard_path.name == _STAGING_DIRNAME:
-                if stat.S_ISDIR(shard_mode):
+                if not stat.S_ISDIR(shard_mode):
+                    yield BlobNamespaceEntry(
+                        kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                        path=shard_path,
+                        relative_path=shard_path.name,
+                        issue=BlobNamespaceIssue.NOT_DIRECTORY,
+                    )
                     continue
-                yield BlobNamespaceEntry(
-                    kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
-                    path=shard_path,
-                    relative_path=shard_path.name,
-                    issue=BlobNamespaceIssue.NOT_DIRECTORY,
-                )
+                try:
+                    staged_paths = sorted(shard_path.iterdir(), key=lambda path: path.name)
+                except OSError:
+                    yield BlobNamespaceEntry(
+                        kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                        path=shard_path,
+                        relative_path=shard_path.name,
+                        issue=BlobNamespaceIssue.STAT_FAILED,
+                    )
+                    continue
+                for staged_path in staged_paths:
+                    relative_path = f"{_STAGING_DIRNAME}/{staged_path.name}"
+                    try:
+                        staged_path.stat(follow_symlinks=False)
+                    except OSError:
+                        issue = BlobNamespaceIssue.STAT_FAILED
+                    else:
+                        issue = BlobNamespaceIssue.STAGED_WORK_FILE
+                    yield BlobNamespaceEntry(
+                        kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                        path=staged_path,
+                        relative_path=relative_path,
+                        issue=issue,
+                    )
                 continue
 
             if not _VALID_SHARD.fullmatch(shard_path.name):

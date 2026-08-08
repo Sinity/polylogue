@@ -432,7 +432,7 @@ def test_stats_with_blobs(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_pending_publication_stays_outside_canonical_namespace(tmp_path: Path) -> None:
+def test_pending_publication_is_noncanonical_and_recovers_to_pristine_namespace(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blobs")
     blob_hash, _ = blob_store.write_from_bytes(b"real blob")
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", blob_store.root)
@@ -445,13 +445,20 @@ def test_pending_publication_stays_outside_canonical_namespace(tmp_path: Path) -
         assert pending_path.parent == blob_store.staging_root
         assert pending_path.exists()
         assert [(entry.relative_path, entry.issue) for entry in entries] == [
-            (blob_hash[:2] + "/" + blob_hash[2:], None)
+            (f".staging/{pending_path.name}", BlobNamespaceIssue.STAGED_WORK_FILE),
+            (blob_hash[:2] + "/" + blob_hash[2:], None),
         ]
-        assert verified.passed
+        assert not verified.passed
+        assert [(failure.path, failure.reason) for failure in verified.failures] == [
+            (f".staging/{pending_path.name}", "invalid_namespace_entry")
+        ]
         assert list(blob_store.iter_all()) == [blob_hash]
     finally:
         publisher.discard_pending()
     assert not pending_path.exists()
+    assert blob_store.staging_root.is_dir()
+    assert not tuple(blob_store.staging_root.iterdir())
+    assert blob_store.verify_all().passed
 
 
 def test_iter_all_skips_non_prefix_dirs(tmp_path: Path) -> None:

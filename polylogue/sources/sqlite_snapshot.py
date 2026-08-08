@@ -207,9 +207,10 @@ def snapshot_sqlite_to_blob(
             blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         )
     finally:
-        temporary_path.unlink(missing_ok=True)
-        for suffix in _SQLITE_SIDECAR_SUFFIXES:
-            temporary_path.with_name(f"{temporary_path.name}{suffix}").unlink(missing_ok=True)
+        blob_store.discard_staging_path(
+            temporary_path,
+            companion_suffixes=_SQLITE_SIDECAR_SUFFIXES,
+        )
 
 
 __all__ = [

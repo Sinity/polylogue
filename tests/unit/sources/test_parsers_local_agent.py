@@ -942,6 +942,8 @@ def test_hermes_snapshot_parse_route_keeps_live_wal_sidecars_out_of_namespace(
     assert not staged_path.exists()
     assert not staged_path.with_name(f"{staged_path.name}-wal").exists()
     assert not staged_path.with_name(f"{staged_path.name}-shm").exists()
+    assert store.staging_root.is_dir()
+    assert not tuple(store.staging_root.iterdir())
     entries = tuple(store.iter_namespace())
     assert [(entry.kind, entry.hash_hex) for entry in entries] == [("blob", raw.blob_hash)]
     with store.open(raw.blob_hash) as retained:

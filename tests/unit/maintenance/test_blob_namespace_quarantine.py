@@ -397,6 +397,50 @@ def test_root_level_interrupted_blob_is_quarantined_and_recovery_classified(
     assert classify_blob_namespace_quarantine_recovery(receipt_dir).outcome == "rolled_back"
 
 
+def test_staging_workspace_crash_is_quarantined_as_recoverable_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash-left staging tree stays visible to the typed recovery actuator."""
+    archive_root = _archive(tmp_path)
+    store = BlobStore(archive_root / "blob")
+    store.write_from_bytes(b"canonical")
+    interrupted = store.staging_root / ".blob.crashed-before-publish"
+    interrupted.parent.mkdir(parents=True, exist_ok=True)
+    interrupted.write_bytes(b"interrupted payload")
+    interrupted.with_name(f"{interrupted.name}-wal").write_bytes(b"stranded wal")
+    manifest = _verified_source_backup(archive_root, tmp_path, monkeypatch)
+    receipt_dir = tmp_path / "receipts" / "staging-interrupted"
+    receipt_dir.parent.mkdir()
+
+    dry_run = quarantine_blob_namespace(archive_root)
+
+    assert [(candidate.relative_path, candidate.file_type) for candidate in dry_run.census.candidates] == [
+        (f".staging/{interrupted.name}", "regular"),
+        (f".staging/{interrupted.name}-wal", "regular"),
+    ]
+    assert not store.verify_all().passed
+
+    report = quarantine_blob_namespace(
+        archive_root,
+        backup_manifest=manifest,
+        receipt_dir=receipt_dir,
+        dry_run=False,
+    )
+
+    assert report.quarantine_root is not None
+    destination = report.quarantine_root / ".staging"
+    assert store.staging_root.is_dir()
+    assert not tuple(store.staging_root.iterdir())
+    assert (destination / interrupted.name).read_bytes() == b"interrupted payload"
+    assert (destination / f"{interrupted.name}-wal").read_bytes() == b"stranded wal"
+    assert store.verify_all().passed
+    assert classify_blob_namespace_quarantine_recovery(receipt_dir).outcome == "committed"
+
+    os.replace(destination / interrupted.name, interrupted)
+    os.replace(destination / f"{interrupted.name}-wal", interrupted.with_name(f"{interrupted.name}-wal"))
+    assert classify_blob_namespace_quarantine_recovery(receipt_dir).outcome == "rolled_back"
+
+
 def test_apply_refuses_live_daemon_busy_checkpoint_and_symlinked_receipt_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
