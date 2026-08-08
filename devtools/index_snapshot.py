@@ -67,6 +67,7 @@ def snapshot_index_file_set(index_db: Path) -> dict[str, Any]:
     encoded = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
     main = files[0]
     return {
+        "path": str(index_db),
         "index_db": str(index_db),
         "present": main["present"],
         "size": main.get("size"),

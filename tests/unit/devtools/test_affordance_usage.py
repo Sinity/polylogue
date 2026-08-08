@@ -207,11 +207,16 @@ def test_affordance_usage_selected_external_index_is_the_report_evidence_source(
     assert report["index_db"] == str(selected_db.resolve())
     assert report["index_db"] != str(configured_root.resolve())
     assert report["evidence_root"] == str(selected_root.resolve())
-    assert report["snapshot_identity"]["index_db"] == str(selected_db.resolve())
-    assert report["snapshot_identity"]["size"] == selected_db.stat().st_size
+    snapshot_identity = report["snapshot_identity"]
+    assert snapshot_identity["before"]["path"] == str(selected_db.resolve())
+    assert snapshot_identity["after"]["path"] == str(selected_db.resolve())
+    assert snapshot_identity["before"]["index_db"] == str(selected_db.resolve())
+    assert snapshot_identity["after"]["index_db"] == str(selected_db.resolve())
+    assert snapshot_identity["before"]["sha256"] == snapshot_identity["after"]["sha256"]
+    assert snapshot_identity["size"] == selected_db.stat().st_size
     assert summary["index_db"] == str(selected_db.resolve())
     assert summary["evidence_root"] == str(selected_root.resolve())
-    assert summary["snapshot_identity"]["index_db"] == str(selected_db.resolve())
+    assert summary["snapshot_identity"] == snapshot_identity
 
 
 def test_affordance_usage_selected_sibling_index_bypasses_archive_store_fast_path(

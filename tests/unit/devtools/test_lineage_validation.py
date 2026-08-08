@@ -375,7 +375,12 @@ def test_lineage_validation_proves_writer_candidate_and_snapshot_identity(tmp_pa
     assert topology["unresolved_read_sample"]["sampled"] == 1
     assert report["index_db"] == str(db.resolve())
     assert report["snapshot_identity"]["stable"] is True
-    assert report["snapshot_identity"]["before"]["sha256"] == report["snapshot_identity"]["after"]["sha256"]
+    snapshot_identity = report["snapshot_identity"]
+    assert snapshot_identity["before"]["index_db"] == str(db.resolve())
+    assert snapshot_identity["after"]["index_db"] == str(db.resolve())
+    assert snapshot_identity["before"]["path"] == str(db.resolve())
+    assert snapshot_identity["after"]["path"] == str(db.resolve())
+    assert snapshot_identity["before"]["sha256"] == snapshot_identity["after"]["sha256"]
 
 
 def test_lineage_validation_rejects_unobserved_unresolved_reader_sample(tmp_path: Path) -> None:
