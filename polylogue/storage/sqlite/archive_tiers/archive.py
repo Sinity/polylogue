@@ -1912,8 +1912,6 @@ class ArchiveStore:
             return
         if initialize:
             initialize_active_archive_root(archive_root)
-        if read_only and self._frozen_index_path is None:
-            self._ensure_read_runtime_indexes()
         if read_only:
             self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True, timeout=read_timeout)
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
@@ -1936,8 +1934,7 @@ class ArchiveStore:
         else:
             # Fresh-bootstrap and same-version reopen both skip runtime-index
             # ensure elsewhere (initialize_archive_tier only replays DDL once,
-            # at current_version==0; the read-only path has its own ensure in
-            # _ensure_read_runtime_indexes). Owned inactive generations (bulk
+            # at current_version==0. Owned inactive generations (bulk
             # rebuilds, revision backfill) open exactly this write connection
             # and nothing else, so without this call a generation could run
             # its whole lifetime — including prefix-tail dependent rewrites —
@@ -2033,22 +2030,6 @@ class ArchiveStore:
             for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
         )
 
-    def _ensure_read_runtime_indexes(self) -> None:
-        """Best-effort performance-index ensure before opening the read connection."""
-        if not self.index_db_path.exists():
-            return
-        try:
-            with closing(sqlite3.connect(self.index_db_path)) as conn:
-                current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-                if current_version != archive_tier_spec(ArchiveTier.INDEX).version:
-                    return
-                for statement in WRITE_CONNECTION_PRAGMA_STATEMENTS:
-                    conn.execute(statement)
-                ensure_runtime_indexes_sync(conn)
-                conn.commit()
-        except sqlite3.Error:
-            return
-
     def set_read_progress_guard(self, guard: Callable[[], int], *, n_opcodes: int = 2000) -> None:
         """Install a SQLite progress handler on the index read connection.
 
@@ -2085,7 +2066,7 @@ class ArchiveStore:
         self._conn.interrupt()
 
     def _ensure_source_conn(self) -> sqlite3.Connection:
-        """Return the persistent source.db write connection, opening it lazily."""
+        """Return the persistent source.db connection, opening it lazily."""
         if self._source_conn is None:
             if self._read_only or self._inactive_candidate_durable_read_only:
                 conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
@@ -2113,6 +2094,7 @@ class ArchiveStore:
         Raw ingest writes commit source references promptly to consume
         publication receipts; bulk cadence applies to the derived index.
         """
+        self._require_writable("commit archive writes")
         self._conn.commit()
         self._consume_index_blob_receipts()
         self._flush_pending_raw_parse_states()
@@ -2589,6 +2571,7 @@ class ArchiveStore:
         *,
         manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
+        self._require_writable("classify source.db revision authority")
         return classify_raw_revision_cohort_for_rebuild_repair(
             self,
             logical_source_key,
@@ -2616,6 +2599,7 @@ class ArchiveStore:
         *,
         manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
+        self._require_writable("classify source.db revision authority")
         return classify_raw_revision_cohort_for_live_watch(
             self,
             logical_source_key,

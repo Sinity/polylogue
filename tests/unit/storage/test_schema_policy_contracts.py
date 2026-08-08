@@ -180,8 +180,8 @@ def test_matching_version_database_ensures_runtime_indexes(tmp_path: Path) -> No
         conn.close()
 
 
-def test_read_only_archive_open_ensures_runtime_indexes(tmp_path: Path) -> None:
-    """Read surfaces should not wait for a later write to gain runtime indexes."""
+def test_read_only_archive_open_does_not_ensure_runtime_indexes(tmp_path: Path) -> None:
+    """Read surfaces must not mutate an existing index to gain runtime indexes."""
     initialize_active_archive_root(tmp_path)
     index_db = tmp_path / "index.db"
     conn = sqlite3.connect(index_db)
@@ -201,7 +201,7 @@ def test_read_only_archive_open_ensures_runtime_indexes(tmp_path: Path) -> None:
             ("messages", "idx_messages_message_type"),
             ("messages", "idx_messages_material_origin"),
         ):
-            assert any(row[1] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
+            assert not any(row[1] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
     finally:
         conn.close()
 
@@ -209,10 +209,10 @@ def test_read_only_archive_open_ensures_runtime_indexes(tmp_path: Path) -> None:
 def test_pinned_read_only_archive_open_does_not_mutate_physical_index(tmp_path: Path) -> None:
     """Pinned candidate evidence reads must not repair the selected index file.
 
-    This catches a regression where ``open_existing(index_path=...)`` still
-    ran ``_ensure_read_runtime_indexes`` before opening the exact physical
-    candidate. Reintroducing that ensure call makes the dropped index appear
-    after the read, mutating inactive-generation evidence.
+    This catches a regression where ``open_existing(index_path=...)`` repairs
+    the exact physical candidate before opening it. Reintroducing a read-open
+    runtime-index ensure makes the dropped index appear after the read,
+    mutating inactive-generation evidence.
     """
     initialize_active_archive_root(tmp_path)
     index_db = (tmp_path / "index.db").resolve()
