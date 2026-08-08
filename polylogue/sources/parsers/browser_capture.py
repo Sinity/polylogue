@@ -22,7 +22,7 @@ from polylogue.browser_capture.models import (
     BrowserCaptureTurn,
     looks_like_browser_capture,
 )
-from polylogue.core.enums import BlockType, Provider, SessionKind
+from polylogue.core.enums import BlockType, Provider, SessionKind, TitleSource
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
@@ -329,6 +329,34 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
     return parsed.model_copy(update={"attachments": list(merged.values())})
 
 
+def _trusted_envelope_title(envelope: BrowserCaptureEnvelope) -> str | None:
+    """Return only a provider-authored browser title.
+
+    Current producers declare the source explicitly. Older v1 envelopes are
+    accepted conservatively only when their title differs from both fallback
+    values the extension is known to synthesize.
+    """
+    title = envelope.session.title
+    if not title:
+        return None
+    if envelope.session.title_source == "provider":
+        return title
+    if envelope.session.title_source in {"page", "session-id"}:
+        return None
+    if title in {envelope.provenance.page_title, envelope.session.provider_session_id}:
+        return None
+    return title
+
+
+def _merge_envelope_title(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
+    """Fill only a missing native title from trusted envelope evidence."""
+    trusted_title = _trusted_envelope_title(envelope)
+    fallback_titles = {None, "", parsed.provider_session_id, envelope.session.provider_session_id}
+    if parsed.title not in fallback_titles or trusted_title is None:
+        return parsed
+    return parsed.model_copy(update={"title": trusted_title, "title_source": TitleSource.ORIGIN})
+
+
 def _merge_envelope_native_metadata(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
     """Use browser-envelope fields only when the native payload omitted them.
 
@@ -338,10 +366,8 @@ def _merge_envelope_native_metadata(parsed: ParsedSession, envelope: BrowserCapt
     title/model/timestamp fields from the embedded payload.
     """
 
+    parsed = _merge_envelope_title(parsed, envelope)
     updates: dict[str, object] = {}
-    fallback_titles = {None, "", parsed.provider_session_id, envelope.session.provider_session_id}
-    if parsed.title in fallback_titles and envelope.session.title:
-        updates["title"] = envelope.session.title
     if parsed.created_at is None and envelope.session.created_at is not None:
         updates["created_at"] = envelope.session.created_at
     if parsed.updated_at is None and envelope.session.updated_at is not None:
@@ -461,10 +487,12 @@ def _parse_claude_fallback_envelope(
     fidelity_flag = (
         COMPACT_BROWSER_CAPTURE_INGEST_FLAG if _is_compact_native_capture(envelope) else DOM_FALLBACK_INGEST_FLAG
     )
+    trusted_title = _trusted_envelope_title(envelope)
     return ParsedSession(
         source_name=Provider.CLAUDE_AI,
         provider_session_id=provider_session_id,
         title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
+        title_source=TitleSource.ORIGIN if trusted_title is not None else None,
         session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
         created_at=created_at,
         updated_at=updated_at,
@@ -640,7 +668,10 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
 
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
-                _merge_envelope_attachments(parse_chatgpt(raw_provider_payload, provider_session_id), envelope),
+                _merge_envelope_attachments(
+                    _merge_envelope_title(parse_chatgpt(raw_provider_payload, provider_session_id), envelope),
+                    envelope,
+                ),
                 envelope,
                 provider_session_id,
                 has_native_payload=True,
@@ -725,10 +756,12 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             )
             for message in messages
         ]
+    trusted_title = _trusted_envelope_title(envelope)
     return ParsedSession(
         source_name=provider,
         provider_session_id=provider_session_id,
         title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
+        title_source=TitleSource.ORIGIN if trusted_title is not None else None,
         session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
         created_at=envelope.session.created_at,
         updated_at=envelope.session.updated_at,

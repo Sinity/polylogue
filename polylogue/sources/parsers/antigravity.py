@@ -19,7 +19,7 @@ from urllib.request import Request, urlopen
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
 
 from .base import (
@@ -308,6 +308,7 @@ def parse_markdown_export(
         source_name=Provider.ANTIGRAVITY,
         provider_session_id=summary.cascade_id,
         title=summary.title,
+        title_source=TitleSource.ORIGIN if summary.title else None,
         created_at=None,
         updated_at=summary.last_modified_time,
         messages=messages,

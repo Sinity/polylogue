@@ -221,8 +221,15 @@ def test_sql_fast_forwardable_index_db_reopen_is_idempotent(tmp_path: Path, monk
         conn.close()
 
 
-def test_v64_to_v65_fast_forward_replaces_actions_view_and_exposes_result_state(tmp_path: Path) -> None:
+def test_v64_to_v65_fast_forward_replaces_actions_view_and_exposes_result_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The production archive-open path upgrades v64 action queries in place."""
+
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    monkeypatch.setitem(ARCHIVE_VERSION_BY_TIER, ArchiveTier.INDEX, 65)
 
     path = tmp_path / "index.db"
     conn = sqlite3.connect(path)
@@ -270,6 +277,9 @@ def test_v64_to_v65_fast_forward_replaces_actions_view_and_exposes_result_state(
             """,
             (message_id, session_id, 2, "tool_result", "unknown outcome", "v65-matched"),
         )
+        matched_result_block_id = conn.execute(
+            "SELECT block_id FROM blocks WHERE tool_id = 'v65-matched' AND block_type = 'tool_result'"
+        ).fetchone()["block_id"]
         conn.execute("DROP VIEW actions")
         conn.execute(
             """
@@ -305,7 +315,7 @@ def test_v64_to_v65_fast_forward_replaces_actions_view_and_exposes_result_state(
         {"tool_command": "absent", "tool_result_block_id": None, "result_state": "no_result"},
         {
             "tool_command": "matched",
-            "tool_result_block_id": "codex-session:v65-action-session:v65-action-message:2",
+            "tool_result_block_id": matched_result_block_id,
             "result_state": "outcome_unknown",
         },
     ]

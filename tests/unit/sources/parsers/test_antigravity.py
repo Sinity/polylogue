@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.antigravity import (
@@ -43,6 +43,7 @@ The focused checks passed.
     assert session.source_name is Provider.ANTIGRAVITY
     assert session.provider_session_id == "cascade-1"
     assert session.title == "Focused checks"
+    assert session.title_source is TitleSource.ORIGIN
     assert session.updated_at == "2026-03-05T04:21:34Z"
     assert [message.role for message in session.messages] == [Role.USER, Role.ASSISTANT]
     assert [message.text for message in session.messages] == [
@@ -113,6 +114,7 @@ Unstructured transcript body.
     assert session.messages[0].position == 0
     assert session.messages[0].is_active_leaf is True
     assert session.active_leaf_message_provider_id == session.messages[0].provider_message_id
+    assert session.title_source is None
 
 
 def test_parse_brain_metadata_reads_adjacent_artifact(tmp_path: Path) -> None:
@@ -134,6 +136,7 @@ def test_parse_brain_metadata_reads_adjacent_artifact(tmp_path: Path) -> None:
     assert session.source_name is Provider.ANTIGRAVITY
     assert session.provider_session_id == "session-1:implementation_plan.md"
     assert session.title == "Implementation Plan"
+    assert session.title_source is None
     assert session.updated_at == "2026-01-07T19:08:15.216541610Z"
     assert session.messages[0].role is Role.ASSISTANT
     assert session.messages[0].text == "# Implementation Plan\n\nDo the work.\n"

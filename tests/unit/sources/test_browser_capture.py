@@ -10,13 +10,16 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, TitleSource
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.browser_capture import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
+)
+from polylogue.sources.parsers.browser_capture import (
+    parse as parse_browser_capture,
 )
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_scenarios import open_index_db
@@ -38,6 +41,7 @@ def _capture_payload() -> dict[str, object]:
             "provider": "chatgpt",
             "provider_session_id": "conv-123",
             "title": "Work plan",
+            "title_source": "provider",
             "updated_at": "2026-04-24T00:00:01+00:00",
             "model": "gpt-5.4",
             "turns": [
@@ -78,6 +82,18 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert session.source_name is Provider.CHATGPT
     assert session.provider_session_id == "conv-123"
     assert session.title == "Work plan"
+    assert session.title_source is TitleSource.ORIGIN
+
+
+def test_browser_capture_page_title_fallback_is_not_provider_title() -> None:
+    payload = json.loads(json.dumps(_capture_payload()))
+    payload["session"]["title"] = "ChatGPT - Work plan"
+    payload["session"]["title_source"] = "page"
+
+    session = parse_browser_capture(payload, "fallback")
+
+    assert session.title == "ChatGPT - Work plan"
+    assert session.title_source is None
     assert session.updated_at == "2026-04-24T00:00:01+00:00"
     assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
     assert len(session.attachments) == 1
@@ -85,6 +101,39 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
     assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
     assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in session.ingest_flags
+
+
+def test_browser_capture_session_id_fallback_is_not_provider_title() -> None:
+    payload = json.loads(json.dumps(_capture_payload()))
+    payload["session"]["title"] = "conv-123"
+    payload["session"]["title_source"] = "session-id"
+
+    session = parse_browser_capture(payload, "fallback")
+
+    assert session.title == "conv-123"
+    assert session.title_source is None
+
+
+@pytest.mark.parametrize("fallback_title", ["ChatGPT - Work plan", "conv-123"])
+def test_legacy_browser_capture_fallback_title_is_not_provider_title(fallback_title: str) -> None:
+    payload = json.loads(json.dumps(_capture_payload()))
+    payload["session"]["title"] = fallback_title
+    payload["session"].pop("title_source")
+
+    session = parse_browser_capture(payload, "fallback")
+
+    assert session.title == fallback_title
+    assert session.title_source is None
+
+
+def test_legacy_browser_capture_distinct_title_retains_provider_provenance() -> None:
+    payload = json.loads(json.dumps(_capture_payload()))
+    payload["session"].pop("title_source")
+
+    session = parse_browser_capture(payload, "fallback")
+
+    assert session.title == "Work plan"
+    assert session.title_source is TitleSource.ORIGIN
 
 
 def test_browser_capture_does_not_launder_capture_time_as_provider_update() -> None:
@@ -96,6 +145,36 @@ def test_browser_capture_does_not_launder_capture_time_as_provider_update() -> N
     parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
 
     assert parsed[0].updated_at is None
+
+
+def test_native_chatgpt_title_merge_does_not_launder_capture_time() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    session_payload["updated_at"] = "2026-04-24T00:00:01+00:00"
+    payload["raw_provider_payload"] = {
+        "id": "native-conv",
+        "current_node": "assistant-node",
+        "mapping": {
+            "assistant-node": {
+                "id": "assistant-node",
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "native-a1",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "text", "parts": ["Native answer"]},
+                    "metadata": {},
+                },
+            }
+        },
+    }
+
+    session = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
+
+    assert session.title == "Work plan"
+    assert session.title_source is TitleSource.ORIGIN
+    assert session.updated_at is None
 
 
 def test_browser_capture_embedded_attachment_payloads_become_inline_bytes() -> None:

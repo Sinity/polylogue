@@ -153,6 +153,7 @@ function envelope({ provider, nativeId, title, createdAt, updatedAt, turns, rawP
       provider_session_id: nativeId,
       session_kind: sessionKind === "temporary" ? "temporary" : "standard",
       title: title || nativeId,
+      title_source: title ? "provider" : "session-id",
       created_at: createdAt,
       updated_at: updatedAt,
       provider_meta: { capture_fidelity: captureFidelity, backfill: attribution },

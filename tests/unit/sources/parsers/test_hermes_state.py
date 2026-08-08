@@ -14,7 +14,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from polylogue.core.enums import BlockType
+from polylogue.core.enums import BlockType, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock
 from polylogue.sources.parsers.hermes_state import parse_state_db
 
@@ -81,6 +81,16 @@ def test_exit_code_zero_is_not_an_error(tmp_path: Path) -> None:
     blocks = _tool_result_blocks(tmp_path / "state.db", tool_contents=[json.dumps({"output": "ok", "exit_code": 0})])
     assert blocks[0].is_error is False
     assert blocks[0].exit_code == 0
+
+
+def test_state_db_explicit_title_is_provider_provenance(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    _write_state_db(path, tool_contents=[json.dumps({"output": "ok", "exit_code": 0})])
+
+    sessions = parse_state_db(path)
+
+    assert sessions[0].title == "Outcome fixture"
+    assert sessions[0].title_source is TitleSource.ORIGIN
 
 
 def test_nonzero_exit_code_is_an_error(tmp_path: Path) -> None:
