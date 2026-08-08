@@ -308,12 +308,23 @@ def test_affordance_usage_product_fast_path_stays_pinned_across_promotion(
     real_open_existing = ArchiveStore.open_existing
     promoted = False
 
-    def promote_before_open(root: Path, **kwargs: object) -> ArchiveStore:
+    def promote_before_open(
+        root: Path,
+        *,
+        read_only: bool = True,
+        read_timeout: float = 5.0,
+        index_path: Path | None = None,
+    ) -> ArchiveStore:
         nonlocal promoted
         active.unlink()
         active.symlink_to(new_db)
         promoted = True
-        return real_open_existing(root, **kwargs)
+        return real_open_existing(
+            root,
+            read_only=read_only,
+            read_timeout=read_timeout,
+            index_path=index_path,
+        )
 
     monkeypatch.setattr(ArchiveStore, "open_existing", promote_before_open)
 
