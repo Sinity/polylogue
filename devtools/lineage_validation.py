@@ -328,6 +328,22 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
           AND COALESCE(NULLIF(TRIM(status), ''), 'unresolved') = 'unresolved'
         """,
     )
+    effective_unresolved_count = _scalar_int(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM session_links l
+        WHERE l.resolved_dst_session_id IS NULL
+          AND COALESCE(NULLIF(TRIM(l.status), ''), 'unresolved') = 'unresolved'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM session_links resolved
+              WHERE resolved.src_session_id = l.src_session_id
+                AND resolved.resolved_dst_session_id IS NOT NULL
+                AND COALESCE(NULLIF(TRIM(resolved.status), ''), 'unresolved') != 'quarantined'
+          )
+        """,
+    )
     rows = _rows(
         conn,
         """
@@ -381,7 +397,7 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
             }
         )
     unsafe = sum(1 for row in samples if row.get("read_status") != "safe")
-    if unresolved_count == 0:
+    if effective_unresolved_count == 0:
         status = "not_applicable"
         safe = True
     elif not samples:
@@ -396,6 +412,7 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
     return {
         "requested": limit,
         "unresolved_count": unresolved_count,
+        "effective_unresolved_count": effective_unresolved_count,
         "sampled": len(samples),
         "status": status,
         "safe": safe,
@@ -438,9 +455,11 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
             "quarantined_with_resolved_parent_count": 0,
             "quarantined_with_stale_projection_count": 0,
             "unresolved_count": 0,
+            "effective_unresolved_count": 0,
             "unresolved_read_sample": {
                 "requested": sample_unresolved,
                 "unresolved_count": 0,
+                "effective_unresolved_count": 0,
                 "sampled": 0,
                 "status": "not_observed",
                 "safe": False,
@@ -539,6 +558,7 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
         "quarantined_with_resolved_parent_count": quarantined_with_resolved_parent_count,
         "quarantined_with_stale_projection_count": quarantined_with_stale_projection_count,
         "unresolved_count": unresolved_read_sample["unresolved_count"],
+        "effective_unresolved_count": unresolved_read_sample["effective_unresolved_count"],
         "unresolved_read_sample": unresolved_read_sample,
     }
 
@@ -901,7 +921,8 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
                 )
             if topology["unresolved_read_sample"]["status"] == "not_observed":
                 reasons.append(
-                    f"{topology['unresolved_count']} unresolved-parent links were not exercised through the reader"
+                    f"{topology['effective_unresolved_count']} effective unresolved-parent links were not exercised "
+                    "through the reader"
                 )
             elif topology["unresolved_read_sample"]["status"] == "unsafe":
                 reasons.append("sampled unresolved-parent reads did not remain child-local")

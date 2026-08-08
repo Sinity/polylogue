@@ -319,11 +319,41 @@ def test_lineage_validation_samples_distinct_unresolved_edges_without_multiplyin
     sample = report["lineage"]["topology"]["unresolved_read_sample"]
     assert sample["safe"] is True
     assert sample["unresolved_count"] == 3
+    assert sample["effective_unresolved_count"] == 2
     assert sample["sampled"] == 2
     assert {row["session_id"] for row in sample["rows"]} == {"orphan"}
     assert {row["link_type"] for row in sample["rows"]} == {"continuation", "subagent"}
     assert {row["stored_messages"] for row in sample["rows"]} == {1}
     assert {row["served_messages"] for row in sample["rows"]} == {1}
+    assert report["verdict"]["external_counts_citable"] is True
+
+
+def test_lineage_validation_treats_only_alternate_unresolved_edges_as_not_applicable(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_links
+                (src_session_id, dst_origin, dst_native_id, link_type, status,
+                 resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
+            VALUES ('child', 'codex-session', 'alternate-parent', 'continuation', NULL,
+                    NULL, 'parser-parent', '{}', NULL, 'spawned-fresh')
+            """
+        )
+        conn.commit()
+
+    report = lineage_validation.build_report(_args(archive_root))
+
+    topology = report["lineage"]["topology"]
+    sample = topology["unresolved_read_sample"]
+    assert topology["unresolved_count"] == 1
+    assert topology["effective_unresolved_count"] == 0
+    assert sample["unresolved_count"] == 1
+    assert sample["effective_unresolved_count"] == 0
+    assert sample["sampled"] == 0
+    assert sample["status"] == "not_applicable"
+    assert sample["safe"] is True
     assert report["verdict"]["external_counts_citable"] is True
 
 
@@ -364,7 +394,7 @@ def test_lineage_validation_rejects_unobserved_unresolved_reader_sample(tmp_path
     assert sample["status"] == "not_observed"
     assert sample["safe"] is False
     assert report["verdict"]["external_counts_citable"] is False
-    assert "1 unresolved-parent links were not exercised through the reader" in report["verdict"]["reasons"]
+    assert "1 effective unresolved-parent links were not exercised through the reader" in report["verdict"]["reasons"]
 
 
 @pytest.mark.frozen_clock_modules("devtools.lineage_validation")

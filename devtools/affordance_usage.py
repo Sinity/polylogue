@@ -975,10 +975,11 @@ def _try_product_detail_report(
 ) -> dict[str, Any] | None:
     if not effective_detail_patterns or args.family:
         return None
-    if config.db_path.parent.resolve() != config.archive_root.resolve():
-        # ArchiveStore resolves the configured file set. A selected external
-        # candidate must stay on the direct read-only SQLite fallback so its
-        # evidence cannot silently come from the configured archive root.
+    if config.db_path.resolve() != (config.archive_root / "index.db").resolve():
+        # ArchiveStore opens exactly <archive-root>/index.db. Any other
+        # selected candidate, including a sibling file in the same root, must
+        # stay on the direct read-only SQLite fallback so its counts and
+        # snapshot identity cannot describe different databases.
         return None
     try:
         from polylogue.insights.tool_usage import ToolUsageInsightQuery

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 import sqlite3
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -211,6 +212,67 @@ def test_affordance_usage_selected_external_index_is_the_report_evidence_source(
     assert summary["index_db"] == str(selected_db.resolve())
     assert summary["evidence_root"] == str(selected_root.resolve())
     assert summary["snapshot_identity"]["index_db"] == str(selected_db.resolve())
+
+
+def test_affordance_usage_selected_sibling_index_bypasses_archive_store_fast_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    configured_db = _make_index_db(archive_root)
+    selected_db = archive_root / "candidate.db"
+    shutil.copy2(configured_db, selected_db)
+    calls = 0
+
+    class DivergentArchive(AbstractContextManager["DivergentArchive"]):
+        def __enter__(self) -> DivergentArchive:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def list_tool_action_evidence_count_rows(self, *args: object, **kwargs: object) -> list[dict[str, object]]:
+            nonlocal calls
+            del args, kwargs
+            calls += 1
+            return [
+                {
+                    "source_name": "wrong-index",
+                    "origin": "codex-session",
+                    "normalized_tool_name": "codebase-memory/command-detail",
+                    "action_kind": "shell",
+                    "evidence_kind": "command_detail",
+                    "matched_by": "detail",
+                    "call_count": 999,
+                    "session_count": 1,
+                    "error_count": 0,
+                    "nonzero_exit_count": 0,
+                }
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _root: DivergentArchive(),
+    )
+
+    report = affordance_usage.build_report(
+        affordance_usage.AffordanceUsageArgs(
+            archive_root=archive_root,
+            out_dir=None,
+            days=36500,
+            family=(),
+            detail_pattern=("codebase-memory",),
+            sample_limit=10,
+            json=True,
+            all_time=False,
+            index_db=selected_db,
+        )
+    )
+
+    assert calls == 0
+    assert report["index_db"] == str(selected_db.resolve())
+    assert {row["family"]: row["actions"] for row in report["family_counts"]}["codebase-memory"] == 2
+    assert report["samples"]
 
 
 def test_affordance_usage_marks_selected_index_snapshot_unstable_after_change(
