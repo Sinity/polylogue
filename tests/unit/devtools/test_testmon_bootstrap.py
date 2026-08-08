@@ -15,6 +15,7 @@ docstring contract.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -66,7 +67,7 @@ def _write_valid_seed_stamp(path: Path, *, protocol_version: int = PROTOCOL_VERS
         0,
         graph,
         _TestmonIdentity("head", "tree", "python", True, False),
-        _TestmonBinding(BindingMode.EXACT, str(path.parent.parent.parent.resolve())),
+        _TestmonBinding(BindingMode.EXACT, str(path.parent.resolve())),
         file_fingerprint(data),
         "seed",
         ".cache/verify/runs/seed",
@@ -114,8 +115,7 @@ def test_local_seed_already_present_skips_bootstrap(tmp_path: Path) -> None:
     local_data = tmp_path / "local" / "testmondata"
     local_stamp = tmp_path / "local" / "seed.json"
     _write_sqlite_db(local_data)
-    local_stamp.parent.mkdir(parents=True, exist_ok=True)
-    local_stamp.write_text(json.dumps({"protocol_version": PROTOCOL_VERSION, "status": "usable"}))
+    _write_valid_seed_stamp(local_stamp)
     main_data = tmp_path / "main" / "testmondata"
     main_stamp = tmp_path / "main" / "seed.json"
     _write_sqlite_db(main_data)
@@ -131,6 +131,29 @@ def test_local_seed_already_present_skips_bootstrap(tmp_path: Path) -> None:
     )
     assert not decision.should_bootstrap
     assert "already has" in decision.reason
+
+
+def test_invalid_local_seed_does_not_block_valid_main_bootstrap(tmp_path: Path) -> None:
+    local_data = tmp_path / "local" / "testmondata"
+    local_stamp = tmp_path / "local" / "seed.json"
+    _write_sqlite_db(local_data)
+    _write_valid_seed_stamp(local_stamp)
+    local_data.write_bytes(local_data.read_bytes() + b"stale")
+    main_data = tmp_path / "main" / "testmondata"
+    main_stamp = tmp_path / "main" / "seed.json"
+    _write_sqlite_db(main_data)
+    _write_valid_seed_stamp(main_stamp)
+
+    decision = decide_testmon_bootstrap(
+        is_linked_worktree=True,
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        main_testmon_data=main_data,
+        main_seed_stamp=main_stamp,
+        protocol_version=PROTOCOL_VERSION,
+    )
+
+    assert decision.should_bootstrap
 
 
 def test_main_seed_absent_skips_bootstrap(tmp_path: Path) -> None:
@@ -251,6 +274,11 @@ def test_complete_red_attempt_bootstraps_as_selection_only_state(tmp_path: Path)
                 },
                 "selection": {"selected_count": 2, "selected_nodeids_omitted": 0},
                 "expected_nodeids": ["tests/test.py::test_passed", "tests/test.py::test_failed"],
+                "expected_count": 2,
+                "expected_digest": hashlib.sha256(
+                    "\n".join(sorted(["tests/test.py::test_passed", "tests/test.py::test_failed"])).encode()
+                ).hexdigest(),
+                "testmon_data": file_fingerprint(main_data),
                 "node_outcomes": [
                     {"nodeid": "tests/test.py::test_passed", "outcome": "passed"},
                     {"nodeid": "tests/test.py::test_failed", "outcome": "failed"},
@@ -320,13 +348,20 @@ def test_bootstrap_seed_files_copies_db_and_stamp(tmp_path: Path) -> None:
         main_testmon_data=main_data,
         main_seed_stamp=main_stamp,
     )
-    bootstrap_testmon_seed_files(decision, local_testmon_data=local_data, local_seed_stamp=local_stamp)
+    assert bootstrap_testmon_seed_files(
+        decision,
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        checkout_root=tmp_path / "local",
+        inherited_from=tmp_path / "main",
+    )
 
     local_payload = json.loads(local_stamp.read_text())
     source_payload = json.loads(main_stamp.read_text())
-    assert {key: local_payload[key] for key in source_payload if key != "testmon_data"} == {
-        key: source_payload[key] for key in source_payload if key != "testmon_data"
-    }
+    comparable_keys = set(source_payload) - {"binding", "testmon_data"}
+    assert {key: local_payload[key] for key in comparable_keys} == {key: source_payload[key] for key in comparable_keys}
+    assert local_payload["binding"]["checkout_root"] == str(tmp_path / "local")
+    assert local_payload["binding"]["source_checkout_root"] == str(tmp_path / "main")
     conn = sqlite3.connect(local_data)
     try:
         rows = conn.execute("SELECT filename, fsha FROM file_fp ORDER BY filename").fetchall()

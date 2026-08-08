@@ -2078,26 +2078,21 @@ def _testmon_coverage_identity(executable_paths: Sequence[str]) -> dict[str, Any
 def _matching_testmon_coverage(executable_paths: Sequence[str]) -> str | None:
     """Return the receipt kind proving that zero new selection is legitimate."""
     identity = _testmon_coverage_identity(executable_paths)
-    seed = validate_stamp(
-        TESTMON_SEED_STAMP,
-        TESTMON_DATA,
-        checkout_root=ROOT,
-        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-    )
-    if seed is not None and seed.affected_selection_allowed:
-        return "validated_seed_graph"
-    attempt = _read_testmon_seed_attempt()
-    if attempt is not None:
-        recovered = stamp_from_attempt(
-            attempt,
-            TESTMON_DATA,
-            checkout_root=ROOT,
-            protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-        )
-        if recovered is not None and recovered.affected_selection_allowed:
-            return "validated_seed_attempt_graph"
     affected = _read_json_artifact(TESTMON_AFFECTED_STAMP)
-    if isinstance(affected, dict) and affected.get("identity") == identity:
+    selected_count = affected.get("selected_count") if isinstance(affected, dict) else None
+    if (
+        isinstance(affected, dict)
+        and affected.get("protocol_version") == 1
+        and affected.get("status") == "complete"
+        and isinstance(affected.get("timestamp"), str)
+        and bool(affected.get("timestamp"))
+        and isinstance(affected.get("run_id"), str)
+        and bool(affected.get("run_id"))
+        and isinstance(selected_count, int)
+        and not isinstance(selected_count, bool)
+        and selected_count > 0
+        and affected.get("identity") == identity
+    ):
         return "successful_affected_run"
     return None
 
@@ -2232,7 +2227,17 @@ def _read_testmon_seed_attempt() -> dict[str, Any] | None:
 def _testmon_seed_expected_nodeids(attempt: Mapping[str, Any]) -> list[str]:
     """Recover the seed ledger, including after an abrupt outer-run exit."""
     expected = attempt.get("expected_nodeids")
-    if isinstance(expected, list) and expected and all(isinstance(nodeid, str) for nodeid in expected):
+    if isinstance(expected, list) and expected:
+        if (
+            any(not isinstance(nodeid, str) or not nodeid for nodeid in expected)
+            or len(set(expected)) != len(expected)
+            or not isinstance(attempt.get("expected_count"), int)
+            or isinstance(attempt.get("expected_count"), bool)
+            or attempt.get("expected_count") != len(expected)
+            or not isinstance(attempt.get("expected_digest"), str)
+            or attempt.get("expected_digest") != hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest()
+        ):
+            return []
         return list(expected)
 
     artifact_dir_raw = attempt.get("artifact_dir")
@@ -2241,10 +2246,26 @@ def _testmon_seed_expected_nodeids(attempt: Mapping[str, Any]) -> list[str]:
     artifact_dir = Path(artifact_dir_raw)
     for selection_path in sorted(artifact_dir.glob("steps/*/selection.json")):
         selection = _read_json_artifact(selection_path)
-        if not isinstance(selection, dict) or int(selection.get("selected_nodeids_omitted") or 0) != 0:
+        if not isinstance(selection, dict):
+            continue
+        omitted = selection.get("selected_nodeids_omitted")
+        selected_count = selection.get("selected_count")
+        if (
+            not isinstance(omitted, int)
+            or isinstance(omitted, bool)
+            or omitted != 0
+            or not isinstance(selected_count, int)
+            or isinstance(selected_count, bool)
+        ):
             continue
         selected = selection.get("selected_nodeids")
-        if isinstance(selected, list) and selected and all(isinstance(nodeid, str) for nodeid in selected):
+        if (
+            isinstance(selected, list)
+            and selected
+            and all(isinstance(nodeid, str) and nodeid for nodeid in selected)
+            and len(set(selected)) == len(selected)
+            and selected_count == len(selected)
+        ):
             return list(selected)
     return []
 
@@ -2320,6 +2341,7 @@ def _seed_node_outcomes_from_events(
     expected_nodeids: Sequence[str],
     database: Mapping[str, Any],
     pytest_step: Mapping[str, Any] | None,
+    use_database_fallback: bool = True,
 ) -> list[dict[str, Any]]:
     """Classify every promised seed node into one explicit terminal state."""
     reports: dict[str, list[dict[str, Any]]] = {}
@@ -2375,9 +2397,9 @@ def _seed_node_outcomes_from_events(
             and any(marker in diagnosis for marker in ("interrupt", "signal", "terminated"))
         ):
             outcome, reason = "interrupted", "run ended while node was active"
-        elif recorded.get(nodeid) == "passed":
+        elif use_database_fallback and recorded.get(nodeid) == "passed":
             outcome, reason = "passed", "testmon database recorded success"
-        elif recorded.get(nodeid) == "failed":
+        elif use_database_fallback and recorded.get(nodeid) == "failed":
             outcome, reason = "failed", "testmon database recorded failure"
         else:
             outcome, reason = "missing", "no terminal report or testmon execution row"
@@ -2421,15 +2443,30 @@ def _finalize_testmon_seed_attempt(
                 selection = selection_payload
             events_path = artifact_dir / "events.jsonl"
 
-    expected_raw = prepared.get("expected_nodeids") if prepared.get("resume") else selection.get("selected_nodeids")
-    expected = [str(nodeid) for nodeid in expected_raw] if isinstance(expected_raw, list) else []
-    omitted = int(selection.get("selected_nodeids_omitted") or 0)
+    raw_omitted = selection.get("selected_nodeids_omitted")
+    raw_selected_count = selection.get("selected_count")
+    selected_nodeids = selection.get("selected_nodeids")
+    selection_valid = (
+        isinstance(raw_omitted, int)
+        and not isinstance(raw_omitted, bool)
+        and raw_omitted >= 0
+        and isinstance(raw_selected_count, int)
+        and not isinstance(raw_selected_count, bool)
+        and isinstance(selected_nodeids, list)
+        and all(isinstance(nodeid, str) and nodeid for nodeid in selected_nodeids)
+        and len(set(selected_nodeids)) == len(selected_nodeids)
+        and raw_selected_count == len(selected_nodeids)
+    )
+    expected_raw = prepared.get("expected_nodeids") if prepared.get("resume") else selected_nodeids
+    expected = list(expected_raw) if isinstance(expected_raw, list) else []
+    omitted = raw_omitted if selection_valid else 1
     database = _testmon_database_state(expected)
     node_outcomes = _seed_node_outcomes_from_events(
         events_path or Path(".missing-testmon-events"),
         expected_nodeids=expected,
         database=database,
         pytest_step=pytest_step,
+        use_database_fallback=False,
     )
     unsuccessful_nodeids = [
         str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
@@ -2437,29 +2474,38 @@ def _finalize_testmon_seed_attempt(
     green_complete = (
         exit_code == 0
         and bool(expected)
-        and (bool(prepared.get("resume")) or omitted == 0)
+        and selection_valid
+        and omitted == 0
         and database["error"] is None
+        and database["graph_status"] == "complete"
         and not database["missing_nodeids"]
         and not database["failed_nodeids"]
+        and database["orphan_execution_edges"] == 0
+        and database["orphan_fingerprint_edges"] == 0
         and not unsuccessful_nodeids
     )
     attempt_candidate = {
         **dict(prepared),
+        "status": "reusable",
         "exit_code": exit_code,
         "expected_nodeids": expected,
         "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
         "selection": {
             **selection,
             # A resumed run inherits the complete collection ledger from its
             # original selection. The current pytest step may select only a
             # subset while it repairs missing graph edges.
-            "selected_count": len(expected) if prepared.get("resume") else selection.get("selected_count"),
-            "selected_nodeids_omitted": 0 if prepared.get("resume") else omitted,
+            "selected_count": len(expected)
+            if prepared.get("resume") and selection_valid
+            else selection.get("selected_count"),
+            "selected_nodeids_omitted": 0 if prepared.get("resume") and selection_valid else omitted,
         },
         "node_outcomes": node_outcomes,
         "identity": prepared.get("identity"),
         "run_id": prepared.get("run_id"),
         "artifact_dir": prepared.get("artifact_dir"),
+        "testmon_data": _file_fingerprint(TESTMON_DATA),
     }
     reusable_stamp = stamp_from_attempt(
         attempt_candidate,

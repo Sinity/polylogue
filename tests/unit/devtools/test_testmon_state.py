@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 from devtools.testmon_state import (
     BaselineStatus,
@@ -54,6 +57,7 @@ def _attempt(data: Path, *, outcomes: tuple[str, str] = ("passed", "failed")) ->
         },
         "expected_nodeids": list(NODEIDS),
         "expected_count": len(NODEIDS),
+        "expected_digest": hashlib.sha256("\n".join(sorted(NODEIDS)).encode()).hexdigest(),
         "node_outcomes": [
             {"nodeid": nodeid, "outcome": outcome} for nodeid, outcome in zip(NODEIDS, outcomes, strict=True)
         ],
@@ -73,6 +77,13 @@ def test_failed_complete_graph_is_selection_only_and_rebindable(tmp_path: Path) 
     assert stamp.baseline_status is BaselineStatus.RED
     assert stamp.affected_selection_allowed
     assert not stamp.release_baseline_allowed
+
+    passed_outcomes = stamp_from_attempt(
+        _attempt(data, outcomes=("passed", "passed")), data, checkout_root=tmp_path, protocol_version=PROTOCOL
+    )
+    assert passed_outcomes is not None
+    assert passed_outcomes.baseline_status is BaselineStatus.RED
+    assert not passed_outcomes.release_baseline_allowed
 
     stamp_path = tmp_path / "seed.json"
     stamp_path.write_text(json.dumps(stamp.as_dict()))
@@ -106,6 +117,40 @@ def test_malformed_sqlite_and_stale_stamp_fail_closed(tmp_path: Path) -> None:
     stamp_path.write_text(json.dumps(stamp.as_dict()))
     data.write_bytes(data.read_bytes() + b"stale")
     assert validate_stamp(stamp_path, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
+
+
+def test_malformed_sqlite_values_fail_closed(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data)
+    with sqlite3.connect(data) as connection:
+        connection.execute("update test_execution set failed = 'bad' where id = 1")
+
+    inspection = inspect_testmon_database(data, NODEIDS)
+
+    assert inspection.status is GraphStatus.INVALID
+
+
+@pytest.mark.parametrize("filename", ["../outside.py", "/tmp/outside.py"])
+def test_unsafe_testmon_fingerprint_paths_fail_closed(tmp_path: Path, filename: str) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data)
+    with sqlite3.connect(data) as connection:
+        connection.execute("update file_fp set filename = ? where id = 1", (filename,))
+
+    assert inspect_testmon_database(data, NODEIDS).status is GraphStatus.INVALID
+
+
+def test_attempt_status_must_be_promotable(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data)
+    attempt = _attempt(data)
+    attempt["status"] = "running"
+
+    assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
+
+    attempt = _attempt(data)
+    attempt["run_id"] = None
+    assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
 
 
 def test_stamp_parser_rejects_untyped_or_non_graph_state() -> None:

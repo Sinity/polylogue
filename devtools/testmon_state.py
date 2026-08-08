@@ -97,12 +97,19 @@ class TestmonBinding:
         source = value.get("source_checkout_root")
         if not isinstance(checkout_root, str) or not checkout_root:
             raise ValueError("binding.checkout_root must be a non-empty string")
+        if not Path(checkout_root).is_absolute():
+            raise ValueError("binding.checkout_root must be absolute")
         if source is not None and (not isinstance(source, str) or not source):
             raise ValueError("binding.source_checkout_root must be a non-empty string or null")
+        if source is not None and not Path(source).is_absolute():
+            raise ValueError("binding.source_checkout_root must be absolute")
         if mode is BindingMode.EXACT and source is not None:
             raise ValueError("exact bindings cannot have a source checkout")
-        if mode is BindingMode.RELATIVE_FILE_FINGERPRINTS and source is None:
-            raise ValueError("rebound bindings require a source checkout")
+        if mode is BindingMode.RELATIVE_FILE_FINGERPRINTS:
+            if source is None:
+                raise ValueError("rebound bindings require a source checkout")
+            if Path(source).resolve() == Path(checkout_root).resolve():
+                raise ValueError("rebound binding source and destination must differ")
         return cls(mode, checkout_root, source)
 
     def as_dict(self) -> dict[str, Any]:
@@ -269,10 +276,22 @@ class TestmonSeedStamp:
             or graph.get("orphan_fingerprint_edges") != 0
         ):
             raise ValueError("seed stamp graph coverage is incomplete")
-        if graph.get("error") is not None or graph.get("missing_nodeids"):
+        missing_nodeids = graph.get("missing_nodeids")
+        if (
+            not isinstance(missing_nodeids, list)
+            or any(not isinstance(item, str) or not item for item in missing_nodeids)
+            or not set(missing_nodeids).issubset(nodeids)
+        ):
+            raise ValueError("seed stamp missing-node ledger is malformed")
+        if graph.get("error") is not None or missing_nodeids:
             raise ValueError("seed stamp graph has missing or erroneous nodes")
         graph_nodeids = graph.get("failed_nodeids", [])
-        if not isinstance(graph_nodeids, list) or any(not isinstance(item, str) for item in graph_nodeids):
+        if (
+            not isinstance(graph_nodeids, list)
+            or any(not isinstance(item, str) or not item for item in graph_nodeids)
+            or not set(graph_nodeids).issubset(nodeids)
+            or len(set(graph_nodeids)) != len(graph_nodeids)
+        ):
             raise ValueError("seed stamp graph failure ledger is malformed")
         testmon_data = value.get("testmon_data")
         run_id = value.get("run_id")
@@ -341,27 +360,96 @@ def inspect_testmon_database(path: Path, expected_nodeids: Sequence[str]) -> Gra
             tables = {str(row[0]) for row in connection.execute("select name from sqlite_master where type='table'")}
             if not required <= tables:
                 return GraphInspection(GraphStatus.INVALID, 0, 0, expected, 0, 0, "testmon schema is incomplete", ())
+            required_columns = {
+                "test_execution": {"id", "test_name", "failed"},
+                "test_execution_file_fp": {"test_execution_id", "fingerprint_id"},
+                "file_fp": {"id", "filename", "fsha"},
+            }
+            for table, columns in required_columns.items():
+                actual = {str(row[1]) for row in connection.execute(f"pragma table_info({table})")}
+                if not columns <= actual:
+                    return GraphInspection(
+                        GraphStatus.INVALID,
+                        0,
+                        0,
+                        expected,
+                        0,
+                        0,
+                        f"testmon schema is missing columns from {table}",
+                        (),
+                    )
             executions = connection.execute(
                 "select id, test_name, failed from test_execution where test_name is not null"
             ).fetchall()
             latest: dict[str, tuple[int, bool]] = {}
+            execution_ids: set[int] = set()
             for execution_id, test_name, failed in executions:
-                name = str(test_name)
+                if (
+                    not isinstance(execution_id, int)
+                    or isinstance(execution_id, bool)
+                    or execution_id <= 0
+                    or not isinstance(test_name, str)
+                    or not test_name
+                    or not isinstance(failed, int)
+                    or isinstance(failed, bool)
+                    or failed not in (0, 1)
+                ):
+                    return GraphInspection(
+                        GraphStatus.INVALID, 0, 0, expected, 0, 0, "testmon execution row is malformed", ()
+                    )
+                if execution_id in execution_ids:
+                    return GraphInspection(
+                        GraphStatus.INVALID, 0, 0, expected, 0, 0, "testmon execution ids are not unique", ()
+                    )
+                execution_ids.add(execution_id)
+                name = test_name
                 prior = latest.get(name)
-                if prior is None or int(execution_id) > prior[0]:
-                    latest[name] = (int(execution_id), bool(failed))
+                if prior is None or execution_id > prior[0]:
+                    latest[name] = (execution_id, failed == 1)
             missing = tuple(sorted(set(expected) - latest.keys()))
             expected_ids = {latest[nodeid][0] for nodeid in expected if nodeid in latest}
             edge_rows = connection.execute(
                 "select test_execution_id, fingerprint_id from test_execution_file_fp"
             ).fetchall()
-            execution_ids = {int(row[0]) for row in executions}
-            fingerprint_ids = {int(row[0]) for row in connection.execute("select id from file_fp").fetchall()}
-            orphan_execution_edges = sum(1 for row in edge_rows if int(row[0]) not in execution_ids)
-            orphan_fingerprint_edges = sum(1 for row in edge_rows if int(row[1]) not in fingerprint_ids)
+            fingerprints = connection.execute("select id, filename, fsha from file_fp").fetchall()
+            fingerprint_ids: set[int] = set()
+            for fingerprint_id, filename, fsha in fingerprints:
+                if (
+                    not isinstance(fingerprint_id, int)
+                    or isinstance(fingerprint_id, bool)
+                    or fingerprint_id <= 0
+                    or not isinstance(filename, str)
+                    or not filename
+                    or Path(filename).is_absolute()
+                    or ".." in Path(filename).parts
+                    or not isinstance(fsha, str)
+                    or not fsha
+                ):
+                    return GraphInspection(
+                        GraphStatus.INVALID, 0, 0, expected, 0, 0, "testmon fingerprint row is malformed", ()
+                    )
+                if fingerprint_id in fingerprint_ids:
+                    return GraphInspection(
+                        GraphStatus.INVALID, 0, 0, expected, 0, 0, "testmon fingerprint ids are not unique", ()
+                    )
+                fingerprint_ids.add(fingerprint_id)
+            for execution_id, fingerprint_id in edge_rows:
+                if (
+                    not isinstance(execution_id, int)
+                    or isinstance(execution_id, bool)
+                    or execution_id <= 0
+                    or not isinstance(fingerprint_id, int)
+                    or isinstance(fingerprint_id, bool)
+                    or fingerprint_id <= 0
+                ):
+                    return GraphInspection(
+                        GraphStatus.INVALID, 0, 0, expected, 0, 0, "testmon dependency edge is malformed", ()
+                    )
+            orphan_execution_edges = sum(1 for row in edge_rows if row[0] not in execution_ids)
+            orphan_fingerprint_edges = sum(1 for row in edge_rows if row[1] not in fingerprint_ids)
             edge_counts: dict[int, int] = {}
             for execution_id, _fingerprint_id in edge_rows:
-                edge_counts[int(execution_id)] = edge_counts.get(int(execution_id), 0) + 1
+                edge_counts[execution_id] = edge_counts.get(execution_id, 0) + 1
             uncovered = tuple(
                 sorted(nodeid for nodeid in expected if nodeid in latest and edge_counts.get(latest[nodeid][0], 0) == 0)
             )
@@ -383,7 +471,7 @@ def inspect_testmon_database(path: Path, expected_nodeids: Sequence[str]) -> Gra
                 None,
                 failed,
             )
-    except (OSError, sqlite3.Error, UnicodeError) as exc:
+    except (OSError, sqlite3.Error, UnicodeError, TypeError, ValueError, OverflowError) as exc:
         return GraphInspection(GraphStatus.INVALID, 0, 0, expected, 0, 0, str(exc), ())
 
 
@@ -431,7 +519,11 @@ def stamp_from_attempt(
     protocol_version: int,
 ) -> TestmonSeedStamp | None:
     """Promote only a complete attempt, including a red one, into a stamp."""
-    if attempt.get("protocol_version") != protocol_version:
+    if attempt.get("protocol_version") != protocol_version or attempt.get("status") not in {
+        "incomplete",
+        "reusable",
+        "complete",
+    }:
         return None
     selection = attempt.get("selection")
     expected = attempt.get("expected_nodeids")
@@ -442,44 +534,72 @@ def stamp_from_attempt(
     assert isinstance(identity, Mapping)
     omitted = selection.get("selected_nodeids_omitted")
     selected_count = selection.get("selected_count")
-    if omitted != 0 or selected_count != len(expected) or not expected:
+    if (
+        not isinstance(omitted, int)
+        or isinstance(omitted, bool)
+        or omitted != 0
+        or not isinstance(selected_count, int)
+        or isinstance(selected_count, bool)
+        or selected_count != len(expected)
+        or not expected
+        or any(not isinstance(nodeid, str) or not nodeid for nodeid in expected)
+        or len(set(expected)) != len(expected)
+    ):
         return None
     expected_count = attempt.get("expected_count")
-    if expected_count is not None and expected_count != len(expected):
+    if not isinstance(expected_count, int) or isinstance(expected_count, bool) or expected_count != len(expected):
         return None
     expected_digest = attempt.get("expected_digest")
     if (
-        expected_digest is not None
-        and expected_digest
-        != hashlib.sha256("\n".join(sorted(str(nodeid) for nodeid in expected)).encode()).hexdigest()
+        not isinstance(expected_digest, str)
+        or expected_digest != hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest()
     ):
         return None
     recorded_data = attempt.get("testmon_data")
-    if recorded_data is not None:
-        if not isinstance(recorded_data, str) or not data_path.is_file():
+    if not isinstance(recorded_data, str) or not recorded_data or not data_path.is_file():
+        return None
+    try:
+        if file_fingerprint(data_path) != recorded_data:
             return None
-        try:
-            if file_fingerprint(data_path) != recorded_data:
-                return None
-        except OSError:
-            return None
+    except OSError:
+        return None
+    run_id = attempt.get("run_id")
+    artifact_dir = attempt.get("artifact_dir")
+    if not isinstance(run_id, str) or not run_id or not isinstance(artifact_dir, str) or not artifact_dir:
+        return None
     outcomes = attempt.get("node_outcomes")
     if not isinstance(outcomes, list) or len(outcomes) != len(expected):
         return None
-    outcome_by_node = {item.get("nodeid"): item.get("outcome") for item in outcomes if isinstance(item, Mapping)}
+    if any(not isinstance(item, Mapping) for item in outcomes):
+        return None
+    outcome_items = [item for item in outcomes if isinstance(item, Mapping)]
+    if any(
+        not isinstance(item.get("nodeid"), str) or not item.get("nodeid") or item.get("nodeid") not in expected
+        for item in outcome_items
+    ):
+        return None
+    outcome_by_node = {item["nodeid"]: item.get("outcome") for item in outcome_items}
     if set(outcome_by_node) != set(expected):
+        return None
+    if len(outcome_by_node) != len(outcomes) or any(
+        not isinstance(nodeid, str) or not nodeid for nodeid in outcome_by_node
+    ):
         return None
     if any(outcome not in {"passed", "failed", "error", "skipped"} for outcome in outcome_by_node.values()):
         return None
-    baseline = (
-        BaselineStatus.GREEN
-        if attempt.get("exit_code") == 0
-        and all(outcome in {"passed", "skipped"} for outcome in outcome_by_node.values())
-        else BaselineStatus.RED
-    )
+    exit_code = attempt.get("exit_code")
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+        return None
     graph = inspect_testmon_database(data_path, [str(nodeid) for nodeid in expected])
     if not graph.usable_for_selection:
         return None
+    baseline = (
+        BaselineStatus.GREEN
+        if exit_code == 0
+        and all(outcome in {"passed", "skipped"} for outcome in outcome_by_node.values())
+        and not graph.failed_nodeids
+        else BaselineStatus.RED
+    )
     try:
         typed_identity = TestmonIdentity.from_mapping(identity)
     except ValueError:
@@ -491,13 +611,13 @@ def stamp_from_attempt(
         0,
         baseline,
         baseline is BaselineStatus.GREEN,
-        int(attempt.get("exit_code", 1)),
+        exit_code,
         graph,
         typed_identity,
         TestmonBinding(BindingMode.EXACT, str(checkout_root.resolve())),
         file_fingerprint(data_path),
-        str(attempt.get("run_id") or "attempt-recovery"),
-        str(attempt.get("artifact_dir") or ".cache/verify"),
+        run_id,
+        artifact_dir,
     )
 
 

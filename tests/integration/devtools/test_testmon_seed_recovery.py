@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -10,6 +11,7 @@ from pathlib import Path
 from devtools.testmon_bootstrap import BootstrapDecision, bootstrap_testmon_seed_files
 from devtools.testmon_state import (
     BaselineStatus,
+    file_fingerprint,
     inspect_testmon_database,
     stamp_from_attempt,
     validate_stamp,
@@ -50,6 +52,8 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(tmp_path: Pat
         },
         "selection": {"selected_count": 2, "selected_nodeids_omitted": 0},
         "expected_nodeids": list(expected),
+        "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
         "node_outcomes": [
             {"nodeid": expected[0], "outcome": "passed"},
             {"nodeid": expected[1], "outcome": "failed"},
@@ -57,6 +61,7 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(tmp_path: Pat
         "exit_code": 1,
         "run_id": "real-testmon",
         "artifact_dir": ".cache/verify/runs/real-testmon",
+        "testmon_data": file_fingerprint(data),
     }
     stamp = stamp_from_attempt(attempt, data, checkout_root=source, protocol_version=4)
     assert stamp is not None and stamp.baseline_status is BaselineStatus.RED
