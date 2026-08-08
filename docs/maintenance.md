@@ -71,9 +71,8 @@ polylogue ops maintenance migrate-tier audit --initialize-missing --output-forma
 ```
 
 The flag builds the canonical database in memory, writes it into an anonymous
-inode when the filesystem supports `O_TMPFILE`, and otherwise uses a same-
-directory 0600 exclusive temporary file. Both paths fsync the image and
-publish it with a no-replace hard link, then fsync the directory. It refuses
+inode, and requires filesystem support for `O_TMPFILE`. It fsyncs the image,
+publishes it with a no-replace hard link, then fsyncs the directory. It refuses
 any existing target including one created concurrently, and never replaces
 durable data. For each existing tier that the selected package reports behind, run its numbered
 migration with the verified full-evidence backup manifest:

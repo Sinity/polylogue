@@ -37,10 +37,17 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
-    try:
-        parent_metadata = path.parent.lstat()
-    except FileNotFoundError as exc:
-        raise MigrationError(f"durable tier parent directory is missing: {path.parent}") from exc
+    def adoption_lstat(candidate: Path, description: str) -> os.stat_result | None:
+        try:
+            return candidate.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise MigrationError(f"cannot inspect {description}: {candidate}") from exc
+
+    parent_metadata = adoption_lstat(path.parent, "durable tier parent directory")
+    if parent_metadata is None:
+        raise MigrationError(f"durable tier parent directory is missing: {path.parent}")
     if (
         stat.S_ISLNK(parent_metadata.st_mode)
         or not stat.S_ISDIR(parent_metadata.st_mode)
@@ -49,57 +56,63 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     ):
         raise MigrationError(f"durable tier parent is not a private owned directory: {path.parent}")
 
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        pass
-    else:
+    if adoption_lstat(path, "durable tier target") is not None:
         raise MigrationError(f"{tier.value} tier already exists; refusing missing-tier initialization: {path}")
 
     try:
         location = ArchiveLocation.resolve(path.parent)
     except Exception as exc:
         raise MigrationError(f"cannot inspect archive adoption markers: {path.parent}") from exc
-    durable_siblings = tuple(
-        path.parent / f"{sibling.value}.db"
-        for sibling in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
-        if sibling is not tier
-    )
+    durable_siblings = tuple(path.parent / f"{sibling.value}.db" for sibling in ArchiveTier if sibling is not tier)
     existing_siblings: list[Path] = []
     for sibling in durable_siblings:
-        try:
-            sibling.lstat()
-        except FileNotFoundError:
-            continue
-        existing_siblings.append(sibling)
+        if adoption_lstat(sibling, "archive tier") is not None:
+            existing_siblings.append(sibling)
     adoption_markers: list[Path] = []
     active_pointer_marker = path.parent / ".index-active-pointer"
-    try:
-        active_pointer_marker.lstat()
-    except FileNotFoundError:
-        pass
-    else:
+    if adoption_lstat(active_pointer_marker, "active index pointer") is not None:
         # Presence is enough. ArchiveLocation intentionally ignores a dangling
         # symlink via Path.exists(), but missing-tier initialization must treat
         # malformed or dangling adoption evidence as established and fail
         # closed rather than publishing an empty durable database.
         adoption_markers.append(active_pointer_marker)
+    blob_path = path.parent / "blob"
+    blob_metadata = adoption_lstat(blob_path, "retained blob path")
+    if blob_metadata is not None:
+        if stat.S_ISLNK(blob_metadata.st_mode) or not stat.S_ISDIR(blob_metadata.st_mode):
+            adoption_markers.append(blob_path)
+        else:
+            try:
+                blob_has_entries = next(blob_path.iterdir(), None) is not None
+            except OSError as exc:
+                raise MigrationError(f"cannot inspect retained blob path: {blob_path}") from exc
+            if blob_has_entries:
+                adoption_markers.append(blob_path)
+    maintenance_state_root = path.parent / ".maintenance-state"
+    maintenance_state_metadata = adoption_lstat(maintenance_state_root, "maintenance state parent")
+    if maintenance_state_metadata is not None and (
+        stat.S_ISLNK(maintenance_state_metadata.st_mode) or not stat.S_ISDIR(maintenance_state_metadata.st_mode)
+    ):
+        adoption_markers.append(maintenance_state_root)
     train_marker_root = path.parent / ".maintenance-state" / "durable-change-trains"
-    try:
-        train_marker_metadata = train_marker_root.lstat()
-    except FileNotFoundError:
-        pass
-    else:
+    train_marker_metadata = adoption_lstat(train_marker_root, "durable change-train adoption marker")
+    if train_marker_metadata is not None:
         if stat.S_ISLNK(train_marker_metadata.st_mode) or not stat.S_ISDIR(train_marker_metadata.st_mode):
             adoption_markers.append(train_marker_root)
         else:
             try:
-                if any(train_marker_root.iterdir()):
-                    adoption_markers.append(train_marker_root)
+                marker_entries = tuple(train_marker_root.iterdir())
             except OSError as exc:
                 raise MigrationError(
                     f"cannot inspect durable change-train adoption marker: {train_marker_root}"
                 ) from exc
+            if marker_entries:
+                for marker_name in (".bootstrap", ".bootstrap.pending"):
+                    marker_path = train_marker_root / marker_name
+                    if adoption_lstat(marker_path, "durable bootstrap marker") is not None:
+                        adoption_markers.append(marker_path)
+                if train_marker_root not in adoption_markers:
+                    adoption_markers.append(train_marker_root)
     if location.active_pointer is not None and active_pointer_marker not in adoption_markers:
         adoption_markers.append(active_pointer_marker)
     if existing_siblings or adoption_markers:

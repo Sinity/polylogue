@@ -206,6 +206,28 @@ def test_read_only_archive_open_ensures_runtime_indexes(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_pinned_read_only_archive_open_does_not_mutate_physical_index(tmp_path: Path) -> None:
+    """Pinned candidate evidence reads must not repair the selected index file.
+
+    This catches a regression where ``open_existing(index_path=...)`` still
+    ran ``_ensure_read_runtime_indexes`` before opening the exact physical
+    candidate. Reintroducing that ensure call makes the dropped index appear
+    after the read, mutating inactive-generation evidence.
+    """
+    initialize_active_archive_root(tmp_path)
+    index_db = (tmp_path / "index.db").resolve()
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("DROP INDEX idx_messages_message_type")
+        conn.commit()
+        assert not any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
+
+    with ArchiveStore.open_existing(tmp_path, index_path=index_db) as archive:
+        assert archive._read_only is True
+
+    with sqlite3.connect(index_db) as conn:
+        assert not any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
+
+
 def test_read_only_archive_open_does_not_bootstrap_missing_tiers(tmp_path: Path) -> None:
     """Read/status surfaces must not create an empty archive as a side effect."""
     with pytest.raises(sqlite3.OperationalError):

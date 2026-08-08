@@ -1908,7 +1908,7 @@ class ArchiveStore:
             return
         if initialize:
             initialize_active_archive_root(archive_root)
-        if read_only and not self._frozen_source_validation:
+        if read_only and self._frozen_index_path is None:
             self._ensure_read_runtime_indexes()
         if read_only:
             self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True, timeout=read_timeout)

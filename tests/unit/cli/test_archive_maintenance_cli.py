@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2203,6 +2204,10 @@ def test_migrate_tier_cli_initializes_only_an_absent_durable_tier(
     cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:
     _stage_uninitialized_archive(cli_workspace)
+    blob_root = cli_workspace["archive_root"] / "blob"
+    blob_root.mkdir()
+    assert blob_root.is_dir()
+    assert not any(blob_root.iterdir())
     audit_db = cli_workspace["archive_root"] / "audit.db"
 
     result = cli_runner.invoke(
@@ -2368,6 +2373,202 @@ def test_migrate_tier_cli_refuses_to_initialize_a_tier_in_an_established_archive
     assert "established archive" in json.loads(result.stdout)["error"]
     assert missing.exists() is before
     assert (root / sibling_name).exists()
+
+
+@pytest.mark.parametrize("derived_name", ["index.db", "embeddings.db", "ops.db"])
+def test_migrate_tier_cli_missing_initialization_refuses_retained_derived_tier(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, derived_name: str
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    derived_path = cli_workspace["archive_root"] / derived_name
+    derived_path.touch()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "established archive" in json.loads(result.stdout)["error"]
+    assert derived_path.exists()
+    assert not (cli_workspace["archive_root"] / "audit.db").exists()
+
+
+@pytest.mark.parametrize("blob_state", ["nonempty-directory", "regular-file"])
+def test_migrate_tier_cli_missing_initialization_refuses_retained_blob_evidence(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, blob_state: str
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    blob_root = cli_workspace["archive_root"] / "blob"
+    blob_root.mkdir()
+    if blob_state == "nonempty-directory":
+        (blob_root / "retained-entry").write_bytes(b"retained")
+    else:
+        blob_root.rmdir()
+        blob_root.write_bytes(b"malformed blob store")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "established archive" in json.loads(result.stdout)["error"]
+    assert not (cli_workspace["archive_root"] / "audit.db").exists()
+
+
+@pytest.mark.parametrize("marker_name", [".bootstrap", ".bootstrap.pending"])
+def test_migrate_tier_cli_missing_initialization_refuses_bootstrap_markers(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, marker_name: str
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    marker_root = cli_workspace["archive_root"] / ".maintenance-state" / "durable-change-trains"
+    marker_root.mkdir(parents=True)
+    (marker_root / marker_name).write_text("marker", encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert "established archive" in error
+    assert str(marker_root / marker_name) in error
+    assert not (cli_workspace["archive_root"] / "audit.db").exists()
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_blob_inspection_failure(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    blob_root = root / "blob"
+    blob_root.mkdir()
+    real_iterdir = Path.iterdir
+
+    def fail_blob_inspection(candidate: Path) -> Iterator[Path]:
+        if candidate == blob_root:
+            raise OSError("blob inspection failed")
+        return real_iterdir(candidate)
+
+    monkeypatch.setattr(Path, "iterdir", fail_blob_inspection)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "cannot inspect retained blob path" in json.loads(result.stdout)["error"]
+    assert not (root / "audit.db").exists()
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_malformed_marker_parent(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    maintenance_state = root / ".maintenance-state"
+    maintenance_state.mkdir(parents=True, exist_ok=True)
+    (maintenance_state / "durable-change-trains").write_bytes(b"malformed marker parent")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert "established archive" in error
+    assert str(maintenance_state / "durable-change-trains") in error
+    assert not (root / "audit.db").exists()
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_marker_inspection_failure(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    marker_root = root / ".maintenance-state" / "durable-change-trains"
+    marker_root.mkdir(parents=True)
+    real_lstat = Path.lstat
+
+    def fail_marker_inspection(candidate: Path) -> os.stat_result:
+        if candidate == marker_root:
+            raise OSError("marker inspection failed")
+        return real_lstat(candidate)
+
+    monkeypatch.setattr(Path, "lstat", fail_marker_inspection)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "cannot inspect durable change-train adoption marker" in json.loads(result.stdout)["error"]
+    assert not (root / "audit.db").exists()
 
 
 def test_migrate_tier_cli_missing_initialization_refuses_dangling_active_pointer(
