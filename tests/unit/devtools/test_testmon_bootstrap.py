@@ -335,8 +335,8 @@ def test_local_seed_missing_only_stamp_still_bootstraps(tmp_path: Path) -> None:
 
 
 def test_bootstrap_seed_files_copies_db_and_stamp(tmp_path: Path) -> None:
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
+    main_data = tmp_path / "main?fragment#1" / "testmondata"
+    main_stamp = tmp_path / "main?fragment#1" / "seed.json"
     _write_sqlite_db(main_data, rows=("x", "y", "z"))
     _write_valid_seed_stamp(main_stamp)
     local_data = tmp_path / "local" / "testmondata"
@@ -353,7 +353,7 @@ def test_bootstrap_seed_files_copies_db_and_stamp(tmp_path: Path) -> None:
         local_testmon_data=local_data,
         local_seed_stamp=local_stamp,
         checkout_root=tmp_path / "local",
-        inherited_from=tmp_path / "main",
+        inherited_from=tmp_path / "main?fragment#1",
     )
 
     local_payload = json.loads(local_stamp.read_text())
@@ -361,7 +361,7 @@ def test_bootstrap_seed_files_copies_db_and_stamp(tmp_path: Path) -> None:
     comparable_keys = set(source_payload) - {"binding", "testmon_data"}
     assert {key: local_payload[key] for key in comparable_keys} == {key: source_payload[key] for key in comparable_keys}
     assert local_payload["binding"]["checkout_root"] == str(tmp_path / "local")
-    assert local_payload["binding"]["source_checkout_root"] == str(tmp_path / "main")
+    assert local_payload["binding"]["source_checkout_root"] == str(tmp_path / "main?fragment#1")
     conn = sqlite3.connect(local_data)
     try:
         rows = conn.execute("SELECT filename, fsha FROM file_fp ORDER BY filename").fetchall()
@@ -395,6 +395,34 @@ def test_bootstrap_seed_files_marks_destination_and_source_checkout(tmp_path: Pa
     assert {key: payload[key] for key in source if key not in {"binding", "testmon_data"}} == {
         key: source[key] for key in source if key not in {"binding", "testmon_data"}
     }
+
+
+def test_bootstrap_seed_files_rejects_paths_outside_or_colliding_with_destination(tmp_path: Path) -> None:
+    main_data = tmp_path / "main" / "testmondata"
+    main_stamp = tmp_path / "main" / "seed.json"
+    _write_sqlite_db(main_data)
+    _write_valid_seed_stamp(main_stamp)
+    decision = BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp)
+    local_data = tmp_path / "lane" / "testmondata"
+
+    assert not bootstrap_testmon_seed_files(
+        decision,
+        local_testmon_data=local_data,
+        local_seed_stamp=tmp_path / "outside" / "seed.json",
+        checkout_root=tmp_path / "lane",
+        inherited_from=tmp_path / "main",
+    )
+    assert not (tmp_path / "outside" / "seed.json").exists()
+    assert not local_data.exists()
+
+    assert not bootstrap_testmon_seed_files(
+        decision,
+        local_testmon_data=local_data,
+        local_seed_stamp=local_data,
+        checkout_root=tmp_path / "lane",
+        inherited_from=tmp_path / "main",
+    )
+    assert not local_data.exists()
 
 
 def test_bootstrap_seed_files_keeps_copied_state_when_stamp_turns_invalid(tmp_path: Path) -> None:

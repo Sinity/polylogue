@@ -515,7 +515,7 @@ def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, mo
                 "status": "running",
                 "identity": identity,
                 "expected_nodeids": [],
-                "artifact_dir": str(artifact_dir),
+                "artifact_dir": str(artifact_dir.relative_to(tmp_path)),
             }
         )
     )
@@ -527,6 +527,46 @@ def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, mo
 
     assert prepared["expected_nodeids"] == expected
     assert prepared["expected_count"] == 1
+
+
+def test_seed_resume_rejects_selection_artifact_outside_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_text("partial")
+    outside = tmp_path.parent / "outside-testmon-artifacts"
+    step_dir = outside / "steps" / "17-pytest-seed-testmon"
+    step_dir.mkdir(parents=True)
+    (step_dir / "selection.json").write_text(
+        json.dumps(
+            {
+                "selected_nodeids": ["tests/unit/test_example.py::test_one"],
+                "selected_nodeids_omitted": 0,
+                "selected_count": 1,
+            }
+        )
+    )
+    identity = {
+        "git_head": "head",
+        "worktree_fingerprint": "tree",
+        "python": "3.13",
+        "skip_slow": True,
+        "lab": False,
+    }
+    TESTMON_SEED_ATTEMPT.write_text(
+        json.dumps(
+            {
+                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                "status": "running",
+                "identity": identity,
+                "expected_nodeids": [],
+                "artifact_dir": str(outside),
+            }
+        )
+    )
+
+    assert _testmon_seed_can_resume(identity) is False
 
 
 def test_resumed_seed_does_not_reuse_an_unexecuted_database_row(tmp_path: Path) -> None:

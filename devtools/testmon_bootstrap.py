@@ -155,6 +155,8 @@ def decide_testmon_bootstrap(
     try:
         main_testmon_data.resolve().relative_to(root)
         main_seed_stamp.resolve().relative_to(root)
+        if main_seed_attempt is not None:
+            main_seed_attempt.resolve().relative_to(root)
     except ValueError:
         return BootstrapDecision(False, "main testmon paths are not bound to the declared checkout root")
     if _is_valid_complete_seed_stamp(
@@ -225,7 +227,7 @@ def _atomic_copy_sqlite_db(src: Path, dst: Path) -> None:
     tmp = dst.with_name(f"{dst.name}.{os.getpid()}.tmp")
     tmp.unlink(missing_ok=True)
     try:
-        src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        src_conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True)
         try:
             dst_conn = sqlite3.connect(tmp)
             try:
@@ -267,6 +269,17 @@ def bootstrap_testmon_seed_files(
             return False
         decision.main_testmon_data.resolve().relative_to(source_root)
         local_testmon_data.resolve().relative_to(destination_root)
+        local_seed_stamp.resolve().relative_to(destination_root)
+        if local_seed_stamp.resolve() == local_testmon_data.resolve():
+            return False
+        if decision.main_seed_stamp is not None:
+            decision.main_seed_stamp.resolve().relative_to(source_root)
+            if decision.main_seed_stamp.resolve() == decision.main_testmon_data.resolve():
+                return False
+        if decision.main_seed_attempt is not None:
+            decision.main_seed_attempt.resolve().relative_to(source_root)
+            if decision.main_seed_attempt.resolve() == decision.main_testmon_data.resolve():
+                return False
         if decision.main_seed_stamp is not None:
             stamp = validate_stamp(
                 decision.main_seed_stamp,

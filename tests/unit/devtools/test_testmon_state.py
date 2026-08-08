@@ -130,6 +130,15 @@ def test_malformed_sqlite_values_fail_closed(tmp_path: Path) -> None:
     assert inspection.status is GraphStatus.INVALID
 
 
+def test_sqlite_paths_with_uri_characters_are_inspected_safely(tmp_path: Path) -> None:
+    data = tmp_path / "checkout?fragment#1" / "testmondata"
+    _write_graph(data)
+
+    inspection = inspect_testmon_database(data, NODEIDS)
+
+    assert inspection.status is GraphStatus.COMPLETE
+
+
 @pytest.mark.parametrize("filename", ["../outside.py", "/tmp/outside.py"])
 def test_unsafe_testmon_fingerprint_paths_fail_closed(tmp_path: Path, filename: str) -> None:
     data = tmp_path / "testmondata"

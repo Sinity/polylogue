@@ -2224,6 +2224,23 @@ def _read_testmon_seed_attempt() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _safe_testmon_artifact_dir(raw: object, *, require_run_root: bool = False) -> Path | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = Path(raw)
+    checkout_root = Path.cwd().resolve()
+    if require_run_root and path.is_absolute():
+        return None
+    resolved = (path if path.is_absolute() else checkout_root / path).resolve()
+    try:
+        resolved.relative_to(checkout_root)
+        if require_run_root:
+            resolved.relative_to((checkout_root / ".cache" / "verify" / "runs").resolve())
+    except ValueError:
+        return None
+    return resolved
+
+
 def _testmon_seed_expected_nodeids(attempt: Mapping[str, Any]) -> list[str]:
     """Recover the seed ledger, including after an abrupt outer-run exit."""
     expected = attempt.get("expected_nodeids")
@@ -2240,10 +2257,9 @@ def _testmon_seed_expected_nodeids(attempt: Mapping[str, Any]) -> list[str]:
             return []
         return list(expected)
 
-    artifact_dir_raw = attempt.get("artifact_dir")
-    if not isinstance(artifact_dir_raw, str):
+    artifact_dir = _safe_testmon_artifact_dir(attempt.get("artifact_dir"), require_run_root=True)
+    if artifact_dir is None:
         return []
-    artifact_dir = Path(artifact_dir_raw)
     for selection_path in sorted(artifact_dir.glob("steps/*/selection.json")):
         selection = _read_json_artifact(selection_path)
         if not isinstance(selection, dict):
@@ -2435,9 +2451,8 @@ def _finalize_testmon_seed_attempt(
     selection: dict[str, Any] = {}
     events_path: Path | None = None
     if pytest_step is not None:
-        artifact_dir_raw = pytest_step.get("artifact_dir")
-        if isinstance(artifact_dir_raw, str):
-            artifact_dir = Path(artifact_dir_raw)
+        artifact_dir = _safe_testmon_artifact_dir(pytest_step.get("artifact_dir"))
+        if artifact_dir is not None:
             selection_payload = _read_json_artifact(artifact_dir / "selection.json")
             if isinstance(selection_payload, dict):
                 selection = selection_payload
