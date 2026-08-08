@@ -9,13 +9,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
+
+
+RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
+RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = 8 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)

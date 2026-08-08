@@ -26,11 +26,13 @@ import sys
 import time
 from dataclasses import replace
 from datetime import datetime
-from functools import cache
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
 
+from polylogue.config import Config
+from polylogue.product import raw_authority
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadPhaseObservation,
@@ -45,162 +47,48 @@ from polylogue.storage.archive_readiness import raw_materialization_readiness_sn
 from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_canonical_snapshot import archive_snapshot
-from tests.infra.corpus_program import (
-    Acquire,
-    CorpusProgram,
-    ProductionCorpusRuntime,
-    RawArtifact,
-)
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+from tests.infra.whale_fixtures import (
+    WHALE_FIXTURE_DIMENSIONS,
+    CodexRevisionChainFixture,
+    acquire_codex_revision_chain,
+)
 
-REVISION_COUNT = 804
-TERMINAL_WIRE_BYTES = 90_822_451
-SESSION_NATIVE_ID = "codex-sanitized-804-session"
+REVISION_COUNT = WHALE_FIXTURE_DIMENSIONS.revision_count
+TERMINAL_WIRE_BYTES = WHALE_FIXTURE_DIMENSIONS.terminal_wire_bytes
+SESSION_NATIVE_ID = CodexRevisionChainFixture().session_native_id
 SOURCE_PATH = "codex/incident-804-sanitized.jsonl"
-NEAR_TERMINAL_PREDECESSOR_BYTES = 32 * 1024 * 1024
 _BASELINE_MESSAGE_IDS = tuple(f"{SESSION_NATIVE_ID}-message-{index}" for index in range(2))
 _BASELINE_MESSAGE_TIMESTAMPS = ("2026-07-31T04:25:20Z", "2026-07-31T04:25:20Z")
 
 
-def _wire_target_bytes(revision: int) -> int:
-    if revision < REVISION_COUNT - 4:
-        # Keep every prefix strictly larger than its predecessor without
-        # making the 800 ordinary snapshots consume hundreds of megabytes.
-        return 4_096 + revision * 640
-    return {
-        REVISION_COUNT - 4: 8 * 1024 * 1024,
-        REVISION_COUNT - 3: 16 * 1024 * 1024,
-        REVISION_COUNT - 2: NEAR_TERMINAL_PREDECESSOR_BYTES,
-        REVISION_COUNT - 1: TERMINAL_WIRE_BYTES,
-    }[revision]
-
-
-@cache
-def _codex_payload(revision: int, *, terminal: bool) -> bytes:
-    revision_timestamp = f"2026-07-31T04:{25 + revision // 60:02d}:{20 + revision % 60:02d}Z"
-    if revision == 0:
-        records: list[dict[str, object]] = [
-            {
-                "type": "session_meta",
-                "payload": {
-                    "id": SESSION_NATIVE_ID,
-                    "timestamp": "2026-07-31T04:25:20Z",
-                    "cwd": "/sanitized/codex-804",
-                },
-            },
-        ]
-        for message_index, role in enumerate(("user", "assistant")):
-            text = f"sanitized incident witness {role} baseline"
-            records.append(
-                {
-                    "type": "response_item",
-                    "timestamp": _BASELINE_MESSAGE_TIMESTAMPS[message_index],
-                    "payload": {
-                        "type": "message",
-                        "id": f"{SESSION_NATIVE_ID}-message-{message_index}",
-                        "role": role,
-                        "content": [{"type": "output_text" if role == "assistant" else "input_text", "text": text}],
-                    },
-                }
-            )
-        previous_payload = b""
-    else:
-        records = []
-        previous_payload = _codex_payload(revision - 1, terminal=False)
-    # Parsed content grows by containment.  The first milestone proves that
-    # revisions differ semantically, while the later milestones keep the
-    # production membership classifier's accepted frontier moving toward the
-    # terminal snapshot without making the fixture 804 messages wide.
-    milestone_revisions = (1, 800, 801, 802)
-    if revision in milestone_revisions:
-        records.append(
-            {
-                "type": "response_item",
-                "timestamp": revision_timestamp,
-                "payload": {
-                    "type": "message",
-                    "id": f"{SESSION_NATIVE_ID}-milestone-{revision:03d}",
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "output_text",
-                            "text": f"sanitized parsed milestone revision {revision}",
-                        }
-                    ],
-                },
-            }
-        )
-    if terminal:
-        records.append(
-            {
-                "type": "response_item",
-                "timestamp": revision_timestamp,
-                "payload": {
-                    "type": "message",
-                    "id": f"{SESSION_NATIVE_ID}-terminal-803",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "sanitized terminal response revision 803"}],
-                },
-            }
-        )
-    prefix = previous_payload + b"".join(json.dumps(record, sort_keys=True).encode() + b"\n" for record in records)
-    wire_template = json.dumps(
-        {
-            "payload": {
-                "padding": "",
-                "type": "token_count",
-            },
-            "revision": revision,
-            "type": "response_item",
-        },
-        sort_keys=True,
-    ).encode()
-    padding_prefix, padding_suffix = wire_template.split(b'""', maxsplit=1)
-    padding_size = _wire_target_bytes(revision) - len(prefix) - len(padding_prefix) - len(padding_suffix) - 3
-    if padding_size <= 0:
-        raise AssertionError(f"terminal padding underflow: {padding_size}")
-    payload = prefix + padding_prefix + b'"' + (b"x" * padding_size) + b'"' + padding_suffix + b"\n"
-    if terminal:
-        assert len(payload) == TERMINAL_WIRE_BYTES
-    else:
-        assert len(payload) == _wire_target_bytes(revision)
-    return payload
-
-
-def _baseline_message_timestamps(payload: bytes) -> tuple[str, ...]:
+def _baseline_message_timestamps(path: Path) -> tuple[str, ...]:
     timestamps: dict[str, str] = {}
-    for line in payload.splitlines():
-        record = json.loads(line)
-        if not isinstance(record, dict):
-            continue
-        record_payload = record.get("payload")
-        if not isinstance(record_payload, dict) or record_payload.get("type") != "message":
-            continue
-        message_id = record_payload.get("id")
-        timestamp = record.get("timestamp")
-        if isinstance(message_id, str) and message_id in _BASELINE_MESSAGE_IDS:
-            if not isinstance(timestamp, str):
-                raise AssertionError(f"baseline message {message_id} has no string timestamp")
-            timestamps[message_id] = timestamp
+    with path.open("rb") as handle:
+        for line in handle:
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                continue
+            record_payload = record.get("payload")
+            if not isinstance(record_payload, dict) or record_payload.get("type") != "message":
+                continue
+            message_id = record_payload.get("id")
+            timestamp = record.get("timestamp")
+            if isinstance(message_id, str) and message_id in _BASELINE_MESSAGE_IDS:
+                if not isinstance(timestamp, str):
+                    raise AssertionError(f"baseline message {message_id} has no string timestamp")
+                timestamps[message_id] = timestamp
+                if len(timestamps) == len(_BASELINE_MESSAGE_IDS):
+                    break
     return tuple(timestamps[message_id] for message_id in _BASELINE_MESSAGE_IDS)
 
 
-def _incident_program() -> CorpusProgram:
-    operations = tuple(
-        Acquire(
-            f"revision-{revision:03d}",
-            RawArtifact(
-                artifact_id=f"revision-{revision:03d}",
-                payload=_codex_payload(revision, terminal=revision == REVISION_COUNT - 1),
-                source_name="codex",
-                source_path=SOURCE_PATH,
-                source_index=revision,
-                metadata={"incident": "codex-804-sanitized", "revision": revision},
-            ),
-        )
-        for revision in range(REVISION_COUNT)
-    )
-    return CorpusProgram(operations=operations)
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _current_rss_bytes() -> int | None:
@@ -296,35 +184,27 @@ def _readiness_count(readiness: dict[str, object], key: str) -> int:
     return int(value)
 
 
-@pytest.mark.timeout(420)
+@pytest.mark.timeout(900)
 @pytest.mark.uses_real_clock("waits for a real subprocess replay checkpoint and kill/resume boundary")
-def test_sanitized_codex_804_revision_recovery_proof(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
-) -> None:
+def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise acquisition through candidate promotion at incident scale.
 
     Anti-vacuity: deleting the production ``AcquisitionService`` call from
-    ``ProductionCorpusRuntime.acquire`` leaves the source row count at zero;
+    ``acquire_codex_revision_chain`` leaves the source row count at zero;
     deleting parser/convergence leaves the terminal index session absent;
     deleting the resumable candidate path leaves no paused transaction or
     inactive generation for the recovery assertions below.
     """
 
-    _codex_payload.cache_clear()
-    request.addfinalizer(_codex_payload.cache_clear)
     root = tmp_path / "codex-804-proof"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     initialize_active_archive_root(root)
-    runtime = ProductionCorpusRuntime(root)
+    fixture = CodexRevisionChainFixture()
+    source_path = root / "fixture-sources" / SOURCE_PATH
 
     setup_before = _resource_sample(root)
     setup_started = time.perf_counter()
-    program = _incident_program()
     profile_id = _schema_profile_id()
-    program_json = program.to_json()
-    # The JSON program is intentionally the canonical witness identity.  Its
-    # 90 MiB terminal payload is a faithful wire-shape fixture, not a parser
-    # replacement or a pre-populated database.
     setup_after = _resource_sample(root)
     phases: list[WorkloadPhaseObservation] = [
         _phase(
@@ -332,40 +212,47 @@ def test_sanitized_codex_804_revision_recovery_proof(
             setup_before,
             setup_after,
             setup_started,
-            completed=REVISION_COUNT,
+            completed=0,
             total=REVISION_COUNT,
         )
     ]
 
     acquire_before = _resource_sample(root)
     acquire_started = time.perf_counter()
-    run = program.run(runtime)
+    acquired_raw_ids, sizes, fixture_sha256s = acquire_codex_revision_chain(root, fixture, source_path)
+    with sqlite3.connect(root / "source.db") as conn:
+        persisted_sizes = tuple(
+            int(row[0]) for row in conn.execute("SELECT blob_size FROM raw_sessions ORDER BY blob_size")
+        )
+    manifest_path = fixture.write_manifest(root / "fixture-manifest.json", sizes, fixture_sha256s)
+    fixture_manifest = manifest_path.read_text(encoding="utf-8")
     acquire_after = _resource_sample(root)
     phases.append(
         _phase(
             "acquire", acquire_before, acquire_after, acquire_started, completed=REVISION_COUNT, total=REVISION_COUNT
         )
     )
-    assert len(run.state.artifacts) == REVISION_COUNT
-    assert run.state.crashed is False
-    assert len(program_json) > REVISION_COUNT
-    first_revision_payload = _codex_payload(0, terminal=False)
-    second_revision_payload = _codex_payload(1, terminal=False)
-    assert first_revision_payload != second_revision_payload
-    for revision in range(1, REVISION_COUNT):
-        current_payload = _codex_payload(revision, terminal=revision == REVISION_COUNT - 1)
-        previous_payload = _codex_payload(revision - 1, terminal=False)
-        assert current_payload.startswith(previous_payload)
-    assert b"incident witness user baseline" in first_revision_payload
-    assert b"parsed milestone revision 1" in second_revision_payload
-    # Mutation that assigns every recursively extended baseline message the
-    # current revision timestamp fails this exact multi-revision comparison.
-    for revision, terminal in ((0, False), (1, False), (800, False), (803, True)):
-        assert _baseline_message_timestamps(_codex_payload(revision, terminal=terminal)) == (
-            _BASELINE_MESSAGE_TIMESTAMPS
-        )
+    assert len(acquired_raw_ids) == REVISION_COUNT
+    assert len(set(acquired_raw_ids)) == REVISION_COUNT
+    assert len(sizes) == REVISION_COUNT
+    assert sizes[0] == 4_096
+    assert sizes[-2] == WHALE_FIXTURE_DIMENSIONS.near_terminal_predecessor_bytes
+    assert sizes[-1] == TERMINAL_WIRE_BYTES
+    assert all(current > previous for previous, current in pairwise(sizes))
+    assert persisted_sizes == sizes
+    manifest_payload = json.loads(fixture_manifest)
+    assert manifest_payload["fixture_id"] == WHALE_FIXTURE_DIMENSIONS.fixture_id
+    assert manifest_payload["session_native_id"] == SESSION_NATIVE_ID
+    assert manifest_payload["revision_sizes"] == list(sizes)
+    assert manifest_payload["revision_sha256"] == list(fixture_sha256s)
+    assert manifest_payload["dimensions"] == dict(WHALE_FIXTURE_DIMENSIONS.manifest_dimensions())
+    with source_path.open("rb") as handle:
+        first_source_bytes = handle.read(8_192)
+    assert b"sanitized incident witness user baseline" in first_source_bytes
+    assert b"sanitized parsed milestone revision 1" in first_source_bytes
+    assert _baseline_message_timestamps(source_path) == _BASELINE_MESSAGE_TIMESTAMPS
 
-    program_digest = hashlib.sha256(program_json.encode("utf-8")).hexdigest()
+    fixture_manifest_digest = hashlib.sha256(fixture_manifest.encode("utf-8")).hexdigest()
 
     census_before = _resource_sample(root)
     census_started = time.perf_counter()
@@ -382,6 +269,19 @@ def test_sanitized_codex_804_revision_recovery_proof(
     assert pre_recovery_unresolved_count == REVISION_COUNT
     assert pre_recovery_membership_count == 0
     assert pre_recovery_census_count == 0
+    whale_candidate = raw_authority.whale_pass_candidate(
+        Config(archive_root=root, render_root=root / "render", sources=[]),
+        ordinary_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes,
+        whale_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.whale_blob_limit_bytes,
+    )
+    assert whale_candidate is not None
+    assert whale_candidate == acquired_raw_ids[0]
+    whale_component_bytes = sum(sizes)
+    assert (
+        WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes
+        < whale_component_bytes
+        <= WHALE_FIXTURE_DIMENSIONS.whale_blob_limit_bytes
+    )
     phases.append(
         _phase(
             "census",
@@ -644,14 +544,13 @@ else:
     assert source_path_count == 1
     assert parse_error_count == 0
     assert authorities == ("byte_proven",)
-    assert tuple(row[1] for row in raw_rows) == tuple(
-        _wire_target_bytes(revision) for revision in range(REVISION_COUNT)
-    )
+    assert tuple(row[1] for row in raw_rows) == sizes
+    assert tuple(row[4] for row in raw_rows) == fixture_sha256s
     assert raw_rows[-1][1] == TERMINAL_WIRE_BYTES
-    assert raw_rows[-2][1] >= NEAR_TERMINAL_PREDECESSOR_BYTES
+    assert raw_rows[-2][1] == WHALE_FIXTURE_DIMENSIONS.near_terminal_predecessor_bytes
     terminal_raw_id = raw_rows[-1][2]
     terminal_blob_hash = raw_rows[-1][4]
-    assert raw_rows[-1][4] == hashlib.sha256(_codex_payload(REVISION_COUNT - 1, terminal=True)).hexdigest()
+    assert raw_rows[-1][4] == fixture_sha256s[-1] == _file_sha256(source_path)
     with sqlite3.connect(root / "source.db") as conn:
         post_recovery_membership_count = int(
             conn.execute("SELECT COUNT(DISTINCT raw_id) FROM raw_session_memberships").fetchone()[0]
@@ -725,6 +624,20 @@ else:
                 ("%sanitized terminal response revision 803%",),
             ).fetchone()[0]
         )
+        compaction_event_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM session_events WHERE session_id = ? AND event_type = 'compaction'",
+                (f"codex-session:{SESSION_NATIVE_ID}",),
+            ).fetchone()[0]
+        )
+        attachment_summary_count = int(
+            conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text LIKE '%sha256_base64=%'").fetchone()[0]
+        )
+        attachment_image_block_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM blocks WHERE block_type = 'image' AND search_text LIKE '%sha256_base64=%'"
+            ).fetchone()[0]
+        )
         selected_heads = conn.execute(
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
             (terminal_logical_source_key,),
@@ -744,7 +657,7 @@ else:
     assert len(selected_heads) == 1
     selected_raw_id = str(selected_heads[0][0])
     assert selected_raw_id == terminal_raw_id
-    assert indexed == [(f"codex-session:{SESSION_NATIVE_ID}", selected_raw_id, 7)]
+    assert indexed == [(f"codex-session:{SESSION_NATIVE_ID}", selected_raw_id, 8)]
     with sqlite3.connect(root / "source.db") as conn:
         selected_source_row = conn.execute(
             "SELECT blob_size, lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?",
@@ -752,6 +665,9 @@ else:
         ).fetchone()
     assert selected_source_row == (TERMINAL_WIRE_BYTES, terminal_blob_hash)
     assert terminal_block_count > 0
+    assert compaction_event_count == 1
+    assert attachment_summary_count > 0
+    assert attachment_image_block_count > 0
     expected_baseline_timestamps = tuple(
         int(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000)
         for timestamp in _BASELINE_MESSAGE_TIMESTAMPS
@@ -790,8 +706,8 @@ else:
         inputs=(
             replace(
                 input_ref,
-                input_id=f"{input_ref.input_id}:program-json-sha256:{program_digest}",
-                corpus_id=f"program-json:sha256:{program_digest}",
+                input_id=f"{input_ref.input_id}:fixture-manifest-sha256:{fixture_manifest_digest}",
+                corpus_id=f"fixture-manifest:sha256:{fixture_manifest_digest}",
             ),
         ),
     )
@@ -808,7 +724,7 @@ else:
             "fixture:codex-804-sanitized",
             f"schema-registry:{profile_id}",
             f"candidate-generation:{generation_id}",
-            f"program-json-sha256:{program_digest}",
+            f"fixture-manifest-sha256:{fixture_manifest_digest}",
             f"source-raw-count:{raw_count}",
             f"source-parse-error-count:{parse_error_count}",
             f"recovery-unresolved-before-crash:{pre_recovery_unresolved_count}",
@@ -820,8 +736,8 @@ else:
         cleanup_complete=True,
         notes=(
             "Sanitized structural witness only; no live /realm/db/polylogue access.",
-            "Fixture setup includes 804 payload construction, schema hashing, and canonical program serialization.",
-            f"Serialized program digest is sha256:{program_digest} and is bound into the receipt input identity.",
+            "Fixture setup includes 804 on-disk payload revisions, schema hashing, and a canonical fixture manifest.",
+            f"Serialized fixture manifest digest is sha256:{fixture_manifest_digest} and is bound into the receipt input identity.",
             "Replay and postflight subprocess RSS is unavailable because statm samples only the pytest parent; storage growth is not reported as write I/O.",
             "The crash boundary hard-exits after durable transaction creation with all 804 authority rows unresolved; a fresh process resumes and materializes the cohort into an inactive candidate.",
             "Live confidence remains open until the named successor receipts bind the active archive.",
@@ -841,7 +757,7 @@ else:
                 "receipt_id": workload_receipt.receipt_id,
                 "raw_count": raw_count,
                 "max_blob_size": max_blob_size,
-                "program_digest": program_digest,
+                "fixture_manifest_digest": fixture_manifest_digest,
                 "parse_error_count": parse_error_count,
                 "terminal_raw_id": selected_raw_id,
                 "indexed_session": indexed[0][0],

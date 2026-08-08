@@ -126,6 +126,8 @@ def test_reindex_campaign_manifest_has_positive_denominators(tmp_path: Path) -> 
     assert corpus.manifest.duplicate_raw_ids
     assert corpus.manifest.restart_session_ids
     assert set(corpus.manifest.parser_failure_raw_ids).isdisjoint(corpus.manifest.duplicate_raw_ids)
+    assert dict(corpus.manifest.fixture_dimensions)["fixture_id"] == "codex-whale-bounds-v2"
+    assert dict(corpus.manifest.fixture_dimensions)["revision_count"] == 804
 
 
 def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_duplicate(tmp_path: Path) -> None:

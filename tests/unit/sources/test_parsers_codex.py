@@ -1442,6 +1442,61 @@ class TestGitContextAndInstructions:
         assert "mime=image/png" in (message.text or "")
         assert "sha256_base64=" in (message.text or "")
 
+    def test_message_preserves_bounded_inline_image_evidence(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "message-image",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "inspect this image"},
+                        {"type": "input_image", "image_url": "data:image/png;base64," + ("a" * 4096)},
+                    ],
+                },
+            }
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        message = result.messages[0]
+        assert "data:image/png;base64" not in (message.text or "")
+        assert message.text == "inspect this image"
+        assert all("data:image/png;base64" not in (block.text or "") for block in message.blocks)
+        image_blocks = [block for block in message.blocks if block.type is BlockType.IMAGE]
+        assert len(image_blocks) == 1
+        assert image_blocks[0].media_type == "image/png"
+        assert "mime=image/png" in (image_blocks[0].text or "")
+        assert "sha256_base64=" in (image_blocks[0].text or "")
+
+    def test_message_preserves_image_only_bounded_evidence(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "message-image-only",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": "data:image/png;base64," + ("a" * 4096)},
+                    ],
+                },
+            }
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        message = result.messages[0]
+        assert message.text == ""
+        assert len(message.blocks) == 1
+        assert message.blocks[0].type is BlockType.IMAGE
+        assert message.blocks[0].media_type == "image/png"
+        assert "data:image/png;base64" not in (message.blocks[0].text or "")
+        assert "sha256_base64=" in (message.blocks[0].text or "")
+
 
 # =============================================================================
 # Edge Cases

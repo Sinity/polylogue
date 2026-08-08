@@ -17,7 +17,7 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import click
 
@@ -66,6 +66,10 @@ from polylogue.daemon.write_coordinator import (
     daemon_write_coordinator,
 )
 from polylogue.logging import configure_logging, get_logger
+from polylogue.product.raw_authority import (
+    RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
+    RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+)
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
@@ -106,7 +110,7 @@ _RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
 # -- consuming a prefetch hit costs a receipt write, not a reparse, so this
 # does not meaningfully extend the writer hold.
 _RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT = 64
-_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
+_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
 # polylogue-de2a: declared, enforced ceiling on how long ONE ordinary trickle
 # pass may hold the process-wide writer coordinator. Live evidence showed
 # ``_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT`` alone did not bound hold
@@ -157,7 +161,7 @@ _DRIVE_CATCHUP_MAX_PASS_SECONDS = 20.0
 # contention). 8 GiB comfortably covers the live witness (codex:019f49d8,
 # 6.33GB/788 raws) with headroom; override via
 # ``raw_authority_whale_payload_bytes`` / POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES.
-_RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES = 8 * 1024 * 1024 * 1024
+_RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
 _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
