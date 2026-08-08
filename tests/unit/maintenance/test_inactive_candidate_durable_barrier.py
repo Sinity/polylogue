@@ -455,6 +455,10 @@ def test_candidate_rejects_poisoned_typed_append_census_before_allocation(
         )
     with sqlite3.connect(root / "source.db") as source:
         source.execute(
+            "UPDATE raw_sessions SET logical_source_key = ? WHERE raw_id = ?",
+            ("codex-session:poisoned-append-key", append_raw_id),
+        )
+        source.execute(
             """
             INSERT INTO raw_authority_parser_census (
                 raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
@@ -467,7 +471,7 @@ def test_candidate_rejects_poisoned_typed_append_census_before_allocation(
         source.commit()
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "poisoned-append-receipt.json")
 
-    with pytest.raises(FrozenSourceRemediationRequiredError, match="frozen durable authority bindings"):
+    with pytest.raises(FrozenSourceRemediationRequiredError, match="typed continuation identity"):
         rebuild_index_from_source_sync(
             RebuildIndexRequest(
                 archive_root=root,

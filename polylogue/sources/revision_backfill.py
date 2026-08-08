@@ -996,6 +996,42 @@ def require_current_parser_source_census(
             f"{len(authority_binding_drift)} raw(s) require source remediation (sample: {sample})"
         )
 
+    append_identity_drift: set[str] = set()
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
+        for selection in selections:
+            where = "" if selection is None else f"AND a.raw_id IN ({','.join('?' for _ in selection)})"
+            params = () if selection is None else selection
+            rows = source_conn.execute(
+                f"""
+                SELECT a.raw_id, a.logical_source_key,
+                       predecessor.logical_source_key, baseline.logical_source_key
+                FROM raw_sessions AS a
+                LEFT JOIN raw_sessions AS predecessor ON predecessor.raw_id = a.predecessor_raw_id
+                LEFT JOIN raw_sessions AS baseline ON baseline.raw_id = a.baseline_raw_id
+                WHERE a.revision_kind = 'append' {where}
+                ORDER BY a.raw_id
+                """,
+                params,
+            )
+            for raw_id_value, append_key, predecessor_key, baseline_key in rows:
+                linked_keys = [value for value in (predecessor_key, baseline_key) if value is not None]
+                if append_key is None or not linked_keys:
+                    continue
+                try:
+                    canonical_append_key = _canonical_authority_logical_key(str(append_key))
+                    canonical_linked_keys = {_canonical_authority_logical_key(str(value)) for value in linked_keys}
+                except ValueError:
+                    append_identity_drift.add(str(raw_id_value))
+                    continue
+                if canonical_linked_keys != {canonical_append_key}:
+                    append_identity_drift.add(str(raw_id_value))
+    if append_identity_drift:
+        sample = ", ".join(sorted(append_identity_drift)[:5])
+        raise FrozenSourceRemediationRequiredError(
+            "inactive candidate typed continuation identity differs from linked byte authority; "
+            f"{len(append_identity_drift)} raw(s) require source remediation (sample: {sample})"
+        )
+
     unresolved_raw_ids: list[str] = []
     with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source_conn:
         for selection in selections:

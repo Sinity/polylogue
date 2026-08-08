@@ -617,15 +617,26 @@ def test_run_reindex_canary_rejects_missing_receipt_even_with_ambient_valid_rece
         run_reindex_canary(root, schema_inference_receipt_path=None, sessions_per_origin=1, no_promote=True)
 
 
+@pytest.mark.parametrize("anchor_state", ["missing", "poisoned"])
 def test_run_reindex_canary_cleans_candidate_after_comparison_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, anchor_state: str
 ) -> None:
     """A post-rebuild canary failure cannot strand its inactive candidate."""
     root = tmp_path / "archive"
     _prepare_candidate_ready_archive(root)
     receipt_path = _write_candidate_receipt(root, tmp_path / "receipt.json")
+    anchor = root / ".index-active-pointer"
+    expected_anchor: bytes | None = None
 
     def fail_compare(*args: object, **kwargs: object) -> CanaryDiffReport:
+        nonlocal expected_anchor
+        del kwargs
+        if anchor.exists() or anchor.is_symlink():
+            anchor.unlink()
+        if anchor_state == "poisoned":
+            candidate_path = Path(str(args[1]))
+            anchor.write_text(str(candidate_path), encoding="utf-8")
+            expected_anchor = anchor.read_bytes()
         raise RuntimeError("synthetic canary comparison failure")
 
     monkeypatch.setattr(reindex_canary_module, "compare_reindex_generations", fail_compare)
@@ -639,6 +650,7 @@ def test_run_reindex_canary_cleans_candidate_after_comparison_failure(
         )
 
     assert not list((root / ".index-generations").glob("gen-*"))
+    assert (anchor.read_bytes() if anchor.exists() else None) == expected_anchor
 
 
 def test_run_reindex_canary_clean_success_retains_a_valid_inactive_candidate(tmp_path: Path) -> None:

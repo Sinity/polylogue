@@ -388,7 +388,7 @@ def _discard_canary_candidate(archive_root: Path, receipt: object) -> list[BaseE
     generation_id = generation.get("generation_id")
     if not isinstance(generation_id, str) or not generation_id:
         return [RuntimeError("canary receipt candidate generation id is missing")]
-    store = IndexGenerationStore(ArchiveLocation.resolve(archive_root))
+    store = IndexGenerationStore(ArchiveLocation.resolve(archive_root), repair_anchor=False)
     try:
         candidate = store.load(generation_id)
     except BaseException as exc:
