@@ -66,7 +66,7 @@ from polylogue.pipeline.ingest_outcomes import (
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
-from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
+from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     _detect_provider_from_raw_bytes,
     is_stream_record_provider,
@@ -345,7 +345,7 @@ def _write_codex_thread_state_evidence(
 
 
 def _is_json_stream_decode_error(error: BaseException) -> bool:
-    return isinstance(error, (StdlibJSONDecodeError, UnicodeDecodeError, PartialJsonStreamError))
+    return isinstance(error, (StdlibJSONDecodeError, UnicodeDecodeError, PartialJsonStreamError, JsonlDecodeError))
 
 
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
@@ -496,6 +496,10 @@ def _captured_jsonl_ends_at_record_boundary(
 @dataclass(slots=True)
 class _ArchiveFullWriteResult:
     raw_ids: dict[str, str] = field(default_factory=dict)
+    # Terminal refusals are durably retained and therefore handled by this
+    # observation. Keep them separate from accepted raw ids so deferred
+    # authority failures remain retryable.
+    terminal_raw_ids: dict[str, str] = field(default_factory=dict)
     # A raw whose membership census does not produce an accepted session is
     # still a durably acquired, successfully parsed source observation. The
     # decision can be pending for the materialization conveyor or already
@@ -2192,10 +2196,16 @@ class LiveBatchProcessor:
                 for raw_id in raw_by_id
                 if raw_id not in archive_write.raw_ids
                 and raw_id not in archive_write.deferred_raw_ids
+                and raw_id not in archive_write.terminal_raw_ids
                 and raw_id not in archive_write.skipped_raw_ids
             )
             raw_by_id = {
-                (archive_write.raw_ids.get(raw_id) or archive_write.deferred_raw_ids.get(raw_id) or raw_id): path
+                (
+                    archive_write.raw_ids.get(raw_id)
+                    or archive_write.deferred_raw_ids.get(raw_id)
+                    or archive_write.terminal_raw_ids.get(raw_id)
+                    or raw_id
+                ): path
                 for raw_id, path in raw_by_id.items()
             }
             if heartbeat is not None:
@@ -2540,23 +2550,43 @@ class LiveBatchProcessor:
                             with blob_store.open(blob_hash) as payload_handle:
                                 sessions = parse_stream_payload(
                                     provider,
-                                    _iter_json_stream(payload_handle, source_name),
+                                    _iter_json_stream(
+                                        payload_handle,
+                                        source_name,
+                                        fail_on_decode_error=provider is Provider.UNKNOWN,
+                                    ),
                                     fallback_id,
                                     source_path=record.source_path,
                                 )
                         else:
                             sessions = parse_stream_payload(
                                 provider,
-                                _iter_json_stream(BytesIO(payload), source_name),
+                                _iter_json_stream(
+                                    BytesIO(payload),
+                                    source_name,
+                                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                                ),
                                 fallback_id,
                                 source_path=record.source_path,
                             )
                     else:
                         if payload is None:
                             with blob_store.open(blob_hash) as payload_handle:
-                                payloads = list(_iter_json_stream(payload_handle, source_name))
+                                payloads = list(
+                                    _iter_json_stream(
+                                        payload_handle,
+                                        source_name,
+                                        fail_on_decode_error=provider is Provider.UNKNOWN,
+                                    )
+                                )
                         else:
-                            payloads = list(_iter_json_stream(BytesIO(payload), source_name))
+                            payloads = list(
+                                _iter_json_stream(
+                                    BytesIO(payload),
+                                    source_name,
+                                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                                )
+                            )
                         sessions = parse_payload(
                             provider,
                             payloads,
@@ -2841,6 +2871,7 @@ class LiveBatchProcessor:
                                 acquired_at_ms=acquired_at_ms,
                                 kind=RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
                             )
+                            result.terminal_raw_ids[record.raw_id] = source_raw_id
                         archive.mark_raw_parse_failed(source_raw_id, provider=provider, error=exc)
                     logger.warning(
                         "live.watcher: archive full ingest failed for %s: %s: %s",

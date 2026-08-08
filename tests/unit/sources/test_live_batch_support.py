@@ -431,6 +431,35 @@ def test_full_ingest_unknown_export_without_sessions_records_terminal_evidence(t
     assert artifact == ("terminal_unknown_export_no_session", "unsupported_parseable", 0)
 
 
+def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_retrying(tmp_path: Path) -> None:
+    """Complete malformed JSONL lines are terminal decode evidence, not no-session evidence."""
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "malformed.jsonl"
+    path.write_bytes(b'{"broken":}\n{"also_broken":}\n')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    first = processor._ingest_full_paths_sync([path], source_name="unknown")
+    second = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert first.succeeded == [path]
+    assert first.failed == []
+    assert second.succeeded == [path]
+    assert second.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unknown_json_decode", "decode_failed")
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 1
+    assert lifecycle.unexplained == 0
+
+
 def test_full_ingest_unknown_json_decode_records_terminal_decode_evidence(tmp_path: Path) -> None:
     root = tmp_path / "unknown"
     root.mkdir()
