@@ -27,6 +27,7 @@ reverts the corresponding fix and makes the test fail.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -202,6 +203,71 @@ class TestDelegatedSettingsReachRealConsumers:
 
         assert provider is not None, "vector provider construction failed even though TOML supplied a voyage key"
         assert getattr(provider, "voyage_key", None) == "toml-only-fixture-key"
+        assert getattr(provider, "model", None) == "voyage-4-lite"
+        assert getattr(provider, "dimension", None) == 1024
+
+    def test_configured_embedding_recipe_reaches_query_and_document_requests(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        pytest.importorskip("sqlite_vec")
+        from polylogue.api import Polylogue
+        from polylogue.config import resolve_runtime_config
+        from polylogue.storage.search_providers import create_vector_provider
+        from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+
+        _disable_site(monkeypatch)
+        user = tmp_path / "user.toml"
+        user.write_text(
+            '[embedding]\nvoyage_api_key = "toml-only-fixture-key"\nmodel = "voyage-4-lite"\ndimension = 512\n',
+            encoding="utf-8",
+        )
+        config = resolve_runtime_config(config_path=user).as_config()
+        archive = Polylogue.open(config=config)
+        provider = create_vector_provider(archive.config, db_path=tmp_path / "embeddings.db")
+
+        assert isinstance(provider, SqliteVecProvider)
+        assert provider.model == "voyage-4-lite"
+        assert provider.dimension == 512
+
+        payloads: list[dict[str, object]] = []
+        response = MagicMock()
+        response.json.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+        response.raise_for_status = MagicMock()
+
+        def capture_post(*args: object, **kwargs: object) -> MagicMock:
+            del args
+            payload = kwargs.get("json")
+            assert isinstance(payload, dict)
+            payloads.append(dict(payload))
+            return response
+
+        with patch("httpx.Client") as client_class:
+            client = MagicMock()
+            client.post = capture_post
+            client.__enter__ = MagicMock(return_value=client)
+            client.__exit__ = MagicMock(return_value=False)
+            client_class.return_value = client
+
+            provider._get_embeddings(["query text"], input_type="query")
+            provider._get_embeddings(["document text"], input_type="document")
+
+        assert payloads == [
+            {
+                "input": ["query text"],
+                "model": "voyage-4-lite",
+                "input_type": "query",
+                "output_dimension": 512,
+            },
+            {
+                "input": ["document text"],
+                "model": "voyage-4-lite",
+                "input_type": "document",
+                "output_dimension": 512,
+            },
+        ]
 
 
 class TestDirectEnvBypassCallersRouteThroughResolver:

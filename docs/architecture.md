@@ -323,8 +323,9 @@ full permission audit trail (PermissionRequest/PermissionDenied).
 
 ## Embedding Pipeline
 
-Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
-1024 dimensions) via SQLite-vec (`vec0` virtual table):
+Vector embeddings for semantic search, powered by the configured Voyage AI
+recipe (`voyage-4-lite` and 1024 dimensions by default) via SQLite-vec (`vec0`
+virtual table):
 
 - **Storage**: `message_embeddings` (vec0) and `message_embeddings_meta` are
   content-addressed, keyed by `embedding_input_hash = SHA-256(model,

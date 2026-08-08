@@ -93,13 +93,15 @@ class Config:
     sources: list[Source]
     db_path: Path
     # Class-level defaults, not bare annotations. ``__init__`` always assigns
-    # both, so these change no runtime behaviour -- but a bare annotation is
+    # these, so they change no runtime behaviour -- but a bare annotation is
     # invisible to ``dir()``, which means ``MagicMock(spec=Config)`` silently
     # omits them and any consumer reading ``config.drive_config`` blows up with
     # ``Mock object has no attribute`` instead of getting ``None``. Declaring
     # the defaults makes the spec honest about the optional surface.
     drive_config: DriveConfig | None = None
     index_config: IndexConfig | None = None
+    embedding_model: str = "voyage-4-lite"
+    embedding_dimension: int = 1024
 
     def __init__(
         self,
@@ -109,6 +111,8 @@ class Config:
         db_path: Path | None = None,
         drive_config: DriveConfig | None = None,
         index_config: IndexConfig | None = None,
+        embedding_model: str = "voyage-4-lite",
+        embedding_dimension: int = 1024,
     ) -> None:
         self.archive_root = archive_root
         self.render_root = render_root
@@ -116,6 +120,8 @@ class Config:
         self.db_path = db_path if db_path is not None else resolve_active_index_path(archive_root)
         self.drive_config = drive_config
         self.index_config = index_config
+        self.embedding_model = embedding_model
+        self.embedding_dimension = embedding_dimension
         for attr in ("archive_root", "render_root", "db_path"):
             value = getattr(self, attr)
             if not isinstance(value, Path):
@@ -133,13 +139,16 @@ class Config:
             and self.db_path == other.db_path
             and self.drive_config == other.drive_config
             and self.index_config == other.index_config
+            and self.embedding_model == other.embedding_model
+            and self.embedding_dimension == other.embedding_dimension
         )
 
     def __repr__(self) -> str:
         return (
             f"Config(archive_root={self.archive_root!r}, render_root={self.render_root!r}, "
             f"sources={self.sources!r}, db_path={self.db_path!r}, "
-            f"drive_config={self.drive_config!r}, index_config={self.index_config!r})"
+            f"drive_config={self.drive_config!r}, index_config={self.index_config!r}, "
+            f"embedding_model={self.embedding_model!r}, embedding_dimension={self.embedding_dimension!r})"
         )
 
     def with_sources(self, sources: list[Source]) -> Config:
@@ -150,6 +159,8 @@ class Config:
             db_path=self.db_path,
             drive_config=self.drive_config,
             index_config=self.index_config,
+            embedding_model=self.embedding_model,
+            embedding_dimension=self.embedding_dimension,
         )
 
 
@@ -353,7 +364,7 @@ class PolylogueConfig:
 
     @property
     def embedding_model(self) -> str:
-        return str(self._data.get("embedding_model", "voyage-4"))
+        return str(self._data.get("embedding_model", "voyage-4-lite"))
 
     @property
     def embedding_dimension(self) -> int:
@@ -1805,7 +1816,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "browser_capture_port": 8765,
         "browser_capture_allowed_origins": "chrome-extension://*",
         "embedding_enabled": False,
-        "embedding_model": "voyage-4",
+        "embedding_model": "voyage-4-lite",
         "embedding_dimension": 1024,
         "embedding_max_cost_usd": 5.0,
         "voyage_api_key": None,
@@ -2160,6 +2171,8 @@ class ResolvedRuntimeConfig:
             db_path=self.paths.index_db,
             drive_config=self.drive_config,
             index_config=self.index_config,
+            embedding_model=self.settings.embedding_model,
+            embedding_dimension=self.settings.embedding_dimension,
         )
 
 

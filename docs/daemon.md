@@ -777,7 +777,7 @@ Embedding settings live in the `[embedding]` section of `polylogue.toml` (see
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Enable post-ingest embedding convergence |
-| `model` | string | `voyage-4` | Voyage AI model name |
+| `model` | string | `voyage-4-lite` | Voyage AI model name |
 | `dimension` | int | `1024` | Vector dimension (must match the model) |
 | `max_cost_usd` | float | `5.0` | Per-run soft cost cap in USD (0 = no limit) |
 | `voyage_api_key` | string | (none) | Voyage AI API key |
@@ -787,7 +787,7 @@ Example TOML:
 ```toml
 [embedding]
 enabled = true
-model = "voyage-4"
+model = "voyage-4-lite"
 dimension = 1024
 max_cost_usd = 1.00
 voyage_api_key = "va-..."

@@ -29,6 +29,8 @@ class TestConfig:
         assert config.archive_root == tmp_path / "archive"
         assert config.render_root == tmp_path / "render"
         assert config.sources == []
+        assert config.embedding_model == "voyage-4-lite"
+        assert config.embedding_dimension == 1024
 
     def test_config_with_sources(self, tmp_path: Path) -> None:
         """Config stores source list."""
@@ -436,7 +438,7 @@ class TestPolylogueConfigDefaults:
         from polylogue.config import load_polylogue_config
 
         cfg = load_polylogue_config()
-        assert cfg.embedding_model == "voyage-4"
+        assert cfg.embedding_model == "voyage-4-lite"
 
     def test_embedding_dimension_default(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
