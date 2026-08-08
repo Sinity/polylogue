@@ -49,6 +49,7 @@ from polylogue.maintenance.archive_verification import read_raw_failure_lifecycl
 from polylogue.maintenance.rebuild_index import (
     _REBUILD_TERMINAL_NOT_RESUMABLE,
     _reconcile_active_generation_transaction,
+    validate_rebuild_source_admission,
 )
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.index_generation import (
@@ -210,7 +211,7 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
         # after ownership acquisition so receipt expiry, source revision, or
         # external-corpus drift cannot reach generation bookkeeping.
         _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
-        store = IndexGenerationStore(location)
+        store = IndexGenerationStore(location, repair_anchor=False)
         transaction: IndexRebuildTransaction | None
         try:
             transaction = store.load_transaction(DAEMON_BULK_REBUILD_OPERATION_ID)
@@ -229,6 +230,11 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
             if transaction.status not in _TERMINAL_NOT_RESUMABLE:
                 _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
                 return transaction
+
+        # A fresh transaction receives one archive-wide source admission.
+        # Resumed passes validate only their selected authority component in
+        # rebuild_index_from_source_sync, avoiding a full reparse per page.
+        validate_rebuild_source_admission(root, location)
 
         if transaction is not None:
             if transaction.status == "promoted-attestation-failed":
@@ -379,7 +385,7 @@ async def run_daemon_bulk_rebuild_pass(
         # Recheck before consuming the receipt or selecting source material.
         await asyncio.to_thread(require_rebuild_schema_currency, root)
         await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
-        store = IndexGenerationStore(location)
+        store = IndexGenerationStore(location, repair_anchor=False)
         await asyncio.to_thread(_validate_rebuild_provenance_receipt, root, receipt_path)
         page = await asyncio.to_thread(store.next_raw_page, transaction, limit=batch_size)
     finally:

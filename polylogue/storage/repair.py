@@ -5817,6 +5817,7 @@ def repair_session_insights(
     session_ids: tuple[str, ...] | None = None,
     archive_root_override: Path | None = None,
     owned_inactive_generation: tuple[str, str] | None = None,
+    resolve_convergence_debt: bool = True,
 ) -> RepairResult:
     """Repair / rebuild session insights.
 
@@ -5852,6 +5853,11 @@ def repair_session_insights(
     generation) cannot reach at all. Do not remove the mutate path
     without first giving thread/tag-rollup/day-summary aggregate
     staleness its own automatic convergence mechanism.
+
+    ``resolve_convergence_debt=False`` is reserved for an owned inactive
+    generation. Its ``ops.db`` is a read-through link to live disposable
+    state, so candidate materialization may prove derived readiness without
+    clearing the active daemon's debt ledger.
     """
     from polylogue.paths import archive_root as _resolve_archive_root
     from polylogue.storage.archive_identity import resolve_active_index_path
@@ -5944,7 +5950,7 @@ def repair_session_insights(
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.
             success = True if session_ids is not None else assess_session_insight_repairs(refreshed).row_debt == 0
-            if success:
+            if success and resolve_convergence_debt:
                 _resolve_session_insight_convergence_debt(
                     ops_db=config.archive_root / "ops.db",
                     session_ids=session_ids,

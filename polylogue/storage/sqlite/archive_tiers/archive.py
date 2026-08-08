@@ -11,18 +11,19 @@ contract spanning index and source) moved to
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, BinaryIO, Literal, TypedDict, cast
+from typing import IO, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
 
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
@@ -134,6 +135,8 @@ from polylogue.insights.temporal_source import time_confidence_for_source
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import CleanupOrphansResult, Heartbeat, PreparedBlob
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
@@ -183,6 +186,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     apply_raw_revision_replay,
     bind_raw_revision,
     blob_path_for_hash,
+    classify_raw_revision_cohort_for_frozen_candidate,
     classify_raw_revision_cohort_for_live_watch,
     classify_raw_revision_cohort_for_rebuild_repair,
     classify_untyped_full_revision_groups,
@@ -193,6 +197,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     finalize_raw_parse_state,
     mark_raw_parse_failed,
     mark_raw_parse_succeeded,
+    membership_decisions_for_classification,
     open_raw_revision_material,
     pending_raw_revision_logical_keys,
     raw_append_revision_parent,
@@ -217,6 +222,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     record_raw_failure_evidence,
     release_provisional_full_revisions,
     replace_raw_membership_census,
+    require_frozen_membership_authority,
     unclassified_raw_revision_rows,
     write_parsed_for_retained_raw,
     write_parsed_for_retained_raw_result,
@@ -1617,7 +1623,7 @@ def _session_filter_is_active(session_filters: Mapping[str, object] | None) -> b
 
 
 class _SourceTierOnlyIndexConnection:
-    """Loud placeholder for the index connection in source-tier acquisition mode.
+    """Loud placeholder for an archive mode that must not open ``index.db``.
 
     Acquire-only ingestion (polylogue-gbs02) deliberately never opens
     ``index.db`` — a derived tier awaiting rebuild may be at an older schema
@@ -1627,14 +1633,92 @@ class _SourceTierOnlyIndexConnection:
     instead of writing through a stale-schema handle.
     """
 
+    def __init__(self, mode: str = "source-tier acquisition") -> None:
+        self._mode = mode
+
     def __getattr__(self, name: str) -> Any:
         if name == "close":
             return lambda: None
         raise RuntimeError(
-            "index tier is unavailable in source-tier acquisition mode "
+            f"index tier is unavailable in {self._mode} mode "
             f"(attempted connection attribute {name!r}); only raw source-tier "
-            "admission is permitted while derived tiers await rebuild"
+            "access is permitted while the derived tier is unavailable"
         )
+
+
+class InactiveCandidateDurableWriteError(RuntimeError):
+    """An inactive generation attempted to mutate read-through durable state."""
+
+
+class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
+    """Read frozen blob bytes while refusing candidate publication attempts."""
+
+    @staticmethod
+    def _refuse() -> NoReturn:
+        raise InactiveCandidateDurableWriteError(
+            "inactive candidate generations may read frozen blobs but may not publish or replace blob bytes"
+        )
+
+    def _queue(self, prepared: PreparedBlob) -> NoReturn:
+        del prepared
+        self._refuse()
+
+    def prepare_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> NoReturn:
+        del source, heartbeat
+        self._refuse()
+
+    def prepare_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> NoReturn:
+        del source, heartbeat
+        self._refuse()
+
+    def prepare_from_bytes(self, data: bytes) -> NoReturn:
+        del data
+        self._refuse()
+
+    def publish_prepared(self, prepared: PreparedBlob) -> NoReturn:
+        del prepared
+        self._refuse()
+
+    def publish_many(self, prepared: Iterable[PreparedBlob]) -> NoReturn:
+        del prepared
+        self._refuse()
+
+    @staticmethod
+    def discard_prepared(prepared: PreparedBlob) -> NoReturn:
+        del prepared
+        _InactiveCandidateBlobPublisher._refuse()
+
+    def write_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
+        del source, heartbeat
+        return self._refuse()
+
+    def write_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
+        del source, heartbeat
+        return self._refuse()
+
+    def write_from_bytes(self, data: bytes) -> tuple[str, int]:
+        del data
+        return self._refuse()
+
+    def remove(self, hash_hex: str) -> NoReturn:
+        del hash_hex
+        self._refuse()
+
+    def cleanup_orphans(
+        self,
+        orphan_hashes: set[str],
+        *,
+        dry_run: bool = True,
+    ) -> CleanupOrphansResult:
+        if not dry_run:
+            return self._refuse()
+        return super().cleanup_orphans(orphan_hashes, dry_run=True)
+
+    def flush(self) -> tuple[()]:
+        return ()
+
+    def discard_pending(self) -> None:
+        return None
 
 
 class ArchiveStore:
@@ -1649,10 +1733,20 @@ class ArchiveStore:
         read_timeout: float = 5.0,
         owned_inactive_generation: tuple[str, str] | None = None,
         source_tier_acquisition: bool = False,
+        frozen_source_validation: bool = False,
+        frozen_index_path: Path | None = None,
     ) -> None:
         if source_tier_acquisition and read_only:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
+        if frozen_source_validation and (not read_only or owned_inactive_generation is not None):
+            raise ValueError("frozen source validation requires a read-only active archive")
+        if frozen_index_path is not None and not frozen_source_validation:
+            raise ValueError("a frozen index path is valid only for frozen source validation")
         self._source_tier_acquisition = source_tier_acquisition
+        self._owned_inactive_generation = owned_inactive_generation
+        self._frozen_source_validation = frozen_source_validation
+        self._frozen_index_path = frozen_index_path
+        self._inactive_candidate_durable_read_only = owned_inactive_generation is not None or frozen_source_validation
         self._active_writer_lease = None
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
@@ -1673,26 +1767,52 @@ class ArchiveStore:
                     self._active_writer_lease = None
                     raise
             else:
-                from polylogue.storage.index_generation import IndexGenerationStore
+                from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 
                 generation_id, owner_id = owned_inactive_generation
                 # An inactive generation is opened from its generation root,
                 # while the configured root may intentionally point at a
-                # different live archive. Resolve the owning archive from the
-                # candidate path instead of routing this safety check through
-                # global configuration.
-                generation_archive_root = archive_root.parent.parent
-                generation = IndexGenerationStore.for_archive_root(generation_archive_root).load(generation_id)
+                # different live archive. Read the candidate's declared root,
+                # then require the store anchored at that root to return the
+                # exact same metadata. Deriving the root from ``../..`` fails
+                # for supported split-index layouts, where generations live
+                # beside the external active index rather than below the
+                # durable archive root.
+                generation = IndexGeneration(
+                    **json.loads((archive_root / "generation.json").read_text(encoding="utf-8"))
+                )
+                declared_archive_root = Path(generation.archive_root).resolve(strict=True)
+                authoritative_generation = IndexGenerationStore.for_archive_root(
+                    declared_archive_root,
+                    repair_anchor=False,
+                ).load(generation_id)
                 if (
-                    generation.owner_id != owner_id
+                    generation != authoritative_generation
+                    or generation.owner_id != owner_id
                     or generation.state != "inactive"
                     or Path(generation.index_path).parent.resolve(strict=True) != archive_root.resolve(strict=True)
                 ):
                     raise RuntimeError("inactive index generation ownership validation failed")
+                for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
+                    expected = declared_archive_root / filename
+                    candidate = archive_root / filename
+                    if expected.exists() or expected.is_symlink():
+                        if not candidate.is_symlink() or candidate.resolve(strict=True) != expected.resolve(
+                            strict=True
+                        ):
+                            raise RuntimeError(
+                                f"inactive index generation has an invalid read-through target: {filename}"
+                            )
+                    elif candidate.exists() or candidate.is_symlink():
+                        raise RuntimeError(f"inactive index generation invented a read-through target: {filename}")
         try:
             self._initialize_store(
                 archive_root,
-                initialize=initialize and not source_tier_acquisition,
+                # The generation store already initialized the candidate's
+                # sole owned tier, index.db. Active-root initialization would
+                # reinterpret deliberate source/user read-through symlinks as
+                # writable durable tiers.
+                initialize=initialize and not source_tier_acquisition and owned_inactive_generation is None,
                 read_only=read_only,
                 read_timeout=read_timeout,
                 # polylogue-623q: only ever True for a write connection against
@@ -1723,7 +1843,7 @@ class ArchiveStore:
     ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
-        self.index_db_path = archive_root / "index.db"
+        self.index_db_path = self._frozen_index_path or archive_root / "index.db"
         self.embeddings_db_path = archive_root / "embeddings.db"
         self.user_db_path = archive_root / "user.db"
         self.ops_db_path = archive_root / "ops.db"
@@ -1753,21 +1873,39 @@ class ArchiveStore:
                         f"source-tier acquisition refused: durable tier {spec.filename} "
                         f"user_version {current} != expected {spec.version}"
                     )
-            from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
             self._conn = cast(sqlite3.Connection, _SourceTierOnlyIndexConnection())
             self._user_tier_attached = False
             self._tags_relation = "session_tags"
             self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
             return
+        if self._frozen_source_validation:
+            # Candidate admission derives every decision from source.db and
+            # frozen blob bytes. Requiring an index handle here would make the
+            # derived tier being rebuilt a prerequisite for its own rebuild.
+            self._conn = cast(
+                sqlite3.Connection,
+                _SourceTierOnlyIndexConnection("frozen source validation"),
+            )
+            self._user_tier_attached = False
+            self._tags_relation = "session_tags"
+            self._blob_publisher = _InactiveCandidateBlobPublisher(
+                self.source_db_path,
+                self.archive_root / "blob",
+            )
+            return
         if initialize:
             initialize_active_archive_root(archive_root)
-        if read_only:
+        if read_only and not self._frozen_source_validation:
             self._ensure_read_runtime_indexes()
+        if read_only:
             self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True, timeout=read_timeout)
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
-            self._conn = sqlite3.connect(self.index_db_path)
+            self._conn = (
+                sqlite3.connect(f"file:{self.index_db_path}?mode=rw", uri=True)
+                if self._inactive_candidate_durable_read_only
+                else sqlite3.connect(self.index_db_path)
+            )
             pragma_statements = (
                 BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
                 if bulk_build_profile
@@ -1793,9 +1931,10 @@ class ArchiveStore:
         self._user_tier_attached = False
         self._tags_relation = "session_tags"
         if not read_only:
-            from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-            self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
+            publisher_type = (
+                _InactiveCandidateBlobPublisher if self._inactive_candidate_durable_read_only else ArchiveBlobPublisher
+            )
+            self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
         self._attach_user_tier_if_present()
 
     @classmethod
@@ -1821,6 +1960,22 @@ class ArchiveStore:
         connection raises immediately.
         """
         return cls(archive_root, initialize=False, read_only=False, source_tier_acquisition=True)
+
+    @classmethod
+    def open_frozen_source_validation(
+        cls,
+        archive_root: Path,
+        *,
+        active_index_path: Path | None = None,
+    ) -> ArchiveStore:
+        """Open the live tiers without repairing or mutating any durable or pointer state."""
+        return cls(
+            archive_root,
+            initialize=False,
+            read_only=True,
+            frozen_source_validation=True,
+            frozen_index_path=active_index_path,
+        )
 
     @classmethod
     def open_owned_inactive_generation(cls, archive_root: Path, *, generation_id: str, owner_id: str) -> ArchiveStore:
@@ -1893,10 +2048,24 @@ class ArchiveStore:
     def _ensure_source_conn(self) -> sqlite3.Connection:
         """Return the persistent source.db write connection, opening it lazily."""
         if self._source_conn is None:
-            conn = sqlite3.connect(self.source_db_path)
+            if self._inactive_candidate_durable_read_only:
+                conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
+                conn.execute("PRAGMA query_only = ON")
+            else:
+                conn = sqlite3.connect(self.source_db_path)
             conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
         return self._source_conn
+
+    def _open_user_write_connection(self, *, initialize: bool = False) -> sqlite3.Connection:
+        """Open user.db for mutation unless this store is an inactive candidate."""
+        if self._inactive_candidate_durable_read_only:
+            raise InactiveCandidateDurableWriteError(
+                "inactive candidate generations may read frozen user assertions but may not mutate user.db"
+            )
+        if initialize:
+            initialize_archive_database(self.user_db_path, ArchiveTier.USER)
+        return open_connection(self.user_db_path)
 
     def commit(self) -> None:
         """Commit index.db and any source transaction left by other callers.
@@ -2019,6 +2188,29 @@ class ArchiveStore:
         acquired: dict[int, tuple[bytes | None, int, str]] = {}
         refs: list[ArchiveSourceBlobRef] = []
         for attachment in session.attachments:
+            if self._inactive_candidate_durable_read_only:
+                if attachment.inline_bytes is not None:
+                    hash_hex = hashlib.sha256(attachment.inline_bytes).hexdigest()
+                    size = len(attachment.inline_bytes)
+                elif attachment.precomputed_blob is not None:
+                    hash_hex, size = attachment.precomputed_blob
+                else:
+                    continue
+                blob_path = self._blob_publisher.blob_path(hash_hex)
+                if not blob_path.is_file() or blob_path.stat().st_size != size:
+                    raise InactiveCandidateDurableWriteError(
+                        "inactive candidate requires attachment bytes to be present in the frozen blob namespace: "
+                        f"{hash_hex}"
+                    )
+                with blob_path.open("rb") as handle:
+                    stored_hash = hashlib.file_digest(handle, "sha256").hexdigest()
+                if stored_hash != hash_hex:
+                    raise InactiveCandidateDurableWriteError(
+                        "inactive candidate found attachment bytes that do not match the frozen blob identity: "
+                        f"{hash_hex}"
+                    )
+                acquired[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
+                continue
             if attachment.inline_bytes is None:
                 continue
             hash_hex, size = self._blob_publisher.write_from_bytes(attachment.inline_bytes)
@@ -2349,6 +2541,21 @@ class ArchiveStore:
             self,
             logical_source_key,
             manage_transaction=manage_transaction,
+        )
+
+    def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
+        return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
+
+    def require_frozen_membership_authority(
+        self,
+        logical_source_key: str,
+        classification: MembershipClassification,
+    ) -> None:
+        require_frozen_membership_authority(
+            self,
+            logical_source_key,
+            classification,
+            membership_decisions_for_classification(classification),
         )
 
     def classify_raw_revision_cohort_for_live_watch(
@@ -4301,10 +4508,8 @@ class ArchiveStore:
         author_kind: str | None = None,
     ) -> int:
         """Add user tag assertions to archive user.db and return changed count."""
-        user_db_path = self.user_db_path
-        initialize_archive_database(user_db_path, ArchiveTier.USER)
         changed = 0
-        user_conn = open_connection(user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         user_conn.row_factory = sqlite3.Row
         try:
             with user_conn:
@@ -4343,7 +4548,7 @@ class ArchiveStore:
         if not resolved_session_ids or not self.user_db_path.exists():
             return 0
         removed = 0
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 for session_id in resolved_session_ids:
@@ -5140,9 +5345,7 @@ class ArchiveStore:
 
     def set_user_metadata(self, session_ids: tuple[str, ...], pairs: tuple[tuple[str, object], ...]) -> int:
         """Set human-owned metadata as archive user.db assertions."""
-        user_db_path = self.user_db_path
-        initialize_archive_database(user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         user_conn.row_factory = sqlite3.Row
         try:
             changed = 0
@@ -5201,7 +5404,7 @@ class ArchiveStore:
             raise ValueError("metadata key cannot be empty")
         if not self.user_db_path.exists():
             return 0
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 assertion_id = assertion_id_for_session_metadata(resolved_session_id, normalized_key)
@@ -5214,8 +5417,7 @@ class ArchiveStore:
 
     def add_mark(self, target_type: str, target_id: str, mark_type: str) -> bool:
         """Add one user mark to archive user.db."""
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_mark(target_type, target_id, mark_type))
             exists = assertion is not None and assertion.status != "deleted"
@@ -5229,7 +5431,7 @@ class ArchiveStore:
         """Remove one user mark from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(
@@ -5278,8 +5480,7 @@ class ArchiveStore:
 
     def save_annotation(self, annotation_id: str, target_type: str, target_id: str, note_text: str) -> bool:
         """Create or update one annotation in archive user.db."""
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_annotation(annotation_id))
             exists = assertion is not None and assertion.status != "deleted"
@@ -5303,8 +5504,7 @@ class ArchiveStore:
     ) -> DurableAnnotationSchema:
         """Persist an immutable annotation schema definition in ``user.db``."""
 
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         user_conn.row_factory = sqlite3.Row
         try:
             with user_conn:
@@ -5347,8 +5547,7 @@ class ArchiveStore:
     def save_annotation_batch(self, batch: AnnotationBatch) -> AnnotationBatch:
         """Persist one immutable annotation-batch provenance container."""
 
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         user_conn.row_factory = sqlite3.Row
         try:
             with user_conn:
@@ -5457,7 +5656,7 @@ class ArchiveStore:
         """Delete one annotation from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_annotation(annotation_id), "deleted")
@@ -5472,8 +5671,7 @@ class ArchiveStore:
         query = json.loads(query_json)
         if not isinstance(query, dict):
             raise ValueError("query_json must encode an object")
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion_id = assertion_id_for_saved_view(view_id)
             assertion = read_assertion_envelope(user_conn, assertion_id)
@@ -5526,7 +5724,7 @@ class ArchiveStore:
         """Delete one saved view from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_saved_view(view_id), "deleted")
@@ -5546,8 +5744,7 @@ class ArchiveStore:
             raise ValueError("payload_json must encode an object")
         payload = dict(payload)
         payload["session_ids_json"] = session_ids_json
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion = read_assertion_envelope(user_conn, assertion_id_for_recall_pack(pack_id))
             exists = assertion is not None and assertion.status != "deleted"
@@ -5595,7 +5792,7 @@ class ArchiveStore:
         """Delete one recall pack from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_recall_pack(pack_id), "deleted")
@@ -5619,8 +5816,7 @@ class ArchiveStore:
             "layout_json": layout_json,
             "active_target_json": active_target_json,
         }
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion_id = assertion_id_for_workspace(workspace_id)
             assertion = read_assertion_envelope(user_conn, assertion_id)
@@ -5678,7 +5874,7 @@ class ArchiveStore:
         """Delete one workspace from archive user.db."""
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 return mark_assertion_status(user_conn, assertion_id_for_workspace(workspace_id), "deleted")
@@ -5698,9 +5894,8 @@ class ArchiveStore:
         """Record one learning correction in archive user.db."""
         resolved_session_id = self.resolve_session_id(session_id)
         correction_kind = parse_correction_kind(kind)
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         stored_payload: dict[str, object] = {"payload": dict(payload), "note": note}
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             with user_conn:
                 upsert_correction(
@@ -5753,7 +5948,7 @@ class ArchiveStore:
         correction_kind = parse_correction_kind(kind)
         if not self.user_db_path.exists():
             return False
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 correction_id = correction_id_for("insight", resolved_session_id, correction_kind.value)
@@ -5766,7 +5961,7 @@ class ArchiveStore:
         resolved_session_id = self.resolve_session_id(session_id)
         if not self.user_db_path.exists():
             return 0
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection()
         try:
             with user_conn:
                 deleted_count = 0
@@ -5796,8 +5991,7 @@ class ArchiveStore:
         context_policy: dict[str, object] | None = None,
     ) -> ArchiveBlackboardNoteEnvelope:
         """Insert-or-update one blackboard note in archive user.db."""
-        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        user_conn = open_connection(self.user_db_path)
+        user_conn = self._open_user_write_connection(initialize=True)
         try:
             envelope = upsert_blackboard_note(
                 user_conn,
@@ -5951,7 +6145,11 @@ class ArchiveStore:
     def _attach_user_tier_if_present(self) -> None:
         if self._user_tier_attached or not self.user_db_path.exists():
             return
-        user_db_uri = f"file:{self.user_db_path}?mode=ro" if self._read_only else str(self.user_db_path)
+        user_db_uri = (
+            f"file:{self.user_db_path}?mode=ro"
+            if self._read_only or self._inactive_candidate_durable_read_only
+            else str(self.user_db_path)
+        )
         self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
         self._user_tier_attached = True
         self._tags_relation = _all_session_tags_sql()

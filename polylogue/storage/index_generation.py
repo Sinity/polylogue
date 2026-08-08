@@ -126,6 +126,19 @@ def _is_generation_member(path: Path) -> bool:
     return len(parts) - depth > 2
 
 
+def canonical_active_index_path(location: ArchiveLocation) -> Path:
+    """Resolve the active index path without repairing a missing or poisoned anchor."""
+    anchored = location.active_pointer
+    if anchored is not None and not _is_generation_member(anchored):
+        return anchored
+    configured_index = location.configured_tier("index").configured_path
+    if configured_index.is_symlink():
+        target = Path(os.readlink(configured_index))
+        resolved = target if target.is_absolute() else configured_index.parent / target
+        return configured_index if _is_generation_member(resolved) else resolved
+    return configured_index
+
+
 @dataclass(frozen=True, slots=True)
 class IndexGeneration:
     generation_id: str
@@ -452,15 +465,13 @@ class IndexGenerationStore:
     authority belongs.
     """
 
-    def __init__(self, location: ArchiveLocation) -> None:
+    def __init__(self, location: ArchiveLocation, *, repair_anchor: bool = True) -> None:
         self.archive_root = location.configured_root
         self.location = location
         anchor = location.configured_root / ".index-active-pointer"
-        configured_index = location.configured_tier("index").configured_path
         anchored = location.active_pointer
-        if anchored is not None and not _is_generation_member(anchored):
-            self.active_pointer = anchored
-        else:
+        self.active_pointer = canonical_active_index_path(location)
+        if (anchored is None or _is_generation_member(anchored)) and repair_anchor:
             # Recompute, and rewrite the anchor, when it is absent OR poisoned.
             #
             # The canonical pointer is the path ``promote()`` replaces with a
@@ -480,12 +491,6 @@ class IndexGenerationStore:
             # anchor as recoverable rather than fatal lets an archive already
             # carrying one heal on next open, instead of needing the file
             # repaired by hand.
-            if configured_index.is_symlink():
-                target = Path(os.readlink(configured_index))
-                resolved = target if target.is_absolute() else configured_index.parent / target
-                self.active_pointer = configured_index if _is_generation_member(resolved) else resolved
-            else:
-                self.active_pointer = configured_index
             temporary = anchor.with_suffix(".tmp")
             # Constructing the store must not require the archive root to have
             # been materialized first. Daemon bulk-rebuild routing is now
@@ -500,9 +505,14 @@ class IndexGenerationStore:
         self.transactions_root = self.active_pointer.parent / ".index-rebuild-transactions"
 
     @classmethod
-    def for_archive_root(cls, archive_root: Path) -> IndexGenerationStore:
+    def for_archive_root(
+        cls,
+        archive_root: Path,
+        *,
+        repair_anchor: bool = True,
+    ) -> IndexGenerationStore:
         """Convenience constructor resolving ``archive_root`` into an :class:`ArchiveLocation` first."""
-        return cls(ArchiveLocation.resolve(archive_root))
+        return cls(ArchiveLocation.resolve(archive_root), repair_anchor=repair_anchor)
 
     def create_transaction(
         self,

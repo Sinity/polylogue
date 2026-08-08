@@ -131,6 +131,15 @@ def require_rebuild_schema_currency(root: Path) -> dict[str, object]:
     return diagnostic
 
 
+def validate_rebuild_source_admission(root: Path, location: ArchiveLocation) -> None:
+    """Validate frozen source authority under the owned archive identity."""
+    from polylogue.sources.revision_backfill import validate_frozen_source_authority
+
+    if location.configured_root != root.absolute():
+        raise RuntimeError("rebuild source admission received a foreign archive location")
+    validate_frozen_source_authority(root)
+
+
 @dataclass(slots=True)
 class RebuildProvenanceContext:
     """Validated evidence shared by every mutation in one rebuild pass.
@@ -274,7 +283,7 @@ def _mark_rebuild_transaction_stale_after_provenance_failure(
     from polylogue.storage.index_generation import IndexGenerationStore
 
     try:
-        store = IndexGenerationStore.for_archive_root(root)
+        store = IndexGenerationStore.for_archive_root(root, repair_anchor=False)
         transaction = store.load_transaction(operation_id)
         transaction = _reconcile_active_generation_transaction(store, transaction)
     except Exception as load_error:
@@ -1332,8 +1341,16 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     # route below, so a missing root/index.db must not masquerade as raw debt.
     if count_source_raw_sessions(root) and location.active_index_path.parent == root:
         from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+        from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 
-        if reason := raw_frontier_source_selection_block_reason(root):
+        materialization = raw_materialization_readiness_snapshot(root)
+        # An available active index must agree with source and cursor
+        # authority before it can seed a rebuild. A missing or unreadable
+        # derived tier is the recovery case this operation exists to handle;
+        # source-only candidate admission below remains mandatory.
+        if materialization.get("available") is True and (
+            reason := raw_frontier_source_selection_block_reason(root, materialization)
+        ):
             raise RuntimeError(f"reindex source preflight gate failed: raw frontier integrity: {reason}")
     active_config = Config(
         archive_root=root,
@@ -1413,15 +1430,14 @@ async def _rebuild_index_from_source_owned(
         verify_archive,
     )
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
-    from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
-    from polylogue.storage.archive_readiness import archive_readiness_status
-    from polylogue.storage.index_generation import (
-        IndexGenerationStore,
-        rebuild_source_evidence_snapshot,
+    from polylogue.sources.revision_backfill import (
+        RebuildDeadlineExceededError,
+        validate_frozen_source_authority,
     )
+    from polylogue.storage.archive_readiness import archive_readiness_status
+    from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
     from polylogue.storage.repair import repair_session_insights
 
-    generation_store = IndexGenerationStore(owned.location)
     provenance = RebuildProvenanceContext(
         root=root,
         receipt_path=request.schema_inference_receipt_path,
@@ -1458,10 +1474,12 @@ async def _rebuild_index_from_source_owned(
         page = None
         pass_started_at_ms = int(time.time() * 1000)
         if resumable_full_source:
+            generation_store = IndexGenerationStore(owned.location, repair_anchor=False)
             if request.operation_id is not None:
                 transaction = generation_store.load_transaction(request.operation_id)
                 transaction = _reconcile_active_generation_transaction(generation_store, transaction)
             else:
+                validate_frozen_source_authority(root)
                 transaction = _create_rebuild_transaction_after_receipt_validation(
                     generation_store, request, provenance
                 )
@@ -1544,11 +1562,21 @@ async def _rebuild_index_from_source_owned(
             selected_raw_ids = [raw_id for raw_id, _blob_hash_hex, _blob_size in page.rows]
             selected_raw_count = len(selected_raw_ids)
             skipped_by_blob_limit_count = 0
+            if not transaction_created_here and selected_raw_ids:
+                validate_frozen_source_authority(
+                    root,
+                    selected_raw_ids=selected_raw_ids,
+                )
         else:
             selection_started_at = time.perf_counter()
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
+            validate_frozen_source_authority(
+                root,
+                selected_raw_ids=selected_raw_ids,
+            )
+            generation_store = IndexGenerationStore(owned.location, repair_anchor=request.promote)
             provenance.validate()
             generation = generation_store.create(source_snapshot=rebuild_source_evidence_snapshot(root))
         try:
@@ -2017,6 +2045,7 @@ async def _rebuild_index_from_source_owned(
                 dry_run=False,
                 archive_root_override=generation_root,
                 owned_inactive_generation=(generation.generation_id, generation.owner_id),
+                resolve_convergence_debt=False,
             )
             terminal_timings_s["terminal.session_insights"] = time.perf_counter() - terminal_started_at
             logger.info(

@@ -12,7 +12,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from io import BytesIO
 from itertools import chain, islice
@@ -36,7 +36,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.sources import provider_from_origin
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
 from polylogue.pipeline.services.process_pool import (
@@ -60,9 +60,51 @@ from polylogue.storage.raw_authority import (
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.revision_governance import FrozenSourceRemediationRequiredError
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
+
+
+def _canonical_authority_logical_key(logical_key: str) -> str:
+    """Normalize transitional provider and public-origin authority prefixes."""
+    prefix, separator, native_id = logical_key.partition(":")
+    if not separator or not native_id:
+        raise ValueError(f"invalid logical source key: {logical_key!r}")
+    try:
+        origin = Origin(prefix)
+    except ValueError:
+        try:
+            origin = origin_from_provider(Provider(prefix))
+        except ValueError as exc:
+            raise ValueError(f"unknown logical source key prefix: {prefix!r}") from exc
+    return f"{origin.value}:{native_id}"
+
+
+def _expand_frozen_revision_link_selection(archive_root: Path, raw_ids: Sequence[str]) -> tuple[str, ...]:
+    """Include every predecessor and baseline needed to validate selected APPEND authority."""
+    expanded = set(raw_ids)
+    pending = set(raw_ids)
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+        while pending:
+            current = tuple(sorted(pending))
+            pending.clear()
+            for offset in range(0, len(current), 500):
+                chunk = current[offset : offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = source_conn.execute(
+                    f"""
+                    SELECT predecessor_raw_id, baseline_raw_id
+                    FROM raw_sessions WHERE raw_id IN ({placeholders})
+                    """,
+                    chunk,
+                )
+                for predecessor_raw_id, baseline_raw_id in rows:
+                    for linked_raw_id in (predecessor_raw_id, baseline_raw_id):
+                        if linked_raw_id is not None and str(linked_raw_id) not in expanded:
+                            expanded.add(str(linked_raw_id))
+                            pending.add(str(linked_raw_id))
+    return tuple(sorted(expanded))
 
 
 def _browser_snapshot_fidelity(ingest_flags: Sequence[str]) -> Literal["dom", "native"] | None:
@@ -806,6 +848,391 @@ def _census_historical_revision_evidence(
     return state
 
 
+def _load_frozen_revision_evidence(
+    archive: ArchiveStore,
+    spill: _ParsedSessionSpill,
+    *,
+    selected_raw_ids: list[str] | None,
+    max_payload_bytes: int | None,
+    ingest_workers: int,
+    prefetch_cache: RawParsePrefetchCache | None,
+) -> _RevisionCensusState:
+    """Parse a phase-2 source snapshot without changing its durable ledger."""
+    expanded_raw_ids, _logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+    if selected_raw_ids is not None:
+        expanded_raw_ids = _expand_frozen_revision_link_selection(archive.archive_root, expanded_raw_ids)
+    recorded_logical_keys = require_current_parser_source_census(
+        archive.archive_root,
+        selected_raw_ids=expanded_raw_ids if selected_raw_ids is not None else None,
+    )
+    rows = archive.raw_membership_census_rows(expanded_raw_ids if selected_raw_ids is not None else None)
+    if max_payload_bytes is not None:
+        payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _source_index in rows])
+        total_payload_bytes = sum(payload_sizes.values())
+        oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
+        if oversized or total_payload_bytes > max_payload_bytes:
+            raise RawRevisionReplayResourceBlockedError(
+                sorted(oversized or payload_sizes), max_payload_bytes, total_payload_bytes
+            )
+    parseable_raw_ids = [raw_id for raw_id, source_index in rows if source_index >= 0]
+    parsed_outcomes = _parse_retained_raws(
+        archive,
+        parseable_raw_ids,
+        ingest_workers=ingest_workers,
+        prefetch_cache=prefetch_cache,
+    )
+    state = _RevisionCensusState(0, 0, 0, set(), {}, {})
+    for raw_id, source_index in rows:
+        state.scanned += 1
+        state.censused.add(raw_id)
+        if source_index < 0:
+            state.quarantined += 1
+            continue
+        outcome = parsed_outcomes[raw_id]
+        if isinstance(outcome, Exception):
+            raise FrozenSourceRemediationRequiredError(
+                f"inactive candidate could not parse frozen raw {raw_id}: {type(outcome).__name__}: {outcome}"
+            ) from outcome
+        sessions, payload_bytes, revision_kind = outcome
+        parsed_logical_keys = tuple(
+            sorted(
+                {
+                    # Parser output uses Provider internally, while the
+                    # persisted census is normalized to public Origin keys.
+                    f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                    for session in sessions
+                }
+            )
+        )
+        if recorded_logical_keys[raw_id] != parsed_logical_keys:
+            raise FrozenSourceRemediationRequiredError(
+                "inactive candidate re-derived different current-parser logical keys for frozen raw "
+                f"{raw_id}: recorded={recorded_logical_keys[raw_id]!r}, parsed={parsed_logical_keys!r}"
+            )
+        spill.add(raw_id, sessions, payload_bytes=payload_bytes)
+        state.classified += int(len(sessions) == 1)
+        if revision_kind is RawRevisionKind.UNKNOWN:
+            for session in sessions:
+                # Membership rows intentionally retain their provider-wire
+                # identity until durable authority comparison normalizes it.
+                logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
+    return state
+
+
+def require_current_parser_source_census(
+    archive_root: Path,
+    *,
+    selected_raw_ids: Sequence[str] | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Require phase-2 parser receipts before allocating an index candidate."""
+    stale_raw_ids: list[str] = []
+    recorded_logical_keys: dict[str, tuple[str, ...]] = {}
+    selections: tuple[tuple[str, ...] | None, ...]
+    if selected_raw_ids is None:
+        selections = (None,)
+    else:
+        selections = tuple(
+            tuple(selected_raw_ids[offset : offset + 500]) for offset in range(0, len(selected_raw_ids), 500)
+        )
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+        for selection in selections:
+            where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
+            params: tuple[object, ...] = () if selection is None else selection
+            rows = source_conn.execute(
+                f"""
+                SELECT r.raw_id, c.parser_fingerprint, c.status, c.logical_keys_json
+                FROM raw_sessions AS r
+                LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                {where}
+                ORDER BY r.raw_id
+                """,
+                params,
+            )
+            for raw_id_value, fingerprint, status, logical_keys_json in rows:
+                raw_id = str(raw_id_value)
+                if fingerprint != RAW_AUTHORITY_PARSER_FINGERPRINT or status != "complete":
+                    stale_raw_ids.append(raw_id)
+                    continue
+                try:
+                    decoded_keys = json.loads(str(logical_keys_json))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    stale_raw_ids.append(raw_id)
+                    continue
+                if not isinstance(decoded_keys, list) or not all(isinstance(value, str) for value in decoded_keys):
+                    stale_raw_ids.append(raw_id)
+                    continue
+                if tuple(decoded_keys) != tuple(sorted(set(decoded_keys))):
+                    stale_raw_ids.append(raw_id)
+                    continue
+                try:
+                    normalized_keys = tuple(sorted({_canonical_authority_logical_key(value) for value in decoded_keys}))
+                except ValueError:
+                    stale_raw_ids.append(raw_id)
+                    continue
+                if len(normalized_keys) != len(decoded_keys):
+                    stale_raw_ids.append(raw_id)
+                    continue
+                recorded_logical_keys[raw_id] = normalized_keys
+    if stale_raw_ids:
+        sample = ", ".join(stale_raw_ids[:5])
+        raise FrozenSourceRemediationRequiredError(
+            "inactive candidate requires a complete current-parser source census; "
+            f"{len(stale_raw_ids)} raw(s) are stale or incomplete (sample: {sample})"
+        )
+
+    durable_logical_keys: dict[str, set[str]] = {raw_id: set() for raw_id in recorded_logical_keys}
+    invalid_durable_bindings: set[str] = set()
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+        for selection in selections:
+            where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
+            params = () if selection is None else selection
+            rows = source_conn.execute(
+                f"""
+                SELECT r.raw_id, r.logical_source_key, r.revision_kind, m.logical_source_key
+                FROM raw_sessions AS r
+                LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                {where}
+                ORDER BY r.raw_id, m.logical_source_key
+                """,
+                params,
+            )
+            for raw_id_value, typed_key, revision_kind, membership_key in rows:
+                raw_id = str(raw_id_value)
+                persisted_keys = durable_logical_keys.setdefault(raw_id, set())
+                raw_keys = [
+                    value
+                    for value in (
+                        typed_key if typed_key is not None and revision_kind != RawRevisionKind.UNKNOWN.value else None,
+                        membership_key,
+                    )
+                    if value is not None
+                ]
+                try:
+                    persisted_keys.update(_canonical_authority_logical_key(str(value)) for value in raw_keys)
+                except ValueError:
+                    invalid_durable_bindings.add(raw_id)
+
+    authority_binding_drift = sorted(
+        invalid_durable_bindings
+        | {
+            raw_id
+            for raw_id, census_keys in recorded_logical_keys.items()
+            if tuple(sorted(durable_logical_keys.get(raw_id, ()))) != census_keys
+        }
+    )
+    if authority_binding_drift:
+        sample = ", ".join(authority_binding_drift[:5])
+        raise FrozenSourceRemediationRequiredError(
+            "inactive candidate current-parser census differs from frozen durable authority bindings; "
+            f"{len(authority_binding_drift)} raw(s) require source remediation (sample: {sample})"
+        )
+
+    authority_rows: dict[str, tuple[str | None, str, str, int, str | None, str | None]] = {}
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+        for selection in selections:
+            where = "" if selection is None else f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
+            params = () if selection is None else selection
+            rows = source_conn.execute(
+                f"""
+                SELECT raw_id, logical_source_key, revision_kind, revision_authority,
+                       source_index, predecessor_raw_id, baseline_raw_id
+                FROM raw_sessions {where}
+                ORDER BY raw_id
+                """,
+                params,
+            )
+            for raw_id_value, logical_key, revision_kind, authority, source_index, predecessor_id, baseline_id in rows:
+                authority_rows[str(raw_id_value)] = (
+                    str(logical_key) if logical_key is not None else None,
+                    str(revision_kind),
+                    str(authority),
+                    int(source_index),
+                    str(predecessor_id) if predecessor_id is not None else None,
+                    str(baseline_id) if baseline_id is not None else None,
+                )
+
+    append_identity_drift: set[str] = set()
+    for raw_id, (
+        append_key,
+        revision_kind,
+        authority,
+        _source_index,
+        predecessor_id,
+        baseline_id,
+    ) in authority_rows.items():
+        if revision_kind != RawRevisionKind.APPEND.value:
+            continue
+        predecessor = authority_rows.get(predecessor_id or "")
+        baseline = authority_rows.get(baseline_id or "")
+        if (
+            append_key is None
+            or authority != RawRevisionAuthority.BYTE_PROVEN.value
+            or predecessor_id is None
+            or baseline_id is None
+            or predecessor_id == raw_id
+            or baseline_id == raw_id
+            or predecessor is None
+            or baseline is None
+            or predecessor[2] != RawRevisionAuthority.BYTE_PROVEN.value
+            or baseline[1] != RawRevisionKind.FULL.value
+            or baseline[2] != RawRevisionAuthority.BYTE_PROVEN.value
+            or baseline[3] < 0
+        ):
+            append_identity_drift.add(raw_id)
+            continue
+        try:
+            canonical_append_key = _canonical_authority_logical_key(append_key)
+            canonical_predecessor_key = _canonical_authority_logical_key(predecessor[0] or "")
+            canonical_baseline_key = _canonical_authority_logical_key(baseline[0] or "")
+        except ValueError:
+            append_identity_drift.add(raw_id)
+            continue
+        if {canonical_predecessor_key, canonical_baseline_key} != {canonical_append_key}:
+            append_identity_drift.add(raw_id)
+            continue
+
+        seen = {raw_id}
+        cursor_id = predecessor_id
+        while True:
+            if cursor_id in seen:
+                append_identity_drift.add(raw_id)
+                break
+            seen.add(cursor_id)
+            cursor = authority_rows.get(cursor_id)
+            if cursor is None:
+                append_identity_drift.add(raw_id)
+                break
+            if cursor[1] == RawRevisionKind.FULL.value:
+                if cursor_id != baseline_id:
+                    append_identity_drift.add(raw_id)
+                break
+            if cursor[1] != RawRevisionKind.APPEND.value or cursor[4] is None:
+                append_identity_drift.add(raw_id)
+                break
+            try:
+                if _canonical_authority_logical_key(cursor[0] or "") != canonical_append_key:
+                    append_identity_drift.add(raw_id)
+                    break
+            except ValueError:
+                append_identity_drift.add(raw_id)
+                break
+            cursor_id = cursor[4]
+    if append_identity_drift:
+        sample = ", ".join(sorted(append_identity_drift)[:5])
+        raise FrozenSourceRemediationRequiredError(
+            "inactive candidate typed continuation identity differs from linked byte authority; "
+            f"{len(append_identity_drift)} raw(s) require source remediation (sample: {sample})"
+        )
+
+    unresolved_raw_ids: list[str] = []
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+        for selection in selections:
+            authority_where = "" if selection is None else f"AND r.raw_id IN ({','.join('?' for _ in selection)})"
+            authority_params: tuple[object, ...] = () if selection is None else selection
+            unresolved_raw_ids.extend(
+                str(row[0])
+                for row in source_conn.execute(
+                    f"""
+                    SELECT DISTINCT r.raw_id
+                    FROM raw_sessions AS r
+                    LEFT JOIN raw_membership_census AS c ON c.raw_id = r.raw_id
+                    LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                    WHERE r.revision_authority = 'quarantined'
+                      {authority_where}
+                      AND (
+                          c.raw_id IS NULL OR c.status NOT IN ('complete', 'non_session')
+                          OR (
+                              c.status = 'complete'
+                              AND (
+                                  m.raw_id IS NULL OR m.decision IS NULL
+                                  OR m.decision IN ('ambiguous', 'deferred')
+                              )
+                          )
+                      )
+                    ORDER BY r.raw_id
+                    """,
+                    authority_params,
+                )
+            )
+    if unresolved_raw_ids:
+        sample = ", ".join(unresolved_raw_ids[:5])
+        raise FrozenSourceRemediationRequiredError(
+            "inactive candidate requires complete frozen source authority; "
+            f"{len(unresolved_raw_ids)} raw(s) remain quarantined or undecided (sample: {sample})"
+        )
+    return recorded_logical_keys
+
+
+def validate_frozen_source_authority(
+    archive_root: Path,
+    *,
+    active_index_path: Path | None = None,
+    selected_raw_ids: list[str] | None = None,
+    max_payload_bytes: int | None = None,
+    ingest_workers: int = 1,
+    prefetch_cache: RawParsePrefetchCache | None = None,
+) -> None:
+    """Re-derive every selected source decision before allocating a candidate."""
+    with (
+        ArchiveStore.open_frozen_source_validation(
+            archive_root,
+            active_index_path=active_index_path,
+        ) as archive,
+        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
+    ):
+        census = _load_frozen_revision_evidence(
+            archive,
+            spill,
+            selected_raw_ids=selected_raw_ids,
+            max_payload_bytes=max_payload_bytes,
+            ingest_workers=ingest_workers,
+            prefetch_cache=prefetch_cache,
+        )
+        _unclassified, logical_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        _membership_raw_ids, persisted_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+        membership_keys = {*persisted_membership_keys, *census.membership_candidates}
+        byte_replayed_keys: set[str] = set()
+
+        for logical_key in sorted(logical_keys):
+            plan = archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
+            if not plan.accepted_raw_ids:
+                convertible = archive.convertible_full_revision_raw_ids(logical_key)
+                if convertible:
+                    raise FrozenSourceRemediationRequiredError(
+                        "inactive candidate found a full-revision cohort that still requires membership "
+                        f"remediation in frozen source: {logical_key}"
+                    )
+                continue
+            byte_replayed_keys.add(logical_key)
+
+        for logical_key in sorted(membership_keys - byte_replayed_keys):
+            candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
+            candidate_raw_ids.update(census.membership_candidates.get(logical_key, ()))
+            revisions: list[MembershipRevision] = []
+            for raw_id in sorted(candidate_raw_ids):
+                sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+                for session in sessions:
+                    session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                    if session_logical_key != logical_key:
+                        continue
+                    projection = session_revision_projection(session)
+                    revisions.append(
+                        MembershipRevision(
+                            raw_id,
+                            projection,
+                            session.updated_at,
+                            browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                            provider_message_ids=frozenset(message.provider_message_id for message in session.messages),
+                            provider_attachment_ids=frozenset(
+                                attachment.provider_attachment_id for attachment in session.attachments
+                            ),
+                        )
+                    )
+            classification = classify_membership_revisions(revisions, existing_accepted_raw_id=None)
+            archive.require_frozen_membership_authority(logical_key, classification)
+
+
 def census_historical_revision_evidence(
     archive_root: Path,
     *,
@@ -1089,15 +1516,25 @@ def backfill_historical_revision_evidence(
         prepare_pool if prepare_pool is not None else nullcontext(),
     ):
         census_started = time.perf_counter()
-        census = _census_historical_revision_evidence(
-            archive,
-            spill,
-            selected_raw_ids=selected_raw_ids,
-            max_payload_bytes=max_payload_bytes,
-            ingest_workers=ingest_workers,
-            commit_batch_size=commit_batch_size,
-            prefetch_cache=prefetch_cache,
-        )
+        if owned_inactive_generation is not None:
+            census = _load_frozen_revision_evidence(
+                archive,
+                spill,
+                selected_raw_ids=selected_raw_ids,
+                max_payload_bytes=max_payload_bytes,
+                ingest_workers=ingest_workers,
+                prefetch_cache=prefetch_cache,
+            )
+        else:
+            census = _census_historical_revision_evidence(
+                archive,
+                spill,
+                selected_raw_ids=selected_raw_ids,
+                max_payload_bytes=max_payload_bytes,
+                ingest_workers=ingest_workers,
+                commit_batch_size=commit_batch_size,
+                prefetch_cache=prefetch_cache,
+            )
         stage_timings["census"] = time.perf_counter() - census_started
         receipt_started = time.perf_counter()
         censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
@@ -1106,7 +1543,8 @@ def backfill_historical_revision_evidence(
         # any index plan. Commit the source census first so the separate
         # durable receipt writer observes one complete source snapshot.
         archive.commit()
-        _record_raw_authority_parser_census(archive_root, tuple(censused_raw_ids))
+        if owned_inactive_generation is None:
+            _record_raw_authority_parser_census(archive_root, tuple(censused_raw_ids))
         stage_timings["census_receipt"] = time.perf_counter() - receipt_started
         membership_candidates = census.membership_candidates
         provisional_full_raw_ids = census.provisional_full_raw_ids
@@ -1181,13 +1619,17 @@ def backfill_historical_revision_evidence(
                 # different session's content, which must not be quarantined
                 # as "divergent evidence".
                 classify_started = time.perf_counter()
-                plan = archive.classify_raw_revision_cohort_for_rebuild_repair(
-                    logical_key,
-                    # Batched replay defers the classification's source.db
-                    # authority updates into the same batch window as the replay
-                    # writes (idempotent, re-derived on resume -- see
-                    # classify_raw_revision_cohort_for_rebuild_repair's docstring).
-                    manage_transaction=not replay_batched,
+                plan = (
+                    archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
+                    if owned_inactive_generation is not None
+                    else archive.classify_raw_revision_cohort_for_rebuild_repair(
+                        logical_key,
+                        # Batched replay defers the classification's source.db
+                        # authority updates into the same batch window as the replay
+                        # writes (idempotent, re-derived on resume -- see
+                        # classify_raw_revision_cohort_for_rebuild_repair's docstring).
+                        manage_transaction=not replay_batched,
+                    )
                 )
                 stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (
                     time.perf_counter() - classify_started
@@ -1197,7 +1639,13 @@ def backfill_historical_revision_evidence(
                     # still carry semantic evidence. Move only that full-only
                     # cohort to membership governance and let parsed-content
                     # prefix rules decide it; append chains remain byte-governed.
-                    for raw_id in archive.convertible_full_revision_raw_ids(logical_key):
+                    convertible = archive.convertible_full_revision_raw_ids(logical_key)
+                    if owned_inactive_generation is not None and convertible:
+                        raise FrozenSourceRemediationRequiredError(
+                            "inactive candidate found a full-revision cohort that still requires membership "
+                            f"remediation in frozen source: {logical_key}"
+                        )
+                    for raw_id in convertible:
                         spill_started = time.perf_counter()
                         sessions, _payload_bytes = spill.for_raw(archive, raw_id)
                         stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
@@ -2710,6 +3158,7 @@ __all__ = [
     "census_historical_revision_evidence",
     "census_parse_worker",
     "record_resource_blocked_revision_census",
+    "require_current_parser_source_census",
     "uncensused_historical_revision_raw_ids",
     "parse_retained_raw_sessions",
 ]

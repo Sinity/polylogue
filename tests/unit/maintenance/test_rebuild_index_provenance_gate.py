@@ -24,7 +24,7 @@ from polylogue.core.enums import Provider
 from polylogue.daemon import bulk_rebuild as bulk_rebuild_module
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.maintenance.sharded_rebuild import shard_raw_ids
-from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
+from polylogue.sources.revision_backfill import RebuildDeadlineExceededError, census_historical_revision_evidence
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import (
@@ -78,6 +78,8 @@ def _seed(root: Path, count: int = 2) -> None:
     with sqlite3.connect(root / "source.db") as source:
         source.execute("UPDATE raw_sessions SET baseline_raw_id = raw_id, revision_authority = 'byte_proven'")
         source.commit()
+    census = census_historical_revision_evidence(root)
+    assert census.scanned == count
 
 
 def _active_bytes(root: Path) -> bytes:
@@ -402,6 +404,48 @@ def test_invalid_receipt_preserves_provenance_error_when_recovery_metadata_is_re
                 operation_id=transaction.operation_id,
             )
         )
+
+
+@pytest.mark.parametrize("anchor_state", ["missing", "poisoned"])
+def test_invalid_resume_marks_transaction_stale_without_repairing_active_anchor(
+    tmp_path: Path, anchor_state: str
+) -> None:
+    """Stale-retirement bookkeeping cannot mutate active-pointer authority."""
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    store = IndexGenerationStore.for_archive_root(root)
+    transaction = store.create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root),
+        operation_id=f"stale-with-{anchor_state}-anchor",
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["generated_at"] = "2000-01-01T00:00:00Z"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    anchor = root / ".index-active-pointer"
+    if anchor_state == "missing":
+        anchor.unlink()
+        expected_anchor: bytes | None = None
+    else:
+        poisoned_path = Path(store.load(transaction.generation_id).index_path)
+        anchor.write_text(str(poisoned_path), encoding="utf-8")
+        expected_anchor = anchor.read_bytes()
+
+    with pytest.raises(rebuild_index_module.RebuildProvenanceError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=transaction.operation_id,
+            )
+        )
+
+    assert (anchor.read_bytes() if anchor.exists() else None) == expected_anchor
+    checkpoint = IndexGenerationStore.for_archive_root(root, repair_anchor=False).load_transaction(
+        transaction.operation_id
+    )
+    assert checkpoint.status == "stale"
 
 
 def test_resume_revalidates_external_mapping_before_more_replay(tmp_path: Path) -> None:
