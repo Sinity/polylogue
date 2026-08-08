@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import errno
 import os
 import sqlite3
 import stat
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -123,36 +121,22 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
         raise MigrationError(f"canonical {tier.value} tier initialization produced an empty database image")
 
     anonymous_flag = getattr(os, "O_TMPFILE", 0)
-    anonymous_unsupported = not anonymous_flag
+    if not anonymous_flag:
+        raise MigrationError(
+            f"cannot initialize missing {tier.value} tier: durable publication requires anonymous O_TMPFILE support"
+        )
     publication_descriptor: int | None = None
-    named_publication_path: Path | None = None
     try:
-        if not anonymous_unsupported:
-            try:
-                publication_descriptor = os.open(
-                    path.parent,
-                    os.O_RDWR | anonymous_flag | getattr(os, "O_CLOEXEC", 0),
-                    0o600,
-                )
-            except OSError as exc:
-                if exc.errno in {errno.EISDIR, errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}:
-                    anonymous_unsupported = True
-                else:
-                    raise MigrationError(
-                        f"cannot create anonymous durable-tier publication inode: {path.parent}"
-                    ) from exc
-        if anonymous_unsupported:
-            try:
-                descriptor, temporary_name = tempfile.mkstemp(
-                    prefix=f".{path.name}.initialize-",
-                    suffix=".tmp",
-                    dir=path.parent,
-                )
-            except OSError as exc:
-                raise MigrationError(f"cannot create durable-tier publication staging file: {path.parent}") from exc
-            publication_descriptor = descriptor
-            named_publication_path = Path(temporary_name)
-            os.fchmod(descriptor, 0o600)
+        try:
+            publication_descriptor = os.open(
+                path.parent,
+                os.O_RDWR | anonymous_flag | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+        except OSError as exc:
+            raise MigrationError(
+                f"cannot initialize missing {tier.value} tier: filesystem does not support anonymous durable publication"
+            ) from exc
 
         assert publication_descriptor is not None
         descriptor = publication_descriptor
@@ -170,25 +154,16 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
         publication_metadata = os.fstat(descriptor)
         if (
             not stat.S_ISREG(publication_metadata.st_mode)
-            or (not anonymous_unsupported and publication_metadata.st_nlink != 0)
+            or publication_metadata.st_nlink != 0
             or publication_metadata.st_size != len(initialized_image)
         ):
             raise MigrationError(f"durable-tier publication image is incomplete: {path}")
         publication_identity = (publication_metadata.st_dev, publication_metadata.st_ino)
-        if named_publication_path is not None:
-            os.close(descriptor)
-            publication_descriptor = None
         try:
-            if named_publication_path is None:
-                # O_TMPFILE plus link(2) publishes one descriptor-backed inode
-                # without resolving a replaceable named staging path again.
-                os.link(f"/proc/self/fd/{descriptor}", path, follow_symlinks=True)
-            else:
-                # mkstemp created this same-directory name with O_EXCL and
-                # mode 0600. Closing it before link makes the fallback portable
-                # to filesystems without O_TMPFILE while retaining no-replace
-                # publication semantics.
-                os.link(named_publication_path, path, follow_symlinks=True)
+            # Link the still-open anonymous inode directly. A named fallback
+            # would let another same-UID process replace or modify the staged
+            # bytes before publication, so unsupported filesystems fail closed.
+            os.link(f"/proc/self/fd/{descriptor}", path, follow_symlinks=True)
         except FileExistsError as exc:
             raise MigrationError(
                 f"{tier.value} tier appeared during initialization; refusing to replace it: {path}"
@@ -198,9 +173,9 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             not stat.S_ISREG(published_metadata.st_mode)
             or (published_metadata.st_dev, published_metadata.st_ino) != publication_identity
         ):
+            if (published_metadata.st_dev, published_metadata.st_ino) == publication_identity:
+                path.unlink(missing_ok=True)
             raise MigrationError(f"published durable tier identity does not match the staged database: {path}")
-        if named_publication_path is not None:
-            named_publication_path.unlink(missing_ok=True)
         directory_descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory_descriptor)
@@ -209,8 +184,6 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     finally:
         if publication_descriptor is not None:
             os.close(publication_descriptor)
-        if named_publication_path is not None:
-            named_publication_path.unlink(missing_ok=True)
 
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 

@@ -2306,35 +2306,12 @@ def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_repl
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 
-def test_migrate_tier_cli_uses_named_staging_inode_when_anonymous_publication_is_unsupported(
+def test_migrate_tier_cli_refuses_named_staging_when_anonymous_publication_is_unsupported(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _stage_uninitialized_archive(cli_workspace)
     audit_db = cli_workspace["archive_root"] / "audit.db"
-    real_link = os.link
     monkeypatch.setattr(os, "O_TMPFILE", 0, raising=False)
-
-    def assert_no_named_stage_before_publish(
-        source: os.PathLike[str] | str,
-        destination: os.PathLike[str] | str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
-        assert list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
-        real_link(
-            source,
-            destination,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
-
-    monkeypatch.setattr(
-        "polylogue.operations.durable_change_train.os.link",
-        assert_no_named_stage_before_publish,
-    )
 
     result = cli_runner.invoke(
         cli,
@@ -2351,10 +2328,9 @@ def test_migrate_tier_cli_uses_named_staging_inode_when_anonymous_publication_is
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0, result.output
-    with sqlite3.connect(audit_db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
-        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert result.exit_code == 1
+    assert "durable publication requires anonymous O_TMPFILE support" in json.loads(result.stdout)["error"]
+    assert not audit_db.exists()
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 
