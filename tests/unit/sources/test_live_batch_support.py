@@ -475,7 +475,8 @@ def test_full_ingest_unknown_json_decode_records_terminal_decode_evidence(tmp_pa
 
     result = processor._ingest_full_paths_sync([path], source_name="unknown")
 
-    assert result.succeeded == []
+    assert result.succeeded == [path]
+    assert result.failed == []
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
@@ -496,7 +497,8 @@ def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_p
 
     result = processor._ingest_full_paths_sync([path], source_name="unknown")
 
-    assert result.succeeded == []
+    assert result.succeeded == [path]
+    assert result.failed == []
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)

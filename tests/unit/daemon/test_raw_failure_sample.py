@@ -674,6 +674,14 @@ class TestRawFailureInfoProducesTypedSamples:
             source_path="/data/kind-contradiction.jsonl",
             parse_error="parser failed after artifact observation",
         )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-malformed-carrier",
+            origin="codex-session",
+            native_id="malformed-carrier",
+            source_path="/data/malformed-carrier.jsonl",
+            parse_error="parser failed with malformed evidence",
+        )
         with sqlite3.connect(tmp_path / "source.db") as conn:
             upsert_raw_artifact(
                 conn,
@@ -701,6 +709,25 @@ class TestRawFailureInfoProducesTypedSamples:
                     support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
                 ),
             )
+            upsert_raw_artifact(
+                conn,
+                "raw-malformed-carrier",
+                ArchiveSourceArtifact(
+                    artifact_id="malformed-carrier-evidence",
+                    origin="codex-session",
+                    source_path="/data/malformed-carrier.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.DECODE_FAILED,
+                ),
+            )
+            # Directly mutate the persisted carrier to simulate a malformed
+            # producer row without weakening the typed write boundary.
+            conn.execute(
+                "UPDATE raw_artifacts SET artifact_kind = ? WHERE artifact_id = ?",
+                ("malformed_evidence_kind", "malformed-carrier-evidence"),
+            )
             conn.commit()
 
         snapshot = read_raw_failure_lifecycle(tmp_path / "source.db")
@@ -712,10 +739,11 @@ class TestRawFailureInfoProducesTypedSamples:
 
         samples = cast(list[RawFailureSample], info["samples"])
         by_origin_error = {sample.redacted_error: sample for sample in samples}
-        assert snapshot.unexplained == 2
-        assert info["unexplained_failures"] == 2
+        assert snapshot.unexplained == 3
+        assert info["unexplained_failures"] == 3
         assert by_origin_error["schema drift"].failure_kind == "schema_violation"
         assert by_origin_error["parser failed after artifact observation"].failure_kind == "parse_error"
+        assert by_origin_error["parser failed with malformed evidence"].failure_kind == "parse_error"
         assert all(sample.failure_kind != "terminal_corrupt_input" for sample in samples)
 
     def test_daemon_status_lifecycle_counts_match_the_shared_projection(self, tmp_path: Path) -> None:

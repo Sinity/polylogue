@@ -17,7 +17,7 @@ from typing import Literal
 
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS,
-    RawFailureEvidenceKind,
+    validated_raw_failure_evidence_kind,
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -85,19 +85,12 @@ def _lifecycle(
     validation_failed: bool,
 ) -> RawFailureLifecycle:
     """Classify an artifact only when its closed evidence is self-consistent."""
-    if validation_failed:
-        return "unexplained"
-    if artifact_kind is None or support_status is None:
-        return "unexplained"
-    kind = str(artifact_kind)
-    support = str(support_status)
-    try:
-        evidence_kind = RawFailureEvidenceKind(kind)
-    except ValueError:
-        return "unexplained"
-    if evidence_kind.lifecycle not in {"deferred", "terminal"}:
-        return "unexplained"
-    if evidence_kind.support_status.value != support:
+    evidence_kind = validated_raw_failure_evidence_kind(
+        artifact_kind,
+        support_status,
+        validation_failed=validation_failed,
+    )
+    if evidence_kind is None:
         return "unexplained"
     return "deferred" if evidence_kind.lifecycle == "deferred" else "terminal"
 

@@ -48,6 +48,24 @@ class RawFailureEvidenceKind(StrEnum):
         return "deferred" if self.value in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS else "terminal"
 
 
+def validated_raw_failure_evidence_kind(
+    artifact_kind: object,
+    support_status: object,
+    *,
+    validation_failed: bool,
+) -> RawFailureEvidenceKind | None:
+    """Return a typed kind only for a complete, self-consistent carrier."""
+    if validation_failed or artifact_kind is None or support_status is None:
+        return None
+    try:
+        evidence_kind = RawFailureEvidenceKind(str(artifact_kind))
+    except ValueError:
+        return None
+    if evidence_kind.support_status.value != str(support_status):
+        return None
+    return evidence_kind
+
+
 RAW_FAILURE_EVIDENCE_KINDS = frozenset(kind.value for kind in RawFailureEvidenceKind)
 RAW_FAILURE_DEFERRED_EVIDENCE_KINDS = frozenset(
     {
@@ -81,4 +99,5 @@ __all__ = [
     "RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS",
     "RAW_FAILURE_TERMINAL_EVIDENCE_KINDS",
     "RawFailureEvidenceKind",
+    "validated_raw_failure_evidence_kind",
 ]
