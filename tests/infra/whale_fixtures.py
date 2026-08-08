@@ -151,7 +151,7 @@ class CodexRevisionChainFixture:
             raise ValueError(f"revision must be in [0, {self.dimensions.revision_count})")
         source_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = source_path.with_name(f".{source_path.name}.revision-{revision:03d}.tmp")
-        previous_size = source_path.stat().st_size if source_path.exists() else 0
+        previous_size = source_path.stat().st_size if revision and source_path.exists() else 0
         try:
             with temporary_path.open("wb") as handle:
                 if revision:
@@ -276,21 +276,27 @@ def acquire_codex_revision_chain(
     archive_root: Path,
     fixture: CodexRevisionChainFixture,
     source_path: Path,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], tuple[int, ...]]:
     """Acquire all snapshots through ``AcquisitionService`` with one live path."""
     from polylogue.config import Source
     from polylogue.pipeline.services.acquisition import AcquisitionService
     from polylogue.storage.sqlite import SQLiteBackend
 
-    async def _run() -> tuple[str, ...]:
+    async def _run() -> tuple[tuple[str, ...], tuple[int, ...]]:
         backend = SQLiteBackend(db_path=archive_root / "index.db")
         try:
             service = AcquisitionService(backend)
             raw_ids: list[str] = []
-            for _revision, _size in fixture.iter_revisions(source_path):
+            sizes: list[int] = []
+            for revision, size in fixture.iter_revisions(source_path):
                 result = await service.acquire_sources([Source(name="codex", path=source_path)])
+                if result.errors:
+                    raise AssertionError(
+                        f"acquisition reported {result.errors} error(s) at revision {revision}: {result.counts}"
+                    )
                 raw_ids.extend(result.raw_ids)
-            return tuple(raw_ids)
+                sizes.append(size)
+            return tuple(raw_ids), tuple(sizes)
         finally:
             await backend.close()
 

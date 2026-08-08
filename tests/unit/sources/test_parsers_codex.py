@@ -1466,6 +1466,7 @@ class TestGitContextAndInstructions:
         assert "inspect this image" in (message.text or "")
         assert "mime=image/png" in (message.text or "")
         assert "sha256_base64=" in (message.text or "")
+        assert all("data:image/png;base64" not in (block.text or "") for block in message.blocks)
         assert any("sha256_base64=" in (block.text or "") for block in message.blocks)
 
 

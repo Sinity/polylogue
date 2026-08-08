@@ -217,9 +217,11 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
 
     acquire_before = _resource_sample(root)
     acquire_started = time.perf_counter()
-    acquired_raw_ids = acquire_codex_revision_chain(root, fixture, source_path)
+    acquired_raw_ids, sizes = acquire_codex_revision_chain(root, fixture, source_path)
     with sqlite3.connect(root / "source.db") as conn:
-        sizes = tuple(int(row[0]) for row in conn.execute("SELECT blob_size FROM raw_sessions ORDER BY blob_size"))
+        persisted_sizes = tuple(
+            int(row[0]) for row in conn.execute("SELECT blob_size FROM raw_sessions ORDER BY blob_size")
+        )
     manifest_path = fixture.write_manifest(root / "fixture-manifest.json", sizes)
     fixture_manifest = manifest_path.read_text(encoding="utf-8")
     acquire_after = _resource_sample(root)
@@ -235,7 +237,12 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     assert sizes[-2] == WHALE_FIXTURE_DIMENSIONS.near_terminal_predecessor_bytes
     assert sizes[-1] == TERMINAL_WIRE_BYTES
     assert all(current > previous for previous, current in pairwise(sizes))
-    assert len(fixture_manifest) > REVISION_COUNT
+    assert persisted_sizes == sizes
+    manifest_payload = json.loads(fixture_manifest)
+    assert manifest_payload["fixture_id"] == WHALE_FIXTURE_DIMENSIONS.fixture_id
+    assert manifest_payload["session_native_id"] == SESSION_NATIVE_ID
+    assert manifest_payload["revision_sizes"] == list(sizes)
+    assert manifest_payload["dimensions"] == dict(WHALE_FIXTURE_DIMENSIONS.manifest_dimensions())
     with source_path.open("rb") as handle:
         first_source_bytes = handle.read(8_192)
     assert b"sanitized incident witness user baseline" in first_source_bytes

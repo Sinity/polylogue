@@ -89,3 +89,8 @@ def test_fixture_pack_generator_writes_a_complete_manifest(tmp_path: Path) -> No
     assert manifest["fixture_id"] == dimensions.fixture_id
     assert manifest["revision_sizes"] == [4_096, 64 * 1024, 128 * 1024, 256 * 1024, 1024 * 1024]
     assert manifest["terminal_features"] == ["compaction", "giant-base64-attachment", "codex-stream-dispatch"]
+
+    rerun_source_path, rerun_manifest_path = write_codex_whale_fixture_pack(tmp_path, fixture)
+    assert rerun_source_path == source_path
+    assert rerun_source_path.stat().st_size == dimensions.terminal_wire_bytes
+    assert json.loads(rerun_manifest_path.read_text(encoding="utf-8")) == manifest
