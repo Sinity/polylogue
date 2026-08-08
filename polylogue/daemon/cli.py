@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     from polylogue.daemon.parse_prefetch import DaemonParseStage
     from polylogue.product.raw_authority import RawMaterializationCounts
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
@@ -1191,7 +1192,9 @@ async def _bridge_catch_up_complete(
     target.set()
 
 
-async def _reconcile_blob_publications(*, actor: str = "startup.blob_publications") -> Any:
+async def _reconcile_blob_publications(
+    *, actor: str = "startup.blob_publications"
+) -> BlobPublicationReconciliation | None:
     """Classify crash-left publication reservations before source catch-up."""
     from polylogue.paths import archive_root
     from polylogue.storage.blob_publication import reconcile_blob_publication_reservations_under_exclusion
