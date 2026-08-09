@@ -140,6 +140,31 @@ def test_malformed_sqlite_and_stale_stamp_fail_closed(tmp_path: Path) -> None:
     assert validate_stamp(stamp_path, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
 
 
+def test_attempt_and_green_stamp_artifacts_fail_closed_when_malformed(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data)
+    attempt = _attempt(data, outcomes=("passed", "passed"))
+    attempt["exit_code"] = 0
+    attempt["artifact_dir"] = "/tmp/outside-testmon-run"
+    assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
+
+    attempt["artifact_dir"] = ".cache/verify/runs/run-red"
+    attempt["status"] = "complete"
+    stamp = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)
+    assert stamp is not None
+    stamp_path = tmp_path / ".cache" / "testmon" / "seed.json"
+    stamp_path.parent.mkdir(parents=True)
+    payload = stamp.as_dict()
+    payload["baseline"]["exit_code"] = 1
+    stamp_path.write_text(json.dumps(payload))
+    assert validate_stamp(stamp_path, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
+
+    payload = stamp.as_dict()
+    payload["graph"]["failed_nodeids"] = [NODEIDS[0]]
+    stamp_path.write_text(json.dumps(payload))
+    assert validate_stamp(stamp_path, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
+
+
 def test_malformed_sqlite_values_fail_closed(tmp_path: Path) -> None:
     data = tmp_path / "testmondata"
     _write_graph(data)

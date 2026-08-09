@@ -303,14 +303,19 @@ def test_complete_red_attempt_bootstraps_as_selection_only_state(tmp_path: Path)
     assert decision.main_seed_attempt == attempt
     local_data = tmp_path / "lane" / "testmondata"
     local_stamp = tmp_path / "lane" / "seed.json"
+    local_attempt = tmp_path / "lane" / "seed-attempt.json"
     assert bootstrap_testmon_seed_files(
         decision,
         local_testmon_data=local_data,
         local_seed_stamp=local_stamp,
+        local_seed_attempt=local_attempt,
         checkout_root=tmp_path / "lane",
         inherited_from=tmp_path / "main",
     )
-    assert json.loads(local_stamp.read_text())["baseline"]["status"] == "red"
+    assert not local_stamp.exists()
+    rebound_attempt = json.loads(local_attempt.read_text())
+    assert rebound_attempt["artifact_dir"] == ".cache/verify/runs/red-run"
+    assert rebound_attempt["testmon_data"] == file_fingerprint(local_data)
 
 
 def test_local_seed_missing_only_stamp_still_bootstraps(tmp_path: Path) -> None:

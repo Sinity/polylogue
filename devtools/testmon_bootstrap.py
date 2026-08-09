@@ -31,7 +31,8 @@ This module owns exactly one decision and one action:
 - :func:`decide_testmon_bootstrap` -- pure decision, no subprocess beyond the
   caller. It validates the main stamp or a complete red seed attempt.
 - :func:`bootstrap_testmon_seed_files` -- the copy action once bootstrapping
-  has been decided.
+  has been decided. A red attempt is copied as a rebound attempt receipt and
+  never synthesized into ``seed.json``.
 - :func:`maybe_bootstrap_testmon_seed` -- the orchestrator `devtools verify`
   calls: detects whether ``repo_root`` is a linked worktree (via
   ``git rev-parse --absolute-git-dir --git-common-dir``, the same mechanism
@@ -204,14 +205,18 @@ def decide_testmon_bootstrap(
     )
 
 
-def _atomic_write_stamp(seed_stamp: Path, stamp: TestmonSeedStamp) -> None:
-    seed_stamp.parent.mkdir(parents=True, exist_ok=True)
-    tmp = seed_stamp.with_name(f"{seed_stamp.name}.{os.getpid()}.tmp")
+def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(json.dumps(stamp.as_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(seed_stamp)
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _atomic_write_stamp(seed_stamp: Path, stamp: TestmonSeedStamp) -> None:
+    _atomic_write_json(seed_stamp, stamp.as_dict())
 
 
 def _atomic_copy_sqlite_db(src: Path, dst: Path) -> None:
@@ -246,6 +251,7 @@ def bootstrap_testmon_seed_files(
     *,
     local_testmon_data: Path,
     local_seed_stamp: Path,
+    local_seed_attempt: Path | None = None,
     checkout_root: Path | None = None,
     inherited_from: Path | None = None,
 ) -> bool:
@@ -254,6 +260,8 @@ def bootstrap_testmon_seed_files(
         return True
     assert decision.main_testmon_data is not None
     if decision.main_seed_stamp is None and decision.main_seed_attempt is None:
+        return False
+    if decision.main_seed_attempt is not None and local_seed_attempt is None:
         return False
     if checkout_root is None or inherited_from is None:
         return False
@@ -272,6 +280,10 @@ def bootstrap_testmon_seed_files(
         local_seed_stamp.resolve().relative_to(destination_root)
         if local_seed_stamp.resolve() == local_testmon_data.resolve():
             return False
+        if local_seed_attempt is not None:
+            local_seed_attempt.resolve().relative_to(destination_root)
+            if local_seed_attempt.resolve() in {local_testmon_data.resolve(), local_seed_stamp.resolve()}:
+                return False
         if decision.main_seed_stamp is not None:
             decision.main_seed_stamp.resolve().relative_to(source_root)
             if decision.main_seed_stamp.resolve() == decision.main_testmon_data.resolve():
@@ -305,12 +317,34 @@ def bootstrap_testmon_seed_files(
     if stamp is None:
         return False
     try:
+        if decision.main_seed_attempt is not None:
+            local_seed_stamp.unlink(missing_ok=True)
         _atomic_copy_sqlite_db(decision.main_testmon_data, local_testmon_data)
-        stamp = stamp.rebound(checkout_root=destination_root, inherited_from=source_root)
-        refreshed = refresh_stamp(stamp, local_testmon_data)
-        if refreshed is None or refreshed.graph != stamp.graph:
+        rebound = stamp.rebound(checkout_root=destination_root, inherited_from=source_root)
+        refreshed = refresh_stamp(rebound, local_testmon_data)
+        if refreshed is None or refreshed.graph != rebound.graph:
             return False
-        _atomic_write_stamp(local_seed_stamp, refreshed)
+        if decision.main_seed_attempt is not None:
+            assert local_seed_attempt is not None
+            source_attempt = json.loads(decision.main_seed_attempt.read_text(encoding="utf-8"))
+            if not isinstance(source_attempt, dict):
+                return False
+            rebound_attempt = dict(source_attempt)
+            rebound_attempt["testmon_data"] = refreshed.testmon_data
+            rebound_attempt["artifact_dir"] = f".cache/verify/runs/{refreshed.run_id}"
+            if (
+                stamp_from_attempt(
+                    rebound_attempt,
+                    local_testmon_data,
+                    checkout_root=destination_root,
+                    protocol_version=decision.protocol_version,
+                )
+                is None
+            ):
+                return False
+            _atomic_write_json(local_seed_attempt, rebound_attempt)
+        else:
+            _atomic_write_stamp(local_seed_stamp, refreshed)
         return True
     except (OSError, sqlite3.Error, TypeError, ValueError):
         return False
@@ -369,6 +403,7 @@ def maybe_bootstrap_testmon_seed(
         return None
     local_testmon_data = repo_root / testmon_data_relpath
     local_seed_stamp = repo_root / seed_stamp_relpath
+    local_seed_attempt = repo_root / TESTMON_SEED_ATTEMPT_RELPATH
     main_testmon_data = main_checkout / testmon_data_relpath
     main_seed_stamp = main_checkout / seed_stamp_relpath
     main_seed_attempt = main_checkout / TESTMON_SEED_ATTEMPT_RELPATH
@@ -389,6 +424,7 @@ def maybe_bootstrap_testmon_seed(
         decision,
         local_testmon_data=local_testmon_data,
         local_seed_stamp=local_seed_stamp,
+        local_seed_attempt=local_seed_attempt,
         checkout_root=repo_root,
         inherited_from=main_checkout,
     )
@@ -396,6 +432,11 @@ def maybe_bootstrap_testmon_seed(
         return (
             f"verify: bootstrapped pytest-testmon seed into {local_testmon_data.parent}, "
             "but could not record its checkout provenance"
+        )
+    if decision.main_seed_attempt is not None:
+        return (
+            f"verify: bootstrapped pytest-testmon graph from main checkout {main_checkout} "
+            f"into {local_testmon_data.parent} as a selection-only attempt receipt (no seed.json)"
         )
     return (
         f"verify: bootstrapped pytest-testmon seed from main checkout {main_checkout} "

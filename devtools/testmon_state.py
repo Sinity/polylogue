@@ -248,6 +248,8 @@ class TestmonSeedStamp:
             raise ValueError("seed stamp baseline fields are malformed")
         if release_allowed != (baseline_status is BaselineStatus.GREEN):
             raise ValueError("release permission does not match baseline status")
+        if baseline_status is BaselineStatus.GREEN and exit_code != 0:
+            raise ValueError("green seed stamp must have a zero exit code")
         graph_status = graph.get("status")
         if not isinstance(graph_status, str):
             raise ValueError("seed stamp graph status is invalid")
@@ -293,6 +295,8 @@ class TestmonSeedStamp:
             or len(set(graph_nodeids)) != len(graph_nodeids)
         ):
             raise ValueError("seed stamp graph failure ledger is malformed")
+        if baseline_status is BaselineStatus.GREEN and graph_nodeids:
+            raise ValueError("green seed stamp cannot contain failed graph nodes")
         testmon_data = value.get("testmon_data")
         run_id = value.get("run_id")
         artifact_dir = value.get("artifact_dir")
@@ -301,6 +305,13 @@ class TestmonSeedStamp:
         assert isinstance(testmon_data, str)
         assert isinstance(run_id, str)
         assert isinstance(artifact_dir, str)
+        typed_binding = TestmonBinding.from_mapping(binding)
+        if not _is_bound_run_artifact(
+            artifact_dir,
+            checkout_root=Path(typed_binding.checkout_root),
+            run_id=run_id,
+        ):
+            raise ValueError("seed stamp artifact directory is not checkout-bound")
         return cls(
             protocol_version,
             CollectionStatus.COMPLETE,
@@ -320,7 +331,7 @@ class TestmonSeedStamp:
                 tuple(graph_nodeids),
             ),
             TestmonIdentity.from_mapping(identity),
-            TestmonBinding.from_mapping(binding),
+            typed_binding,
             testmon_data,
             run_id,
             artifact_dir,
@@ -343,6 +354,21 @@ def file_fingerprint(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _is_bound_run_artifact(raw: object, *, checkout_root: Path, run_id: str) -> bool:
+    if not isinstance(raw, str) or not raw or not isinstance(run_id, str) or not run_id:
+        return False
+    path = Path(raw)
+    if path.is_absolute() or path.parts[:3] != (".cache", "verify", "runs"):
+        return False
+    if path.parts[3:] != (run_id,):
+        return False
+    try:
+        (checkout_root / path).resolve().relative_to((checkout_root / ".cache" / "verify" / "runs" / run_id).resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def inspect_testmon_database(path: Path, expected_nodeids: Sequence[str]) -> GraphInspection:
@@ -566,6 +592,8 @@ def stamp_from_attempt(
     run_id = attempt.get("run_id")
     artifact_dir = attempt.get("artifact_dir")
     if not isinstance(run_id, str) or not run_id or not isinstance(artifact_dir, str) or not artifact_dir:
+        return None
+    if not _is_bound_run_artifact(artifact_dir, checkout_root=checkout_root, run_id=run_id):
         return None
     outcomes = attempt.get("node_outcomes")
     if not isinstance(outcomes, list) or len(outcomes) != len(expected):

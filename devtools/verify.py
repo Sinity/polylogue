@@ -101,6 +101,17 @@ from polylogue.scenarios.workload import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def _anchor_verification_paths() -> None:
+    """Use the checkout root for relative verification state when invoked inside it."""
+    current = Path.cwd().resolve()
+    try:
+        current.relative_to(ROOT.resolve())
+    except ValueError:
+        return
+    os.chdir(ROOT)
+
+
 # ── mypy daemon probe ──────────────────────────────────────────────
 
 
@@ -2601,6 +2612,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
+    _anchor_verification_paths()
     bootstrap_message = maybe_bootstrap_testmon_seed(
         ROOT,
         protocol_version=TESTMON_SEED_PROTOCOL_VERSION,

@@ -42,6 +42,7 @@ from devtools.verify import (
     TESTMON_SEED_ATTEMPT,
     TESTMON_SEED_PROTOCOL_VERSION,
     TESTMON_SEED_STAMP,
+    _anchor_verification_paths,
     _finalize_testmon_seed_attempt,
     _format_completion_notification,
     _matching_testmon_coverage,
@@ -606,7 +607,7 @@ def test_resumed_seed_does_not_reuse_an_unexecuted_database_row(tmp_path: Path) 
             "resume": True,
             "expected_nodeids": expected,
             "run_id": "resume",
-            "artifact_dir": str(tmp_path / "resume"),
+            "artifact_dir": ".cache/verify/runs/resume",
         }
 
         receipt = _finalize_testmon_seed_attempt(
@@ -777,7 +778,7 @@ def test_seed_receipt_classifies_every_node_terminal_outcome(
             "resume": False,
             "expected_nodeids": [],
             "run_id": "run-mixed",
-            "artifact_dir": str(tmp_path / "run-mixed"),
+            "artifact_dir": ".cache/verify/runs/run-mixed",
         },
         step_results=[
             {
@@ -879,7 +880,7 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
             "resume": False,
             "expected_nodeids": [],
             "run_id": "run-1",
-            "artifact_dir": str(tmp_path / "run-1"),
+            "artifact_dir": ".cache/verify/runs/run-1",
         },
         step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 0}],
         exit_code=0,
@@ -906,7 +907,7 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
             "resume": False,
             "expected_nodeids": [],
             "run_id": "run-stale-db",
-            "artifact_dir": str(tmp_path / "run-stale-db"),
+            "artifact_dir": ".cache/verify/runs/run-stale-db",
         },
         step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir)}],
         exit_code=0,
@@ -929,7 +930,7 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
             "resume": False,
             "expected_nodeids": [],
             "run_id": "run-orphaned",
-            "artifact_dir": str(tmp_path / "run-orphaned"),
+            "artifact_dir": ".cache/verify/runs/run-orphaned",
         },
         step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir)}],
         exit_code=0,
@@ -1820,6 +1821,16 @@ def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.Ca
     assert rc == 125
     run.assert_not_called()
     assert "only 0.50 GiB available" in capsys.readouterr().err
+
+
+def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT / "devtools")
+
+    _anchor_verification_paths()
+
+    assert Path.cwd() == ROOT.resolve()
 
 
 def test_verify_rejects_zero_testmon_selection_for_executable_change(
