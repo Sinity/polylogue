@@ -357,7 +357,7 @@ def file_fingerprint(path: Path) -> str:
 
 
 def _is_bound_run_artifact(raw: object, *, checkout_root: Path, run_id: str) -> bool:
-    if not isinstance(raw, str) or not raw or not isinstance(run_id, str) or not run_id:
+    if not isinstance(raw, str) or not raw or not run_id:
         return False
     path = Path(raw)
     if path.is_absolute() or path.parts[:3] != (".cache", "verify", "runs"):
