@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -430,7 +431,9 @@ def test_post_import_rejects_a_modified_wave_contract(tmp_path: Path) -> None:
     ],
     ids=["category", "count", "refusal-reasons", "deferred-reasons", "already-guarded"],
 )
-def test_post_import_rejects_tampered_complete_report(tmp_path: Path, mutation: object) -> None:
+def test_post_import_rejects_tampered_complete_report(
+    tmp_path: Path, mutation: Callable[[dict[str, Any]], None]
+) -> None:
     master = _issue()
     before = copy.deepcopy(master)
     before["acceptance_criteria"] = None

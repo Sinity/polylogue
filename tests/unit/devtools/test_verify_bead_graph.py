@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools import verify_bead_graph
+from devtools import beads_acceptance_contracts, verify_bead_graph
 
 EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES = frozenset(
     {
@@ -171,7 +171,7 @@ def test_main_exits_nonzero_and_reports_malformed_wave(
         "_run_bd_list_all",
         lambda: [_issue("polylogue-a", labels=["wave:later"])],
     )
-    monkeypatch.setattr(verify_bead_graph.beads_acceptance_contracts, "load_manifest", lambda path: ())
+    monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: ())
 
     rc = verify_bead_graph.main([])
 
@@ -186,7 +186,7 @@ def test_main_exits_zero_when_all_waves_are_well_formed(
 ) -> None:
     monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (True, ""))
     monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: [_issue("polylogue-a", labels=["wave:1"])])
-    monkeypatch.setattr(verify_bead_graph.beads_acceptance_contracts, "load_manifest", lambda path: ())
+    monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: ())
     monkeypatch.setattr(verify_bead_graph, "REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES", ())
     monkeypatch.setattr(verify_bead_graph, "REINDEX_PROOF_EDGE_GUARD_PHASE_BINDINGS", ())
 
@@ -204,7 +204,7 @@ def test_main_reports_manifest_load_failure_without_invoking_live_graph_commands
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(
-        verify_bead_graph.beads_acceptance_contracts,
+        beads_acceptance_contracts,
         "load_manifest",
         lambda path: (_ for _ in ()).throw(SystemExit("manifest inventory is invalid")),
     )
@@ -399,7 +399,7 @@ def test_main_enforces_reindex_edge_policy(monkeypatch: pytest.MonkeyPatch, caps
     ]
     monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (True, "cycles clean"))
     monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: issues)
-    monkeypatch.setattr(verify_bead_graph.beads_acceptance_contracts, "load_manifest", lambda path: ())
+    monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: ())
 
     assert verify_bead_graph.main(["--json"]) == 1
     payload = json.loads(capsys.readouterr().out)

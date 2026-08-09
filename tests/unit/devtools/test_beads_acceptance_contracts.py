@@ -419,7 +419,7 @@ def test_malformed_shapes_return_validation_errors_without_render_tracebacks(key
 def test_untrusted_scalar_membership_values_fail_closed(path: tuple[str, ...], value: object) -> None:
     issue = _issue()
     contract = issue["metadata"]["acceptance_contract_v1"]
-    target: dict[str, object] = contract
+    target: Any = contract
     for key in path[:-1]:
         target = target[key]
     target[path[-1]] = value
@@ -510,7 +510,7 @@ def test_committed_route_registry_has_exact_manifest_population() -> None:
 def test_route_registry_rejects_unbound_or_wildcard_authority(
     monkeypatch: pytest.MonkeyPatch, field: str, value: object, expected: str
 ) -> None:
-    registry = {
+    registry: dict[str, dict[str, Any]] = {
         "test/one": {
             "bead_id": "polylogue-one",
             "class": "ImplementationRoute",
