@@ -72,6 +72,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import merge_gate
+from devtools.testmon_state import TerminalAuthorization, VerificationScope
 
 _LEDGER_PATH = Path(".cache/verify/merge-gate/merge-train-ledger.json")
 
@@ -133,11 +134,17 @@ def _append_merge_entry(pr: int, head_sha: str, title: str) -> None:
 
 def _pending_prs_since_last_full_verify(ledger: dict[str, Any]) -> list[dict[str, Any]]:
     last_verify = ledger.get("last_full_verify") or {}
+    scope = last_verify.get("verification_scope")
+    terminal_authorized = scope == VerificationScope.RELEASE_BASELINE.value or (
+        scope == VerificationScope.NARROW_TERMINAL.value
+        and last_verify.get("terminal_authorization") == TerminalAuthorization.NARROW_TERMINAL.value
+    )
     last_verify_at = (
         last_verify.get("at", 0.0)
         if last_verify.get("accepted") is True
         and last_verify.get("exit_code") == 0
         and last_verify.get("release_baseline_allowed") is True
+        and terminal_authorized
         else 0.0
     )
     return [entry for entry in ledger.get("merges", []) if entry.get("merged_at", 0.0) > last_verify_at]

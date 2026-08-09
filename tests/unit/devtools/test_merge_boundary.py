@@ -373,6 +373,25 @@ def test_train_status_blocks_when_pr_merged_after_last_full_verify(
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
+def test_train_status_rejects_untyped_accepted_terminal_ledger(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._write_ledger(
+        {
+            "merges": [],
+            "last_full_verify": {
+                "at": 1000.0,
+                "command": "devtools verify --all",
+                "exit_code": 0,
+                "release_baseline_allowed": True,
+                "accepted": True,
+            },
+        }
+    )
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+
 def test_record_full_verify_clears_pending_prs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     merge_boundary._append_merge_entry(1, "sha1", "some title")
