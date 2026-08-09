@@ -2796,10 +2796,6 @@ def daemon_status_payload(
     calls instead of a fresh, ephemeral registry per call).
     """
     config_was_explicit = config is not None
-    if config is None:
-        from polylogue.config import resolve_runtime_config
-
-        config = resolve_runtime_config().as_config()
 
     watch_sources = sources if sources is not None else default_sources()
 

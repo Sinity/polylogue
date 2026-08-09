@@ -221,6 +221,11 @@ def _record_judgment_automation_receipt(
     """Persist one scheduler outcome in the existing daemon event ledger."""
 
     _require_positive_batch_limit(batch_limit)
+    if receipt_context is not None:
+        if operation_id is None:
+            operation_id = receipt_context.operation_id
+        elif operation_id != receipt_context.operation_id:
+            raise ValueError("judgment automation receipt operation ownership mismatch")
     if not (root / "ops.db").exists():
         return JudgmentAutomationReceiptOutcome.FAILED
     from polylogue.daemon.events import current_epoch_ms, emit_daemon_event, get_latest_daemon_event
@@ -236,7 +241,7 @@ def _record_judgment_automation_receipt(
     )
     observed_at_ms = current_epoch_ms() if now_ms is None else now_ms
     try:
-        if suppress_identical_for_ms is not None:
+        if suppress_identical_for_ms is not None and operation_id is None:
             latest = get_latest_daemon_event(JUDGMENT_AUTOMATION_STAGE, archive_root_path=root)
             latest_ts_ms = latest.get("ts_ms") if latest is not None else None
             latest_state = _receipt_state(latest.get("payload")) if latest is not None else None
@@ -275,13 +280,18 @@ def _sweep_result_from_receipt_payload(payload: Mapping[str, object]) -> Judgmen
     if not all(isinstance(value, int) and not isinstance(value, bool) for value in values):
         return None
     typed_values = cast(tuple[int, int, int, int, int, int], tuple(values))
+    if any(value < 0 for value in typed_values):
+        return None
+    considered, accepted, rejected, escalated, idempotent, failed = typed_values
+    if considered != accepted + rejected + escalated + idempotent + failed:
+        return None
     return JudgmentAutomationSweepResult(
-        considered=typed_values[0],
-        accepted=typed_values[1],
-        rejected=typed_values[2],
-        escalated=typed_values[3],
-        idempotent=typed_values[4],
-        failed=typed_values[5],
+        considered=considered,
+        accepted=accepted,
+        rejected=rejected,
+        escalated=escalated,
+        idempotent=idempotent,
+        failed=failed,
     )
 
 
@@ -306,7 +316,21 @@ def _valid_judgment_automation_receipt_payload(payload: object) -> bool:
         if not isinstance(payload.get(key), bool):
             return False
     counter_keys = {"considered", "accepted", "rejected", "escalated", "idempotent", "failed"}
-    return not (counter_keys & payload.keys()) or _sweep_result_from_receipt_payload(payload) is not None
+    present_counter_keys = counter_keys & payload.keys()
+    if present_counter_keys and present_counter_keys != counter_keys:
+        return False
+    result = _sweep_result_from_receipt_payload(payload) if present_counter_keys else None
+    if present_counter_keys and result is None:
+        return False
+    if payload["status"] == "completed" and result is not None and result.failed:
+        return False
+    return not (payload["status"] == "failed" and result is not None and not result.failed)
+
+
+def is_valid_judgment_automation_receipt_payload(payload: object) -> bool:
+    """Return whether a scheduler receipt has complete projection evidence."""
+
+    return _valid_judgment_automation_receipt_payload(payload)
 
 
 def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | None = None) -> int:
@@ -827,6 +851,8 @@ async def periodic_judgment_automation_sweep(
         """Resolve the archive root without letting a reload error kill the loop."""
 
         nonlocal last_valid_root
+        if archive_root_path is not None:
+            return archive_root_path
         try:
             root = archive_root()
         except Exception:
@@ -932,6 +958,9 @@ async def periodic_judgment_automation_sweep(
         root = receipt_root()
         if not root.exists():
             continue
+        # Recovery is independent of feature configuration. A malformed
+        # post-sleep reload must not strand durable user-tier markers.
+        await recover_receipt_outbox(root)
         try:
             cfg = load_polylogue_config()
             cfg_interval_s = cfg.judgment_automation_interval_s
@@ -952,7 +981,6 @@ async def periodic_judgment_automation_sweep(
             continue
         last_valid_interval_s = max(cfg_interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)
         last_valid_batch_limit = cfg_batch_limit
-        await recover_receipt_outbox(root)
         if not (cfg_automation_enabled and cfg_judge_enabled):
             try:
                 recorded = await coordinator.run_sync(
@@ -1049,5 +1077,6 @@ __all__ = [
     "periodic_judgment_automation_sweep",
     "recover_pending_judgment_automation_receipts",
     "run_judgment_automation_sweep_once",
+    "is_valid_judgment_automation_receipt_payload",
     "judgment_automation_receipt_freshness_window_ms",
 ]

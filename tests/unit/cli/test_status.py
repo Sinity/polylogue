@@ -9,6 +9,7 @@ import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -1946,6 +1947,33 @@ class TestNoArchiveStatus:
         assert payload["source"] == "direct"
         assert payload["assertion_candidate_queue"]["pending_count"] == 1
         assert payload["assertion_candidate_queue"]["state"] == "parked-pending"
+
+    def test_status_command_direct_json_fallback_uses_configured_scheduler_interval(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        for tier in (ArchiveTier.INDEX, ArchiveTier.USER, ArchiveTier.OPS):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        queue_summary = MagicMock(return_value={"state": "healthy-empty", "pending_count": 0})
+        runtime_config = SimpleNamespace(
+            as_config=lambda: SimpleNamespace(judgment_automation_interval_s=7_200),
+        )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._daemon_live", return_value=False),
+            patch("polylogue.cli.commands.status.urlopen", side_effect=TimeoutError),
+            patch("polylogue.config.resolve_runtime_config", return_value=runtime_config),
+            patch("polylogue.daemon.status.assertion_candidate_queue_status_summary", queue_summary),
+        ):
+            result = CliRunner().invoke(
+                status_command,
+                ["--daemon-url", "http://127.0.0.1:8766", "--json"],
+                obj=env,
+            )
+
+        assert result.exit_code == 1
+        queue_config = queue_summary.call_args.kwargs["config"]
+        assert queue_config.judgment_automation_interval_s == 7_200
 
     def test_status_command_exact_archive_readiness_direct_fallback_opts_in(self) -> None:
         """Exact readiness is a separate explicit diagnostic flag."""

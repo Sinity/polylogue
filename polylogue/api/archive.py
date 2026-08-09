@@ -1509,6 +1509,7 @@ def _archive_assertion_candidate_queue_health(
     """Project queue depth, retention, producer telemetry, and scheduler health."""
 
     from polylogue.daemon.judgment_automation import (
+        is_valid_judgment_automation_receipt_payload,
         judgment_automation_receipt_freshness_window_ms,
     )
     from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
@@ -1692,23 +1693,20 @@ def _archive_assertion_candidate_queue_health(
                             receipt_payload = json.loads(str(receipt_row[1]))
                         except (TypeError, ValueError):
                             receipt_payload = None
+                        receipt_is_valid = is_valid_judgment_automation_receipt_payload(receipt_payload)
                         raw_status = (
                             str(receipt_payload.get("status", "unknown"))
-                            if isinstance(receipt_payload, dict)
+                            if receipt_is_valid and isinstance(receipt_payload, dict)
                             else "unknown"
                         )
-                        if not isinstance(receipt_payload, dict) or raw_status not in {
-                            "completed",
-                            "parked",
-                            "failed",
-                        }:
+                        if not receipt_is_valid:
                             caveats.append("latest judgment scheduler receipt is malformed")
                         if raw_status in {"completed", "parked", "failed"}:
                             judgment_scheduler_receipt_status = cast(
                                 Literal["completed", "parked", "failed"], raw_status
                             )
                         judgment_scheduler_receipt_at_ms = int(receipt_row[0])
-                        if isinstance(receipt_payload, dict) and receipt_payload.get("reason") is not None:
+                        if receipt_is_valid and isinstance(receipt_payload, dict):
                             judgment_scheduler_receipt_reason = str(receipt_payload["reason"])
             finally:
                 ops_conn.close()

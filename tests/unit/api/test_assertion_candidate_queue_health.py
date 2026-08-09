@@ -140,7 +140,7 @@ def test_pending_queue_without_judgment_scheduler_receipt_is_parked(tmp_path: Pa
     assert any("not converged" in caveat for caveat in health.caveats)
 
 
-@pytest.mark.parametrize("payload_json", ["not-json", "[]", '{"status":"bogus"}'])
+@pytest.mark.parametrize("payload_json", ["not-json", "[]", '{"status":"bogus"}', '{"status":"completed"}'])
 def test_malformed_latest_scheduler_receipt_is_unknown_and_keeps_pending_parked(
     tmp_path: Path, payload_json: str
 ) -> None:
@@ -198,7 +198,15 @@ def test_pending_queue_with_fresh_scheduler_receipt_is_active_pending(tmp_path: 
         "judgment-automation",
         archive_root_path=tmp_path,
         observed_at_ms=now_ms - 60_000,
-        payload={"status": "completed", "reason": "sweep_completed", "retryable": False},
+        payload={
+            "status": "completed",
+            "reason": "sweep_completed",
+            "retryable": False,
+            "retry_route": "next enabled judgment-automation tick",
+            "batch_limit": 200,
+            "receipt_persistence_degraded": False,
+            "receipt_persistence_recovered": False,
+        },
     )
 
     health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
@@ -226,13 +234,29 @@ def test_latest_scheduler_receipt_uses_ledger_order_when_clock_regresses(tmp_pat
         "judgment-automation",
         archive_root_path=tmp_path,
         observed_at_ms=now_ms - 60_000,
-        payload={"status": "completed", "reason": "sweep_completed", "retryable": False},
+        payload={
+            "status": "completed",
+            "reason": "sweep_completed",
+            "retryable": False,
+            "retry_route": "next enabled judgment-automation tick",
+            "batch_limit": 200,
+            "receipt_persistence_degraded": False,
+            "receipt_persistence_recovered": False,
+        },
     )
     emit_daemon_event(
         "judgment-automation",
         archive_root_path=tmp_path,
         observed_at_ms=now_ms - 120_000,
-        payload={"status": "failed", "reason": "clock_regressed", "retryable": True},
+        payload={
+            "status": "failed",
+            "reason": "clock_regressed",
+            "retryable": True,
+            "retry_route": "next enabled judgment-automation tick",
+            "batch_limit": 200,
+            "receipt_persistence_degraded": False,
+            "receipt_persistence_recovered": False,
+        },
     )
 
     health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
@@ -263,7 +287,15 @@ def test_scheduler_receipt_freshness_uses_configured_interval_and_bounded_grace(
         "judgment-automation",
         archive_root_path=tmp_path,
         observed_at_ms=now_ms - receipt_age_ms,
-        payload={"status": "completed", "reason": "sweep_completed", "retryable": False},
+        payload={
+            "status": "completed",
+            "reason": "sweep_completed",
+            "retryable": False,
+            "retry_route": "next enabled judgment-automation tick",
+            "batch_limit": 200,
+            "receipt_persistence_degraded": False,
+            "receipt_persistence_recovered": False,
+        },
     )
 
     at_boundary = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
@@ -304,7 +336,15 @@ def test_scheduler_receipt_freshness_uses_explicit_runtime_projection(
         "judgment-automation",
         archive_root_path=tmp_path,
         observed_at_ms=now_ms - receipt_age_ms,
-        payload={"status": "completed", "reason": "sweep_completed", "retryable": False},
+        payload={
+            "status": "completed",
+            "reason": "sweep_completed",
+            "retryable": False,
+            "retry_route": "next enabled judgment-automation tick",
+            "batch_limit": 200,
+            "receipt_persistence_degraded": False,
+            "receipt_persistence_recovered": False,
+        },
     )
 
     health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
@@ -360,7 +400,15 @@ def test_failed_scheduler_receipt_is_not_converged(tmp_path: Path) -> None:
         "judgment-automation",
         archive_root_path=tmp_path,
         observed_at_ms=now_ms - 60_000,
-        payload={"status": "failed", "reason": "transient_sqlite_lock", "retryable": True},
+        payload={
+            "status": "failed",
+            "reason": "transient_sqlite_lock",
+            "retryable": True,
+            "retry_route": "next enabled judgment-automation tick",
+            "batch_limit": 200,
+            "receipt_persistence_degraded": False,
+            "receipt_persistence_recovered": False,
+        },
     )
 
     health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
@@ -397,7 +445,15 @@ def test_parked_scheduler_receipt_covers_coalesced_tick_before_expiring(tmp_path
         "judgment-automation",
         archive_root_path=tmp_path,
         observed_at_ms=now_ms - cadence_ms,
-        payload={"status": "parked", "reason": "capability_gate_disabled", "retryable": True},
+        payload={
+            "status": "parked",
+            "reason": "capability_gate_disabled",
+            "retryable": True,
+            "retry_route": "next enabled judgment-automation tick",
+            "batch_limit": 200,
+            "receipt_persistence_degraded": False,
+            "receipt_persistence_recovered": False,
+        },
     )
 
     at_boundary = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)

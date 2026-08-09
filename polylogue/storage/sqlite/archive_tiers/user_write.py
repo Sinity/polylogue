@@ -1794,7 +1794,7 @@ def list_judgment_automation_receipt_outbox(
     *,
     limit: int | None = None,
 ) -> list[ArchiveAssertionEnvelope]:
-    """List active scheduler receipt markers, newest first."""
+    """List active scheduler receipt markers oldest first for ordered recovery."""
 
     if limit is not None and limit <= 0:
         raise ValueError("judgment automation receipt outbox limit must be a positive integer")
@@ -1812,7 +1812,7 @@ def list_judgment_automation_receipt_outbox(
         SELECT {_ASSERTION_COLUMNS}
         FROM assertions
         WHERE kind = ? AND scope_ref = ? AND status = ? AND key IS NOT NULL
-        ORDER BY updated_at_ms DESC, assertion_id
+        ORDER BY updated_at_ms ASC, assertion_id
         {limit_clause}
         """,
         params,

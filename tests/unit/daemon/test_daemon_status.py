@@ -1965,6 +1965,26 @@ def test_daemon_status_payload_marks_unproven_raw_frontier_non_green(
     assert payload["ok"] is False
 
 
+def test_daemon_status_contains_malformed_scheduler_config_inside_bounded_queue_health() -> None:
+    """A bad ambient interval cannot abort the daemon status route."""
+
+    status = status_module.DaemonStatus(
+        daemon_liveness=True,
+        raw_frontier_integrity=status_module.RawFrontierIntegrity(overall_status="healthy"),
+    )
+    with (
+        patch("polylogue.daemon.status.build_daemon_status", return_value=status),
+        patch("polylogue.daemon.status._archive_debt_status_summary", return_value={}),
+        patch("polylogue.daemon.events.get_last_ingestion_batch", return_value=None),
+        patch("polylogue.config.resolve_runtime_config", side_effect=ValueError("malformed interval")),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    queue = cast(dict[str, object], payload["assertion_candidate_queue"])
+    assert queue["state"] == "unavailable"
+    assert any("malformed interval" in str(caveat) for caveat in cast(list[object], queue["caveats"]))
+
+
 @pytest.mark.parametrize(
     ("available", "lifecycle_state", "expected_ok"),
     [

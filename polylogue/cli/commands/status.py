@@ -1711,17 +1711,28 @@ def _show_direct_json(
     raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
     raw_frontier_integrity = _direct_raw_frontier_integrity(active_root, raw_materialization_readiness)
     raw_failure_status = _direct_raw_failure_status(root)
-    from polylogue.config import Config
+    from polylogue.config import Config, resolve_runtime_config
     from polylogue.daemon.status import assertion_candidate_queue_status_summary
     from polylogue.paths import render_root
 
-    queue_config = Config(
-        archive_root=active_root,
-        render_root=render_root(),
-        sources=[],
-        db_path=active_db if active_db is not None else active_root / "index.db",
-    )
-    assertion_candidate_queue = assertion_candidate_queue_status_summary(config=queue_config)
+    try:
+        resolved_runtime_config = resolve_runtime_config().as_config()
+    except Exception as exc:
+        assertion_candidate_queue = {
+            "mode": "assertion-candidate-queue-health",
+            "state": "unavailable",
+            "pending_count": 0,
+            "caveats": [f"queue health configuration unavailable: {exc}"],
+        }
+    else:
+        queue_config = Config(
+            archive_root=active_root,
+            render_root=render_root(),
+            sources=[],
+            db_path=active_db if active_db is not None else active_root / "index.db",
+            judgment_automation_interval_s=resolved_runtime_config.judgment_automation_interval_s,
+        )
+        assertion_candidate_queue = assertion_candidate_queue_status_summary(config=queue_config)
     component_readiness = _direct_component_readiness(
         env,
         active_root=active_root,
