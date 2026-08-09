@@ -15,6 +15,7 @@ import hashlib
 import re
 import sys
 from collections.abc import Iterable, Mapping
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,10 @@ _REPORT_CATEGORIES = (
     "same_timestamp_different",
     "contract_refused",
 )
-_BEADS_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+_BEADS_TIMESTAMP = re.compile(
+    r"^(?P<second>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
+    r"(?:\.(?P<fraction>\d+))?(?P<timezone>Z|[+-]\d{2}:\d{2})$"
+)
 
 
 class ReconciliationError(ValueError):
@@ -125,18 +129,20 @@ def non_contract_equality_digest(rows: Mapping[str, Mapping[str, Any]], ids: Ite
     return equality_digest(scrubbed)
 
 
-def _parse_beads_timestamp(value: object) -> dt.datetime:
+def _parse_beads_timestamp(value: object) -> tuple[dt.datetime, Decimal]:
     if not isinstance(value, str):
         raise ValueError("updated_at must be a string on both repository and live records")
-    if not _BEADS_TIMESTAMP.fullmatch(value):
+    match = _BEADS_TIMESTAMP.fullmatch(value)
+    if match is None:
         raise ValueError("updated_at must be a valid canonical Beads timestamp")
     try:
-        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = dt.datetime.fromisoformat(f"{match['second']}{match['timezone'].replace('Z', '+00:00')}")
     except ValueError as exc:
         raise ValueError("updated_at must be a valid canonical Beads timestamp") from exc
     if parsed.tzinfo is None:
         raise ValueError("updated_at must include a timezone")
-    return parsed.astimezone(dt.UTC)
+    fraction = Decimal(f"0.{match['fraction'] or '0'}")
+    return parsed.astimezone(dt.UTC).replace(microsecond=0), fraction
 
 
 def _classify_timestamp(master: Mapping[str, Any], live: Mapping[str, Any]) -> str:

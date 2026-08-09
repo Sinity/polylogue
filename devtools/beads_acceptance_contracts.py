@@ -37,7 +37,7 @@ _ROUTE_DISPATCH_BY_TYPE = {
     "process": frozenset({"production"}),
     "documentation": frozenset({"documentation"}),
 }
-_EVIDENCE_SPAN_FIELDS = frozenset({"snapshot_digest", "range", "text_digest"})
+_EVIDENCE_SPAN_FIELDS = frozenset({"snapshot", "snapshot_digest", "range", "text_digest"})
 _EVIDENCE_RANGE_FIELDS = frozenset({"start", "end"})
 _ALLOWED_VERIFICATION_MANAGERS = {"devtools"}
 _ALLOWED_VERIFICATION_FOCUSED = {"devtools test"}
@@ -213,7 +213,7 @@ def _validate_receipt(errors: list[str], contract: dict[str, Any]) -> bool:
 
 
 def _validate_evidence_spans(errors: list[str], contract: dict[str, Any]) -> None:
-    """Validate evidence as snapshot-bound typed ranges, never prose heuristics."""
+    """Validate evidence as byte ranges over digest-bound UTF-8 snapshots."""
     evidence = contract.get("evidence")
     spans = contract.get("evidence_spans")
     if not isinstance(evidence, list) or not isinstance(spans, list):
@@ -227,10 +227,20 @@ def _validate_evidence_spans(errors: list[str], contract: dict[str, Any]) -> Non
             errors.append(f"evidence_spans[{index}] must be an object")
             continue
         if set(span) != _EVIDENCE_SPAN_FIELDS:
-            errors.append(f"evidence_spans[{index}] fields must be exactly snapshot_digest, range, and text_digest")
+            errors.append(
+                f"evidence_spans[{index}] fields must be exactly snapshot, snapshot_digest, range, and text_digest"
+            )
+        snapshot = span.get("snapshot")
+        snapshot_bytes: bytes | None = None
+        if not isinstance(snapshot, str):
+            errors.append(f"evidence_spans[{index}].snapshot must be a UTF-8 snapshot string")
+        else:
+            snapshot_bytes = snapshot.encode("utf-8")
         snapshot_digest = span.get("snapshot_digest")
         if not isinstance(snapshot_digest, str) or not _SHA256.fullmatch(snapshot_digest):
             errors.append(f"evidence_spans[{index}].snapshot_digest must be a lowercase SHA-256 digest")
+        elif snapshot_bytes is not None and snapshot_digest != hashlib.sha256(snapshot_bytes).hexdigest():
+            errors.append(f"evidence_spans[{index}].snapshot_digest does not match the snapshot")
         evidence_range = span.get("range")
         if not isinstance(evidence_range, Mapping) or set(evidence_range) != _EVIDENCE_RANGE_FIELDS:
             errors.append(f"evidence_spans[{index}].range must contain exactly start and end")
@@ -246,13 +256,32 @@ def _validate_evidence_spans(errors: list[str], contract: dict[str, Any]) -> Non
                 or end <= start
             ):
                 errors.append(f"evidence_spans[{index}].range must be a non-empty half-open integer range")
+            elif snapshot_bytes is not None and end > len(snapshot_bytes):
+                errors.append(f"evidence_spans[{index}].range exceeds the snapshot byte length")
         text_digest = span.get("text_digest")
         if not isinstance(text_digest, str) or not _SHA256.fullmatch(text_digest):
             errors.append(f"evidence_spans[{index}].text_digest must be a lowercase SHA-256 digest")
-        elif isinstance(value, str):
-            expected_text_digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-            if text_digest != expected_text_digest:
-                errors.append(f"evidence_spans[{index}].text_digest does not match the evidence item")
+        elif snapshot_bytes is not None and isinstance(evidence_range, Mapping):
+            start = evidence_range.get("start")
+            end = evidence_range.get("end")
+            if (
+                isinstance(start, int)
+                and not isinstance(start, bool)
+                and isinstance(end, int)
+                and not isinstance(end, bool)
+                and 0 <= start < end <= len(snapshot_bytes)
+            ):
+                span_bytes = snapshot_bytes[start:end]
+                try:
+                    span_text = span_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    errors.append(f"evidence_spans[{index}].range must align to UTF-8 boundaries")
+                else:
+                    expected_text_digest = hashlib.sha256(span_bytes).hexdigest()
+                    if text_digest != expected_text_digest:
+                        errors.append(f"evidence_spans[{index}].text_digest does not match the snapshot range")
+                    if value != span_text:
+                        errors.append(f"evidence_spans[{index}].range text does not match the evidence item")
 
 
 def load_manifest(path: Path) -> tuple[str, ...]:

@@ -62,7 +62,8 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         }
     contract["evidence_spans"] = [
         {
-            "snapshot_digest": "b" * 64,
+            "snapshot": contract["evidence"][0],
+            "snapshot_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
             "range": {"start": 0, "end": len(contract["evidence"][0])},
             "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
         }
@@ -244,7 +245,7 @@ def test_lowercase_evidence_fragment_is_rejected() -> None:
     ]
     contract["source_digest"] = mod.source_digest(issue)
 
-    assert "evidence_spans[0].text_digest does not match the evidence item" in mod.validate(issue)
+    assert "evidence_spans[0].range text does not match the evidence item" in mod.validate(issue)
 
 
 def test_structured_incomplete_evidence_span_is_rejected() -> None:
@@ -253,7 +254,19 @@ def test_structured_incomplete_evidence_span_is_rejected() -> None:
     contract = issue["metadata"]["acceptance_contract_v1"]
     contract["evidence_spans"] = [{"complete": False}]
 
-    assert "evidence_spans[0] fields must be exactly snapshot_digest, range, and text_digest" in mod.validate(issue)
+    assert "evidence_spans[0] fields must be exactly snapshot, snapshot_digest, range, and text_digest" in mod.validate(
+        issue
+    )
+
+
+def test_truncated_snapshot_range_is_rejected() -> None:
+    """Production dependency: acceptance policy -> validate; catches a range past truncated snapshot bytes."""
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    span = contract["evidence_spans"][0]
+    span["snapshot"] = span["snapshot"][:-6]
+
+    assert "evidence_spans[0].range exceeds the snapshot byte length" in mod.validate(issue)
 
 
 def test_route_dispatch_must_match_contract_type() -> None:

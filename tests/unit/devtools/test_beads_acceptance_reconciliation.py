@@ -63,7 +63,8 @@ def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:
     contract["dependency_digest"] = mod._contracts.dependency_digest(issue)
     contract["evidence_spans"] = [
         {
-            "snapshot_digest": "b" * 64,
+            "snapshot": contract["evidence"][0],
+            "snapshot_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
             "range": {"start": 0, "end": len(contract["evidence"][0])},
             "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
         }
@@ -239,6 +240,24 @@ def test_malformed_string_timestamp_cannot_authorize_a_wave(tmp_path: Path) -> N
     assert report["contract_refused_reasons"]["polylogue-test"] == [
         "updated_at must be a valid canonical Beads timestamp"
     ]
+    assert wave == []
+
+
+def test_timestamp_comparison_preserves_fractional_precision(tmp_path: Path) -> None:
+    """Production dependency: reconcile -> _classify_timestamp; catches precision loss in timestamp ordering."""
+    master = _issue(updated_at="2026-08-07T00:00:00.1234567Z")
+    live = copy.deepcopy(master)
+    live["updated_at"] = "2026-08-07T00:00:00.1234568Z"
+    live["acceptance_criteria"] = None
+    live["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    live_path = tmp_path / "live.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(live_path, [live])
+
+    report, wave = mod.reconcile(repository_path, live_path)
+
+    assert report["ids"]["live_newer"] == ["polylogue-test"]
     assert wave == []
 
 

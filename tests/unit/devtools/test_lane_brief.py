@@ -57,7 +57,8 @@ def _valid_contract_record(confidence: str = "high") -> dict[str, object]:
     }
     contract["evidence_spans"] = [
         {
-            "snapshot_digest": "b" * 64,
+            "snapshot": contract["evidence"][0],
+            "snapshot_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
             "range": {"start": 0, "end": len(contract["evidence"][0])},
             "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
         }
