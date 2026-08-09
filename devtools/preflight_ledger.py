@@ -365,7 +365,7 @@ def _replay_preflight(root: Path, *, limit: int) -> dict[str, object]:
         )
     candidate_count = _count(payload.get("candidate_count"))
     blocked_count = _count(payload.get("blocked_candidate_count"))
-    state = "fail" if candidate_count else "warn" if blocked_count else "pass"
+    state = "fail" if candidate_count > blocked_count else "warn" if blocked_count else "pass"
     return _status(
         state=state,
         reason=(
