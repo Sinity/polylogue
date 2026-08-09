@@ -787,6 +787,8 @@ def build_session_insight_records(
         profile,
         latency_facts,
         materialized_at=materialized_at,
+        input_high_water_mark=profile_record.input_high_water_mark,
+        input_high_water_mark_source=profile_record.input_high_water_mark_source,
     )
     add_timing("build_records.latency_profile_record", t0)
     t0 = time.perf_counter()

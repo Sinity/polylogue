@@ -1704,6 +1704,45 @@ def test_archive_insights_execute_ids_preserves_millisecond_sort_key(tmp_path: P
         assert stages._archive_stale_session_profile_ids(conn, [session_id]) == []
 
 
+def test_archive_insights_execute_ids_propagates_provider_high_water_mark(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    session_id = "codex-session:conv-provider-hwm"
+    provider_hwm_ms = 1_779_606_000_953
+    with open_connection(db_path) as conn:
+        _seed_index_session(conn, session_id="conv-provider-hwm", text="Provider timestamp session")
+        conn.execute(
+            "UPDATE sessions SET updated_at_ms = ? WHERE session_id = ?",
+            (provider_hwm_ms, session_id),
+        )
+        conn.commit()
+
+        assert stages._archive_insights_execute_ids(conn, [session_id])
+
+        latency = conn.execute(
+            """
+            SELECT input_high_water_mark, input_high_water_mark_source
+            FROM session_latency_profiles
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        materialization = conn.execute(
+            """
+            SELECT input_high_water_mark_ms, input_high_water_mark_source
+            FROM insight_materialization
+            WHERE session_id = ? AND insight_type = 'latency'
+            """,
+            (session_id,),
+        ).fetchone()
+
+    assert latency is not None
+    assert latency["input_high_water_mark"] is not None
+    assert latency["input_high_water_mark_source"] == "provider_ts"
+    assert materialization is not None
+    assert materialization["input_high_water_mark_ms"] == provider_hwm_ms
+    assert materialization["input_high_water_mark_source"] == "provider_ts"
+
+
 def test_archive_insights_created_without_updated_stays_ready_after_materialization(tmp_path: Path) -> None:
     db_path = tmp_path / "index.db"
     session_id = "codex-session:conv-created-only"
