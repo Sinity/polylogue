@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
 
@@ -567,3 +568,20 @@ def test_route_registry_rejects_duplicate_and_unlisted_bindings(monkeypatch: pyt
 
     assert any("duplicate Bead bindings" in error for error in errors)
     assert any("population mismatch" in error for error in errors)
+
+
+def test_validator_reports_route_registry_errors_separately_from_bead_failures(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(mod, "load_manifest", lambda path: ("polylogue-required",))
+    monkeypatch.setattr(mod, "validate_route_registry", lambda required: ["unbound route entry"])
+    monkeypatch.setattr(mod, "load", lambda path: [])
+
+    assert mod.main(["--json"]) == 1
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is False
+    assert report["dispatch_blocked"] is True
+    assert report["route_registry_errors"] == ["unbound route entry"]
+    assert report["failures"] == {"polylogue-required": ["manifest id missing from issues or contract"]}
+    assert all(item["id"] != "__route_registry__" for item in report["regeneration_required"])

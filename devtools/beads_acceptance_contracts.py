@@ -601,7 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     required_values = load_manifest(args.manifest)
     registry_errors = validate_route_registry(required_values)
-    failures = {"__route_registry__": registry_errors} if registry_errors else {}
+    failures: dict[str, list[str]] = {}
     required = set(required_values)
     seen = set()
     for issue in load(args.issues):
@@ -616,19 +616,22 @@ def main(argv: list[str] | None = None) -> int:
         failures[missing] = ["manifest id missing from issues or contract"]
     regeneration_required = [{"id": bead_id, "reasons": failures[bead_id]} for bead_id in sorted(failures)]
     report = {
-        "ok": not failures,
-        "dispatch_blocked": bool(failures),
+        "ok": not failures and not registry_errors,
+        "dispatch_blocked": bool(failures or registry_errors),
         "manifest": {
             "expected_count": _EXPECTED_MANIFEST_COUNT,
             "digest": _EXPECTED_MANIFEST_DIGEST,
         },
         "validated": len(seen),
+        "route_registry_errors": registry_errors,
         "failures": failures,
         "regeneration_required": regeneration_required,
     }
     if args.json:
         print(json_dumps(report, indent=2, sort_keys=True))
     else:
+        for error in registry_errors:
+            print(f"route_registry: {error}")
         for bid, errors in sorted(failures.items()):
             for error in errors:
                 print(f"{bid}: {error}")
