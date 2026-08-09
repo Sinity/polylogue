@@ -24,7 +24,7 @@ from polylogue.config import Config
 from polylogue.core.enums import ArtifactSupportStatus, BlockType, Origin, Provider
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.types import SessionId
-from polylogue.daemon.status import raw_failure_info_for_root
+from polylogue.daemon.status import RawFailureSample, raw_failure_info_for_root
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services import ingest_worker as ingest_worker_mod
 from polylogue.pipeline.services.ingest_batch import (
@@ -3821,7 +3821,8 @@ async def test_persist_batch_raw_state_updates_persists_terminal_worker_disposit
     status = raw_failure_info_for_root(tmp_path)
     assert status["terminal_rejections"] == 1
     assert status["unexplained_failures"] == 0
-    assert status["samples"][0].failure_kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
+    samples = cast(list[RawFailureSample], status["samples"])
+    assert samples[0].failure_kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
     assert lifecycle.state == "degraded"
 
 
