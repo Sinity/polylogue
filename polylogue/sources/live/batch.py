@@ -3683,9 +3683,38 @@ class LiveBatchProcessor:
         codex_identity = self._codex_session_meta_native_id(path)
         if codex_identity is None:
             return None
+        # An index-only identity recovery is valid when the source tier has no
+        # row for this path.  It is not valid when the path is already owned by
+        # another origin: accepting the Codex id from the index in that case
+        # would turn a mixed-origin path collision into an append match.
+        if self._source_path_has_conflicting_origin(path, expected_origin=expected_origin):
+            return None
         if self._archive_has_native_session("codex-session", codex_identity):
             return codex_identity
         return None
+
+    def _source_path_has_conflicting_origin(self, path: Path, *, expected_origin: str) -> bool:
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        source_db = archive_root / "source.db"
+        if not source_db.exists():
+            return False
+        try:
+            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM raw_sessions
+                    WHERE source_path = ? AND origin <> ?
+                    LIMIT 1
+                    """,
+                    (str(path), expected_origin),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return False
+        return row is not None
 
     def _codex_session_meta_native_id(self, path: Path) -> str | None:
         try:

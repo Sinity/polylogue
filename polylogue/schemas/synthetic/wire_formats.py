@@ -144,8 +144,18 @@ class WireSupportEntry:
         )
 
 
+def wire_support_key(
+    provider: str,
+    package_version: str | None,
+    element_kind: str | None,
+) -> WireSupportEntryKey:
+    """Return the canonical identity used by persisted wire-support entries."""
+
+    return (provider, package_version, element_kind)
+
+
 def wire_support_entry_key(entry: WireSupportEntry) -> WireSupportEntryKey:
-    return (entry.provider, entry.package_version, entry.element_kind)
+    return wire_support_key(entry.provider, entry.package_version, entry.element_kind)
 
 
 def validate_wire_support_entry_keys(
@@ -1466,6 +1476,7 @@ __all__ = [
     "UnsupportedSyntheticWireRouteError",
     "build_wire_support_receipt",
     "validate_wire_support_entry_keys",
+    "wire_support_key",
     "wire_support_entry_key",
     "construct_coverage",
     "generate_coverage_witnesses",

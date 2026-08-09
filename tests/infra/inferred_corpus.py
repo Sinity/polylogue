@@ -41,6 +41,7 @@ from polylogue.schemas.synthetic.wire_formats import (
     build_wire_support_receipt,
     validate_wire_support_entry_keys,
     wire_support_entry_key,
+    wire_support_key,
 )
 
 INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION = 3
@@ -886,7 +887,7 @@ def compile_inferred_corpus_manifest(
             element=element,
             registry=registry,
             wire_formats=formats,
-            support_entry=support_entries.get((provider, package.version, element.element_kind)),
+            support_entry=support_entries.get(wire_support_key(provider, package.version, element.element_kind)),
             support_receipt_bound=wire_support_receipt is not None,
         )
         for provider, catalog, package, element in _catalog_entries(registry, providers)
@@ -971,8 +972,12 @@ def _validate_inference_handoff(
             (
                 candidate
                 for candidate in manifest.entries
-                if (candidate.key.provider, candidate.key.package_version, candidate.key.element_kind)
-                == (provider, package.version, element.element_kind)
+                if wire_support_key(
+                    candidate.key.provider,
+                    candidate.key.package_version,
+                    candidate.key.element_kind,
+                )
+                == wire_support_key(provider, package.version, element.element_kind)
             ),
             None,
         )
@@ -1006,7 +1011,7 @@ def _validate_inference_handoff(
             schema=live_schema if isinstance(live_schema, dict) else None,
             wire_format=PROVIDER_WIRE_FORMATS.get(provider),
             construct_support=live_constructs,
-            support_entry=support_entries.get((provider, package.version, element.element_kind)),
+            support_entry=support_entries.get(wire_support_key(provider, package.version, element.element_kind)),
             support_receipt_bound=manifest.wire_support_receipt is not None,
         )
         if (live_entry.unsupported is None) != (live_unsupported is None):
