@@ -30,6 +30,7 @@ from polylogue.core.protocols import ProgressCallback
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+    RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
 )
 from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
@@ -3865,7 +3866,7 @@ def _raw_materialization_candidate_ids(
                        FROM raw_artifacts AS a
                        WHERE 1 = 1
                          {_raw_artifact_coordinate_predicate(artifact_alias="a", raw_alias="r")}
-                         AND a.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
+                         AND a.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS)})
                          AND a.support_status = ?
                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
                        LIMIT 1
@@ -3951,7 +3952,7 @@ def _raw_materialization_candidate_ids(
                   FROM raw_artifacts AS retry_evidence
                   WHERE 1 = 1
                     {_raw_artifact_coordinate_predicate(artifact_alias="retry_evidence", raw_alias="r")}
-                    AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
+                    AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS)})
                     AND retry_evidence.support_status = ?
                 )
                 OR r.parse_error LIKE '{_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX}%'
@@ -3971,11 +3972,11 @@ def _raw_materialization_candidate_ids(
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
             """,
             [
-                *sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS),
+                *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
                 RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 BYTE_AUTHORITY_CENSUS_DETAIL,
-                *sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS),
+                *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
                 RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
                 *params,
             ],
@@ -4016,7 +4017,7 @@ def _raw_materialization_candidate_ids(
                 continue
             if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(
                 row["parse_error"],
-                row["failure_artifact_kind"] in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
+                row["failure_artifact_kind"] in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
             ):
                 continue
             if _raw_materialized_by_source_path_native(materialized_aliases, row):

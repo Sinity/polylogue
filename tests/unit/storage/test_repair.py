@@ -707,6 +707,48 @@ def test_raw_materialization_requires_exact_failed_artifact_coordinate(tmp_path:
     assert raw_id not in candidates.raw_ids
 
 
+@pytest.mark.parametrize("artifact_kind", ["deferred_hot_jsonl_capture", "deferred_claude_code_partial_jsonl"])
+def test_raw_materialization_does_not_replay_hot_partial_capture(tmp_path: Path, artifact_kind: str) -> None:
+    """Hot partial evidence stays deferred until a complete source observation arrives."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"type":"message_start"}\n',
+            source_path="rollout.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
+            ("partial JSONL capture", raw_id),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id=f"{artifact_kind}-{raw_id}",
+                origin="claude-code-session",
+                source_path="rollout.jsonl",
+                source_index=0,
+                artifact_kind=artifact_kind,
+                classification_reason=artifact_kind,
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                parse_as_session=True,
+                schema_eligible=True,
+            ),
+        )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+
+    assert raw_id not in candidates.raw_ids
+
+
 def test_raw_materialization_repairs_deferred_stale_frontier_failure(tmp_path: Path) -> None:
     """Durable frontier evidence reaches the real replay actuator."""
     from polylogue.core.enums import Provider

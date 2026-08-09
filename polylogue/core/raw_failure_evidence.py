@@ -78,6 +78,16 @@ RAW_FAILURE_DEFERRED_EVIDENCE_KINDS = frozenset(
         RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER.value,
     }
 )
+# Only frontier conflicts authorize retained-raw replay. Hot captures remain
+# deferred until a complete source observation arrives; replaying their
+# truncated blob would advance the cursor past the record that later bytes
+# complete.
+RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS = frozenset(
+    {
+        RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
+        RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER.value,
+    }
+)
 # Every deferred raw-failure carrier represents a partial decode. Consumers
 # selecting retry authority must validate this companion field as well as the
 # closed kind, or contradictory rows can authorize replay.
@@ -101,6 +111,7 @@ __all__ = [
     "RAW_FAILURE_DEFERRED_SUPPORT_STATUS",
     "RAW_FAILURE_EVIDENCE_KINDS",
     "RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS",
+    "RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS",
     "RAW_FAILURE_TERMINAL_EVIDENCE_KINDS",
     "RawFailureEvidenceKind",
     "validated_raw_failure_evidence_kind",
