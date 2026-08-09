@@ -35,12 +35,15 @@ from polylogue.maintenance.archive_verification import (
     validate_archive_verification_registry,
     verify_archive,
 )
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.pathology_zoo import (
+    CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+    CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
     build_pathology_zoo,
     make_pathology_zoo_member_red,
@@ -50,6 +53,68 @@ from tests.infra.workload_artifacts import SeededArchiveArtifact
 
 def _connect(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)
+
+
+def _insert_foreign_same_native_id_row(source_db: Path) -> str:
+    """Add a valid-looking foreign-origin row that shares Claude's native ID."""
+    foreign_raw_id = "foreign-origin-same-native-id"
+    foreign_origin = "chatgpt-export"
+    foreign_logical_source_key = f"chatgpt:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}"
+    with _connect(source_db) as conn:
+        raw = conn.execute(
+            """
+            SELECT r.native_id, r.blob_hash, r.blob_size, r.acquired_at_ms,
+                   m.normalized_content_hash, m.message_count
+            FROM raw_sessions AS r
+            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+            WHERE r.origin = ? AND m.logical_source_key = ?
+            ORDER BY r.source_path
+            LIMIT 1
+            """,
+            (CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN, CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY),
+        ).fetchone()
+        assert raw is not None
+        native_id, blob_hash, blob_size, acquired_at_ms, content_hash, message_count = raw
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, logical_source_key, revision_kind, source_revision,
+                revision_authority, capture_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'full', ?, 'byte_proven', 'chatgpt')
+            """,
+            (
+                foreign_raw_id,
+                foreign_origin,
+                native_id,
+                "foreign-origin/same-native-id.json",
+                blob_hash,
+                blob_size,
+                acquired_at_ms,
+                foreign_logical_source_key,
+                "foreign-origin-revision",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, revision_authority,
+                decision, decided_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, 'byte_proven', 'applied', ?)
+            """,
+            (
+                foreign_raw_id,
+                foreign_logical_source_key,
+                native_id,
+                "foreign-origin-revision",
+                content_hash,
+                message_count,
+                acquired_at_ms,
+            ),
+        )
+        conn.commit()
+    return foreign_raw_id
 
 
 def _seed_coherent_archive(root: Path) -> None:
@@ -1825,7 +1890,7 @@ def test_pathology_zoo_invariants_red_twin(tmp_path: Path) -> None:
 
 
 def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic_drift(tmp_path: Path) -> None:
-    """The Claude registry check fails for hash and either membership verdict drift."""
+    """The Claude registry check fails for every scoped revision drift."""
     zoo = build_pathology_zoo(tmp_path / "zoo")
     green = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
     green_check = _check(green, "pathology-zoo-invariants")
@@ -1833,20 +1898,26 @@ def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic
     assert green_check.evidence["active"] is True
     assert "claude-vintage-live-proof" in green_check.evidence["checked_member_ids"]
     assert "claude-vintage-live-proof" not in green_check.evidence["failed_member_ids"]
+    foreign_logical_source_key = f"chatgpt:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}"
 
-    for drift in ("hash", "applied", "superseded_equivalent"):
+    for drift in ("hash", "applied", "superseded_equivalent", "missing"):
         mutated_root = tmp_path / f"claude-vintage-{drift}"
         copytree(zoo.archive_root, mutated_root)
+        foreign_raw_id = _insert_foreign_same_native_id_row(mutated_root / "source.db")
         with sqlite3.connect(mutated_root / "source.db") as conn:
             rows = conn.execute(
                 """
                 SELECT r.raw_id, m.normalized_content_hash, m.decision
                 FROM raw_sessions AS r
                 JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-                WHERE r.native_id = ?
+                WHERE r.origin = ?
+                  AND m.logical_source_key = ?
                 ORDER BY r.source_path
                 """,
-                (CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,),
+                (
+                    CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
+                    CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+                ),
             ).fetchall()
             assert len(rows) == 2
 
@@ -1861,7 +1932,7 @@ def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic
                     "UPDATE raw_session_memberships SET normalized_content_hash = ? WHERE raw_id = ?",
                     (bytes(drifted_hash), raw_id),
                 )
-            else:
+            elif drift in ("applied", "superseded_equivalent"):
                 raw_id = next(row[0] for row in rows if row[2] == drift)
                 conn.execute(
                     "UPDATE raw_session_memberships SET decision = 'superseded_prefix' WHERE raw_id = ?",
@@ -1869,10 +1940,45 @@ def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic
                 )
             conn.commit()
 
+        foreign_scoped_green = verify_archive(mutated_root, checks=("pathology-zoo-invariants",))
+        foreign_scoped_check = _check(foreign_scoped_green, "pathology-zoo-invariants")
+        assert foreign_scoped_check.status is OutcomeStatus.OK
+        assert "claude-vintage-live-proof" not in foreign_scoped_check.evidence["failed_member_ids"]
+
+        if drift == "missing":
+            make_pathology_zoo_member_red(mutated_root, "claude-vintage-live-proof")
+
         red = verify_archive(mutated_root, checks=("pathology-zoo-invariants",))
         check = _check(red, "pathology-zoo-invariants")
         assert check.status is OutcomeStatus.ERROR
         assert "claude-vintage-live-proof" in check.evidence["failed_member_ids"]
+
+        with sqlite3.connect(mutated_root / "source.db") as conn:
+            foreign_after = conn.execute(
+                "SELECT origin, logical_source_key, decision FROM raw_sessions AS r "
+                "JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id "
+                "WHERE r.raw_id = ? AND m.logical_source_key = ?",
+                (foreign_raw_id, foreign_logical_source_key),
+            ).fetchone()
+        assert foreign_after == ("chatgpt-export", foreign_logical_source_key, "applied")
+
+        candidate = mutated_root / "candidate-index.db"
+        shutil.copy2(mutated_root / "index.db", candidate)
+        candidate_report = verify_archive(
+            mutated_root,
+            checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+            index_path_override=candidate,
+        )
+        candidate_check = _check(candidate_report, "pathology-zoo-invariants")
+        assert candidate_check.status is OutcomeStatus.ERROR
+        assert "claude-vintage-live-proof" in candidate_check.evidence["failed_member_ids"]
+        assert not passes_strict_acceptance(candidate_report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
+
+    reindex_root = tmp_path / "claude-vintage-reindex"
+    copytree(zoo.archive_root, reindex_root)
+    make_pathology_zoo_member_red(reindex_root, "claude-vintage-live-proof")
+    with pytest.raises(RuntimeError, match=r"reindex acceptance gate failed.*pathology-zoo-invariants"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=reindex_root, promote=False))
 
 
 def test_pathology_zoo_candidate_check_uses_candidate_index_and_durable_source(tmp_path: Path) -> None:

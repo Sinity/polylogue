@@ -81,6 +81,8 @@ _CLAUDE_CODE = "claude-code-session"
 _CHATGPT = "chatgpt-export"
 _DESIGN = "claude-design-session"
 _GEMINI = "aistudio-drive"
+_CLAUDE_VINTAGE_NATIVE_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
+_CLAUDE_VINTAGE_LOGICAL_SOURCE_KEY = f"claude-ai:{_CLAUDE_VINTAGE_NATIVE_ID}"
 
 
 PATHOLOGY_ZOO_MANIFEST: tuple[PathologyZooMember, ...] = (
@@ -270,9 +272,10 @@ PATHOLOGY_ZOO_MANIFEST: tuple[PathologyZooMember, ...] = (
                 THEN 1 ELSE 0 END
             FROM raw_sessions AS r
             JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-            WHERE r.native_id = ?
+            WHERE r.origin = ?
+              AND m.logical_source_key = ?
             """,
-            ("9ed2056f-b415-4f51-b18e-5265f21a67bf",),
+            (_CLAUDE_AI, _CLAUDE_VINTAGE_LOGICAL_SOURCE_KEY),
             (1,),
         ),
         evidence_note=(

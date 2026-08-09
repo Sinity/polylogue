@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from polylogue.config import Source
+from polylogue.core.enums import Origin
 from polylogue.maintenance.pathology_zoo import (
     PATHOLOGY_ZOO_MANIFEST as PRODUCTION_PATHOLOGY_ZOO_MANIFEST,
 )
@@ -31,6 +32,10 @@ from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
+
+CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
+CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN = Origin.CLAUDE_AI_EXPORT.value
+CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY = f"claude-ai:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,16 +121,23 @@ _PATHOLOGY_ZOO_MUTATIONS: dict[str, PathologyZooMutation] = {
     "claude-vintage-live-proof": PathologyZooMutation(
         "source",
         """
-        UPDATE raw_session_memberships
-        SET decision = 'superseded_prefix'
-        WHERE raw_id IN (
-            SELECT m.raw_id
+        DELETE FROM raw_sessions
+        WHERE raw_id = (
+            SELECT r.raw_id
             FROM raw_sessions AS r
             JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-            WHERE r.native_id = ? AND m.decision = 'applied'
+            WHERE r.origin = ?
+              AND m.logical_source_key = ?
+              AND r.source_path LIKE ?
+            ORDER BY r.source_path DESC
+            LIMIT 1
         )
         """,
-        ("9ed2056f-b415-4f51-b18e-5265f21a67bf",),
+        (
+            Origin.CLAUDE_AI_EXPORT.value,
+            f"claude-ai:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",
+            "%claude-live-proof-new.json",
+        ),
     ),
     "lifecycle-anchor-drift": PathologyZooMutation(
         "index",
@@ -235,7 +247,6 @@ def _chatgpt_node(
     return node
 
 
-CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
 CLAUDE_VINTAGE_LIVE_PROOF_MESSAGE_IDS = (
     "64878c9e-2642-437b-a384-0961184f84ea",
     "4c341ad3-dbd9-4224-9ab4-dcb4f833b3f9",

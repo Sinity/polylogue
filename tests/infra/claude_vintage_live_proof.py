@@ -27,6 +27,8 @@ from polylogue.sources.parsers.claude.ai_parser import parse_ai
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.pathology_zoo import (
+    CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+    CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
     write_claude_vintage_live_proof_pair,
 )
@@ -185,10 +187,14 @@ def _read_membership_rows(archive_root: Path) -> tuple[dict[str, object], ...]:
             SELECT r.source_path, m.normalized_content_hash, m.decision
             FROM raw_sessions AS r
             JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-            WHERE m.logical_source_key = ?
+            WHERE r.origin = ?
+              AND m.logical_source_key = ?
             ORDER BY r.source_path
             """,
-            (f"claude-ai:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",),
+            (
+                CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
+                CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+            ),
         ).fetchall()
     return tuple(
         {
