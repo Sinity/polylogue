@@ -194,9 +194,7 @@ def test_main_blocks_invalid_non_planner_contracts(
     assert "DISPATCH BLOCKED" in (tmp_path / "brief.md").read_text()
 
 
-def test_main_allows_non_manifest_bead_without_contract(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_main_allows_non_manifest_bead_without_contract(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(lane_brief, "_repo_root", lambda: tmp_path)
     monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: ("polylogue-manifest",))
     monkeypatch.setattr(
@@ -209,7 +207,9 @@ def test_main_allows_non_manifest_bead_without_contract(
     monkeypatch.setattr(lane_brief, "_find_prior_art", lambda records, paths, exclude_ids: [])
     monkeypatch.setattr(lane_brief, "_recent_master_commits", lambda repo_root, paths, days: [])
 
-    assert lane_brief.main(["polylogue-non-manifest", "--out", str(tmp_path / "brief.md"), "--tmpdir", str(tmp_path)]) == 0
+    assert (
+        lane_brief.main(["polylogue-non-manifest", "--out", str(tmp_path / "brief.md"), "--tmpdir", str(tmp_path)]) == 0
+    )
     assert "DISPATCH BLOCKED" not in (tmp_path / "brief.md").read_text()
 
 
