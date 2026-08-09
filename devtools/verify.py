@@ -2501,7 +2501,7 @@ def _finalize_testmon_seed_attempt(
     )
     attempt_candidate = {
         **dict(prepared),
-        "status": "reusable",
+        "status": "complete" if green_complete else "reusable",
         "exit_code": exit_code,
         "expected_nodeids": expected,
         "expected_count": len(expected),

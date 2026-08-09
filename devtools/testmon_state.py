@@ -595,7 +595,8 @@ def stamp_from_attempt(
         return None
     baseline = (
         BaselineStatus.GREEN
-        if exit_code == 0
+        if attempt.get("status") == "complete"
+        and exit_code == 0
         and all(outcome in {"passed", "skipped"} for outcome in outcome_by_node.values())
         and not graph.failed_nodeids
         else BaselineStatus.RED
