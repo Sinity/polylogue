@@ -189,7 +189,7 @@ def test_preflight_fails_closed_on_missing_census_relation(tmp_path: Path) -> No
     assert "raw_membership_census" in reason
 
 
-def test_preflight_warns_when_blocked_replay_candidates_outnumber_executable(
+def test_preflight_fails_when_executable_replay_candidates_coexist_with_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _initialize_all_tiers(tmp_path)
@@ -198,7 +198,7 @@ def test_preflight_warns_when_blocked_replay_candidates_outnumber_executable(
     report = build_preflight_ledger(tmp_path, limit=10)
     replay = _mapping(_mapping(report["checks"])["replay_backlog"])
 
-    assert replay["state"] == "warn"
+    assert replay["state"] == "fail"
     assert replay["candidate_count"] == 2
     assert replay["blocked_candidate_count"] == 5
 

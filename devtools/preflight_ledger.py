@@ -365,7 +365,12 @@ def _replay_preflight(root: Path, *, limit: int) -> dict[str, object]:
         )
     candidate_count = _count(payload.get("candidate_count"))
     blocked_count = _count(payload.get("blocked_candidate_count"))
-    state = "fail" if candidate_count > blocked_count else "warn" if blocked_count else "pass"
+    # ``blocked_candidate_count`` includes authority/resource debt that is
+    # intentionally excluded from ``candidate_count``.  Comparing the two
+    # numbers can therefore hide one executable row behind one unrelated
+    # blocked row.  Any executable candidate is a hard preflight failure;
+    # blocked-only work remains a visible warning.
+    state = "fail" if candidate_count else "warn" if blocked_count else "pass"
     return _status(
         state=state,
         reason=(

@@ -120,10 +120,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
         if raw_table is None:
             return RawFailureLifecycleSnapshot(False, reason="source.db is missing raw_sessions")
         parse_failures = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL AND TRIM(parse_error) != ''"
-            ).fetchone()[0]
-            or 0
+            conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL").fetchone()[0] or 0
         )
         validation_failures = int(
             conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE validation_status = 'failed'").fetchone()[0] or 0
@@ -138,7 +135,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
             SELECT r.raw_id, r.origin, r.source_path, r.source_index,
                    r.validation_status, r.acquired_at_ms
             FROM raw_sessions AS r
-            WHERE (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
+            WHERE r.parse_error IS NOT NULL
                OR r.validation_status = 'failed'
         )
         """
