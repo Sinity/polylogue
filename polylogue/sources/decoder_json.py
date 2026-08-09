@@ -128,25 +128,26 @@ def _yield_jsonl_pending(
     *,
     is_last: bool,
     path_name: str,
-) -> tuple[list[JsonValue], int]:
+    line_number: int,
+) -> tuple[list[JsonValue], int, int | None]:
     try:
         parsed = json_loads(raw_pending)
     except JSONDecodeError:
         parsed = None
     else:
         if _is_json_value(parsed):
-            return ([parsed], 0)
+            return ([parsed], 0, None)
         logger_obj.debug("Skipping non-JSON-compatible decoded line from %s", path_name)
-        return ([], 0)
+        return ([], 0, None)
 
     if isinstance(raw_pending, bytes):
         decoded = decode_json_bytes_with(logger_obj, raw_pending)
         if not decoded:
             if is_last:
                 logger_obj.debug("Skipping undecodable trailing line from %s", path_name)
-                return ([], 1)
+                return ([], 1, line_number)
             else:
-                return ([], 1)
+                return ([], 1, line_number)
     else:
         decoded = raw_pending
 
@@ -155,12 +156,12 @@ def _yield_jsonl_pending(
     except json.JSONDecodeError as exc:
         if is_last:
             logger_obj.debug("Skipping truncated trailing line in %s: %s", path_name, exc)
-            return ([], 1)
-        return ([], 1)
+            return ([], 1, line_number)
+        return ([], 1, line_number)
     if _is_json_value(parsed):
-        return ([parsed], 0)
+        return ([parsed], 0, None)
     logger_obj.debug("Skipping non-JSON-compatible decoded line from %s", path_name)
-    return ([], 0)
+    return ([], 0, None)
 
 
 def _iter_jsonl_stream(
@@ -172,21 +173,25 @@ def _iter_jsonl_stream(
 ) -> Iterable[JsonValue]:
     error_count = 0
     pending: bytes | str | None = None
-    line_number = 0
+    physical_line_number = 0
+    pending_line_number: int | None = None
+    first_decode_error_line: int | None = None
 
     for line in handle:
-        line_number += 1
+        physical_line_number += 1
         raw = line.strip()
         if not raw:
-            line_number -= 1
             continue
         if pending is not None:
-            records, new_errors = _yield_jsonl_pending(
+            records, new_errors, error_line = _yield_jsonl_pending(
                 logger_obj,
                 pending,
                 is_last=False,
                 path_name=path_name,
+                line_number=pending_line_number or physical_line_number,
             )
+            if first_decode_error_line is None and error_line is not None:
+                first_decode_error_line = error_line
             error_count += new_errors
             if new_errors:
                 if error_count <= 3:
@@ -195,19 +200,27 @@ def _iter_jsonl_stream(
                     logger_obj.warning("Skipping further invalid JSON lines in %s...", path_name)
             yield from records
         pending = raw
+        pending_line_number = physical_line_number
 
     if pending is not None:
-        records, new_errors = _yield_jsonl_pending(
+        records, new_errors, error_line = _yield_jsonl_pending(
             logger_obj,
             pending,
             is_last=True,
             path_name=path_name,
+            line_number=pending_line_number or physical_line_number,
         )
+        if first_decode_error_line is None and error_line is not None:
+            first_decode_error_line = error_line
         error_count += new_errors
         yield from records
 
     if fail_on_decode_error and error_count:
-        raise JsonlDecodeError(path_name, line_number=line_number, cause=ValueError("malformed JSONL record"))
+        raise JsonlDecodeError(
+            path_name,
+            line_number=first_decode_error_line or physical_line_number,
+            cause=ValueError("malformed JSONL record"),
+        )
 
     if error_count > 3:
         logger_obj.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)

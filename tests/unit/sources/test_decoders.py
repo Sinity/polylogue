@@ -11,9 +11,11 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from polylogue.sources.decoder_json import JsonlDecodeError
 from polylogue.sources.decoders import (
     MAX_AGGREGATE_UNCOMPRESSED_SIZE,
     MAX_UNCOMPRESSED_SIZE,
@@ -186,6 +188,12 @@ class TestIterJsonStream:
         handle = io.BytesIO(content)
         items = list(_iter_json_stream(handle, "data.jsonl.txt"))
         assert len(items) == 2
+
+    def test_strict_jsonl_decode_reports_physical_offending_line(self) -> None:
+        content = b'{"valid": 1}\n\nnot json at all\n{"later": 2}\n'
+        with pytest.raises(JsonlDecodeError) as exc_info:
+            list(_iter_json_stream(io.BytesIO(content), "data.jsonl", fail_on_decode_error=True))
+        assert exc_info.value.line_number == 3
 
 
 # =============================================================================
