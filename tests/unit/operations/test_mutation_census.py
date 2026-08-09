@@ -69,3 +69,19 @@ def test_derived_maintenance_facade_routes_are_executor_routed() -> None:
     for operation in ("rebuild_index", "update_index", "rebuild_insights"):
         assert rows[operation]["status"] == "executor-routed"
         assert rows[operation]["actuator"].startswith("polylogue.operations.mutation_actuators.")
+
+
+def test_raw_authority_recovery_routes_are_executor_routed() -> None:
+    rows = {row["operation"]: row for row in _load_rows()}
+    for operation, actuator in (
+        (
+            "mutate-reset-raw-authority-census",
+            "polylogue.maintenance.raw_authority_recovery.ResetRawAuthorityCensusActuator",
+        ),
+        (
+            "mutate-prune-orphaned-index-revision-seeds",
+            "polylogue.maintenance.raw_authority_recovery.PruneOrphanedIndexRevisionSeedsActuator",
+        ),
+    ):
+        assert rows[operation]["status"] == "executor-routed"
+        assert rows[operation]["actuator"] == actuator

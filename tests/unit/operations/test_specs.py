@@ -54,6 +54,8 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-update-index",
         "mutate-rebuild-insights",
         "mutate-resolve-raw-authority-blocker",
+        "mutate-reset-raw-authority-census",
+        "mutate-prune-orphaned-index-revision-seeds",
         "mutate-save-saved-view",
         "mutate-delete-saved-view",
         "mutate-save-recall-pack",

@@ -798,6 +798,28 @@ confirm-flag-strength authorization bound to that plan's hash, refusing
 (`preview_stale`) if the blocker was concurrently resolved between preview
 and confirm.
 
+### `polylogue ops maintenance raw-authority-recovery` - break-glass ledger recovery
+
+This command family is the only operator route for the two callerless raw-authority recovery actuators. It is inspect-only by default. The census reset removes only the five poisoned census-planning tables after a verified source-tier backup. The index-seed prune removes only active-index `raw_revision_heads` and `raw_revision_applications` rows whose source raw is absent. Parser census rows, source raws, blob receipts, and present-source revision rows are outside both target sets.
+
+Write an exact plan first, then apply that same plan with the required backup authority:
+
+```bash
+polylogue ops maintenance raw-authority-recovery \
+  --operation reset_raw_authority_census \
+  --plan-file /realm/tmp/work/raw-authority-census-reset.plan.json \
+  --backup-manifest /realm/staging/polylogue-backup/manifest.json \
+  --output-format json
+
+polylogue ops maintenance raw-authority-recovery \
+  --operation reset_raw_authority_census --apply \
+  --plan-file /realm/tmp/work/raw-authority-census-reset.plan.json \
+  --backup-manifest /realm/staging/polylogue-backup/manifest.json \
+  --output-format json
+```
+
+Apply refuses a running daemon, stale plan or active pointer, changed tier bytes or schema versions, malformed ledger, unexpected candidate set, mismatched backup authority, or changed unrelated rows. It acquires archive ownership and the rebuild lease before revalidation, runs one failure-atomic transaction, and writes a self-hashed immutable receipt. It does not invoke the broad index reset or reparse path.
+
 ### Measuring Codex UUID-title coverage
 
 Codex sessions without a resolvable title (thread name / authored history /

@@ -101,6 +101,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "raw_authority_blocker_resolve_command",
         "Resolve one stale-plan blocker against current source evidence.",
     ),
+    (
+        "raw-authority-recovery",
+        "_raw_authority_recovery",
+        "raw_authority_recovery_command",
+        "Inspect or apply one exact guarded raw-authority recovery plan.",
+    ),
     ("preview", "_preview", "preview_command", "Staleness inventory by model and scope. Read-only."),
     ("blob-gc", "_blob_gc", "blob_gc_command", "Preview lease-safe blob garbage collection. Read-only."),
     (

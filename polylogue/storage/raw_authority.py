@@ -24,8 +24,6 @@ from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
 
 #: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
 #: whose classification semantics are known to have been superseded by a
@@ -75,7 +73,6 @@ RAW_AUTHORITY_CENSUS_PLAN_RETENTION = 8
 RAW_AUTHORITY_CENSUS_HEADER_RETENTION = 256
 logger = get_logger(__name__)
 
-
 def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | None:
     """Validate and normalize the durable logical-key receipt payload.
 
@@ -110,7 +107,6 @@ _RESET_LEDGER_TABLES_CHILD_FIRST = (
     "raw_authority_plans",
     "raw_authority_censuses",
 )
-
 
 @dataclass(frozen=True, slots=True)
 class RawAuthorityCensusResetCounts:
@@ -2285,7 +2281,14 @@ def reset_raw_authority_census_ledger(
     backup_manifest: Path | None,
     dry_run: bool,
 ) -> RawAuthorityCensusResetCounts:
-    """Reset derived census bookkeeping after authenticating a source backup."""
+    """Return ledger counts for diagnostics.
+
+    Direct storage-layer deletion was intentionally removed.  The maintenance
+    recovery route owns plan binding, offline ownership, backup authority,
+    postflight, and immutable receipts.  Keeping this read-only compatibility
+    helper prevents callers from mistaking a storage primitive for an operator
+    authorization boundary.
+    """
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         raise FileNotFoundError(source_db)
@@ -2303,12 +2306,9 @@ def reset_raw_authority_census_ledger(
             ),
         }
         if not dry_run:
-            if backup_manifest is None:
-                raise ValueError("raw-authority census reset requires a verified source backup manifest")
-            validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=conn)
-            for table in _RESET_LEDGER_TABLES_CHILD_FIRST:
-                conn.execute(f"DELETE FROM {table}")
-            conn.commit()
+            raise RuntimeError(
+                "direct raw-authority census mutation is disabled; use the guarded maintenance recovery route"
+            )
     return RawAuthorityCensusResetCounts(
         censuses=counts["raw_authority_censuses"],
         plans=counts["raw_authority_plans"],
@@ -2323,7 +2323,11 @@ def prune_orphaned_index_revision_seeds(
     *,
     dry_run: bool,
 ) -> OrphanedIndexRevisionSeedCounts:
-    """Prune rebuildable revision seeds that no longer have source authority."""
+    """Return orphan counts for diagnostics without mutating the index.
+
+    Apply is deliberately unavailable here.  The named maintenance route is
+    the only authority that may delete these rows.
+    """
     source_db = archive_root / "source.db"
     index_db = ArchiveLocation.resolve(archive_root).active_index_path
     if not source_db.is_file() or not index_db.is_file():
@@ -2341,13 +2345,9 @@ def prune_orphaned_index_revision_seeds(
             ).fetchone()[0]
         )
         if not dry_run:
-            conn.execute(
-                "DELETE FROM raw_revision_heads WHERE accepted_raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
+            raise RuntimeError(
+                "direct orphaned-index-seed mutation is disabled; use the guarded maintenance recovery route"
             )
-            conn.execute(
-                "DELETE FROM raw_revision_applications WHERE raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
-            )
-            conn.commit()
     return OrphanedIndexRevisionSeedCounts(
         revision_heads=heads,
         revision_applications=applications,

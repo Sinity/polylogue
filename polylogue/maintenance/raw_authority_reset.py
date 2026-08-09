@@ -29,11 +29,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.config import Config
-from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
-from polylogue.paths import render_root
-from polylogue.storage.raw_authority import prune_orphaned_index_revision_seeds as _prune_orphaned_index_revision_seeds
-from polylogue.storage.raw_authority import reset_raw_authority_census_ledger
+from polylogue.maintenance.raw_authority_recovery import (
+    RecoveryOperation,
+    apply_raw_authority_recovery,
+    inspect_raw_authority_recovery,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,34 +48,28 @@ class RawAuthorityResetReport:
     applied: bool
 
 
-def _offline_config(archive_root: Path) -> Config:
-    return Config(archive_root=archive_root, render_root=render_root(), sources=[])
-
-
 def reset_raw_authority_census(
     archive_root: Path,
     *,
     backup_manifest: Path | None = None,
     dry_run: bool = True,
 ) -> RawAuthorityResetReport:
-    """Empty the census planning ledger. ``dry_run`` reports counts only."""
-    if not dry_run and (
-        reason := offline_maintenance_block_reason(_offline_config(archive_root), active=True, dry_run=False)
-    ):
-        raise RuntimeError(reason)
-    before = reset_raw_authority_census_ledger(
+    """Inspect or apply the guarded census-ledger recovery route."""
+    plan = inspect_raw_authority_recovery(
         archive_root,
+        RecoveryOperation.RESET_CENSUS,
         backup_manifest=backup_manifest,
-        dry_run=dry_run,
     )
+    report = apply_raw_authority_recovery(plan, backup_manifest=backup_manifest) if not dry_run else None
+    counts = plan.before_counts
 
     return RawAuthorityResetReport(
-        censuses=before.censuses,
-        plans=before.plans,
-        blockers=before.blockers,
-        census_plans=before.census_plans,
-        census_post_plans=before.census_post_plans,
-        applied=not dry_run,
+        censuses=counts["raw_authority_censuses"],
+        plans=counts["raw_authority_plans"],
+        blockers=counts["raw_authority_blockers"],
+        census_plans=counts["raw_authority_census_plans"],
+        census_post_plans=counts["raw_authority_census_post_plans"],
+        applied=report is not None and report.status == "applied",
     )
 
 
@@ -88,7 +82,12 @@ class IndexSeedPruneReport:
     applied: bool
 
 
-def prune_orphaned_index_revision_seeds(archive_root: Path, *, dry_run: bool = True) -> IndexSeedPruneReport:
+def prune_orphaned_index_revision_seeds(
+    archive_root: Path,
+    *,
+    backup_manifest: Path | None = None,
+    dry_run: bool = True,
+) -> IndexSeedPruneReport:
     """Delete index raw-frontier seeds whose raw is gone from the source tier.
 
     ``raw_revision_heads`` / ``raw_revision_applications`` are the index's
@@ -99,13 +98,14 @@ def prune_orphaned_index_revision_seeds(archive_root: Path, *, dry_run: bool = T
     ``raw_id`` no longer exists in ``source.raw_sessions`` restores a clean
     frontier; seeds for present raws are untouched.
     """
-    if not dry_run and (
-        reason := offline_maintenance_block_reason(_offline_config(archive_root), active=True, dry_run=False)
-    ):
-        raise RuntimeError(reason)
-    counts = _prune_orphaned_index_revision_seeds(archive_root, dry_run=dry_run)
+    plan = inspect_raw_authority_recovery(
+        archive_root,
+        RecoveryOperation.PRUNE_INDEX_SEEDS,
+        backup_manifest=backup_manifest,
+    )
+    report = apply_raw_authority_recovery(plan, backup_manifest=backup_manifest) if not dry_run else None
     return IndexSeedPruneReport(
-        revision_heads=counts.revision_heads,
-        revision_applications=counts.revision_applications,
-        applied=not dry_run,
+        revision_heads=len(plan.candidate_keys["raw_revision_heads"]),
+        revision_applications=len(plan.candidate_keys["raw_revision_applications"]),
+        applied=report is not None and report.status == "applied",
     )

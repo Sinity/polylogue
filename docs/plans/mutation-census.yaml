@@ -170,6 +170,22 @@ rows:
     adapters:
       - polylogue.cli.commands.maintenance._raw_identity.raw_authority_blocker_resolve_command
 
+  - operation: mutate-reset-raw-authority-census
+    spec_name: mutate-reset-raw-authority-census
+    status: executor-routed
+    actuator: polylogue.maintenance.raw_authority_recovery.ResetRawAuthorityCensusActuator
+    surfaces: [cli]
+    adapters:
+      - polylogue.cli.commands.maintenance._raw_authority_recovery.raw_authority_recovery_command
+
+  - operation: mutate-prune-orphaned-index-revision-seeds
+    spec_name: mutate-prune-orphaned-index-revision-seeds
+    status: executor-routed
+    actuator: polylogue.maintenance.raw_authority_recovery.PruneOrphanedIndexRevisionSeedsActuator
+    surfaces: [cli]
+    adapters:
+      - polylogue.cli.commands.maintenance._raw_authority_recovery.raw_authority_recovery_command
+
   # --- Phase 4: executor-routed (saved-view/recall-pack/workspace family) ----
 
   - operation: mutate-save-saved-view
