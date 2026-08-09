@@ -31,6 +31,7 @@ from polylogue.archive.query.execution_control import (
     execute_archive_read_sync,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.identity import archive_message_id
 
 pytestmark = pytest.mark.uses_real_clock(
     "polylogue-z9gh.1 execution-control tests measure real elapsed wall-clock by contract: cancellation/deadline abort SLOs against a genuinely running SQLite statement, event-loop heartbeat gaps during worker-thread offload, and cross-thread admission queue waits. frozen_clock cannot substitute for real thread scheduling and SQLite progress-handler cadence."
@@ -709,7 +710,7 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     for index in range(512):
         native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
         session_id = f"codex-session:{native_id}"
-        message_id = f"{session_id}:m1"
+        message_id = archive_message_id(session_id, "m1", position=0)
         tool_id = f"tool-{index:04d}"
         session_rows.append((native_id, Origin.CODEX_SESSION.value, sha256(session_id.encode()).digest()))
         message_rows.append(

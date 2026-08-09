@@ -230,7 +230,7 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
     )
     return ParsedMessage(
         # polylogue-slshy: no positional fallback -- empty id lets
-        # _message_comparison_id's content-anchor fallback run instead.
+        # _message_revision_match_id's content-anchor fallback run instead.
         provider_message_id=_string(record.get("id")) or "",
         role=gemini_role,
         text=text,

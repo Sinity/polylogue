@@ -40,6 +40,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from polylogue.logging import get_logger
+from polylogue.pipeline.ids import attachment_message_owner_key, message_owner_resolution
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload, ingest_record
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
 from polylogue.storage.runtime.raw.records import RawSessionRecord
@@ -204,24 +205,16 @@ def _append_materialized_attachment_maps(
     index_conn: sqlite3.Connection,
     session_id: str,
     messages: list[ParsedMessage],
-) -> tuple[dict[str, str], dict[int, str]]:
+) -> dict[str, str]:
     resolved = _append_materialized_message_ids(index_conn, session_id, messages)
-    by_native_message_id: dict[str, str] = {}
-    by_message_position: dict[int, str] = {}
-    for message_index, message in enumerate(messages):
+    resolution = message_owner_resolution(messages)
+    by_owner_key: dict[str, str] = {}
+    for message_index, owner_key in enumerate(resolution.keys):
         message_id = resolved.get(message_index)
-        if message_id is None:
+        if message_id is None or owner_key in resolution.ambiguous_keys:
             continue
-        provider_message_id = message.provider_message_id
-        if provider_message_id:
-            by_native_message_id[str(provider_message_id)] = message_id
-            normalized = _normalized_message_native_id(message)
-            if normalized is not None:
-                by_native_message_id[normalized] = message_id
-        message_position = message.position
-        if message_position is not None:
-            by_message_position[int(message_position)] = message_id
-    return by_native_message_id, by_message_position
+        by_owner_key[owner_key] = message_id
+    return by_owner_key
 
 
 def _iter_raw_session_rows(source_conn: sqlite3.Connection, *, raw_row_limit: int | None) -> list[sqlite3.Row]:
@@ -346,19 +339,18 @@ def _match_session_payload(
     session_id = payload.session_id
     messages = payload.parsed_session.messages
     position_offset = _next_message_position(index_conn, session_id) if payload.append_only else 0
-    by_native_message_id, by_message_position = _attachment_message_id_maps(
+    owner_resolution, by_owner_key = _attachment_message_id_maps(
         session_id,
         messages,
         position_offset=position_offset,
     )
     if payload.append_only:
-        materialized_by_native_id, materialized_by_position = _append_materialized_attachment_maps(
+        materialized_by_owner_key = _append_materialized_attachment_maps(
             index_conn,
             session_id,
             messages,
         )
-        by_native_message_id.update(materialized_by_native_id)
-        by_message_position.update(materialized_by_position)
+        by_owner_key.update(materialized_by_owner_key)
     # Attachments are session-level (``ParsedSession.attachments``), each
     # linked to its owning message via ``message_provider_id`` -- mirroring
     # exactly how ``_write_attachments`` consumes them (write.py:_attachment_message_id_maps).
@@ -366,11 +358,8 @@ def _match_session_payload(
     attachments_by_message: dict[str, list[ParsedAttachment]] = {}
     for attachment in payload.parsed_session.attachments:
         attachment_id = _attachment_id(session_id, attachment)
-        message_id = (
-            by_native_message_id.get(attachment.message_provider_id) if attachment.message_provider_id else None
-        )
-        if message_id is None and attachment.message_position is not None:
-            message_id = by_message_position.get(attachment.message_position)
+        owner_key = attachment_message_owner_key(attachment, owner_resolution)
+        message_id = by_owner_key.get(owner_key) if owner_key is not None else None
         if message_id is None:
             if attachment_id in pending:
                 ineligible_reasons.setdefault(

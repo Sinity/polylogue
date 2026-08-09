@@ -292,8 +292,10 @@ def test_parse_chunked_prompt_idless_turns_resolve_parent_coordinates_in_archive
 
 
 def test_idless_drive_attachment_owner_changes_hash_and_revision_identity() -> None:
+    # Same-timestamp turns force the owner anchor to include message content;
+    # a timestamp-only fallback would make moving the attachment invisible.
     first: JSONDocument = {"role": "user", "text": "first", "createTime": "2026-01-01T00:00:00Z"}
-    second: JSONDocument = {"role": "model", "text": "second", "createTime": "2026-01-01T00:00:01Z"}
+    second: JSONDocument = {"role": "user", "text": "second", "createTime": "2026-01-01T00:00:00Z"}
     attachment: JSONDocument = {"id": "drive-doc", "name": "note.txt", "mimeType": "text/plain"}
     first_owner = parse_chunked_prompt(
         "gemini",

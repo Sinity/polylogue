@@ -977,6 +977,7 @@ async function loadUserState() {
     var marks = await fetchJSON(route, {timeoutMs: 5000});
     state.marks = {};
     (marks.items || []).forEach(function(m) {
+      if (m.target_type !== 'session') return;
       setMarkLocal(m.session_id, m.mark_type, true);
     });
     route = '/api/user/annotations';

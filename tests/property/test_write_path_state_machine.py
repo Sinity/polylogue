@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.schema import _ensure_schema
+from tests.infra.identity import archive_message_id
 
 
 @dataclass
@@ -592,14 +593,14 @@ def test_grandchild_transcript_recomposes_after_intermediate_ancestor_message_de
                 (grandchild_id,),
             ).fetchone()
             assert branch_row is not None
-            assert branch_row[0] == "claude-code-session:cascade-child:child-2"
+            assert branch_row[0] == archive_message_id("claude-code-session:cascade-child", "child-2", position=2)
 
             # Two hops upstream of the grandchild: delete the root parent's
             # first message, an ancestor edit that precedes every downstream
             # branch point.
             conn.execute(
                 "DELETE FROM messages WHERE message_id = ?",
-                ("claude-code-session:cascade-parent:parent-0",),
+                (archive_message_id("claude-code-session:cascade-parent", "parent-0", position=0),),
             )
             conn.commit()
         finally:

@@ -26,7 +26,7 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
 
-RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v2"
+RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v4"
 
 #: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
 #: whose classification semantics are known to have been superseded by a
@@ -41,7 +41,9 @@ RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v2"
 #: *quiescence* gate (``uncensused_historical_revision_raw_ids``) accepts any
 #: known fingerprint (current or superseded) so a bump does not force a full
 #: archive re-census -- see that function's docstring.
-SUPERSEDED_MEMBERSHIP_FINGERPRINTS = frozenset({"revision-membership-v1"})
+SUPERSEDED_MEMBERSHIP_FINGERPRINTS = frozenset(
+    {"revision-membership-v1", "revision-membership-v2", "revision-membership-v3"}
+)
 RAW_AUTHORITY_CENSUS_QUERY_PREFIX = "polylogue://raw-authority-census/"
 RAW_AUTHORITY_DETAIL_QUERY_PREFIX = "polylogue://raw-authority-detail/"
 RAW_AUTHORITY_DETAIL_CHUNK_CHARS = 16_384

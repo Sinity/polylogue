@@ -835,7 +835,7 @@ def _grok_spec() -> OriginSpec:
         assembly_paths=("polylogue/sources/dispatch.py:_lower_grok_export_payload",),
         fidelity_notes=(
             "No native conversation or response id is present in any confirmed export shape; "
-            "provider_session_id/provider_message_id are synthesized from file-relative position.",
+            "provider_session_id is derived from file identity and provider_message_id from response content.",
             "The export drops attachments/images by xAI's own documentation; only text turns are recoverable.",
         ),
         display_description="Grok account-data exports (lab: xAI)",

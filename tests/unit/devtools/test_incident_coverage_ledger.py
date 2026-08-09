@@ -43,10 +43,31 @@ def test_real_campaign_graph_resolves_all_current_forcing_dependencies() -> None
         "polylogue-6753s",
         "polylogue-foee",
         "polylogue-ix5r",
+        "polylogue-slshy",
         "polylogue-xofj",
     }
     assert LEDGER_PATH.is_file()
     assert CAMPAIGN_GRAPH_PATH.is_file()
+
+
+def test_slshy_keeps_partial_disposition_and_named_residual_scope() -> None:
+    ledger = _ledger()
+    row = next(row for row in _rows(ledger) if row["bead_id"] == "polylogue-slshy")
+    graph_entry = next(
+        entry
+        for entry in cast(list[dict[str, object]], _graph()["forcing_dependencies"])
+        if entry["bead_id"] == "polylogue-slshy"
+    )
+
+    assert row["bead_status"] == "in_progress"
+    assert row["residual_successor"] == {
+        "bead_id": "polylogue-message-owner-scope-backfill",
+        "kind": "named-child-bead",
+    }
+    assert set(cast(list[str], graph_entry["child_bead_ids"])) == {
+        "polylogue-xselt",
+        "polylogue-message-owner-scope-backfill",
+    }
 
 
 def test_deleting_a_forcing_row_is_blocking() -> None:

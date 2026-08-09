@@ -34,6 +34,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
+from polylogue.pipeline.ids import MessageOwnerResolution, attachment_message_owner_key, message_owner_resolution
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -3341,20 +3342,20 @@ def _attachment_message_id_maps(
     *,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] | None = None,
-) -> tuple[dict[str, str], dict[int, str]]:
+) -> tuple[MessageOwnerResolution, dict[str, str]]:
     """Build the authoritative attachment-owner lookup maps.
 
-    Native message ids are usable only when unique after the same SQLite
-    normalization used by the writer. Message positions remain the fallback
-    for id-less attachments and for attachments whose native id is ambiguous.
-    Keep this shared with repair/relink paths so they cannot invent a weaker
-    ownership rule than the production write.
+    The first result is the shared private owner-resolution contract. The
+    second maps its resolved owner keys to stored message ids, including the
+    full ``(position, variant_index)`` coordinate and any reorder-stable
+    parser evidence. Keep this shared with repair/relink paths so they cannot
+    invent a weaker ownership rule than the production write.
     """
     duplicates = duplicate_native_ids if duplicate_native_ids is not None else _duplicate_message_native_ids(messages)
-    by_native_message_id: dict[str, str] = {}
-    for fallback_position, message in enumerate(messages):
-        normalized = _normalized_message_native_id(message)
-        if normalized is None or normalized in duplicates:
+    resolution = message_owner_resolution(messages)
+    by_owner_key: dict[str, str] = {}
+    for fallback_position, (message, owner_key) in enumerate(zip(messages, resolution.keys, strict=True)):
+        if owner_key in resolution.ambiguous_keys:
             continue
         message_id = _message_id(
             session_id,
@@ -3363,21 +3364,8 @@ def _attachment_message_id_maps(
             position_offset=position_offset,
             duplicate_native_ids=duplicates,
         )
-        by_native_message_id[normalized] = message_id
-        if message.provider_message_id != normalized:
-            by_native_message_id[message.provider_message_id] = message_id
-    by_message_position = {
-        message.position: _message_id(
-            session_id,
-            message,
-            fallback_position,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicates,
-        )
-        for fallback_position, message in enumerate(messages)
-        if message.position is not None
-    }
-    return by_native_message_id, by_message_position
+        by_owner_key[owner_key] = message_id
+    return resolution, by_owner_key
 
 
 def _next_message_position(conn: sqlite3.Connection, session_id: str) -> int:
@@ -3401,7 +3389,7 @@ def _write_attachments(
     preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
 ) -> None:
     attachments = tuple(attachments)
-    by_native_message_id, by_message_position = _attachment_message_id_maps(
+    owner_resolution, by_owner_key = _attachment_message_id_maps(
         session_id,
         messages,
         position_offset=position_offset,
@@ -3411,11 +3399,8 @@ def _write_attachments(
     resolved_message_ids: dict[int, str] = {}
     attachments_by_message: defaultdict[str, list[ParsedAttachment]] = defaultdict(list)
     for attachment in attachments:
-        message_id = (
-            by_native_message_id.get(attachment.message_provider_id) if attachment.message_provider_id else None
-        )
-        if message_id is None and attachment.message_position is not None:
-            message_id = by_message_position.get(attachment.message_position)
+        owner_key = attachment_message_owner_key(attachment, owner_resolution)
+        message_id = by_owner_key.get(owner_key) if owner_key is not None else None
         if message_id is not None:
             resolved_message_ids[id(attachment)] = message_id
             attachments_by_message[message_id].append(attachment)
@@ -3523,7 +3508,7 @@ def _write_attachments(
         tuple(sorted(affected_attachment_ids)),
     )
     # polylogue-w06b: a full-replace re-ingest (or a re-ingest whose attachment
-    # can no longer be matched to a message via `by_native_message_id`, e.g.
+    # can no longer be matched to a message via the shared owner key, e.g.
     # the owning message became a duplicate-native-id exclusion or dropped
     # out of this ingest's message set) drops a previously-written
     # attachment_refs row for `refresh_attachment_ids` without this

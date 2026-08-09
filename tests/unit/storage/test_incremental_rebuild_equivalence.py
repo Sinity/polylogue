@@ -39,17 +39,18 @@ from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+from tests.infra.identity import archive_block_id, archive_message_id
 
 CHAT_SESSION = "chatgpt-export:branch-canary"
 PARENT_SESSION = "codex-session:lineage-parent"
 CHILD_SESSION = "codex-session:lineage-child"
-CHAT_USER = f"{CHAT_SESSION}:u1"
-CHAT_OLD = f"{CHAT_SESSION}:a-old"
-CHAT_NEW = f"{CHAT_SESSION}:a-new"
-CHAT_NEW_BLOCK = f"{CHAT_NEW}:0"
-PARENT_FIRST = f"{PARENT_SESSION}:lineage-parent-m0"
-PARENT_SECOND = f"{PARENT_SESSION}:lineage-parent-m1"
-CHILD_FIRST = f"{CHILD_SESSION}:lineage-child-m0"
+CHAT_USER = archive_message_id(CHAT_SESSION, "u1", position=0)
+CHAT_OLD = archive_message_id(CHAT_SESSION, "a-old", position=1)
+CHAT_NEW = archive_message_id(CHAT_SESSION, "a-new", position=1)
+CHAT_NEW_BLOCK = archive_block_id(CHAT_NEW, position=0)
+PARENT_FIRST = archive_message_id(PARENT_SESSION, "lineage-parent-m0", position=0)
+PARENT_SECOND = archive_message_id(PARENT_SESSION, "lineage-parent-m1", position=1)
+CHILD_FIRST = archive_message_id(CHILD_SESSION, "lineage-child-m0", position=0)
 CANONICAL_TOKEN = "quartzneedle"
 STALE_TOKEN = "staleonlytoken"
 OVERLAY_TAG = "operator-canary"

@@ -11,6 +11,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider
+from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.scenarios.workload import (
     BudgetVerdict,
     WorkloadPhaseObservation,
@@ -33,6 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     read_assertion_envelope,
 )
 from polylogue.surfaces.payloads import ActionQueryRowPayload
+from tests.infra.identity import archive_message_id
 from tests.infra.workload_artifacts import build_seeded_archive
 
 
@@ -58,7 +60,7 @@ def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_pat
     assert session_id == "codex-session:codex-archive-1"
     assert envelope.session_id == "codex-session:codex-archive-1"
     assert len(envelope.messages) == 1
-    assert matching_blocks == ["codex-session:codex-archive-1:m1:0"]
+    assert matching_blocks == [archive_message_id("codex-session:codex-archive-1", "m1", position=0) + ":0"]
 
 
 def test_open_existing_read_timeout_updates_busy_timeout(tmp_path: Path) -> None:
@@ -407,7 +409,7 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
     for index in range(512):
         native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
         session_id = f"codex-session:{native_id}"
-        message_id = f"{session_id}:m1"
+        message_id = archive_message_id(session_id, "m1", position=0)
         tool_id = f"tool-{index:04d}"
         session_rows.append((native_id, Origin.CODEX_SESSION.value, sha256(session_id.encode()).digest()))
         message_rows.append(
@@ -1198,6 +1200,63 @@ def test_archive_tiers_archive_facade_hash_skips_identical_content_and_refreshes
     assert stored_raw_id == second.raw_id
 
 
+def test_archive_tiers_archive_facade_reingests_duplicate_idless_owner_reassignment(tmp_path: Path) -> None:
+    def session(message_position: int) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="duplicate-idless-owner-reassignment",
+            title="Duplicate idless owners",
+            updated_at="2026-04-03T00:00:00Z",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="",
+                    role=Role.USER,
+                    text="same duplicate turn",
+                    timestamp="2026-04-03T00:00:00Z",
+                    position=0,
+                    owner_coordinate=MessageOwnerCoordinate("owner-first", 0, 0),
+                ),
+                ParsedMessage(
+                    provider_message_id="",
+                    role=Role.USER,
+                    text="same duplicate turn",
+                    timestamp="2026-04-03T00:00:00Z",
+                    position=1,
+                    owner_coordinate=MessageOwnerCoordinate("owner-second", 1, 0),
+                ),
+            ],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="drive-doc",
+                    message_provider_id="",
+                    message_position=message_position,
+                    name="note.txt",
+                    mime_type="text/plain",
+                )
+            ],
+        )
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            session(0),
+            payload=b'{"owner":0}',
+            source_path="/tmp/duplicate-owner-first.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        reassigned = facade.write_raw_and_parsed_result(
+            session(1),
+            payload=b'{"owner":1}',
+            source_path="/tmp/duplicate-owner-second.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    assert first.content_changed is True
+    assert reassigned.content_changed is True
+    assert reassigned.counts["sessions"] == 1
+    assert reassigned.counts["skipped_sessions"] == 0
+
+
 def test_archive_tiers_archive_facade_replaces_same_size_changed_attachment_bytes(tmp_path: Path) -> None:
     def session(payload: bytes) -> ParsedSession:
         return ParsedSession(
@@ -1615,7 +1674,9 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
         sampled_summaries = facade.list_summaries(limit=1, offset=1, sample=True)
         hits = facade.search_summaries("alpha", limit=5)
         offset_hits = facade.search_summaries("read", limit=1, offset=1)
-        semantic_hits = facade.semantic_summaries([("codex-session:codex-read-1:m1", 0.2)], limit=5)
+        semantic_hits = facade.semantic_summaries(
+            [(archive_message_id("codex-session:codex-read-1", "m1", position=0), 0.2)], limit=5
+        )
         tagged_hits = facade.search_summaries("alpha", limit=5, tags=("archive",))
         excluded_origin_hits = facade.search_summaries("alpha", limit=5, excluded_origins=("chatgpt-export",))
         multi_origin_hits = facade.search_summaries("alpha", limit=5, origins=("codex-session", "chatgpt-export"))
@@ -1692,7 +1753,7 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
     assert hits[0].session_id == first_id
     assert [hit.rank for hit in offset_hits] == [2]
     assert semantic_hits[0].session_id == first_id
-    assert semantic_hits[0].message_id == "codex-session:codex-read-1:m1"
+    assert semantic_hits[0].message_id == archive_message_id("codex-session:codex-read-1", "m1", position=0)
     assert tagged_hits[0].session_id == first_id
     assert excluded_origin_hits[0].session_id == first_id
     assert multi_origin_hits[0].session_id == first_id
@@ -1717,7 +1778,7 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
     assert repo_miss_hits == []
     assert titled_hits[0].session_id == first_id
     assert dated_hits[0].session_id == first_id
-    assert hits[0].block_id == "codex-session:codex-read-1:m1:0"
+    assert hits[0].block_id == archive_message_id("codex-session:codex-read-1", "m1", position=0) + ":0"
     assert hits[0].origin == Origin.CODEX_SESSION.value
     assert "[alpha]" in hits[0].snippet
 

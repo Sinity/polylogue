@@ -70,6 +70,16 @@ from polylogue.archive.query.predicate import (
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.runtime import MessageRecord
+from tests.infra.identity import archive_block_id, archive_message_id
+
+
+def _mid(session_id: str, native_id: str, *, position: int = 0) -> str:
+    return archive_message_id(session_id, native_id, position=position)
+
+
+def _bid(session_id: str, native_id: str, *, message_position: int = 0, block_position: int = 0) -> str:
+    return archive_block_id(_mid(session_id, native_id, position=message_position), position=block_position)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1834,7 +1844,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.role, row.text) for row in rows] == [
             (
                 "chatgpt-export:ext-hit",
-                "chatgpt-export:ext-hit:m-hit",
+                _mid("chatgpt-export:ext-hit", "m-hit"),
                 "assistant",
                 "the timeout happened",
             )
@@ -1859,7 +1869,9 @@ class TestBooleanQueryExpression:
         with ArchiveStore.open_existing(index_db.parent) as archive:
             rows = archive.query_messages(source.predicate, limit=100)
 
-        assert [(row.message_id, row.text) for row in rows] == [("chatgpt-export:ext-hit:m-new", "new")]
+        assert [(row.message_id, row.text) for row in rows] == [
+            (_mid("chatgpt-export:ext-hit", "m-new", position=1), "new")
+        ]
         assert rows[0].occurred_at_ms is not None
 
     def test_exists_message_predicate_filters_by_row_time(self, workspace_env: dict[str, Path]) -> None:
@@ -2103,7 +2115,7 @@ class TestBooleanQueryExpression:
         assert len(envelope.items) == 1
         row = envelope.items[0]
         assert isinstance(row, MessageQueryRowPayload)
-        assert row.message_id == "chatgpt-export:ext-message-numeric:m-hit"
+        assert row.message_id == _mid("chatgpt-export:ext-message-numeric", "m-hit")
 
     def test_session_scoped_message_predicate_executes_against_archive(
         self,
@@ -2169,7 +2181,7 @@ class TestBooleanQueryExpression:
             rows = archive.query_messages(source.predicate, limit=100)
 
         assert [(row.session_id, row.message_id) for row in rows] == [
-            ("claude-code-session:ext-hit", "claude-code-session:ext-hit:m-hit")
+            ("claude-code-session:ext-hit", _mid("claude-code-session:ext-hit", "m-hit"))
         ]
 
     def test_session_to_message_pipeline_executes_terminal_rows(
@@ -2216,7 +2228,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.text) for row in rows] == [
             (
                 "claude-code-session:ext-hit",
-                "claude-code-session:ext-hit:m-hit-assistant",
+                _mid("claude-code-session:ext-hit", "m-hit-assistant", position=1),
                 "the pipeline answer",
             )
         ]
@@ -2264,7 +2276,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.text) for row in rows] == [
             (
                 "chatgpt-export:ext-hit",
-                "chatgpt-export:ext-hit:m-selected",
+                _mid("chatgpt-export:ext-hit", "m-selected", position=1),
                 "selected terminal row",
             )
         ]
@@ -2309,7 +2321,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.text) for row in rows] == [
             (
                 "chatgpt-export:ext-hit",
-                "chatgpt-export:ext-hit:m-selected",
+                _mid("chatgpt-export:ext-hit", "m-selected", position=1),
                 "selected terminal row",
             )
         ]
@@ -2403,7 +2415,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.text) for row in rows] == [
             (
                 "claude-code-session:ext-hit",
-                "claude-code-session:ext-hit:m-selected",
+                _mid("claude-code-session:ext-hit", "m-selected", position=2),
                 "selected terminal row",
             )
         ]
@@ -2452,7 +2464,7 @@ class TestBooleanQueryExpression:
         from polylogue.surfaces.payloads import MessageQueryRowPayload
 
         assert isinstance(row, MessageQueryRowPayload)
-        assert row.message_id == "claude-code-session:ext-hit:m-2"
+        assert row.message_id == _mid("claude-code-session:ext-hit", "m-2", position=1)
         assert row.text == "second"
 
         with ArchiveStore.open_existing(index_db.parent) as archive:
@@ -2463,7 +2475,7 @@ class TestBooleanQueryExpression:
         assert len(next_page.items) == 1
         next_row = next_page.items[0]
         assert isinstance(next_row, MessageQueryRowPayload)
-        assert next_row.message_id == "claude-code-session:ext-hit:m-3"
+        assert next_row.message_id == _mid("claude-code-session:ext-hit", "m-3", position=2)
         assert next_row.text == "third"
 
     def test_session_to_message_pipeline_lineage_executes_against_archive(
@@ -2911,7 +2923,7 @@ class TestBooleanQueryExpression:
         from polylogue.surfaces.payloads import MessageQueryRowPayload
 
         assert isinstance(row, MessageQueryRowPayload)
-        assert row.message_id == "claude-code-session:ext-hit:m-new"
+        assert row.message_id == _mid("claude-code-session:ext-hit", "m-new", position=1)
         assert row.text == "new"
 
     def test_session_to_message_pipeline_sort_desc_executes_before_limit(
@@ -2947,7 +2959,7 @@ class TestBooleanQueryExpression:
         from polylogue.surfaces.payloads import MessageQueryRowPayload
 
         assert isinstance(row, MessageQueryRowPayload)
-        assert row.message_id == "claude-code-session:ext-hit:m-new"
+        assert row.message_id == _mid("claude-code-session:ext-hit", "m-new", position=1)
         assert row.text == "new"
 
     def test_exists_action_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
@@ -3038,7 +3050,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.semantic_type, row.tool_path) for row in rows] == [
             (
                 "claude-code-session:ext-hit",
-                "claude-code-session:ext-hit:m-hit",
+                _mid("claude-code-session:ext-hit", "m-hit"),
                 "file_edit",
                 "polylogue/archive/query/expression.py",
             )
@@ -3210,7 +3222,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.path, row.action_count) for row in rows] == [
             ("claude-code-session:ext-hit", "polylogue/archive/query/expression.py", 2)
         ]
-        assert rows[0].first_tool_use_block_id == "claude-code-session:ext-hit:m-edit-1:0"
+        assert rows[0].first_tool_use_block_id == _bid("claude-code-session:ext-hit", "m-edit-1")
 
     def test_exists_file_source_filters_sessions(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -3471,7 +3483,7 @@ class TestBooleanQueryExpression:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["session_id"] == "claude-code-session:ext-hit"
-        assert payload["messages"][0]["id"] == "claude-code-session:ext-hit:m-edit"
+        assert payload["messages"][0]["id"] == _mid("claude-code-session:ext-hit", "m-edit")
 
     def test_terminal_action_source_filters_by_row_time(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -3536,7 +3548,7 @@ class TestBooleanQueryExpression:
             rows = archive.query_actions(source.predicate, limit=100)
 
         assert [(row.message_id, row.tool_path) for row in rows] == [
-            ("claude-code-session:ext-hit:m-new", "polylogue/archive/new.py")
+            (_mid("claude-code-session:ext-hit", "m-new", position=2), "polylogue/archive/new.py")
         ]
         assert rows[0].occurred_at_ms is not None
 
@@ -3675,7 +3687,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.block_type, row.text) for row in rows] == [
             (
                 "chatgpt-export:ext-hit",
-                "chatgpt-export:ext-hit:m-hit",
+                _mid("chatgpt-export:ext-hit", "m-hit"),
                 "code",
                 "def query_timeout_guard(): pass",
             )
@@ -3833,7 +3845,9 @@ class TestBooleanQueryExpression:
         assert row.is_error == 1
         assert row.exit_code == 1
         assert row.followup_class == "silent_proceed"
-        assert row.followup_message_ref == "message:codex-session:ext-followups:m-silent-followup"
+        assert row.followup_message_ref == "message:" + _mid(
+            "codex-session:ext-followups", "m-silent-followup", position=3
+        )
 
         aggregate_query = "actions where is_error:true | group by followup_class | count"
         aggregate_source = parse_unit_source_expression(aggregate_query)
@@ -4095,11 +4109,12 @@ class TestBooleanQueryExpression:
         assert row.kind == "tool_finished"
         assert row.delivery_state == "observed"
         assert row.session_id == "claude-code-session:ext-tool-finished"
-        assert row.subject_ref == "message:claude-code-session:ext-tool-finished:m-tool"
+        tool_message_id = _mid("claude-code-session:ext-tool-finished", "m-tool")
+        assert row.subject_ref == "message:" + tool_message_id
         assert row.object_refs == ("tool-call:claude-code-session:ext-tool-finished:serena-1",)
         assert row.evidence_refs == (
-            "claude-code-session:ext-tool-finished::claude-code-session:ext-tool-finished:m-tool::0",
-            "claude-code-session:ext-tool-finished::claude-code-session:ext-tool-finished:m-tool::1",
+            "claude-code-session:ext-tool-finished::" + tool_message_id + "::0",
+            "claude-code-session:ext-tool-finished::" + tool_message_id + "::1",
         )
 
     def test_terminal_observed_event_tool_finished_aggregate_reads_blocks_without_materialization(
@@ -5339,8 +5354,8 @@ class TestBooleanQueryExpression:
                 assert text == "query compiler"
                 assert limit >= 6
                 return [
-                    ("chatgpt-export:ext-hit:m-hit", 0.01),
-                    ("chatgpt-export:ext-miss:m-miss", 0.02),
+                    (_mid("chatgpt-export:ext-hit", "m-hit"), 0.01),
+                    (_mid("chatgpt-export:ext-miss", "m-miss"), 0.02),
                 ]
 
             def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:

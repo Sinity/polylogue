@@ -1322,7 +1322,10 @@ def test_ambiguous_verdict_under_current_fingerprint_stays_terminal(tmp_path: Pa
     assert "ambiguous" in outcome.reason.lower()
 
 
-def test_ambiguous_verdict_under_superseded_fingerprint_is_replayable(tmp_path: Path) -> None:
+@pytest.mark.parametrize("superseded_fingerprint", ["revision-membership-v1", "revision-membership-v2"])
+def test_ambiguous_verdict_under_superseded_fingerprint_is_replayable(
+    tmp_path: Path, superseded_fingerprint: str
+) -> None:
     """polylogue-9dxn: an 'ambiguous' decision recorded under a fingerprint
     listed in SUPERSEDED_MEMBERSHIP_FINGERPRINTS is stale -- a corrected
     classifier deserves a chance to re-derive it, so it must not be
@@ -1339,7 +1342,7 @@ def test_ambiguous_verdict_under_superseded_fingerprint_is_replayable(tmp_path: 
     plan as TERMINAL.
     """
     initialize_active_archive_root(tmp_path)
-    superseded_fingerprint = next(iter(raw_authority_mod.SUPERSEDED_MEMBERSHIP_FINGERPRINTS))
+    assert superseded_fingerprint in raw_authority_mod.SUPERSEDED_MEMBERSHIP_FINGERPRINTS
     _raw_id, outcome = _seed_ambiguous_membership_component(
         tmp_path, native_id="superseded-ambiguous", parser_fingerprint=superseded_fingerprint
     )

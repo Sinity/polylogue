@@ -34,6 +34,7 @@ import pytest
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import archive_block_id, archive_message_id
 
 _INDEX_DDL = ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX]
 
@@ -88,10 +89,10 @@ def _build_replace_fixture(db_path: Path, *, drop_leading_index: bool) -> tuple[
         )
         for position in range(3):
             native_id = f"m{position}"
-            message_id = f"{session_id}:{native_id}"
+            message_id = archive_message_id(session_id, native_id, position=position)
             background_messages.append((session_id, native_id, position, "user", bytes([position]) * 32))
             background_blocks.append((message_id, session_id, 0, "text", "hi"))
-            block_id = f"{message_id}:0"
+            block_id = archive_block_id(message_id, position=0)
             background_constructs.append((session_id, message_id, block_id, 0, "chatgpt", "canvas"))
     conn.executemany(
         "INSERT INTO messages (session_id, native_id, position, role, content_hash) VALUES (?, ?, ?, ?, ?)",

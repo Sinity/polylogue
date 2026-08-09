@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import make_message, make_session, store_records
 
 
@@ -1050,7 +1051,9 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
         )
         batch = load_sync_batch(conn, [_sid("conv-blocks", "codex-session")])
 
-    assert [str(block.message_id) for block in batch.blocks] == [_sid("conv-blocks", "codex-session") + ":msg-2"]
+    assert [str(block.message_id) for block in batch.blocks] == [
+        archive_message_id(_sid("conv-blocks", "codex-session"), "msg-2", position=1)
+    ]
 
 
 def test_session_insight_load_includes_compaction_session_events_for_profile_classifiers(tmp_path: Path) -> None:

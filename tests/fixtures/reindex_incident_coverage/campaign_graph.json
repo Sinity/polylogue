@@ -36,7 +36,7 @@
     {"bead_id": "polylogue-rrxe4", "status": "open", "kind": "verification", "child_bead_ids": []},
     {"bead_id": "polylogue-rrxe4.1", "status": "open", "kind": "verification", "child_bead_ids": []},
     {"bead_id": "polylogue-s8s54", "status": "open", "kind": "implementation", "child_bead_ids": []},
-    {"bead_id": "polylogue-slshy", "status": "in_progress", "kind": "implementation", "child_bead_ids": []},
+    {"bead_id": "polylogue-slshy", "status": "closed", "kind": "implementation", "child_bead_ids": ["polylogue-xselt"]},
     {"bead_id": "polylogue-sp72", "status": "open", "kind": "implementation", "child_bead_ids": []},
     {"bead_id": "polylogue-t0m73", "status": "open", "kind": "verification", "child_bead_ids": []},
     {"bead_id": "polylogue-uqwd", "status": "in_progress", "kind": "implementation", "child_bead_ids": []},
@@ -52,6 +52,7 @@
     "polylogue-byte-supersession-live-proof",
     "polylogue-hook-authority-conflict-proof",
     "polylogue-excluded-cursor-live-proof",
-    "polylogue-chatgpt-content-live-proof"
+    "polylogue-chatgpt-content-live-proof",
+    "polylogue-xselt"
   ]
 }

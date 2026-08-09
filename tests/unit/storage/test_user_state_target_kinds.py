@@ -256,7 +256,7 @@ async def test_recall_pack_resolves_insight_targets_and_degrades_explicitly(
     builder = SessionBuilder(db_path, "conv-pack").provider("claude-code").add_message(message_id="msg-1", text="Hi")
     builder.save()
     session_id = builder.native_session_id()
-    message_id = f"{session_id}:msg-1"
+    message_id = f"{session_id}:n:msg-1"
     _seed_session_profile(db_path, session_id)
     thread_id = _native_thread_id(db_path, session_id)
 

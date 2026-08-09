@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import copy
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from polylogue.archive.session_revision_membership import _relation
 from polylogue.core.enums import Provider
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
@@ -15,7 +20,10 @@ from polylogue.sources.parsers.browser_capture import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
-from polylogue.sources.parsers.claude.common import CLAUDE_LINEAGE_CYCLE_INGEST_FLAG
+from polylogue.sources.parsers.claude.common import (
+    CLAUDE_LINEAGE_CYCLE_INGEST_FLAG,
+)
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.pipeline_roundtrip import parse_payload_roundtrip, write_and_hydrate
 from tests.infra.storage_records import db_setup
@@ -434,6 +442,478 @@ def test_claude_multiple_idless_messages_remain_distinct_and_choose_one_leaf() -
     assert (
         session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
     )
+
+
+def test_claude_same_timestamp_idless_rows_keep_private_association_keys() -> None:
+    rows = {
+        "first": {
+            "sender": "human",
+            "text": "The first same-timestamp turn.",
+            "created_at": "2026-07-01T10:00:00Z",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tool-first",
+                    "name": "lookup",
+                    "input": {"query": "first"},
+                    "start_timestamp": "2026-07-01T10:00:00.100Z",
+                    "display_content": {"type": "text", "text": "first evidence"},
+                }
+            ],
+            "files": [{"file_uuid": "file-first", "file_name": "first.txt", "file_type": "text/plain"}],
+            "is_active_leaf": False,
+        },
+        "leaf": {
+            "sender": "assistant",
+            "text": "The active same-timestamp turn.",
+            "created_at": "2026-07-01T10:00:00Z",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tool-leaf",
+                    "name": "lookup",
+                    "input": {"query": "leaf"},
+                    "start_timestamp": "2026-07-01T10:00:00.200Z",
+                    "display_content": {"type": "text", "text": "leaf evidence"},
+                }
+            ],
+            "files": [{"file_uuid": "file-leaf", "file_name": "leaf.txt", "file_type": "text/plain"}],
+            "is_active_leaf": True,
+        },
+    }
+    forward = parse_payload(
+        Provider.CLAUDE_AI,
+        {"uuid": "claude-idless-same-timestamp", "chat_messages": [rows["first"], rows["leaf"]]},
+        "fallback",
+    )[0]
+    reversed_rows = parse_payload(
+        Provider.CLAUDE_AI,
+        {"uuid": "claude-idless-same-timestamp", "chat_messages": [rows["leaf"], rows["first"]]},
+        "fallback",
+    )[0]
+
+    assert [message.provider_message_id for message in forward.messages] == ["", ""]
+    assert [message.provider_message_id for message in reversed_rows.messages] == ["", ""]
+    assert (
+        session_revision_projection(forward).message_contents
+        == session_revision_projection(reversed_rows).message_contents
+    )
+
+    for normalized in (forward, reversed_rows):
+        messages_by_text = {message.text: message for message in normalized.messages}
+        assert [message.text for message in normalized.messages if message.is_active_leaf] == [
+            "The active same-timestamp turn."
+        ]
+        assert normalized.active_leaf_message_provider_id == ""
+        assert {attachment.message_provider_id for attachment in normalized.attachments} == {""}
+        assert {attachment.message_position: attachment.name for attachment in normalized.attachments} == {
+            messages_by_text["The first same-timestamp turn."].position: "first.txt",
+            messages_by_text["The active same-timestamp turn."].position: "leaf.txt",
+        }
+
+        tool_events = [
+            event for event in normalized.session_events if event.event_type == "claude_ai_web_tool_evidence"
+        ]
+        assert [event.source_message_provider_id for event in tool_events] == ["", ""]
+        assert {json.dumps(event.payload["display_content"], sort_keys=True) for event in tool_events} == {
+            '{"text": "first evidence", "type": "text"}',
+            '{"text": "leaf evidence", "type": "text"}',
+        }
+
+
+def _duplicate_idless_owner_payload(order: tuple[str, ...]) -> dict[str, Any]:
+    rows = {
+        "first": {
+            "sender": "assistant",
+            "text": "same duplicate turn",
+            "created_at": "2026-07-01T10:00:00Z",
+            "files": [{"file_uuid": "owner-file-first", "file_name": "first.txt", "file_type": "text/plain"}],
+        },
+        "second": {
+            "sender": "assistant",
+            "text": "same duplicate turn",
+            "created_at": "2026-07-01T10:00:00Z",
+            "files": [{"file_uuid": "owner-file-second", "file_name": "second.txt", "file_type": "text/plain"}],
+        },
+    }
+    return {"uuid": "claude-idless-owner-evidence", "chat_messages": [copy.deepcopy(rows[key]) for key in order]}
+
+
+def test_claude_duplicate_idless_owner_evidence_survives_parser_reorder() -> None:
+    """Real parser reorder fails closed without owner-independent evidence."""
+    forward = _parse_real_route(_duplicate_idless_owner_payload(("first", "second")))
+    reordered = _parse_real_route(_duplicate_idless_owner_payload(("second", "first")))
+
+    assert [message.provider_message_id for message in forward.messages] == ["", ""]
+    assert [message.provider_message_id for message in reordered.messages] == ["", ""]
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(forward)
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(reordered)
+
+
+def test_claude_indistinguishable_duplicate_idless_owner_is_typed_ambiguity() -> None:
+    rows = [
+        {
+            "sender": "assistant",
+            "text": "same duplicate turn",
+            "created_at": "2026-07-01T10:00:00Z",
+            "files": [{"file_name": "same.txt", "file_type": "text/plain"}],
+        },
+        {
+            "sender": "assistant",
+            "text": "same duplicate turn",
+            "created_at": "2026-07-01T10:00:00Z",
+            "files": [{"file_name": "same.txt", "file_type": "text/plain"}],
+        },
+    ]
+    parsed = _parse_real_route({"uuid": "claude-idless-owner-ambiguous", "chat_messages": rows})
+
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(parsed)
+
+
+def test_claude_timestamped_idless_edit_keeps_axis_and_persists_content(tmp_path: Path) -> None:
+    def payload(text: str) -> dict[str, Any]:
+        return {
+            "uuid": "claude-idless-edit",
+            "chat_messages": [
+                {
+                    "sender": "assistant",
+                    "text": text,
+                    "created_at": "2026-07-01T10:00:00Z",
+                }
+            ],
+        }
+
+    older = _parse_real_route(payload("before"))
+    edited = _parse_real_route(payload("after"))
+    old_projection = session_revision_projection(older)
+    edited_projection = session_revision_projection(edited)
+    old_identity, old_content, _ = next(iter(old_projection.message_contents))
+    edited_identity, edited_content, _ = next(iter(edited_projection.message_contents))
+
+    assert old_identity == edited_identity
+    assert old_content != edited_content
+    assert old_projection.session_hash != edited_projection.session_hash
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            older,
+            payload=json.dumps(payload("before")).encode(),
+            source_path="/tmp/claude-idless-edit-before.json",
+            acquired_at_ms=1_775_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            edited,
+            payload=json.dumps(payload("after")).encode(),
+            source_path="/tmp/claude-idless-edit-after.json",
+            acquired_at_ms=1_775_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        stored_text = conn.execute(
+            """
+            SELECT b.search_text
+            FROM blocks AS b
+            JOIN messages AS m ON m.message_id = b.message_id
+            WHERE m.session_id = ? AND b.block_type = 'text'
+            """,
+            ("claude-ai-export:claude-idless-edit",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.content_changed is True
+    assert second.content_changed is True
+    assert second.counts["skipped_sessions"] == 0
+    assert stored_text == "after"
+
+
+def test_claude_attachment_owner_stays_stable_across_idless_body_edit(tmp_path: Path) -> None:
+    def payload(first_text: str) -> dict[str, Any]:
+        return {
+            "uuid": "claude-idless-attachment-edit",
+            "chat_messages": [
+                {
+                    "sender": "assistant",
+                    "text": first_text,
+                    "created_at": "2026-07-01T10:00:00Z",
+                    "position": 0,
+                    "files": [{"id": "owner-file-first", "file_name": "first.txt", "file_type": "text/plain"}],
+                },
+                {
+                    "sender": "assistant",
+                    "text": "second",
+                    "created_at": "2026-07-01T10:00:00Z",
+                    "position": 1,
+                    "files": [{"id": "owner-file-second", "file_name": "second.txt", "file_type": "text/plain"}],
+                },
+            ],
+        }
+
+    older_payload = payload("before")
+    edited_payload = payload("after")
+    older = _parse_real_route(older_payload)
+    edited = _parse_real_route(edited_payload)
+    older_projection = session_revision_projection(older)
+    edited_projection = session_revision_projection(edited)
+
+    assert older_projection.attachment_identities == edited_projection.attachment_identities
+    assert _relation(older_projection, edited_projection) == "equal"
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            older,
+            payload=json.dumps(older_payload).encode(),
+            source_path="/tmp/claude-idless-attachment-edit-before.json",
+            acquired_at_ms=1_775_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            edited,
+            payload=json.dumps(edited_payload).encode(),
+            source_path="/tmp/claude-idless-attachment-edit-after.json",
+            acquired_at_ms=1_775_000_000_001,
+        )
+
+    assert first.content_changed is True
+    assert second.content_changed is True
+    assert second.counts["skipped_sessions"] == 0
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachment_refs WHERE session_id = ?",
+                ("claude-ai-export:claude-idless-attachment-edit",),
+            ).fetchone()[0]
+            == 2
+        )
+    finally:
+        conn.close()
+
+
+def test_claude_duplicate_stable_owner_evidence_uses_full_coordinate(
+    workspace_env: dict[str, Path],
+) -> None:
+    payload = {
+        "uuid": "claude-duplicate-stable-owner-evidence",
+        "chat_messages": [
+            {
+                "sender": "assistant",
+                "text": "first body",
+                "created_at": "2026-07-01T10:00:00Z",
+                "position": 4,
+                "files": [{"id": "shared-owner-file", "file_name": "first.txt", "file_type": "text/plain"}],
+            },
+            {
+                "sender": "assistant",
+                "text": "second body",
+                "created_at": "2026-07-01T10:00:00Z",
+                "position": 4,
+                "files": [{"id": "shared-owner-file", "file_name": "second.txt", "file_type": "text/plain"}],
+            },
+        ],
+    }
+    parsed = _parse_real_route(payload)
+    assert [message.provider_message_id for message in parsed.messages] == ["", ""]
+    assert [(message.position, message.variant_index) for message in parsed.messages] == [(4, 0), (4, 1)]
+    assert len(parsed.attachments) == 1
+    assert parsed.attachments[0].owner_coordinate is not None
+    assert parsed.attachments[0].owner_coordinate.physical_key == (4, 0)
+
+    raw_bytes = json.dumps(payload).encode()
+    db_path = db_setup(workspace_env)
+    with open_connection(db_path) as conn:
+        hydrated = write_and_hydrate(
+            parse_payload_roundtrip("claude-ai", raw_bytes, unique_id="claude-duplicate-stable-owner-evidence"), conn
+        )
+        row = conn.execute(
+            """
+            SELECT m.position, m.variant_index
+            FROM attachment_refs AS r
+            JOIN messages AS m ON m.message_id = r.message_id
+            WHERE r.session_id = ?
+            """,
+            (str(hydrated.id),),
+        ).fetchone()
+
+    assert tuple(row) == (4, 0)
+
+
+def _duplicate_native_variant_payload(*, swapped: bool = False) -> dict[str, Any]:
+    files = (("att-variant-a", "variant-a.txt"), ("att-variant-b", "variant-b.txt"))
+    if swapped:
+        files = files[::-1]
+    return {
+        "uuid": "claude-duplicate-native-owners",
+        "chat_messages": [
+            {
+                "uuid": "duplicate-native",
+                "sender": "assistant",
+                "text": "duplicate native first",
+                "created_at": "2026-07-01T10:00:00Z",
+                "position": 0,
+                "variant_index": 0,
+                "files": [{"id": files[0][0], "file_name": files[0][1], "file_type": "text/plain"}],
+            },
+            {
+                "uuid": "duplicate-native",
+                "sender": "assistant",
+                "text": "duplicate native second",
+                "created_at": "2026-07-01T10:00:00Z",
+                "position": 0,
+                "variant_index": 1,
+                "files": [{"id": files[1][0], "file_name": files[1][1], "file_type": "text/plain"}],
+            },
+        ],
+    }
+
+
+def test_claude_duplicate_native_attachment_owner_keeps_variant_coordinate(
+    workspace_env: dict[str, Path],
+) -> None:
+    payload = _duplicate_native_variant_payload()
+    raw_bytes = json.dumps(payload).encode()
+    db_path = db_setup(workspace_env)
+
+    with open_connection(db_path) as conn:
+        parsed = _parse_real_route(payload)
+        assert [message.provider_message_id for message in parsed.messages] == ["duplicate-native"] * 2
+        assert {attachment.message_variant_index for attachment in parsed.attachments} == {0, 1}
+        roundtrip = parse_payload_roundtrip("claude-ai", raw_bytes, unique_id="claude-duplicate-native-owners")
+        write_and_hydrate(roundtrip, conn)
+        rows = [
+            tuple(row)
+            for row in conn.execute(
+                """
+            SELECT n.native_id, m.variant_index
+            FROM attachment_native_ids AS n
+            JOIN attachment_refs AS r ON r.ref_id = n.ref_id
+            JOIN messages AS m ON m.message_id = r.message_id
+            WHERE m.session_id = ? AND n.id_kind = 'attachment'
+            ORDER BY n.native_id
+            """,
+                ("claude-ai-export:claude-duplicate-native-owners",),
+            ).fetchall()
+        ]
+
+    assert rows == [("att-variant-a", 0), ("att-variant-b", 1)]
+
+
+def test_claude_idless_file_reassignment_changes_owner_hash_and_reingests(
+    tmp_path: Path,
+) -> None:
+    """A moved idless Claude file changes the real archive owner and hash."""
+
+    def payload(file_owner: int) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = [
+            {
+                "sender": "assistant",
+                "text": "first same-timestamp turn",
+                "created_at": "2026-07-01T10:00:00Z",
+            },
+            {
+                "sender": "assistant",
+                "text": "second same-timestamp turn",
+                "created_at": "2026-07-01T10:00:00Z",
+            },
+        ]
+        rows[file_owner]["files"] = [{"id": "reassigned-file", "file_name": "shared.txt", "file_type": "text/plain"}]
+        return {"uuid": "claude-idless-file-reassignment", "chat_messages": rows}
+
+    first_payload = payload(0)
+    second_payload = payload(1)
+    first = _parse_real_route(first_payload)
+    second = _parse_real_route(second_payload)
+    first_position = first.attachments[0].message_position
+    second_position = second.attachments[0].message_position
+    assert first_position is not None
+    assert second_position is not None
+
+    assert (
+        session_revision_projection(first).attachment_identities
+        != session_revision_projection(second).attachment_identities
+    )
+    assert first_position != second_position
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        initial = facade.write_raw_and_parsed_result(
+            first,
+            payload=json.dumps(first_payload).encode(),
+            source_path="/tmp/claude-idless-file-reassignment-before.json",
+            acquired_at_ms=1_775_000_000_000,
+        )
+        reassigned = facade.write_raw_and_parsed_result(
+            second,
+            payload=json.dumps(second_payload).encode(),
+            source_path="/tmp/claude-idless-file-reassignment-after.json",
+            acquired_at_ms=1_775_000_000_001,
+        )
+
+    assert initial.content_changed is True
+    assert reassigned.content_changed is True
+    assert reassigned.counts["skipped_sessions"] == 0
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            """
+            SELECT m.position
+            FROM attachment_refs AS r
+            JOIN messages AS m ON m.message_id = r.message_id
+            WHERE r.session_id = ?
+            """,
+            ("claude-ai-export:claude-idless-file-reassignment",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == (second_position,)
+
+
+def test_claude_duplicate_native_owner_move_changes_real_ingest_hash_and_owner(
+    tmp_path: Path,
+) -> None:
+    first_payload = _duplicate_native_variant_payload()
+    second_payload = _duplicate_native_variant_payload(swapped=True)
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            _parse_real_route(first_payload),
+            payload=json.dumps(first_payload).encode(),
+            source_path="/tmp/duplicate-native-first.json",
+            acquired_at_ms=1_775_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            _parse_real_route(second_payload),
+            payload=json.dumps(second_payload).encode(),
+            source_path="/tmp/duplicate-native-second.json",
+            acquired_at_ms=1_775_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        moved = conn.execute(
+            """
+            SELECT n.native_id, m.variant_index
+            FROM attachment_native_ids AS n
+            JOIN attachment_refs AS r ON r.ref_id = n.ref_id
+            JOIN messages AS m ON m.message_id = r.message_id
+            WHERE m.session_id = ? AND n.id_kind = 'attachment'
+            ORDER BY n.native_id
+            """,
+            ("claude-ai-export:claude-duplicate-native-owners",),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert first.content_changed is True
+    assert second.content_changed is True
+    assert second.counts["skipped_sessions"] == 0
+    assert moved == [("att-variant-a", 1), ("att-variant-b", 0)]
 
 
 def test_authenticated_browser_capture_uses_native_payload_and_enriches_attachment() -> None:

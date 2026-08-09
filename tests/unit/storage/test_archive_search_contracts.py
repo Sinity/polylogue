@@ -29,6 +29,7 @@ from polylogue.storage.search_providers.hybrid_sessions import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
+from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import ingest_session
 
 
@@ -349,7 +350,7 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
     assert hit.session_id == "aistudio-drive:gemini-attachment-identity"
     assert hit.match_surface == "attachment"
     assert hit.retrieval_lane == "attachment"
-    assert hit.message_id == "aistudio-drive:gemini-attachment-identity:msg-doc"
+    assert hit.message_id == archive_message_id("aistudio-drive:gemini-attachment-identity", "msg-doc", position=0)
     assert hit.snippet is not None
     assert expected_snippet in hit.snippet
     assert 'name="Project Plan"' in hit.snippet

@@ -23,6 +23,7 @@ from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.archive_scenarios import archive_for_scenario_db
+from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import ingest_session
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -249,10 +250,13 @@ class TestBranchDomainViews:
 
         assert branching is not None
         bid = ids["branching"]
-        assert [message.id for message in branching.mainline_messages()] == [f"{bid}:q1", f"{bid}:a1"]
+        assert [message.id for message in branching.mainline_messages()] == [
+            archive_message_id(bid, "q1", position=0),
+            archive_message_id(bid, "a1", position=1),
+        ]
         branches = list(branching.iter_branches())
         assert len(branches) == 1
-        assert branches[0][0] == f"{bid}:q1"
+        assert branches[0][0] == archive_message_id(bid, "q1", position=0)
         assert [message.branch_index for message in branches[0][1]] == [0, 1]
         assert [message.is_branch for message in branches[0][1]] == [False, True]
         # is_active_path (not branch_index) is what selected a1: it is the

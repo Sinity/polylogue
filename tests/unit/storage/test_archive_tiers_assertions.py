@@ -52,6 +52,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_transform_candidate_assertions,
 )
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, open_connection
+from tests.infra.identity import archive_message_id
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -107,7 +108,7 @@ def _insert_index_message(conn: sqlite3.Connection, session_id: str, native_id: 
         """,
         (session_id, native_id, position, Role.ASSISTANT.value, "message", bytes(32)),
     )
-    return f"{session_id}:{native_id}"
+    return archive_message_id(session_id, native_id, position=position)
 
 
 def _recovery_candidate_session() -> Session:

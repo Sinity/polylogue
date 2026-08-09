@@ -10,6 +10,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
 
@@ -378,8 +379,28 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         ):
             session_events.append(usage_event)
         chunk_attachments = _collect_chunk_attachments(chunk_obj, msg_id)
+        # Attachment identifiers describe the attachment, not the message
+        # that owns it.  Using them as the message's stable owner key makes a
+        # metadata-only move between same-timestamp idless chunks look like
+        # no change at all: the same attachment recreates the same key under
+        # its new chunk.  Keep ownership on the chunk's own provider id or
+        # physical coordinate instead; ``message_owner_resolution`` then
+        # supplies the content discriminator for duplicate idless turns and
+        # fails closed when those turns are genuinely indistinguishable.
+        owner_coordinate = MessageOwnerCoordinate(
+            stable_key=None,
+            position=message_position,
+            variant_index=0,
+        )
         chunk_attachments = [
-            attachment.model_copy(update={"message_position": message_position}) for attachment in chunk_attachments
+            attachment.model_copy(
+                update={
+                    "message_position": message_position,
+                    "message_variant_index": 0,
+                    "owner_coordinate": owner_coordinate,
+                }
+            )
+            for attachment in chunk_attachments
         ]
         observed_timestamps.append(message_timestamp)
         used_typed_model = False
@@ -428,6 +449,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
                 variant_index=0,
                 is_active_path=True,
                 parent_message_provider_id=(_branch_parent_provider_id(chunk_obj) or branch_child_parents.get(msg_id)),
+                owner_coordinate=owner_coordinate,
                 input_tokens=usage_fields["input_tokens"],
                 output_tokens=usage_fields["output_tokens"],
                 model_name=model_name,

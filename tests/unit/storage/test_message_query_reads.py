@@ -16,6 +16,7 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     get_messages_paginated,
     iter_messages,
 )
+from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import make_message, make_session, save_session_to_archive
 
 
@@ -25,12 +26,12 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
     backend = SQLiteBackend(db_path=tmp_path / "index.db")
     current_session_id = "unknown-export:conv-message-reads"
     expected_message_ids = [
-        f"{current_session_id}:msg-summary",
-        f"{current_session_id}:msg-summary-2",
-        f"{current_session_id}:msg-tool",
-        f"{current_session_id}:msg-user",
-        f"{current_session_id}:msg-protocol",
-        f"{current_session_id}:msg-assistant",
+        archive_message_id(current_session_id, "msg-summary", position=0),
+        archive_message_id(current_session_id, "msg-summary-2", position=1),
+        archive_message_id(current_session_id, "msg-tool", position=2),
+        archive_message_id(current_session_id, "msg-user", position=3),
+        archive_message_id(current_session_id, "msg-protocol", position=4),
+        archive_message_id(current_session_id, "msg-assistant", position=5),
     ]
     conv = make_session("conv-message-reads", title="Message Reads")
     messages = [
@@ -107,9 +108,11 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             message_role=(Role.USER,),
         )
         assert [message.message_id for message in filtered_by_session[current_session_id]] == [
-            f"{current_session_id}:msg-user"
+            archive_message_id(current_session_id, "msg-user", position=3)
         ]
-        assert [message.message_id for message in filtered_messages] == [f"{current_session_id}:msg-user"]
+        assert [message.message_id for message in filtered_messages] == [
+            archive_message_id(current_session_id, "msg-user", position=3)
+        ]
         assert [message.message_id for message in all_messages] == expected_message_ids
 
         traced_sql: list[str] = []
@@ -125,8 +128,12 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         finally:
             await conn.set_trace_callback(lambda _statement: None)
         assert edge_total == 3
-        assert [message.message_id for message in first_edge] == [f"{current_session_id}:msg-user"]
-        assert [message.message_id for message in last_edge] == [f"{current_session_id}:msg-assistant"]
+        assert [message.message_id for message in first_edge] == [
+            archive_message_id(current_session_id, "msg-user", position=3)
+        ]
+        assert [message.message_id for message in last_edge] == [
+            archive_message_id(current_session_id, "msg-assistant", position=5)
+        ]
         assert any("COUNT(*) FROM messages INDEXED BY idx_messages_session_position" in sql for sql in traced_sql)
 
         authored_first, authored_last, authored_total = await get_message_edge_windows(
@@ -139,8 +146,8 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         )
         assert authored_total == 2
         assert [message.message_id for message in authored_first] == [
-            f"{current_session_id}:msg-user",
-            f"{current_session_id}:msg-assistant",
+            archive_message_id(current_session_id, "msg-user", position=3),
+            archive_message_id(current_session_id, "msg-assistant", position=5),
         ]
         assert authored_last == []
 
@@ -152,7 +159,9 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             offset=0,
         )
         assert total == 2
-        assert [message.message_id for message in paginated] == [f"{current_session_id}:msg-summary"]
+        assert [message.message_id for message in paginated] == [
+            archive_message_id(current_session_id, "msg-summary", position=0)
+        ]
         assert paginated_completeness.complete is True
 
         paginated_with_offset, offset_total, _offset_completeness = await get_messages_paginated(
@@ -163,7 +172,9 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             offset=1,
         )
         assert offset_total == 2
-        assert [message.message_id for message in paginated_with_offset] == [f"{current_session_id}:msg-summary-2"]
+        assert [message.message_id for message in paginated_with_offset] == [
+            archive_message_id(current_session_id, "msg-summary-2", position=1)
+        ]
 
         tool_messages, tool_total, _tool_completeness = await get_messages_paginated(
             conn,
@@ -173,7 +184,9 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             offset=0,
         )
         assert tool_total == 1
-        assert [message.message_id for message in tool_messages] == [f"{current_session_id}:msg-tool"]
+        assert [message.message_id for message in tool_messages] == [
+            archive_message_id(current_session_id, "msg-tool", position=2)
+        ]
 
         user_messages, user_total, _user_completeness = await get_messages_paginated(
             conn,
@@ -184,9 +197,9 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         )
         assert user_total == 3
         assert [message.message_id for message in user_messages] == [
-            f"{current_session_id}:msg-user",
-            f"{current_session_id}:msg-protocol",
-            f"{current_session_id}:msg-assistant",
+            archive_message_id(current_session_id, "msg-user", position=3),
+            archive_message_id(current_session_id, "msg-protocol", position=4),
+            archive_message_id(current_session_id, "msg-assistant", position=5),
         ]
 
         with pytest.raises(ValueError, match="Unknown message type"):
@@ -212,7 +225,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
                 chunk_size=1,
                 limit=1,
             )
-        ] == [f"{current_session_id}:msg-user"]
+        ] == [archive_message_id(current_session_id, "msg-user", position=3)]
 
     await backend.close()
 

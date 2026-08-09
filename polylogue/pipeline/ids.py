@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, TypeAlias
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue
+from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import ContentHash, MessageId, SessionId
 
@@ -102,6 +103,10 @@ class SessionRevisionProjection:
     attachment_contents: frozenset[tuple[bytes, bytes]]
     event_hashes: tuple[bytes, ...]
     event_contents: frozenset[tuple[bytes, bytes]]
+    # Timestamped id-less messages intentionally share a revision axis even
+    # when their mutable content changes. Native-id axes retain strict content
+    # conflict semantics in ``session_revision_membership``.
+    mutable_message_identities: frozenset[bytes] = frozenset()
 
 
 def _normalize_nested_for_hash(value: object) -> object:
@@ -224,8 +229,14 @@ def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
 
 def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, JSONValue]:
     """Build the hash-stable payload for a single message."""
+    payload: dict[str, JSONValue] = {"id": message_id}
+    payload.update(_message_comparison_payload(message))
+    return payload
+
+
+def _message_comparison_payload(message: ParsedMessage) -> dict[str, JSONValue]:
+    """Build the content payload that distinguishes an idless message."""
     payload: dict[str, JSONValue] = {
-        "id": message_id,
         "role": str(message.role),
         "text": _normalize_for_hash(message.text),
         "timestamp": _normalize_for_hash(message.timestamp),
@@ -235,17 +246,15 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
     return payload
 
 
-#: Marker prefix for a content-derived (role + timestamp) message identity
-#: anchor, used only when a message carries no native ``provider_message_id``.
-#: Namespaced so it can never collide with a real provider id string (a
-#: provider id never contains this literal token by construction).
-_TIMESTAMP_ANCHOR_PREFIX = "__polylogue_msg_ts_anchor__"
+#: Marker prefix for a content-derived message identity anchor, used only
+#: when a message carries no native ``provider_message_id``. Namespaced so it
+#: can never collide with a real provider id string (a provider id never
+#: contains this literal token by construction).
 _CONTENT_ANCHOR_PREFIX = "__polylogue_msg_content_anchor__"
 
 
-def _message_comparison_id(message: ParsedMessage, index: int) -> str:
-    """Resolve the id used as both a message's content-payload id and its
-    comparison identity (``message_identity_hash``'s sole input).
+def _message_revision_match_id(message: ParsedMessage) -> str:
+    """Resolve the stable revision-match identity for one parsed message.
 
     Prefers the provider's own id -- stable across reordering even when the
     export's array ordering is not (polylogue-c429). When a parser could not
@@ -256,21 +265,177 @@ def _message_comparison_id(message: ParsedMessage, index: int) -> str:
     array position would get two different fallback "ids" and compare as a
     conflict instead of the same message (polylogue-gysk3).
 
-    The fix: fall back to a content-derived anchor -- role plus timestamp,
-    or role plus message text when no timestamp exists -- instead of array
-    position, so reordering an otherwise-unchanged id-less message never
-    changes its comparison identity.
+    Timestamped id-less messages use only role and timestamp here. Their text
+    and blocks remain in ``_message_hash_payload`` as mutable content, so an
+    edit shares one revision axis while still changing the session hash.
+    Timestamp-less messages need their content to remain distinguishable.
 
     Parser normalization maintains the complementary invariant: a missing
     native id is never replaced with an array-position-derived value before
     reaching this function. Parser-local occurrence keys may use position,
     but they are not persisted as ``provider_message_id``.
     """
-    if message.provider_message_id:
-        return message.provider_message_id
-    if message.timestamp:
-        return f"{_TIMESTAMP_ANCHOR_PREFIX}:{message.role}:{message.timestamp}"
-    return f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload({'role': str(message.role), 'text': _normalize_for_hash(message.text)})}"
+    native_id = message.provider_message_id.strip()
+    if native_id:
+        return native_id
+    payload: dict[str, JSONValue] = {
+        "role": str(message.role),
+        "timestamp": _normalize_for_hash(message.timestamp),
+    }
+    if message.timestamp is None:
+        payload["text"] = _normalize_for_hash(message.text)
+        if message.blocks and not _is_redundant_text_only_block(message):
+            payload["content_blocks"] = [_content_block_payload(b) for b in message.blocks]
+    return f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(payload)}"
+
+
+@dataclass(frozen=True, slots=True)
+class MessageOwnerResolution:
+    """One shared private owner-resolution contract for hash and write paths."""
+
+    keys: tuple[str, ...]
+    by_physical_coordinate: Mapping[tuple[int, int], str]
+    ambiguous_physical_coordinates: frozenset[tuple[int, int]]
+    by_stable_key: Mapping[str, str]
+    ambiguous_stable_keys: frozenset[str]
+    ambiguous_keys: frozenset[str]
+    unique_provider_keys: Mapping[str, str]
+    ambiguous_provider_ids: frozenset[str]
+
+
+def _message_owner_coordinate(message: ParsedMessage, fallback_position: int) -> MessageOwnerCoordinate:
+    coordinate = message.owner_coordinate
+    if coordinate is not None:
+        return MessageOwnerCoordinate(
+            stable_key=coordinate.stable_key,
+            position=coordinate.position if coordinate.position is not None else message.position,
+            variant_index=coordinate.variant_index,
+        )
+    return MessageOwnerCoordinate(
+        position=message.position if message.position is not None else fallback_position,
+        variant_index=message.variant_index or 0,
+    )
+
+
+def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResolution:
+    """Resolve stable private owner keys from one parsed message batch.
+
+    Unique native ids and timestamped id-less role/timestamp anchors are
+    stable across reordering and edits. Duplicate anchors use a unique
+    content discriminator when the occurrences differ, then parser-provided
+    reorder-stable evidence when their content is identical. If neither
+    distinguishes the occurrences, the duplicate remains typed ambiguity
+    instead of receiving a position-derived identity.
+    """
+    revision_ids = tuple(_message_revision_match_id(message) for message in messages)
+    revision_counts = Counter(revision_ids)
+    content_ids = tuple(
+        f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(_message_comparison_payload(message))}" for message in messages
+    )
+    content_counts = Counter(content_ids)
+    coordinates = tuple(_message_owner_coordinate(message, index) for index, message in enumerate(messages))
+    stable_counts = Counter(coordinate.stable_key for coordinate in coordinates if coordinate.stable_key is not None)
+
+    keys: list[str] = []
+    for revision_id, content_id, coordinate in zip(revision_ids, content_ids, coordinates, strict=True):
+        if coordinate.stable_key is not None and stable_counts[coordinate.stable_key] == 1:
+            key = coordinate.stable_key
+        elif revision_counts[revision_id] == 1:
+            key = revision_id
+        elif content_counts[content_id] == 1:
+            key = content_id
+        elif coordinate.stable_key is not None:
+            key = coordinate.stable_key
+        else:
+            key = revision_id
+        keys.append(key)
+
+    key_counts = Counter(keys)
+    ambiguous_keys = frozenset(key for key, count in key_counts.items() if count > 1)
+    physical_counts = Counter(
+        coordinate.physical_key for coordinate in coordinates if coordinate.physical_key is not None
+    )
+    by_physical_coordinate = {
+        coordinate.physical_key: key
+        for coordinate, key in zip(coordinates, keys, strict=True)
+        if coordinate.physical_key is not None and physical_counts[coordinate.physical_key] == 1
+    }
+    by_stable_key = {
+        coordinate.stable_key: key
+        for coordinate, key in zip(coordinates, keys, strict=True)
+        if (
+            coordinate.stable_key is not None
+            and stable_counts[coordinate.stable_key] == 1
+            and key not in ambiguous_keys
+        )
+    }
+    provider_keys: dict[str, str] = {}
+    provider_counts = Counter(
+        message.provider_message_id.strip() for message in messages if message.provider_message_id
+    )
+    for message, key in zip(messages, keys, strict=True):
+        provider_id = message.provider_message_id.strip()
+        if provider_id and provider_counts[provider_id] == 1:
+            provider_keys[provider_id] = key
+    return MessageOwnerResolution(
+        keys=tuple(keys),
+        by_physical_coordinate=by_physical_coordinate,
+        ambiguous_physical_coordinates=frozenset(
+            coordinate for coordinate, count in physical_counts.items() if count > 1
+        ),
+        by_stable_key=by_stable_key,
+        ambiguous_stable_keys=frozenset(stable_key for stable_key, count in stable_counts.items() if count > 1),
+        ambiguous_keys=ambiguous_keys,
+        unique_provider_keys=provider_keys,
+        ambiguous_provider_ids=frozenset(provider_id for provider_id, count in provider_counts.items() if count > 1),
+    )
+
+
+def _attachment_owner_coordinate(attachment: ParsedAttachment) -> MessageOwnerCoordinate:
+    coordinate = attachment.owner_coordinate
+    if coordinate is not None:
+        return MessageOwnerCoordinate(
+            stable_key=coordinate.stable_key,
+            position=coordinate.position if coordinate.position is not None else attachment.message_position,
+            variant_index=coordinate.variant_index,
+        )
+    return MessageOwnerCoordinate(
+        position=attachment.message_position,
+        variant_index=attachment.message_variant_index or 0,
+    )
+
+
+def attachment_message_owner_key(attachment: ParsedAttachment, resolution: MessageOwnerResolution) -> str | None:
+    """Resolve one attachment to the same private owner key used by writes."""
+    coordinate = _attachment_owner_coordinate(attachment)
+    if (
+        coordinate.stable_key is not None
+        and coordinate.stable_key not in resolution.ambiguous_stable_keys
+        and coordinate.stable_key not in resolution.ambiguous_keys
+        and coordinate.stable_key in resolution.by_stable_key
+    ):
+        return resolution.by_stable_key[coordinate.stable_key]
+    if coordinate.physical_key is not None:
+        if coordinate.physical_key in resolution.ambiguous_physical_coordinates:
+            raise MessageOwnerAmbiguityError(f"attachment owner coordinate is duplicated: {coordinate.physical_key!r}")
+        key = resolution.by_physical_coordinate.get(coordinate.physical_key)
+        if key is not None:
+            if key in resolution.ambiguous_keys:
+                raise MessageOwnerAmbiguityError(
+                    "attachment owner coordinate is indistinguishable from another message: "
+                    f"{coordinate.physical_key!r}"
+                )
+            return key
+    if coordinate.stable_key in resolution.ambiguous_stable_keys:
+        raise MessageOwnerAmbiguityError(f"attachment owner evidence is duplicated: {coordinate.stable_key!r}")
+    if attachment.message_provider_id:
+        provider_id = attachment.message_provider_id.strip()
+        if provider_id in resolution.ambiguous_provider_ids:
+            raise MessageOwnerAmbiguityError(
+                f"attachment provider message id is duplicated without a private coordinate: {provider_id!r}"
+            )
+        return resolution.unique_provider_keys.get(provider_id, provider_id)
+    return None
 
 
 def message_identity_hash(*, id: str) -> bytes:
@@ -331,12 +496,8 @@ def attachment_identity_hash(*, message_id: JSONValue, name: JSONValue, mime_typ
 def _attachment_hash_payload(
     attachment: ParsedAttachment, *, message_owner_anchor: str | None = None
 ) -> dict[str, JSONValue]:
-    """Build attachment identity without perturbing legacy metadata-only hashes."""
-    owner_id = (
-        message_owner_anchor
-        if not attachment.message_provider_id and message_owner_anchor
-        else attachment.message_provider_id
-    )
+    """Build the full attachment payload using the shared owner coordinate."""
+    owner_id = message_owner_anchor or attachment.message_provider_id
     payload: dict[str, JSONValue] = {
         "id": _normalize_for_hash(attachment.provider_attachment_id),
         "message_id": _normalize_for_hash(owner_id),
@@ -516,24 +677,19 @@ def _session_hash_components(
     caller re-deriving its own copy. Byte-identical to computing each
     payload independently -- pure sharing of an already-pure computation.
     """
-    message_comparison_ids = [_message_comparison_id(msg, idx) for idx, msg in enumerate(convo.messages, start=1)]
+    owner_resolution = message_owner_resolution(convo.messages)
+    # Private owner keys may use duplicate-occurrence evidence. Revision
+    # identity must remain the intrinsic role/timestamp axis for timestamped
+    # id-less messages, independent of the sibling count in this acquisition.
+    message_comparison_ids = [_message_revision_match_id(message) for message in convo.messages]
     messages_payload = [
         _message_hash_payload(message, comparison_id)
         for message, comparison_id in zip(convo.messages, message_comparison_ids, strict=True)
     ]
-    owner_anchor_by_position = {
-        message.position: comparison_id
-        for message, comparison_id in zip(convo.messages, message_comparison_ids, strict=True)
-        if message.position is not None
-    }
     attachments_payload = [
         _attachment_hash_payload(
             attachment,
-            message_owner_anchor=(
-                owner_anchor_by_position.get(attachment.message_position)
-                if attachment.message_position is not None
-                else None
-            ),
+            message_owner_anchor=attachment_message_owner_key(attachment, owner_resolution),
         )
         for attachment in convo.attachments
     ]
@@ -622,10 +778,13 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     )
     message_content_counts: Counter[tuple[bytes, bytes]] = Counter()
     message_hashes: list[bytes] = []
-    for payload in messages_payload:
+    mutable_message_identities: set[bytes] = set()
+    for message, payload in zip(convo.messages, messages_payload, strict=True):
         message_native_id = payload["id"]
         assert isinstance(message_native_id, str)  # built as str above, never anything else
         identity = message_identity_hash(id=message_native_id)
+        if not message.provider_message_id.strip() and message.timestamp is not None:
+            mutable_message_identities.add(identity)
         content = bytes.fromhex(hash_payload(payload))
         message_content_counts[(identity, content)] += 1
         message_hashes.append(content)
@@ -683,4 +842,5 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         attachment_contents=frozenset(attachment_contents),
         event_hashes=tuple(event_hashes),
         event_contents=frozenset(event_contents),
+        mutable_message_identities=frozenset(mutable_message_identities),
     )

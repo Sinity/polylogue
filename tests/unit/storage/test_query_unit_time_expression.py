@@ -20,6 +20,7 @@ from pathlib import Path
 
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.identity import archive_message_id
 
 _TIMELESS_ORIGIN = "codex-session"
 
@@ -107,7 +108,7 @@ def test_query_files_first_last_seen_ms_is_none_not_epoch_for_timeless_action(tm
         conn = facade._conn
         timeless = _insert_timeless_session(conn, native_id="timeless-file")
         _insert_message(conn, session_id=timeless, position=0)
-        message_id = f"{timeless}:0.0"
+        message_id = archive_message_id(timeless, None, position=0)
         conn.execute(
             """
             INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, tool_input)

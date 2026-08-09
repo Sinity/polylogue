@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from tests.infra.archive_scenarios import native_session_id_for
+from tests.infra.identity import archive_message_id
 
 POLYLOGUE_LOCAL_PATH_PREFIXES = ("/home/", "/Users/", "/realm/", "/var/", "/etc/")
 
@@ -136,11 +137,11 @@ def index_db_path(workspace: ReaderWorkspace) -> Path:
 READER_C1 = native_session_id_for("claude-code", "reader-c1")
 READER_C2 = native_session_id_for("chatgpt", "reader-c2")
 READER_C3 = native_session_id_for("claude-ai", "reader-c3")
-READER_C1_M1 = f"{READER_C1}:reader-c1-m1"
-READER_C1_M2 = f"{READER_C1}:reader-c1-m2"
-READER_C1_M3 = f"{READER_C1}:reader-c1-m3"
-READER_C3_M1 = f"{READER_C3}:reader-c3-m1"
-READER_C3_DIFF = f"{READER_C3}:reader-c3-diff"
+READER_C1_M1 = archive_message_id(READER_C1, "reader-c1-m1", position=0)
+READER_C1_M2 = archive_message_id(READER_C1, "reader-c1-m2", position=1)
+READER_C1_M3 = archive_message_id(READER_C1, "reader-c1-m3", position=2)
+READER_C3_M1 = archive_message_id(READER_C3, "reader-c3-m1", position=0)
+READER_C3_DIFF = archive_message_id(READER_C3, "reader-c3-diff", position=1)
 
 
 def _attachment_native_id(message_id: str, attachment_id: str) -> str:

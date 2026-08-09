@@ -40,25 +40,25 @@ _ACOMPACT_FALLBACK_ID = "agent-acompact-normalization-proof"
 _SUBAGENT_ACOMPACT_FALLBACK_ID = "agent-acompact-task-normalization-proof"
 _ARCHIVE_SESSION_ID = "claude-code-session:claude-normalization-main"
 _EXPECTED_ARCHIVE_MESSAGE_IDS = (
-    "claude-code-session:claude-normalization-main:main-u1",
-    "claude-code-session:claude-normalization-main:main-a1",
-    "claude-code-session:claude-normalization-main:main-bg-start",
-    "claude-code-session:claude-normalization-main:main-command",
-    "claude-code-session:claude-normalization-main:main-context",
+    "claude-code-session:claude-normalization-main:n:main-u1",
+    "claude-code-session:claude-normalization-main:n:main-a1",
+    "claude-code-session:claude-normalization-main:n:main-bg-start",
+    "claude-code-session:claude-normalization-main:n:main-command",
+    "claude-code-session:claude-normalization-main:n:main-context",
     # polylogue-slshy: these two wire records carry uuid=None -- the parser
     # now leaves provider_message_id empty (no positional "msg-N" fallback),
     # so the generated message_id column falls back to its own
     # position.variant_index component (COALESCE(native_id, ...)).
-    "claude-code-session:claude-normalization-main:5.0",
-    "claude-code-session:claude-normalization-main:main-a2",
-    "claude-code-session:claude-normalization-main:main-fg-result",
-    "claude-code-session:claude-normalization-main:8.0",
+    "claude-code-session:claude-normalization-main:p:5.0",
+    "claude-code-session:claude-normalization-main:n:main-a2",
+    "claude-code-session:claude-normalization-main:n:main-fg-result",
+    "claude-code-session:claude-normalization-main:p:8.0",
 )
 _EXPECTED_MAIN_A1_BLOCK_IDS = (
-    "claude-code-session:claude-normalization-main:main-a1:0",
-    "claude-code-session:claude-normalization-main:main-a1:1",
-    "claude-code-session:claude-normalization-main:main-a1:2",
-    "claude-code-session:claude-normalization-main:main-a1:3",
+    "claude-code-session:claude-normalization-main:n:main-a1:0",
+    "claude-code-session:claude-normalization-main:n:main-a1:1",
+    "claude-code-session:claude-normalization-main:n:main-a1:2",
+    "claude-code-session:claude-normalization-main:n:main-a1:3",
 )
 
 # Independent normalized-fact oracle. These values are authored alongside the
@@ -269,7 +269,9 @@ def test_family_fixture_survives_acquire_parse_store_read_and_action_pairing(tmp
     assert [message.native_id for message in envelope.messages] == list(_EXPECTED_MAIN_NATIVE_IDS)
     assert [message.material_origin for message in envelope.messages] == [fact[3] for fact in _EXPECTED_MAIN_MESSAGES]
     assert [block.block_id for block in envelope.messages[1].blocks] == list(_EXPECTED_MAIN_A1_BLOCK_IDS)
-    assert envelope.messages[2].blocks[0].block_id == ("claude-code-session:claude-normalization-main:main-bg-start:0")
+    assert envelope.messages[2].blocks[0].block_id == (
+        "claude-code-session:claude-normalization-main:n:main-bg-start:0"
+    )
     assert [block.block_type for block in envelope.messages[1].blocks] == [
         "thinking",
         "text",

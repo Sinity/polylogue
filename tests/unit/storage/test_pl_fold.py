@@ -25,6 +25,7 @@ from polylogue.storage.fts.sql import FTS_MESSAGES_TABLE_SQL
 from polylogue.storage.search.query_support import escape_fts5_query, normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from tests.infra.identity import archive_message_id
 
 # ---------------------------------------------------------------------------
 # Python fold semantics
@@ -139,7 +140,7 @@ def test_all_contentless_fts_surfaces_use_the_same_diacritic_folding_tokenizer()
 def _seed_text_block(conn: sqlite3.Connection, *, native_session_id: str, native_message_id: str, text: str) -> str:
     origin = "unknown-export"
     session_id = f"{origin}:{native_session_id}"
-    message_id = f"{session_id}:{native_message_id}"
+    message_id = archive_message_id(session_id, native_message_id, position=0)
     content_hash = b"x" * 32
     conn.execute(
         "INSERT INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
