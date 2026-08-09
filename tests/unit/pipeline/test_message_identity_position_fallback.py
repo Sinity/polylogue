@@ -1,4 +1,4 @@
-"""message_identity_hash's fallback for id-less messages must not read array position.
+"""Revision-match identity and private owner coordinates must not read array position.
 
 polylogue-gysk3: the attachment-class bug (a synthetic identity seeded partly
 by array index, unstable across export vintages that reorder/insert array
@@ -6,23 +6,20 @@ entries) was found and fixed for attachments (polylogue-hith/-d8al) by
 excluding the (real-or-synthetic) attachment id from identity entirely and
 deriving it from stable content fields instead (message_id, name, mime_type).
 
-`message_identity_hash` has no separate field to fall back to -- a message's
-provider id (or its absence) IS the sole identity input by construction. Its
-one addressable-within-`pipeline/ids.py` instance is the local fallback that
-used to fire when a parser could not populate `provider_message_id`:
-previously `f"msg-{index}"`, positionally-derived exactly like the old
-attachment synthetic id. This file proves the fix: two parses of the same
-id-less message in a different array position must resolve to the same
-message-content identity when a provider timestamp is available to anchor
-on, instead of silently comparing wrong pairs as if their (position-shifted)
-fallback ids matched.
+The revision-match identity is now separate from mutable message content:
+timestamped id-less edits share one axis while their content hash changes.
+Private attachment ownership uses the typed coordinate contract and fails
+closed for indistinguishable duplicate occurrences.
 """
 
 from __future__ import annotations
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 
@@ -74,6 +71,20 @@ def test_id_less_messages_with_distinct_timestamps_do_not_collide() -> None:
     assert len(projection.message_contents) == 2
 
 
+def test_timestamped_idless_edit_shares_revision_identity_but_changes_content() -> None:
+    older = _id_less("assistant", "before", "2024-01-01T00:01:00Z")
+    edited = _id_less("assistant", "after", "2024-01-01T00:01:00Z")
+
+    old_projection = session_revision_projection(_session([older]))
+    edited_projection = session_revision_projection(_session([edited]))
+
+    old_identity, old_content, _ = next(iter(old_projection.message_contents))
+    edited_identity, edited_content, _ = next(iter(edited_projection.message_contents))
+    assert old_identity == edited_identity
+    assert old_content != edited_content
+    assert old_projection.session_hash != edited_projection.session_hash
+
+
 def test_id_less_and_timestamp_less_message_uses_content_anchor() -> None:
     bare = _id_less("user", "x", None)
     keyed = _with_id("m1", "assistant", "y", "2024-01-01T00:00:00Z")
@@ -100,14 +111,8 @@ def test_timestamp_less_idless_duplicates_preserve_unordered_multiplicity() -> N
     assert not classification.ambiguous_raw_ids
 
 
-def test_duplicate_idless_attachment_owner_reassignment_changes_hash() -> None:
-    """Duplicate content anchors still distinguish position-linked owners.
-
-    The messages remain the same content in both revisions. Only the stable
-    transport owner coordinate of one attachment moves from occurrence zero
-    to occurrence one. A content-only owner anchor would make this a false
-    re-ingest skip.
-    """
+def test_indistinguishable_duplicate_idless_attachment_owner_fails_closed() -> None:
+    """A duplicate with no stable evidence cannot receive guessed ownership."""
     repeated = [
         _id_less("assistant", "repeat", "2024-01-01T00:00:00Z").model_copy(update={"position": position})
         for position in (0, 1)
@@ -119,14 +124,5 @@ def test_duplicate_idless_attachment_owner_reassignment_changes_hash() -> None:
         name="note.txt",
         mime_type="text/plain",
     )
-    moved = attachment.model_copy(update={"message_position": 1})
-
-    first = session_revision_projection(_session(repeated, [attachment]))
-    second = session_revision_projection(_session(repeated, [moved]))
-    reordered = session_revision_projection(_session(list(reversed(repeated)), [attachment]))
-
-    assert first.message_contents == second.message_contents
-    assert first.message_contents == reordered.message_contents
-    assert first.attachment_identities == reordered.attachment_identities
-    assert first.attachment_identities != second.attachment_identities
-    assert first.session_hash != second.session_hash
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(_session(repeated, [attachment]))
