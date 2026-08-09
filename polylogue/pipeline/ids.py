@@ -224,8 +224,14 @@ def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
 
 def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, JSONValue]:
     """Build the hash-stable payload for a single message."""
+    payload: dict[str, JSONValue] = {"id": message_id}
+    payload.update(_message_comparison_payload(message))
+    return payload
+
+
+def _message_comparison_payload(message: ParsedMessage) -> dict[str, JSONValue]:
+    """Build the content payload that distinguishes an idless message."""
     payload: dict[str, JSONValue] = {
-        "id": message_id,
         "role": str(message.role),
         "text": _normalize_for_hash(message.text),
         "timestamp": _normalize_for_hash(message.timestamp),
@@ -268,7 +274,7 @@ def _message_comparison_id(message: ParsedMessage) -> str:
     """
     if message.provider_message_id:
         return message.provider_message_id
-    return f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload({'role': str(message.role), 'timestamp': _normalize_for_hash(message.timestamp), 'text': _normalize_for_hash(message.text)})}"
+    return f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(_message_comparison_payload(message))}"
 
 
 def message_identity_hash(*, id: str) -> bytes:

@@ -5499,21 +5499,20 @@ class ArchiveStore:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.MARK)
         finally:
             user_conn.close()
-        out: list[dict[str, str]] = []
+        selected: list[tuple[ArchiveAssertionEnvelope, str, str]] = []
         for assertion in assertions:
             found_target_type, found_target_id = _split_user_target_ref(assertion.target_ref)
-            owner_session_id = _user_mark_session_id(
-                found_target_type,
-                found_target_id,
-                durable_scope_ref=assertion.scope_ref,
-                index_conn=self._conn,
-            )
             if mark_type and assertion.key != mark_type:
                 continue
             if target_type and found_target_type != target_type:
                 continue
             if target_id and found_target_id != target_id:
                 continue
+            selected.append((assertion, found_target_type, found_target_id))
+        owners = _user_state_session_ids((item[0] for item in selected), index_conn=self._conn)
+        out: list[dict[str, str]] = []
+        for assertion, found_target_type, found_target_id in selected:
+            owner_session_id = owners[assertion.assertion_id]
             if session_id and target_id is None and owner_session_id != session_id:
                 continue
             out.append(
@@ -5681,39 +5680,29 @@ class ArchiveStore:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.ANNOTATION)
         finally:
             user_conn.close()
-        out: list[dict[str, str]] = []
+        selected: list[tuple[ArchiveAssertionEnvelope, str, str]] = []
         for assertion in assertions:
             found_annotation_id = str(assertion.key or "")
             found_target_type, found_target_id = _split_user_target_ref(assertion.target_ref)
             if annotation_id and found_annotation_id != annotation_id:
                 continue
-            if session_id and target_id is None:
-                belongs_to_session = (
-                    _user_mark_session_id(
-                        found_target_type,
-                        found_target_id,
-                        durable_scope_ref=assertion.scope_ref,
-                        index_conn=self._conn,
-                    )
-                    == session_id
-                )
-                if not belongs_to_session:
-                    continue
             if target_type and found_target_type != target_type:
                 continue
             if target_id and found_target_id != target_id:
                 continue
+            selected.append((assertion, found_target_type, found_target_id))
+        owners = _user_state_session_ids((item[0] for item in selected), index_conn=self._conn)
+        out: list[dict[str, str]] = []
+        for assertion, found_target_type, found_target_id in selected:
+            owner_session_id = owners[assertion.assertion_id]
+            if session_id and target_id is None and owner_session_id != session_id:
+                continue
             out.append(
                 {
-                    "annotation_id": found_annotation_id,
+                    "annotation_id": str(assertion.key or ""),
                     "target_type": found_target_type,
                     "target_id": found_target_id,
-                    "session_id": _user_mark_session_id(
-                        found_target_type,
-                        found_target_id,
-                        durable_scope_ref=assertion.scope_ref,
-                        index_conn=self._conn,
-                    ),
+                    "session_id": owner_session_id,
                     "message_id": found_target_id if found_target_type == "message" else "",
                     "note_text": assertion.body_text or "",
                     "created_at": str(assertion.created_at_ms),
@@ -9361,6 +9350,46 @@ def _split_user_target_ref(target_ref: str) -> tuple[str, str]:
     if not sep:
         return "", target_ref
     return target_type, target_id
+
+
+def _user_state_session_ids(
+    assertions: Iterable[ArchiveAssertionEnvelope],
+    *,
+    index_conn: sqlite3.Connection | None = None,
+) -> dict[str, str]:
+    """Resolve assertion owners with one bounded indexed-message lookup batch."""
+    owners: dict[str, str] = {}
+    unresolved: list[tuple[str, str]] = []
+    for assertion in assertions:
+        target_type, target_id = _split_user_target_ref(assertion.target_ref)
+        if target_type == "session":
+            owners[assertion.assertion_id] = target_id
+            continue
+        if target_type != "message":
+            owners[assertion.assertion_id] = ""
+            continue
+        if assertion.scope_ref is not None and assertion.scope_ref.startswith("session:"):
+            durable_owner = assertion.scope_ref[len("session:") :]
+            if durable_owner:
+                owners[assertion.assertion_id] = durable_owner
+                continue
+        unresolved.append((assertion.assertion_id, target_id))
+
+    indexed_owners: dict[str, str] = {}
+    if index_conn is not None:
+        for offset in range(0, len(unresolved), 500):
+            batch = sorted({target_id for _assertion_id, target_id in unresolved[offset : offset + 500]})
+            if not batch:
+                continue
+            placeholders = ",".join("?" for _ in batch)
+            rows = index_conn.execute(
+                f"SELECT message_id, session_id FROM messages WHERE message_id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            indexed_owners.update({str(row[0]): str(row[1]) for row in rows})
+    for assertion_id, target_id in unresolved:
+        owners[assertion_id] = indexed_owners.get(target_id, "")
+    return owners
 
 
 def _id_from_target_ref(target_ref: str, prefix: str) -> str:

@@ -878,6 +878,14 @@ class TestPrivacyContract:
         assert "if (value === null || value === undefined || value === '') return 'unknown';" in WEB_SHELL_HTML
         assert "var n = Number(value || 0);" not in WEB_SHELL_HTML
 
+    def test_web_shell_excludes_message_marks_from_session_mark_state(self) -> None:
+        from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+        anchor = "(marks.items || []).forEach(function(m) {"
+        idx = WEB_SHELL_HTML.index(anchor)
+        following = WEB_SHELL_HTML[idx : idx + 220]
+        assert "if (m.target_type !== 'session') return;" in following
+
     def test_load_status_success_path_clears_the_status_route_notice(self) -> None:
         """Dogfood regression (2026-07-08): loadStatus()'s success path set
         state.routeStates.status to 'ready' but never called renderFacets(),

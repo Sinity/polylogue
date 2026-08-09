@@ -21,6 +21,7 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.core.user_state_targets import identity_key
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -304,6 +305,48 @@ async def test_message_target_marks_survive_reimport(workspace_env: dict[str, Pa
     target_type, target_id, _, _ = _mark_row(_user_db_path(workspace_env), "pin")
     assert target_type == "message"
     assert target_id == message_id
+
+
+@pytest.mark.asyncio
+async def test_legacy_message_owner_reads_batch_index_lookup(workspace_env: dict[str, Path]) -> None:
+    """Legacy message marks resolve through one indexed-message batch."""
+    db_path = db_setup(workspace_env)
+    builder = SessionBuilder(db_path, "batch-owner")
+    builder.provider("claude-code")
+    for index in range(1, 4):
+        builder.add_message(message_id=f"msg-{index}", text=f"message {index}")
+    builder.save()
+    session_id = builder.native_session_id()
+
+    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+        for index in range(1, 4):
+            assert (
+                await poly.add_mark(
+                    session_id,
+                    "pin",
+                    target_type="message",
+                    message_id=f"{session_id}:n:msg-{index}",
+                )
+                is True
+            )
+
+    with sqlite3.connect(_user_db_path(workspace_env)) as conn:
+        conn.execute("UPDATE assertions SET scope_ref = NULL WHERE kind = 'mark'")
+        conn.commit()
+
+    with ArchiveStore.open_existing(workspace_env["archive_root"]) as archive:
+        statements: list[str] = []
+        archive._conn.set_trace_callback(statements.append)
+        try:
+            rows = archive.list_marks(mark_type="pin")
+        finally:
+            archive._conn.set_trace_callback(None)
+
+    message_lookup_statements = [
+        statement for statement in statements if "FROM messages WHERE message_id IN" in statement
+    ]
+    assert len(message_lookup_statements) == 1
+    assert {row["session_id"] for row in rows} == {session_id}
 
 
 @pytest.mark.asyncio
