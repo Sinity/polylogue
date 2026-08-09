@@ -187,22 +187,22 @@ def reconcile(repository: Path, live_export: Path) -> tuple[dict[str, Any], list
         "already_guarded_ids": [],
         "targeted_ids": [],
     }
-    for category, ids in (
+    for report_category, ids in (
         ("master_only", master_ids - live_ids),
         ("live_only", live_ids - master_ids),
     ):
-        report["ids"][category] = sorted(ids)
-        report["counts"][category] = len(ids)
+        report["ids"][report_category] = sorted(ids)
+        report["counts"][report_category] = len(ids)
 
     wave: list[dict[str, Any]] = []
     refused_reasons: dict[str, list[str]] = {}
     for bead_id in sorted(master_ids & live_ids):
         master_row = master[bead_id]
         live_row = live[bead_id]
-        category = _classify_timestamp(master_row, live_row)
-        if category in {"master_newer", "live_newer", "same_timestamp_different"}:
-            report["ids"][category].append(bead_id)
-            report["counts"][category] += 1
+        timestamp_category = _classify_timestamp(master_row, live_row)
+        if timestamp_category in {"master_newer", "live_newer", "same_timestamp_different"}:
+            report["ids"][timestamp_category].append(bead_id)
+            report["counts"][timestamp_category] += 1
 
         contract = master_contracts.get(bead_id)
         if contract is None:
