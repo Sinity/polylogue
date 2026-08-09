@@ -277,8 +277,19 @@ def _is_valid_in_progress_testmon_seed_attempt(attempt: Path, *, checkout_root: 
         payload = json.loads(attempt.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
-    if not isinstance(payload, Mapping) or payload.get("status") not in {"running", "incomplete", "reusable"}:
+    if not isinstance(payload, Mapping) or payload.get("status") not in {
+        "running",
+        "incomplete",
+        "reusable",
+        "complete",
+    }:
         return False
+    if payload.get("status") == "complete":
+        return attempt_is_checkout_bound(
+            payload,
+            checkout_root=checkout_root,
+            protocol_version=_TESTMON_SEED_PROTOCOL_VERSION,
+        )
     if payload.get("status") == "reusable":
         return attempt_is_checkout_bound(
             payload,

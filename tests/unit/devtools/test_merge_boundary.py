@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -342,7 +343,7 @@ def test_merge_with_verify_records_terminal_full_verify(monkeypatch: pytest.Monk
     monkeypatch.setattr(
         merge_boundary,
         "_run_post_merge_terminal_verify",
-        lambda command, target: merge_boundary.cmd_record_full_verify(command, target_sha=target),
+        lambda command, target, **_kwargs: merge_boundary.cmd_record_full_verify(command, target_sha=target),
     )
 
     exit_code = merge_boundary.cmd_merge(
@@ -371,7 +372,7 @@ def test_merge_with_verify_returns_nonzero_when_terminal_authority_is_rejected(
     pr_view = _base_pr_view()
     monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
     monkeypatch.setattr(merge_boundary, "_fetched_merged_default_branch_sha", lambda _pr: "merged-master")
-    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", lambda _command, _target: 1)
+    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", lambda _command, _target, **_kwargs: 1)
 
     assert (
         merge_boundary.cmd_merge(
@@ -531,6 +532,18 @@ def test_train_status_fails_closed_on_truncated_ledger(monkeypatch: pytest.Monke
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
+def test_train_status_fails_closed_on_valid_json_partial_merge_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    ledger_path = tmp_path / ".cache" / "verify" / "merge-gate" / "merge-train-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    ledger_path.write_text(json.dumps({"merges": [{"pr": 42, "merged_at": 1.0}], "last_full_verify": None}))
+
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+    assert "Traceback" not in capsys.readouterr().err
+
+
 def test_merge_write_failure_leaves_durable_pending_latch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
@@ -565,7 +578,20 @@ def test_train_status_blocks_when_pr_merged_after_last_full_verify(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     merge_boundary._write_ledger(
-        {"merges": [], "last_full_verify": {"at": 1000.0, "command": "devtools verify --all", "exit_code": 0}}
+        {
+            "merges": [],
+            "last_full_verify": {
+                "at": 1000.0,
+                "verification_started_at": 1000.0,
+                "duration_s": 1.0,
+                "command": "devtools verify --all",
+                "exit_code": 0,
+                "verification_scope": "release-baseline",
+                "release_baseline_allowed": True,
+                "merge_sequence": 0,
+                "accepted": True,
+            },
+        }
     )
     merge_boundary._append_merge_entry(1, "sha1", "some title")
 
@@ -584,9 +610,13 @@ def test_train_status_rejects_untyped_accepted_terminal_ledger(monkeypatch: pyte
             "merges": [],
             "last_full_verify": {
                 "at": 1000.0,
+                "verification_started_at": 1000.0,
+                "duration_s": 1.0,
                 "command": "devtools verify --all",
                 "exit_code": 0,
+                "verification_scope": None,
                 "release_baseline_allowed": True,
+                "merge_sequence": 0,
                 "accepted": True,
             },
         }
@@ -755,6 +785,172 @@ def test_concurrent_merge_during_terminal_verify_remains_pending(
     assert ledger["last_full_verify"]["merge_sequence"] == 0
 
 
+def test_concurrent_ledger_writer_cannot_lose_merge_entry(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    started = threading.Event()
+    writer: threading.Thread | None = None
+
+    def run(_cmd: list[str], **_kwargs: Any) -> MagicMock:
+        nonlocal writer
+
+        def append() -> None:
+            started.set()
+            merge_boundary._append_merge_entry(77, "writer-sha", "writer merge")
+
+        writer = threading.Thread(target=append)
+        writer.start()
+        assert started.wait(timeout=1)
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "git_head": "merged-master",
+                    "verification_scope": "release-baseline",
+                    "release_baseline_allowed": True,
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master") == 0
+    assert writer is not None
+    writer.join(timeout=1)
+    assert not writer.is_alive()
+    ledger = merge_boundary._read_ledger()
+    assert any(entry["pr"] == 77 for entry in ledger["merges"])
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+
+def test_terminal_snapshot_is_taken_before_default_branch_fetch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    events: list[str] = []
+    snapshots: list[tuple[dict[str, Any], float, int]] = []
+
+    original_snapshot = merge_boundary._terminal_verify_snapshot
+
+    def snapshot() -> tuple[dict[str, Any], float, int]:
+        events.append("ledger-snapshot")
+        captured = original_snapshot()
+        snapshots.append(captured)
+        return captured
+
+    def fetch() -> str:
+        events.append("target-fetch")
+        merge_boundary._append_merge_entry(88, "after-fetch-sha", "merge after target fetch")
+        return "merged-master"
+
+    def post_verify(
+        _command: str, _target: str, *, ledger_snapshot: tuple[dict[str, Any], float, int] | None = None
+    ) -> int:
+        assert ledger_snapshot is not None
+        assert ledger_snapshot[2] == 0
+        return 1
+
+    monkeypatch.setattr(merge_boundary, "_terminal_verify_snapshot", snapshot)
+    monkeypatch.setattr(merge_boundary, "_fetched_current_default_branch_sha", fetch)
+    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", post_verify)
+
+    assert merge_boundary.main(["record-full-verify", "--command", "devtools verify --all"]) == 1
+    assert events == ["ledger-snapshot", "target-fetch"]
+    assert snapshots[0][2] == 0
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+
+def test_external_merge_before_completion_is_reconciled_from_durable_intent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    base_run = _fake_run(pr_view)
+    merged = False
+
+    def run(cmd: list[str], **kwargs: Any) -> MagicMock:
+        if cmd[:3] == ["gh", "pr", "view"] and merged:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps({"state": "MERGED", "mergeCommit": {"oid": "merge-commit"}}),
+                stderr="",
+            )
+        return base_run(cmd, **kwargs)
+
+    complete_merge_intent = merge_boundary._complete_merge_intent
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(merge_boundary, "_complete_merge_intent", lambda _pr, _head_sha: None)
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=False,
+            verify_command="devtools verify --all",
+        )
+        == 0
+    )
+    merged = True
+    assert merge_boundary._read_ledger()["merge_intents"]
+    monkeypatch.setattr(merge_boundary, "_complete_merge_intent", complete_merge_intent)
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+    ledger = merge_boundary._read_ledger()
+    assert not ledger["merge_intents"]
+    assert ledger["merges"][0]["pr"] == 42
+
+
+def test_external_merge_completion_write_failure_keeps_recovery_latch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._record_merge_intent(42, "feature-sha", "fix: thing (#42)")
+
+    def fail_completion_replace(source: Path, destination: Path) -> None:
+        if destination == merge_boundary._LEDGER_PATH:
+            raise OSError("injected completion publication failure")
+        os.replace(source, destination)
+
+    monkeypatch.setattr(merge_boundary, "_durable_replace", fail_completion_replace)
+    with pytest.raises(merge_boundary.LedgerStateError):
+        merge_boundary._complete_merge_intent(42, "feature-sha")
+    assert merge_boundary._LEDGER_PENDING_PATH.exists()
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+
+def test_detached_worktree_add_failure_attempts_cleanup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    commands: list[list[str]] = []
+
+    def run(cmd: list[str], **_kwargs: Any) -> MagicMock:
+        commands.append(cmd)
+        if cmd[:3] == ["git", "worktree", "add"]:
+            return MagicMock(returncode=1, stdout="", stderr="add failed")
+        if cmd[:3] == ["git", "worktree", "remove"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert merge_boundary._run_post_merge_terminal_verify("devtools verify --all", "merged-master") == 1
+    assert any(command[:3] == ["git", "worktree", "remove"] for command in commands)
+
+
+def test_detached_worktree_cleanup_failure_is_explicit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def run(cmd: list[str], **_kwargs: Any) -> MagicMock:
+        if cmd[:3] == ["git", "worktree", "add"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:3] == ["git", "worktree", "remove"]:
+            return MagicMock(returncode=2, stdout="", stderr="remove failed")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(merge_boundary, "cmd_record_full_verify", lambda *_args, **_kwargs: 0)
+    assert merge_boundary._run_post_merge_terminal_verify("devtools verify --all", "merged-master") == 1
+
+
 def test_manual_record_route_fetches_target_and_rejects_stale_cli_output(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -780,7 +976,7 @@ def test_manual_record_route_fetches_target_and_rejects_stale_cli_output(
             stderr="",
         )
 
-    def post_verify(command: str, target_sha: str) -> int:
+    def post_verify(command: str, target_sha: str, **_kwargs: Any) -> int:
         post_targets.append(target_sha)
         return merge_boundary.cmd_record_full_verify(command, target_sha=target_sha)
 

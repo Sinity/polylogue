@@ -63,6 +63,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -71,7 +73,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +82,7 @@ from devtools.testmon_state import VerificationScope
 
 _LEDGER_PATH = Path(".cache/verify/merge-gate/merge-train-ledger.json")
 _LEDGER_PENDING_PATH = _LEDGER_PATH.with_name(f"{_LEDGER_PATH.name}.pending")
+_LEDGER_LOCK_PATH = _LEDGER_PATH.with_name(f"{_LEDGER_PATH.name}.lock")
 
 
 class LedgerStateError(RuntimeError):
@@ -110,6 +113,27 @@ def clean_merge_title(title: str, pr: int) -> str:
     return collapsed
 
 
+@contextlib.contextmanager
+def _ledger_lock() -> Iterator[None]:
+    """Serialize every merge-train ledger read-modify-write transaction."""
+    _LEDGER_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _LEDGER_LOCK_PATH.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _is_real_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _require_nonempty_string(entry: Mapping[str, Any], key: str, *, message: str) -> None:
+    if not isinstance(entry.get(key), str) or not entry[key]:
+        raise LedgerStateError(message)
+
+
 def _validate_ledger(data: object) -> dict[str, Any]:
     if not isinstance(data, dict) or not isinstance(data.get("merges"), list):
         raise LedgerStateError("merge-train ledger is malformed")
@@ -117,27 +141,102 @@ def _validate_ledger(data: object) -> dict[str, Any]:
         if (
             not isinstance(entry, dict)
             or not isinstance(entry.get("pr"), int)
-            or not isinstance(entry.get("merged_at"), (int, float))
+            or isinstance(entry.get("pr"), bool)
+            or entry["pr"] <= 0
+            or not isinstance(entry.get("head_sha"), str)
+            or not entry["head_sha"]
+            or not isinstance(entry.get("title"), str)
+            or not entry["title"]
+            or not _is_real_number(entry.get("merged_at"))
+            or (
+                "merge_sequence" in entry
+                and (
+                    not isinstance(entry.get("merge_sequence"), int)
+                    or isinstance(entry.get("merge_sequence"), bool)
+                    or entry["merge_sequence"] <= 0
+                )
+            )
         ):
             raise LedgerStateError("merge-train ledger contains a malformed merge entry")
-    if data.get("last_full_verify") is not None and not isinstance(data.get("last_full_verify"), dict):
+    intents = data.get("merge_intents")
+    if not isinstance(intents, list):
+        raise LedgerStateError("merge-train ledger contains malformed merge intents")
+    for intent in intents:
+        if (
+            not isinstance(intent, dict)
+            or not isinstance(intent.get("pr"), int)
+            or isinstance(intent.get("pr"), bool)
+            or intent["pr"] <= 0
+            or not isinstance(intent.get("head_sha"), str)
+            or not intent["head_sha"]
+            or not isinstance(intent.get("title"), str)
+            or not intent["title"]
+            or not _is_real_number(intent.get("intent_at"))
+        ):
+            raise LedgerStateError("merge-train ledger contains a malformed merge intent")
+    receipt = data.get("last_full_verify")
+    if receipt is None:
+        return data
+    if not isinstance(receipt, dict):
         raise LedgerStateError("merge-train ledger contains a malformed terminal receipt")
+    for key in (
+        "command",
+        "verification_started_at",
+        "at",
+        "duration_s",
+        "exit_code",
+        "accepted",
+        "merge_sequence",
+        "verification_scope",
+        "release_baseline_allowed",
+    ):
+        if key not in receipt:
+            raise LedgerStateError(f"merge-train terminal receipt is missing {key!r}")
+    _require_nonempty_string(receipt, "command", message="merge-train terminal receipt has no command")
+    if (
+        not _is_real_number(receipt.get("verification_started_at"))
+        or not _is_real_number(receipt.get("at"))
+        or not _is_real_number(receipt.get("duration_s"))
+        or not isinstance(receipt.get("exit_code"), int)
+        or isinstance(receipt.get("exit_code"), bool)
+        or not isinstance(receipt.get("accepted"), bool)
+        or not isinstance(receipt.get("merge_sequence"), int)
+        or isinstance(receipt.get("merge_sequence"), bool)
+        or receipt["merge_sequence"] < 0
+    ):
+        raise LedgerStateError("merge-train terminal receipt has malformed status fields")
+    scope = receipt.get("verification_scope")
+    if scope is not None and scope not in {item.value for item in VerificationScope}:
+        raise LedgerStateError("merge-train terminal receipt has an invalid verification scope")
+    permission = receipt.get("release_baseline_allowed")
+    if permission is not None and not isinstance(permission, bool):
+        raise LedgerStateError("merge-train terminal receipt has malformed release permission")
+    for key in ("terminal_authorization", "verified_head_sha", "target_sha", "merged_master_sha"):
+        value = receipt.get(key)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise LedgerStateError(f"merge-train terminal receipt has malformed {key!r}")
     return data
 
 
-def _read_ledger() -> dict[str, Any]:
+def _read_ledger_unlocked() -> dict[str, Any]:
     if _LEDGER_PENDING_PATH.exists():
         raise LedgerStateError("merge-train ledger has an unfinished durable write")
     if not _LEDGER_PATH.exists():
-        return {"merges": [], "last_full_verify": None}
+        return {"merges": [], "merge_intents": [], "last_full_verify": None}
     try:
         data = json.loads(_LEDGER_PATH.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise LedgerStateError("merge-train ledger is unreadable or truncated") from exc
     if isinstance(data, dict):
         data.setdefault("merges", [])
+        data.setdefault("merge_intents", [])
         data.setdefault("last_full_verify", None)
     return _validate_ledger(data)
+
+
+def _read_ledger() -> dict[str, Any]:
+    with _ledger_lock():
+        return _read_ledger_unlocked()
 
 
 def _fsync_directory(path: Path) -> None:
@@ -159,7 +258,10 @@ def _durable_replace(source: Path, destination: Path) -> None:
     os.replace(source, destination)
 
 
-def _write_ledger(ledger: dict[str, Any]) -> None:
+def _write_ledger_unlocked(ledger: dict[str, Any]) -> None:
+    ledger.setdefault("merges", [])
+    ledger.setdefault("merge_intents", [])
+    ledger.setdefault("last_full_verify", None)
     _validate_ledger(ledger)
     parent = _LEDGER_PATH.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +286,11 @@ def _write_ledger(ledger: dict[str, Any]) -> None:
         ledger_tmp.unlink(missing_ok=True)
 
 
+def _write_ledger(ledger: dict[str, Any]) -> None:
+    with _ledger_lock():
+        _write_ledger_unlocked(ledger)
+
+
 def _merge_sequence(ledger: Mapping[str, Any]) -> int:
     sequence = 0
     for index, entry in enumerate(ledger.get("merges", []), start=1):
@@ -193,7 +300,13 @@ def _merge_sequence(ledger: Mapping[str, Any]) -> int:
 
 
 def _append_merge_entry(pr: int, head_sha: str, title: str) -> None:
-    ledger = _read_ledger()
+    with _ledger_lock():
+        ledger = _read_ledger_unlocked()
+        _append_merge_entry_unlocked(ledger, pr, head_sha, title)
+        _write_ledger_unlocked(ledger)
+
+
+def _append_merge_entry_unlocked(ledger: dict[str, Any], pr: int, head_sha: str, title: str) -> None:
     merge_sequence = _merge_sequence(ledger) + 1
     ledger["merges"].append(
         {
@@ -204,7 +317,47 @@ def _append_merge_entry(pr: int, head_sha: str, title: str) -> None:
             "merge_sequence": merge_sequence,
         }
     )
-    _write_ledger(ledger)
+
+
+def _record_merge_intent(pr: int, head_sha: str, title: str) -> None:
+    with _ledger_lock():
+        ledger = _read_ledger_unlocked()
+        if not any(intent.get("pr") == pr and intent.get("head_sha") == head_sha for intent in ledger["merge_intents"]):
+            ledger["merge_intents"].append({"pr": pr, "head_sha": head_sha, "title": title, "intent_at": time.time()})
+            _write_ledger_unlocked(ledger)
+
+
+def _complete_merge_intent(pr: int, head_sha: str) -> None:
+    with _ledger_lock():
+        ledger = _read_ledger_unlocked()
+        intents = ledger["merge_intents"]
+        matching = [intent for intent in intents if intent.get("pr") == pr and intent.get("head_sha") == head_sha]
+        if not matching:
+            return
+        intent = matching[0]
+        if not any(entry.get("pr") == pr and entry.get("head_sha") == head_sha for entry in ledger["merges"]):
+            _append_merge_entry_unlocked(ledger, pr, head_sha, str(intent["title"]))
+        ledger["merge_intents"] = [item for item in intents if item is not intent]
+        _write_ledger_unlocked(ledger)
+
+
+def _reconcile_merge_intents() -> None:
+    """Resolve durable pre-merge intents against GitHub after a restart."""
+    ledger = _read_ledger()
+    for intent in list(ledger["merge_intents"]):
+        try:
+            info = _gh_json(["pr", "view", str(intent["pr"]), "--json", "state,mergeCommit"])
+        except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
+            raise LedgerStateError(f"could not reconcile merge intent for PR #{intent['pr']}: {exc}") from exc
+        merge_commit = info.get("mergeCommit")
+        if info.get("state") != "MERGED" or not isinstance(merge_commit, dict) or not merge_commit.get("oid"):
+            raise LedgerStateError(f"unresolved durable merge intent for PR #{intent['pr']}")
+        _complete_merge_intent(int(intent["pr"]), str(intent["head_sha"]))
+        if any(
+            item.get("pr") == intent["pr"] and item.get("head_sha") == intent["head_sha"]
+            for item in _read_ledger()["merge_intents"]
+        ):
+            raise LedgerStateError(f"merge intent for PR #{intent['pr']} was not durably reconciled")
 
 
 def _pending_prs_since_last_full_verify(ledger: dict[str, Any]) -> list[dict[str, Any]]:
@@ -307,7 +460,37 @@ def _fetched_current_default_branch_sha() -> str | None:
         return None
 
 
-def _run_post_merge_terminal_verify(command: str, target_sha: str) -> int:
+def _terminal_verify_snapshot() -> tuple[dict[str, Any], float, int]:
+    with _ledger_lock():
+        ledger = _read_ledger_unlocked()
+        started_at = time.time()
+        return ledger, started_at, _merge_sequence(ledger)
+
+
+def _remove_detached_worktree(repo_root: Path, worktree: Path) -> bool:
+    removal = subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=repo_root,
+    )
+    if removal.returncode != 0:
+        print(
+            f"REFUSING terminal verify: failed to unregister detached worktree {worktree}: "
+            f"{removal.stderr.strip()[:300]}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _run_post_merge_terminal_verify(
+    command: str,
+    target_sha: str,
+    *,
+    ledger_snapshot: tuple[dict[str, Any], float, int] | None = None,
+) -> int:
     """Run terminal verification in a detached worktree at the fetched target."""
     repo_root = Path.cwd()
     with tempfile.TemporaryDirectory(prefix="polylogue-merge-terminal-") as raw_worktree:
@@ -321,17 +504,16 @@ def _run_post_merge_terminal_verify(command: str, target_sha: str) -> int:
         )
         if add.returncode != 0:
             print(f"REFUSING terminal verify: could not materialize fetched target {target_sha[:8]}", file=sys.stderr)
+            _remove_detached_worktree(repo_root, worktree)
             return 1
-        try:
-            return cmd_record_full_verify(command, target_sha=target_sha, cwd=worktree, execution_root=worktree)
-        finally:
-            subprocess.run(
-                ["git", "worktree", "remove", "--force", str(worktree)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                cwd=repo_root,
-            )
+        result = cmd_record_full_verify(
+            command,
+            target_sha=target_sha,
+            cwd=worktree,
+            execution_root=worktree,
+            ledger_snapshot=ledger_snapshot,
+        )
+        return result if _remove_detached_worktree(repo_root, worktree) else 1
 
 
 def cmd_merge(
@@ -384,6 +566,12 @@ def cmd_merge(
         print(f"PR #{pr} @ {head_sha[:8]}: merge-gate OK -- dry-run, not merging (title would be {clean_title!r})")
         return 0
 
+    try:
+        _record_merge_intent(pr, head_sha, clean_title)
+    except LedgerStateError as exc:
+        print(f"REFUSING to merge PR #{pr}: could not durably record merge intent: {exc}", file=sys.stderr)
+        return 1
+
     merge_result = subprocess.run(
         [
             "gh",
@@ -406,12 +594,17 @@ def cmd_merge(
 
     print(f"merged PR #{pr} @ {head_sha[:8]}: {clean_title!r}")
     try:
-        _append_merge_entry(pr, head_sha, clean_title)
+        _complete_merge_intent(pr, head_sha)
     except LedgerStateError as exc:
         print(f"REFUSING to continue: merge-train ledger is not durably writable: {exc}", file=sys.stderr)
         return 1
 
     if with_verify:
+        try:
+            ledger_snapshot = _terminal_verify_snapshot()
+        except LedgerStateError as exc:
+            print(f"REFUSING terminal verify: {exc}", file=sys.stderr)
+            return 1
         target_sha = _fetched_merged_default_branch_sha(pr)
         if target_sha is None:
             print(
@@ -420,7 +613,7 @@ def cmd_merge(
             )
             return 1
         print(f"running post-merge broad verify (merge-train terminal step): {verify_command!r}")
-        return _run_post_merge_terminal_verify(verify_command, target_sha)
+        return _run_post_merge_terminal_verify(verify_command, target_sha, ledger_snapshot=ledger_snapshot)
 
     print(
         "REMINDER: this merge-train's terminal ledger step (one full-suite verify since the last "
@@ -433,6 +626,7 @@ def cmd_merge(
 
 def cmd_train_status(as_json: bool) -> int:
     try:
+        _reconcile_merge_intents()
         ledger = _read_ledger()
     except LedgerStateError as exc:
         print(f"merge-train REFUSING clean status: {exc}", file=sys.stderr)
@@ -475,6 +669,7 @@ def cmd_record_full_verify(
     target_sha: str | None = None,
     cwd: Path | None = None,
     execution_root: Path | None = None,
+    ledger_snapshot: tuple[dict[str, Any], float, int] | None = None,
 ) -> int:
     argv = shlex.split(command)
     if not argv:
@@ -484,12 +679,11 @@ def cmd_record_full_verify(
         print("REFUSING: terminal verification has no fetched merged-master target", file=sys.stderr)
         return 1
     try:
-        ledger = _read_ledger()
+        snapshot = ledger_snapshot or _terminal_verify_snapshot()
     except LedgerStateError as exc:
         print(f"REFUSING to run terminal verification: {exc}", file=sys.stderr)
         return 1
-    verification_started_at = time.time()
-    merge_sequence = _merge_sequence(ledger)
+    _snapshot_ledger, verification_started_at, merge_sequence = snapshot
     if execution_root is not None:
         argv = ["direnv", "exec", str(execution_root), *argv]
     started = verification_started_at
@@ -499,11 +693,6 @@ def cmd_record_full_verify(
         print(f"REFUSING: could not run {command!r}: {exc}", file=sys.stderr)
         return 2
     duration_s = round(time.time() - started, 2)
-    try:
-        ledger = _read_ledger()
-    except LedgerStateError as exc:
-        print(f"REFUSING to record terminal verification: {exc}", file=sys.stderr)
-        return 1
     release_allowed = merge_gate._release_baseline_permission(result.stdout)
     verification_scope = merge_gate._verification_scope(result.stdout)
     terminal_authorization = merge_gate._terminal_authorization(result.stdout)
@@ -519,23 +708,25 @@ def cmd_record_full_verify(
         and verified_head == target_sha
     )
 
-    ledger["last_full_verify"] = {
-        "command": command,
-        "exit_code": result.returncode,
-        "duration_s": duration_s,
-        "at": verification_started_at,
-        "verification_started_at": verification_started_at,
-        "verification_scope": verification_scope,
-        "release_baseline_allowed": release_allowed,
-        "terminal_authorization": terminal_authorization,
-        "verified_head_sha": verified_head,
-        "target_sha": target_sha,
-        "merged_master_sha": target_sha,
-        "merge_sequence": merge_sequence,
-        "accepted": accepted,
-    }
     try:
-        _write_ledger(ledger)
+        with _ledger_lock():
+            ledger = _read_ledger_unlocked()
+            ledger["last_full_verify"] = {
+                "command": command,
+                "exit_code": result.returncode,
+                "duration_s": duration_s,
+                "at": verification_started_at,
+                "verification_started_at": verification_started_at,
+                "verification_scope": verification_scope,
+                "release_baseline_allowed": release_allowed,
+                "terminal_authorization": terminal_authorization,
+                "verified_head_sha": verified_head,
+                "target_sha": target_sha,
+                "merged_master_sha": target_sha,
+                "merge_sequence": merge_sequence,
+                "accepted": accepted,
+            }
+            _write_ledger_unlocked(ledger)
     except LedgerStateError as exc:
         print(f"REFUSING to record terminal verification: {exc}", file=sys.stderr)
         return 1
@@ -612,11 +803,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.action == "train-status":
         return cmd_train_status(args.as_json)
+    try:
+        ledger_snapshot = _terminal_verify_snapshot()
+    except LedgerStateError as exc:
+        print(f"REFUSING terminal verify: {exc}", file=sys.stderr)
+        return 1
     target_sha = _fetched_current_default_branch_sha()
     if target_sha is None:
         print("REFUSING terminal verify: could not fetch the current default branch", file=sys.stderr)
         return 1
-    return _run_post_merge_terminal_verify(args.command, target_sha)
+    return _run_post_merge_terminal_verify(args.command, target_sha, ledger_snapshot=ledger_snapshot)
 
 
 if __name__ == "__main__":

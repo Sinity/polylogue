@@ -24,7 +24,9 @@ from typing import cast
 
 import pytest
 
+import devtools.checkout_guard as checkout_guard
 import devtools.testmon_bootstrap as testmon_bootstrap
+import devtools.verify as verify
 from devtools.testmon_bootstrap import (
     BootstrapDecision,
     bootstrap_testmon_seed_files,
@@ -491,6 +493,97 @@ def test_complete_typed_markerless_green_attempt_bootstraps_only_as_selection_st
         inherited_from=main_root,
     )
     assert not (tmp_path / "lane" / "seed.json").exists()
+
+
+def test_markerless_complete_bootstrap_passes_guard_and_verify_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main_root = tmp_path / "main"
+    main_data = main_root / "testmondata"
+    nodeid = "tests/test.py::test_passed"
+    _write_sqlite_db(main_data, rows=(nodeid,))
+    attempt = main_root / "seed-attempt.json"
+    attempt.write_text(
+        json.dumps(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "status": "complete",
+                "identity": {
+                    "git_head": "head",
+                    "worktree_fingerprint": "tree",
+                    "python": "python",
+                    "skip_slow": False,
+                    "lab": False,
+                    "terminal_authorization": None,
+                },
+                "selection": {"selected_count": 1, "selected_nodeids_omitted": 0},
+                "expected_nodeids": [nodeid],
+                "expected_count": 1,
+                "expected_digest": hashlib.sha256(nodeid.encode()).hexdigest(),
+                "node_outcomes": [{"nodeid": nodeid, "outcome": "passed"}],
+                "exit_code": 0,
+                "verification_scope": "release-baseline",
+                "release_baseline_allowed": True,
+                "run_id": "green-run",
+                "artifact_dir": ".cache/verify/runs/green-run",
+                "testmon_data": file_fingerprint(main_data),
+            }
+        )
+    )
+    artifact = main_root / ".cache" / "verify" / "runs" / "green-run"
+    artifact.mkdir(parents=True)
+    (artifact / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "green-run",
+                "checkout_root": str(main_root.resolve()),
+                "artifact_dir": ".cache/verify/runs/green-run",
+            }
+        )
+    )
+
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    (lane / ".git").write_text("gitdir: /main/.git/worktrees/lane\n")
+    (lane / ".venv" / "bin").mkdir(parents=True)
+    package = lane / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    local_data = lane / ".cache" / "testmon" / "testmondata"
+    local_stamp = lane / ".cache" / "testmon" / "seed.json"
+    local_attempt = lane / ".cache" / "testmon" / "seed-attempt.json"
+    decision = decide_testmon_bootstrap(
+        is_linked_worktree=True,
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        main_testmon_data=main_data,
+        main_seed_stamp=main_root / "seed.json",
+        main_seed_attempt=attempt,
+        protocol_version=PROTOCOL_VERSION,
+    )
+    assert decision.selection_only
+    assert bootstrap_testmon_seed_files(
+        decision,
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        local_seed_attempt=local_attempt,
+        checkout_root=lane,
+        inherited_from=main_root,
+    )
+
+    monkeypatch.setattr(checkout_guard, "_is_linked_worktree", lambda _root: True)
+    fingerprint = checkout_guard.checkout_environment_fingerprint(
+        lane,
+        polylogue_import_path=package / "__init__.py",
+        python_executable=lane / ".venv" / "bin" / "python",
+    )
+    assert fingerprint.clean
+    monkeypatch.setattr(verify, "ROOT", lane)
+    monkeypatch.setattr(verify, "TESTMON_DATA", local_data)
+    monkeypatch.setattr(verify, "TESTMON_SEED_STAMP", local_stamp)
+    monkeypatch.setattr(verify, "TESTMON_SEED_ATTEMPT", local_attempt)
+    assert verify._testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is None
+    assert json.loads(local_attempt.read_text())["release_baseline_allowed"] is False
 
 
 def test_local_seed_missing_only_stamp_still_bootstraps(tmp_path: Path) -> None:
