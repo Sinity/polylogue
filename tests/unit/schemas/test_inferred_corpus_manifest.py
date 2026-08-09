@@ -18,8 +18,13 @@ from polylogue.schemas.operator.receipt import (
 )
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.models import SchemaRecord
-from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS, build_wire_support_receipt
+from polylogue.schemas.synthetic.wire_formats import (
+    PROVIDER_WIRE_FORMATS,
+    WireSupportEntry,
+    build_wire_support_receipt,
+)
 from polylogue.sources.parsers.base_models import ParsedSession
+from tests.infra import inferred_corpus as inferred_corpus_module
 from tests.infra.inferred_corpus import (
     CorpusManifestKey,
     InferredCorpusManifest,
@@ -163,6 +168,52 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
     )
     assert restored == manifest
     assert restored.wire_support_receipt == wire_support.to_dict()
+
+
+def test_campaign_indexes_persisted_wire_support_entries_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipt = build_schema_inference_receipt(
+        registry,
+        provider="codex",
+        gate_receipt_digest=gate_digest,
+    )
+    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    index_calls = 0
+    payload_calls = 0
+    original_index = inferred_corpus_module._wire_support_entry_index
+    original_payload = inferred_corpus_module._wire_support_entry_from_payload
+
+    def count_index(
+        manifest: InferredCorpusManifest,
+    ) -> dict[tuple[str, str | None, str | None], WireSupportEntry]:
+        nonlocal index_calls
+        index_calls += 1
+        return original_index(manifest)
+
+    def count_payload(payload: object) -> object:
+        nonlocal payload_calls
+        payload_calls += 1
+        return original_payload(cast(dict[str, object], payload))
+
+    monkeypatch.setattr(inferred_corpus_module, "_wire_support_entry_index", count_index)
+    monkeypatch.setattr(inferred_corpus_module, "_wire_support_entry_from_payload", count_payload)
+
+    compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=("codex",),
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+
+    assert index_calls == 1
+    assert payload_calls == len(wire_support.entries)
 
 
 def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
