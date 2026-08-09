@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -120,6 +121,9 @@ def test_apply_reclassifies_only_manifested_failed_raw_and_writes_receipt(
             "previous_classification_reason, disposition_kind, tool_version, detail "
             "FROM raw_failure_disposition_receipts"
         ).fetchone()
+        classification_reason = conn.execute(
+            "SELECT classification_reason FROM raw_artifacts WHERE raw_id = ?", (raw_id,)
+        ).fetchone()[0]
     assert receipt == (
         raw_id,
         "coordinator_session_stream",
@@ -129,6 +133,14 @@ def test_apply_reclassifies_only_manifested_failed_raw_and_writes_receipt(
         TOOL_VERSION,
         "empty retained byte stream",
     )
+    assert json.loads(classification_reason) == {
+        "diagnostic": "empty retained byte stream",
+        "evidence_ref": f"raw-failure-disposition:{hashlib.sha256(manifest.read_bytes()).hexdigest()}",
+        "outcome_code": "corrupt_input",
+        "provenance": "worker-disposition-v1",
+        "remediation": "retain the reviewed terminal disposition until a forced reparse is authorized",
+        "retryable": False,
+    }
 
 
 def test_apply_refuses_duplicate_or_nonterminal_manifest_entries(tmp_path: Path) -> None:

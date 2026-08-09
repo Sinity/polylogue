@@ -8,7 +8,7 @@ import re
 import sqlite3
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -21,6 +21,7 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.raw_failure_evidence import raw_failure_outcome_code, validated_raw_failure_evidence_kind
 from polylogue.core.stats import percentile
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
@@ -80,6 +81,21 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
+
+
+def _authoritative_lifecycle_artifact_kind(sample: Mapping[str, object]) -> str | None:
+    """Project a typed kind only after validating the complete lifecycle row."""
+    evidence_kind = validated_raw_failure_evidence_kind(
+        sample.get("artifact_kind"),
+        sample.get("support_status"),
+        validation_failed=str(sample.get("validation_status") or "") == "failed",
+        classification_reason=sample.get("classification_reason"),
+        outcome_code=raw_failure_outcome_code(sample.get("classification_reason")),
+    )
+    if evidence_kind is None or sample.get("lifecycle") != evidence_kind.lifecycle:
+        return None
+    return evidence_kind.value
+
 
 # Backwards-compatible alias for the stuck threshold (#1246). The "stale"
 # rollup field stays in the typed status payload to avoid breaking
@@ -399,7 +415,21 @@ class RawFailureSample(BaseModel):
       :attr:`operation_id` and the typed planner :attr:`locator`.
     """
 
-    failure_kind: Literal["decode_error", "parse_error", "schema_violation", "maintenance", "unknown"]
+    failure_kind: Literal[
+        "decode_error",
+        "parse_error",
+        "schema_violation",
+        "maintenance",
+        "unknown",
+        "deferred_hot_jsonl_capture",
+        "deferred_claude_code_partial_jsonl",
+        "deferred_cas_frontier",
+        "deferred_codex_cas_frontier",
+        "terminal_corrupt_input",
+        "terminal_unknown_json_decode",
+        "terminal_unknown_export_no_session",
+        "terminal_unsupported_shape",
+    ]
     provider_hint: str | None = None
     redacted_error: str = ""
     source: Literal["ingest", "maintenance"] = "ingest"
@@ -933,6 +963,12 @@ def _archive_raw_failure_info(
                 for sample in lifecycle_snapshot.samples
                 if sample.get("raw_id") is not None and sample.get("lifecycle") is not None
             }
+            validated_artifact_kind_by_raw_id = {
+                str(sample["raw_id"]): artifact_kind
+                for sample in lifecycle_snapshot.samples
+                if sample.get("raw_id") is not None
+                and (artifact_kind := _authoritative_lifecycle_artifact_kind(sample)) is not None
+            }
             samples: list[RawFailureSample] = []
             rows_by_raw_id: dict[str, sqlite3.Row | tuple[object, ...]] = {}
             if sample_ids:
@@ -955,8 +991,11 @@ def _archive_raw_failure_info(
                 val_status = str(row[3] or "") if row[3] else ""
                 val_err = str(row[4] or "") if row[4] else ""
                 origin = str(row[1]) if row[1] else None
-                if "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
-                    kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"] = "decode_error"
+                artifact_kind = validated_artifact_kind_by_raw_id.get(raw_id)
+                if artifact_kind is not None:
+                    kind = cast(Any, artifact_kind)
+                elif "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
+                    kind = "decode_error"
                 elif val_status == "failed":
                     kind = "schema_violation"
                 elif parse_err:

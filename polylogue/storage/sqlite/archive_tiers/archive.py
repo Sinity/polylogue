@@ -2790,8 +2790,21 @@ class ArchiveStore:
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
         return finalize_raw_parse_state(self, raw_id, state=state)
 
-    def mark_raw_parse_failed(self, raw_id: str, *, provider: Provider, error: BaseException) -> None:
-        return mark_raw_parse_failed(self, raw_id, provider=provider, error=error)
+    def mark_raw_parse_failed(
+        self,
+        raw_id: str,
+        *,
+        provider: Provider,
+        error: BaseException,
+        preserve_existing_failure_evidence: bool = False,
+    ) -> None:
+        return mark_raw_parse_failed(
+            self,
+            raw_id,
+            provider=provider,
+            error=error,
+            preserve_existing_failure_evidence=preserve_existing_failure_evidence,
+        )
 
     def record_raw_failure_evidence(
         self,

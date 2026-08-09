@@ -20,6 +20,7 @@ class RawBacklogQuerySpec:
     require_unparsed: bool
     require_unvalidated: bool = False
     validation_statuses: tuple[str, ...] | None = None
+    exclude_terminal_failure_evidence: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,7 @@ def parse_backlog_query_spec(*, force_reparse: bool = False) -> RawBacklogQueryS
     return RawBacklogQuerySpec(
         require_unparsed=not force_reparse,
         validation_statuses=None if force_reparse else tuple(status.value for status in _PARSEABLE_VALIDATION_STATUSES),
+        exclude_terminal_failure_evidence=not force_reparse,
     )
 
 

@@ -467,6 +467,182 @@ def test_symlinked_user_tier_uses_resolved_attestation_authority(
         conn.close()
 
 
+def _restore_source_pre_v30_raw_artifact_indexes(conn: sqlite3.Connection) -> None:
+    """Restore the raw-artifact index shape that existed before migration 030."""
+    conn.executescript(
+        """
+        DROP INDEX IF EXISTS idx_raw_artifacts_failure_identity;
+        DROP INDEX IF EXISTS idx_raw_artifacts_source_identity;
+        CREATE UNIQUE INDEX idx_raw_artifacts_source_identity
+        ON raw_artifacts(origin, source_path, source_index);
+        """
+    )
+
+
+def _create_source_v29_raw_failure_fixture(path: Path, *, archive_root: Path) -> tuple[str, str, str]:
+    """Build the exact pre-v30 source shape used by migration 030."""
+    current_indexes = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_source_identity
+ON raw_artifacts(origin, source_path, source_index)
+WHERE artifact_kind NOT IN (
+    'deferred_hot_jsonl_capture',
+    'deferred_claude_code_partial_jsonl',
+    'deferred_cas_frontier',
+    'deferred_codex_cas_frontier',
+    'terminal_corrupt_input',
+    'terminal_superseded_deferred_cas_frontier',
+    'terminal_unknown_json_decode',
+    'terminal_unknown_export_no_session',
+    'terminal_unsupported_shape'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_failure_identity
+ON raw_artifacts(raw_id, origin, source_path, source_index)
+WHERE artifact_kind IN (
+    'deferred_hot_jsonl_capture',
+    'deferred_claude_code_partial_jsonl',
+    'deferred_cas_frontier',
+    'deferred_codex_cas_frontier',
+    'terminal_corrupt_input',
+    'terminal_superseded_deferred_cas_frontier',
+    'terminal_unknown_json_decode',
+    'terminal_unknown_export_no_session',
+    'terminal_unsupported_shape'
+);
+"""
+    legacy_index = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_source_identity
+ON raw_artifacts(origin, source_path, source_index);
+"""
+    v29_ddl = SOURCE_DDL.replace(current_indexes, legacy_index)
+    assert v29_ddl != SOURCE_DDL
+    path.unlink(missing_ok=True)
+    blob_store = BlobStore(archive_root / "blob")
+    ordinary_blob, ordinary_size = blob_store.write_from_bytes(b"ordinary-v29")
+    failure_a_blob, failure_a_size = blob_store.write_from_bytes(b"failure-a-v29")
+    failure_b_blob, failure_b_size = blob_store.write_from_bytes(b"failure-b-v29")
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(v29_ddl)
+        conn.execute("PRAGMA user_version = 29")
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, 'codex-session', ?, ?, ?, ?, ?)
+            """,
+            [
+                ("raw-v29-ordinary", "/v29/ordinary.json", 0, bytes.fromhex(ordinary_blob), ordinary_size, 1),
+                ("raw-v29-failure-a", "/v29/failure.jsonl", 0, bytes.fromhex(failure_a_blob), failure_a_size, 2),
+                ("raw-v29-failure-b", "/v29/failure.jsonl", 1, bytes.fromhex(failure_b_blob), failure_b_size, 3),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, first_observed_at_ms, last_observed_at_ms
+            ) VALUES ('artifact-v29-ordinary', 'raw-v29-ordinary', 'codex-session',
+                      '/v29/ordinary.json', 0, 'session_export', 'supported_parseable',
+                      'ordinary-v29', 1, 1)
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, 'codex-session', '/v29/failure.jsonl', ?,
+                      'deferred_cas_frontier', 'partial_decode', 'deferred-v29', ?, ?)
+            """,
+            [
+                ("artifact-v29-failure-a", "raw-v29-failure-a", 0, 2, 2),
+                ("artifact-v29-failure-b", "raw-v29-failure-b", 1, 3, 3),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return ordinary_blob, failure_a_blob, failure_b_blob
+
+
+def test_source_tier_v29_applies_only_migration_030_and_preserves_failure_coordinates(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The source-v30 index split preserves ordinary and retained-raw evidence."""
+    db_path = workspace_env["archive_root"] / "source.db"
+    _create_source_v29_raw_failure_fixture(db_path, archive_root=workspace_env["archive_root"])
+    manifest = _verified_backup_manifest(tmp_path / "backup-source-v29")
+
+    with sqlite3.connect(db_path) as conn:
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.from_version == 29
+        assert result.to_version == 30
+        assert result.applied_versions == (30,)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 30
+
+        index_names = {str(row[1]) for row in conn.execute("PRAGMA index_list('raw_artifacts')")}
+        assert {"idx_raw_artifacts_source_identity", "idx_raw_artifacts_failure_identity"} <= index_names
+        index_columns = {
+            name: tuple(str(column[2]) for column in conn.execute(f"PRAGMA index_info('{name}')"))
+            for name in ("idx_raw_artifacts_source_identity", "idx_raw_artifacts_failure_identity")
+        }
+        assert index_columns["idx_raw_artifacts_source_identity"] == ("origin", "source_path", "source_index")
+        assert index_columns["idx_raw_artifacts_failure_identity"] == (
+            "raw_id",
+            "origin",
+            "source_path",
+            "source_index",
+        )
+        assert {
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT artifact_id, raw_id, source_path, source_index, artifact_kind
+                FROM raw_artifacts
+                ORDER BY artifact_id
+                """
+            )
+        } == {
+            (
+                "artifact-v29-failure-a",
+                "raw-v29-failure-a",
+                "/v29/failure.jsonl",
+                0,
+                "deferred_cas_frontier",
+            ),
+            (
+                "artifact-v29-failure-b",
+                "raw-v29-failure-b",
+                "/v29/failure.jsonl",
+                1,
+                "deferred_cas_frontier",
+            ),
+            (
+                "artifact-v29-ordinary",
+                "raw-v29-ordinary",
+                "/v29/ordinary.json",
+                0,
+                "session_export",
+            ),
+        }
+
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, first_observed_at_ms, last_observed_at_ms
+            ) VALUES ('artifact-v30-failure-same-coordinate', 'raw-v29-ordinary',
+                      'codex-session', '/v29/failure.jsonl', 0, 'deferred_cas_frontier',
+                      'partial_decode', 'new-v30', 4, 4)
+            """
+        )
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_artifacts WHERE source_path = '/v29/failure.jsonl' AND source_index = 0"
+        ).fetchone() == (2,)
+
+
 def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
     workspace_env: dict[str, Path],
     tmp_path: Path,
@@ -681,6 +857,13 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         "    ,blob_hash       BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)\n",
         "",
     )
+    # The v7 fixture also predates the v22 source-hash index.  Removing the
+    # column without removing its index makes SQLite reject the fixture before
+    # migration code gets a chance to exercise the copy-forward.
+    old_ddl = old_ddl.replace(
+        "CREATE INDEX IF NOT EXISTS idx_raw_hook_events_source_hash\nON raw_hook_events(source_path, blob_hash);\n",
+        "",
+    )
     # Migration 010 adds `excised_content` (polylogue-27m) -- a v7 snapshot
     # predates it, same as it predates the beads-origin/capture_mode diffs
     # stripped above. Without this, the fixture (built from the CURRENT
@@ -738,6 +921,7 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
             "raw_quarantine_group_dedup_receipts",
             "raw_unknown_export_reclassification_receipts",
             "raw_non_session_duplicate_exclusion_receipts",
+            "raw_failure_disposition_receipts",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.execute("PRAGMA user_version = 7")
@@ -868,6 +1052,12 @@ def _create_source_v20_with_stale_origin_check(path: Path, *, archive_root: Path
     conn = sqlite3.connect(path)
     try:
         conn.executescript(_source_v20_ddl_with_stale_origin_check())
+        _restore_source_pre_v30_raw_artifact_indexes(conn)
+        # v29 is not present in a v20 archive.  The broad origin-check rewrite
+        # above intentionally affects every current table, so remove this
+        # later table explicitly instead of handing migration 029 a malformed
+        # pre-existing copy that CREATE IF NOT EXISTS would preserve.
+        conn.execute("DROP TABLE raw_failure_disposition_receipts")
         conn.execute("PRAGMA user_version = 20")
         conn.execute(
             """
@@ -1144,10 +1334,12 @@ def test_source_tier_v24_repairs_raw_hook_event_origin_check(
     )
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SOURCE_DDL)
+        _restore_source_pre_v30_raw_artifact_indexes(conn)
         for table_name in (
             "raw_quarantine_group_dedup_receipts",
             "raw_unknown_export_reclassification_receipts",
             "raw_non_session_duplicate_exclusion_receipts",
+            "raw_failure_disposition_receipts",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.executescript(
@@ -1486,6 +1678,7 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(SOURCE_DDL)
+        _restore_source_pre_v30_raw_artifact_indexes(conn)
         conn.execute("DROP TABLE raw_sessions")
         conn.executescript(
             """
@@ -1533,6 +1726,7 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
             "raw_quarantine_group_dedup_receipts",
             "raw_unknown_export_reclassification_receipts",
             "raw_non_session_duplicate_exclusion_receipts",
+            "raw_failure_disposition_receipts",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
@@ -1596,6 +1790,7 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(SOURCE_DDL)
+        _restore_source_pre_v30_raw_artifact_indexes(conn)
         conn.execute("DROP TABLE raw_sessions")
         conn.executescript(
             """
@@ -1644,6 +1839,7 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
             "raw_quarantine_group_dedup_receipts",
             "raw_unknown_export_reclassification_receipts",
             "raw_non_session_duplicate_exclusion_receipts",
+            "raw_failure_disposition_receipts",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()

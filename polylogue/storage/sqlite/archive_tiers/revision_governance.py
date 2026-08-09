@@ -129,7 +129,12 @@ from polylogue.archive.revision_replay import (
 )
 from polylogue.archive.session_revision_membership import MembershipClassification, MembershipDecision
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.errors import RawCASFrontierError
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+    RawFailureEvidenceKind,
+    raw_failure_classification_reason,
+)
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -181,7 +186,7 @@ class ActiveByteRevisionChainError(RuntimeError):
     """A byte-identical revision chain cannot admit a conflicting sibling."""
 
 
-class MembershipReplayConflictError(RuntimeError):
+class MembershipReplayConflictError(RawCASFrontierError):
     """Membership replay refused to move an accepted head this pass.
 
     Raised by ``apply_raw_membership_classification`` when it cannot safely
@@ -192,17 +197,9 @@ class MembershipReplayConflictError(RuntimeError):
     over the same durable raw bytes can succeed once sibling evidence
     resolves or the accepted head itself changes (polylogue-5iz4).
 
-    A dedicated subclass exists so ``mark_raw_parse_failed``'s ``parse_error``
-    text (``f"{type(exc).__name__}: {exc}"``) carries a stable, matchable
-    marker for retry-eligibility checks (``storage/repair.py``'s raw
-    materialization candidate query) independent of this class's own
-    human-readable message wording, which has already drifted twice (#2718's
-    original "unconvertible byte head" phrasing no longer appears anywhere in
-    this module) and will keep drifting as the guard is refined. A plain
-    ``RuntimeError`` gives the retry-candidate query nothing durable to match
-    on beyond the exact message text, which is how a raw that hit this guard
-    under old wording got silently excluded from every future rebuild even
-    after the guard's conditions no longer applied to it.
+    A dedicated subclass exists so the raw-failure boundary can persist a
+    structured retryable evidence kind. The free-form ``parse_error`` remains
+    a diagnostic only and is not an authorization signal for replay.
     """
 
 
@@ -3023,6 +3020,13 @@ def apply_raw_membership_classification(
 
 def finalize_raw_parse_state(store: RawRevisionGovernanceHost, raw_id: str, *, state: RawSessionStateUpdate) -> None:
     """Commit one typed source parse state after its index outcome."""
+    # A generic state update is also used by the retained-raw index route when
+    # it has no typed worker disposition to persist.  Retire any prior
+    # failure authority before recording that new untyped failure; otherwise
+    # an old terminal/deferred carrier can continue to authorize replay after
+    # the current attempt has failed for a different reason.
+    if isinstance(state.parse_error, str) and state.parse_error:
+        _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
     apply_source_raw_state_update(
         store._ensure_source_conn(),
         raw_id,
@@ -3032,10 +3036,43 @@ def finalize_raw_parse_state(store: RawRevisionGovernanceHost, raw_id: str, *, s
 
 
 def mark_raw_parse_failed(
-    store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider, error: BaseException
+    store: RawRevisionGovernanceHost,
+    raw_id: str,
+    *,
+    provider: Provider,
+    error: BaseException,
+    preserve_existing_failure_evidence: bool = False,
 ) -> None:
     """Persist a bounded parse/index failure for retained raw evidence."""
-    finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, error))
+    conn = store._ensure_source_conn()
+    with conn:
+        if isinstance(error, RawCASFrontierError):
+            row = conn.execute(
+                "SELECT source_path, source_index, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone()
+            if row is not None:
+                _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
+                record_raw_failure_evidence(
+                    store,
+                    raw_id,
+                    provider=provider,
+                    source_path=str(row[0] or raw_id),
+                    source_index=int(row[1] or 0),
+                    acquired_at_ms=int(row[2] or int(time.time() * 1000)),
+                    kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
+                    manage_transaction=False,
+                )
+        else:
+            if not preserve_existing_failure_evidence:
+                _supersede_deferred_cas_evidence(store, raw_id, provider=provider, manage_transaction=False)
+                _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
+        apply_source_raw_state_update(
+            conn,
+            raw_id,
+            state=_raw_parse_failure_state(provider, error),
+            manage_transaction=False,
+        )
 
 
 def record_raw_failure_evidence(
@@ -3047,6 +3084,7 @@ def record_raw_failure_evidence(
     source_index: int,
     acquired_at_ms: int,
     kind: RawFailureEvidenceKind,
+    manage_transaction: bool = True,
 ) -> None:
     """Persist a closed parse-outcome classification beside retained bytes."""
     from hashlib import sha256
@@ -3055,6 +3093,24 @@ def record_raw_failure_evidence(
     from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 
     artifact_id = "raw-failure:" + sha256(f"{raw_id}:{kind.value}".encode()).hexdigest()
+    raw_row = (
+        store._ensure_source_conn()
+        .execute(
+            "SELECT validation_status FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        )
+        .fetchone()
+    )
+    validation_failed = raw_row is not None and str(raw_row[0] or "") == "failed"
+    outcome_code = (
+        "corrupt_input"
+        if kind
+        in {
+            RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+            RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
+        }
+        else kind.value
+    )
     upsert_raw_artifact(
         store._ensure_source_conn(),
         raw_id,
@@ -3064,19 +3120,160 @@ def record_raw_failure_evidence(
             source_path=source_path,
             source_index=source_index,
             artifact_kind=kind.value,
-            classification_reason=kind.value,
+            classification_reason=raw_failure_classification_reason(
+                diagnostic=None,
+                evidence_ref=None,
+                outcome_code=outcome_code,
+                remediation=None,
+                retryable=False,
+                trusted_validation_failure=(
+                    validation_failed
+                    and kind
+                    in {
+                        RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+                        RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
+                    }
+                    and outcome_code == "corrupt_input"
+                ),
+            ),
             support_status=kind.support_status,
-            parse_as_session=kind is RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
-            schema_eligible=kind is RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
+            parse_as_session=kind.lifecycle == "deferred",
+            schema_eligible=kind.lifecycle == "deferred",
             first_observed_at_ms=acquired_at_ms,
             last_observed_at_ms=acquired_at_ms,
         ),
+        manage_transaction=manage_transaction,
     )
+
+
+def _supersede_deferred_cas_evidence(
+    store: RawRevisionGovernanceHost,
+    raw_id: str,
+    *,
+    provider: Provider,
+    manage_transaction: bool = True,
+) -> None:
+    """Terminalize deferred CAS evidence once its attempt has resolved.
+
+    ``raw_artifacts`` stores the latest observation for a source coordinate,
+    not an attempt history. Replace only an exact-coordinate deferred CAS
+    observation, so a neighboring artifact cannot be consumed or cleared by
+    this raw's outcome.
+    """
+    conn = store._ensure_source_conn()
+    row = conn.execute(
+        """
+        SELECT origin, source_path, source_index
+        FROM raw_sessions
+        WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    if row is None:
+        return
+    origin, source_path, source_index = row
+    deferred = conn.execute(
+        """
+        SELECT 1
+        FROM raw_artifacts
+        WHERE raw_id = ?
+          AND origin IS ?
+          AND source_path IS ?
+          AND source_index IS ?
+          AND artifact_kind IN (?, ?)
+          AND support_status = ?
+        LIMIT 1
+        """,
+        (
+            raw_id,
+            origin,
+            source_path,
+            source_index,
+            RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
+            RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER.value,
+            RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+        ),
+    ).fetchone()
+    if deferred is None:
+        return
+    record_raw_failure_evidence(
+        store,
+        raw_id,
+        provider=provider,
+        source_path=str(source_path or raw_id),
+        source_index=int(source_index or 0),
+        acquired_at_ms=int(time.time() * 1000),
+        kind=RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
+        manage_transaction=manage_transaction,
+    )
+
+
+def _retire_raw_failure_evidence(
+    store: RawRevisionGovernanceHost,
+    raw_id: str,
+    *,
+    manage_transaction: bool = True,
+) -> None:
+    """Retire stale failure evidence before an untyped current failure."""
+    conn = store._ensure_source_conn()
+    row = conn.execute(
+        "SELECT origin, source_path, source_index FROM raw_sessions WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    if row is None:
+        return
+    retired_kinds = {
+        kind.value
+        for kind in RawFailureEvidenceKind
+        if kind is not RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER
+    }
+    placeholders = ", ".join("?" for _ in retired_kinds)
+    with conn if manage_transaction else nullcontext():
+        conn.execute(
+            f"""
+            UPDATE raw_artifacts
+            SET artifact_kind = ?,
+                support_status = ?,
+                classification_reason = ?,
+                parse_as_session = 0,
+                schema_eligible = 0
+            WHERE raw_id = ?
+              AND origin IS ?
+              AND source_path IS ?
+              AND source_index IS ?
+              AND artifact_kind IN ({placeholders})
+            """,
+            (
+                RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+                RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.support_status.value,
+                raw_failure_classification_reason(
+                    diagnostic=None,
+                    evidence_ref=None,
+                    outcome_code="failure_attempt_replaced",
+                    remediation="inspect the current parser failure before retrying",
+                    retryable=False,
+                    trusted_validation_failure=False,
+                ),
+                raw_id,
+                row[0],
+                row[1],
+                row[2],
+                *sorted(retired_kinds),
+            ),
+        )
 
 
 def mark_raw_parse_succeeded(store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider) -> None:
     """Finalize one retained raw payload after every derived session commits."""
-    finalize_raw_parse_state(store, raw_id, state=_raw_parse_success_state(provider))
+    conn = store._ensure_source_conn()
+    with conn:
+        _supersede_deferred_cas_evidence(store, raw_id, provider=provider, manage_transaction=False)
+        apply_source_raw_state_update(
+            conn,
+            raw_id,
+            state=_raw_parse_success_state(provider),
+            manage_transaction=False,
+        )
 
 
 def _flush_pending_raw_parse_states(store: RawRevisionGovernanceHost) -> None:
@@ -3085,6 +3282,14 @@ def _flush_pending_raw_parse_states(store: RawRevisionGovernanceHost) -> None:
     source_conn = store._ensure_source_conn()
     with source_conn:
         for raw_id, state in store._pending_raw_parse_states:
+            provider = state.payload_provider
+            if isinstance(provider, Provider) and isinstance(state.parsed_at, str) and state.parse_error is None:
+                _supersede_deferred_cas_evidence(
+                    store,
+                    raw_id,
+                    provider=provider,
+                    manage_transaction=False,
+                )
             apply_source_raw_state_update(
                 source_conn,
                 raw_id,
@@ -3130,7 +3335,14 @@ def _index_parsed_for_retained_raw(
         )
     except Exception as exc:
         if not _is_frozen_candidate(store):
-            finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, exc))
+            if isinstance(exc, RawCASFrontierError):
+                # A retained-raw CAS refusal is retryable authority evidence.
+                # Persist that carrier with the first source-tier failure
+                # mutation so a crash cannot leave only the generic parse
+                # diagnostic behind.
+                mark_raw_parse_failed(store, raw_id, provider=provider, error=exc)
+            else:
+                finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, exc))
         raise
     if finalize_raw_parse and not _is_frozen_candidate(store):
         success_state = _raw_parse_success_state(provider)

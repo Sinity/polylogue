@@ -24,6 +24,7 @@ class SQLiteQueryStoreMaintenanceMixin:
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
+        exclude_terminal_failure_evidence: bool = False,
     ) -> tuple[str, tuple[str, ...]]:
         return raw_queries.raw_id_query(
             source_paths=source_paths,
@@ -31,6 +32,7 @@ class SQLiteQueryStoreMaintenanceMixin:
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,
+            exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
         )
 
     async def iter_raw_ids(
@@ -41,6 +43,7 @@ class SQLiteQueryStoreMaintenanceMixin:
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
+        exclude_terminal_failure_evidence: bool = False,
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
         async with self._connection_factory() as conn:
@@ -51,6 +54,7 @@ class SQLiteQueryStoreMaintenanceMixin:
                 require_unparsed=require_unparsed,
                 require_unvalidated=require_unvalidated,
                 validation_statuses=validation_statuses,
+                exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
                 page_size=page_size,
             ):
                 yield raw_id
@@ -63,6 +67,7 @@ class SQLiteQueryStoreMaintenanceMixin:
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
+        exclude_terminal_failure_evidence: bool = False,
         page_size: int = 1000,
     ) -> AsyncIterator[tuple[str, int]]:
         async with self._connection_factory() as conn:
@@ -73,6 +78,7 @@ class SQLiteQueryStoreMaintenanceMixin:
                 require_unparsed=require_unparsed,
                 require_unvalidated=require_unvalidated,
                 validation_statuses=validation_statuses,
+                exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
                 page_size=page_size,
             ):
                 yield raw_header

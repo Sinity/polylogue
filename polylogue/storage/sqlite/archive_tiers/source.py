@@ -21,7 +21,7 @@ from polylogue.core.enums import (
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
-SOURCE_SCHEMA_VERSION = 29
+SOURCE_SCHEMA_VERSION = 30
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -576,7 +576,32 @@ CREATE TABLE IF NOT EXISTS raw_artifacts (
 ) STRICT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_source_identity
-ON raw_artifacts(origin, source_path, source_index);
+ON raw_artifacts(origin, source_path, source_index)
+WHERE artifact_kind NOT IN (
+    'deferred_hot_jsonl_capture',
+    'deferred_claude_code_partial_jsonl',
+    'deferred_cas_frontier',
+    'deferred_codex_cas_frontier',
+    'terminal_corrupt_input',
+    'terminal_superseded_deferred_cas_frontier',
+    'terminal_unknown_json_decode',
+    'terminal_unknown_export_no_session',
+    'terminal_unsupported_shape'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_failure_identity
+ON raw_artifacts(raw_id, origin, source_path, source_index)
+WHERE artifact_kind IN (
+    'deferred_hot_jsonl_capture',
+    'deferred_claude_code_partial_jsonl',
+    'deferred_cas_frontier',
+    'deferred_codex_cas_frontier',
+    'terminal_corrupt_input',
+    'terminal_superseded_deferred_cas_frontier',
+    'terminal_unknown_json_decode',
+    'terminal_unknown_export_no_session',
+    'terminal_unsupported_shape'
+);
 
 CREATE INDEX IF NOT EXISTS idx_raw_artifacts_raw_id
 ON raw_artifacts(raw_id);

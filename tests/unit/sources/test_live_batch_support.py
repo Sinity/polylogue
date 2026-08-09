@@ -23,6 +23,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import ArtifactSupportStatus, Provider
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -46,6 +47,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -408,6 +410,154 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     assert artifact == ("terminal_unsupported_shape", "unsupported_parseable", 0)
 
 
+def test_full_ingest_unknown_export_without_sessions_records_terminal_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "export.jsonl"
+    path.write_bytes(b"")
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == [path]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unknown_export_no_session", "unsupported_parseable", 0)
+
+
+def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_retrying(tmp_path: Path) -> None:
+    """Complete malformed JSONL lines are terminal decode evidence, not no-session evidence."""
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "malformed.jsonl"
+    path.write_bytes(b'{"broken":}\n{"also_broken":}\n')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    first = processor._ingest_full_paths_sync([path], source_name="unknown")
+    second = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert first.succeeded == [path]
+    assert first.failed == []
+    assert second.succeeded == [path]
+    assert second.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unknown_json_decode", "decode_failed")
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 1
+    assert lifecycle.unexplained == 0
+
+
+def test_full_ingest_unknown_malformed_final_jsonl_record_records_terminal_decode(tmp_path: Path) -> None:
+    """A malformed final JSONL record contributes to strict decode evidence."""
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "malformed-final.jsonl"
+    path.write_bytes(b'{"only_broken":}\n')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unknown_json_decode", "decode_failed")
+
+
+def test_full_ingest_unknown_json_decode_records_terminal_decode_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "export.json"
+    path.write_bytes(b"{")
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
+
+
+def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "export.json"
+    path.write_bytes(b"\xff")
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
+
+
+def test_full_ingest_unknown_semantic_value_error_remains_unexplained(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "export.json"
+    path.write_bytes(b'{"unrelated": "payload"}')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    def raise_semantic_value_error(*_args: object, **_kwargs: object) -> list[ParsedSession]:
+        raise ValueError("semantic parser rejection")
+
+    monkeypatch.setattr("polylogue.sources.live.batch.parse_payload", raise_semantic_value_error)
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact_kinds = {row[0] for row in conn.execute("SELECT artifact_kind FROM raw_artifacts")}
+    assert not artifact_kinds & RAW_FAILURE_EVIDENCE_KINDS
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.unexplained == 1
+
+
 def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -455,6 +605,44 @@ def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("deferred_hot_jsonl_capture", "partial_decode", 1)
+
+
+def test_full_ingest_claude_partial_jsonl_has_provider_specific_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "claude"
+    root.mkdir()
+    path = root / "active.jsonl"
+    captured = b'{"type":"assistant"'
+    path.write_bytes(captured)
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    boundary_check = live_batch._captured_jsonl_ends_at_record_boundary
+
+    def grow_source_after_capture(**kwargs: object) -> bool:
+        path.write_bytes(captured + b"\n")
+        return boundary_check(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(live_batch, "_captured_jsonl_ends_at_record_boundary", grow_source_after_capture)
+
+    result = processor._ingest_full_paths_sync([path], source_name="claude-code")
+
+    assert result.succeeded == [path]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("deferred_claude_code_partial_jsonl", "partial_decode", 1)
 
 
 def test_streamed_incomplete_jsonl_capture_defers_then_replays_completed_source(
@@ -3606,6 +3794,72 @@ def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_pa
     assert processor._cursor_references_raw_failure_requiring_full_replay(path, record)
 
 
+def test_raw_failure_cursor_guard_rejects_contradictory_or_mismatched_evidence(tmp_path: Path) -> None:
+    """Append fallback requires the same source coordinate and valid support status."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "guard.jsonl"
+    path.write_bytes(b'{"type":"session_meta","payload":{"id":"guard"}}\n')
+    index_db = tmp_path / "index.db"
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        mismatched_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=path.read_bytes(),
+            source_path=str(path),
+            source_index=1,
+            acquired_at_ms=1,
+        )
+        contradictory_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=path.read_bytes() + b"2",
+            source_path=str(path),
+            source_index=0,
+            acquired_at_ms=2,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = ?",
+            [("mismatched coordinate", mismatched_raw_id), ("contradictory support", contradictory_raw_id)],
+        )
+        upsert_raw_artifact(
+            source_conn,
+            mismatched_raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="mismatched-coordinate-evidence",
+                origin="chatgpt-export",
+                source_path=str(path),
+                source_index=0,
+                artifact_kind="deferred_cas_frontier",
+                classification_reason="deferred_cas_frontier",
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+            ),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            contradictory_raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="contradictory-support-evidence",
+                origin="codex-session",
+                source_path=str(path),
+                source_index=0,
+                artifact_kind="deferred_cas_frontier",
+                classification_reason="deferred_cas_frontier",
+                support_status=ArtifactSupportStatus.DECODE_FAILED,
+            ),
+        )
+        source_conn.commit()
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    assert processor._raw_failure_requires_full_replay(path, mismatched_raw_id) is False
+    assert processor._raw_failure_requires_full_replay(path, contradictory_raw_id) is False
+
+
 def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3876,7 +4130,7 @@ def test_append_parse_failure_retains_typed_raw_failure(
     plan = _append_plan(path, payload, payload_hash="bad")
     owner = _append_owner(tmp_path)
     monkeypatch.setattr(
-        "polylogue.sources.dispatch.parse_payload",
+        "polylogue.sources.dispatch.parse_stream_payload",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected append parse failure")),
     )
 
@@ -5501,9 +5755,18 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
         # retry-candidate query (storage/repair.py) nothing stable to match
         # once the message text drifts -- exactly what happened to a real
         # production session that hit this guard under #2718's original
-        # wording and was never retried again. MembershipReplayConflictError
-        # gives that query a message-text-independent marker to key on.
-        assert parse_error.startswith("MembershipReplayConflictError:")
+        # The structured evidence row, not the diagnostic wording, is the
+        # retry authorization.
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute(
+                """
+                SELECT a.artifact_kind
+                FROM raw_artifacts AS a
+                JOIN raw_sessions AS r ON r.raw_id = a.raw_id
+                WHERE r.source_path = ?
+                """,
+                (str(older_bundle),),
+            ).fetchone() == ("deferred_cas_frontier",)
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
         head_after = conn.execute(
@@ -5706,12 +5969,24 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
             (str(incident_recovery),),
         ).fetchone()
     assert parse_error is not None
-    # polylogue-5iz4 / #3646: the retry-eligible marker, not a bare
-    # RuntimeError -- this is what lets a later pass ever try again.
+    # The typed evidence is authoritative for new rows. The recognized prefix
+    # remains a bounded compatibility bridge for this historical diagnostic.
     assert parse_error.startswith("MembershipReplayConflictError:")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            """
+            SELECT a.artifact_kind
+            FROM raw_artifacts AS a
+            JOIN raw_sessions AS r ON r.raw_id = a.raw_id
+            WHERE r.source_path = ?
+            """,
+            (str(incident_recovery),),
+        ).fetchone() == ("deferred_cas_frontier",)
     from polylogue.storage.repair import _raw_materialization_retryable_missing_blob_error
 
     assert _raw_materialization_retryable_missing_blob_error(parse_error) is True
+    assert _raw_materialization_retryable_missing_blob_error("RuntimeError: unrelated parser failure") is False
+    assert _raw_materialization_retryable_missing_blob_error(parse_error, True) is True
 
     with sqlite3.connect(index_db) as conn:
         assert (

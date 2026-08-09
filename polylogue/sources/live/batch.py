@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
+from json import JSONDecodeError as StdlibJSONDecodeError
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
@@ -49,7 +50,11 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_EVIDENCE_KINDS,
+    RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    RawFailureEvidenceKind,
+)
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -59,8 +64,9 @@ from polylogue.pipeline.ingest_outcomes import (
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
-from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
+from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     _detect_provider_from_raw_bytes,
     is_stream_record_provider,
@@ -338,6 +344,10 @@ def _write_codex_thread_state_evidence(
         )
 
 
+def _is_json_stream_decode_error(error: BaseException) -> bool:
+    return isinstance(error, (StdlibJSONDecodeError, UnicodeDecodeError, PartialJsonStreamError, JsonlDecodeError))
+
+
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 LiveBatchSyncRunner = Callable[..., Awaitable[Any]]
 P = ParamSpec("P")
@@ -486,6 +496,10 @@ def _captured_jsonl_ends_at_record_boundary(
 @dataclass(slots=True)
 class _ArchiveFullWriteResult:
     raw_ids: dict[str, str] = field(default_factory=dict)
+    # Terminal refusals are durably retained and therefore handled by this
+    # observation. Keep them separate from accepted raw ids so deferred
+    # authority failures remain retryable.
+    terminal_raw_ids: dict[str, str] = field(default_factory=dict)
     # A raw whose membership census does not produce an accepted session is
     # still a durably acquired, successfully parsed source observation. The
     # decision can be pending for the materialization conveyor or already
@@ -1961,7 +1975,7 @@ class LiveBatchProcessor:
             elif path.suffix.lower() == ".jsonl":
                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
                 source_name = provider.value
-                if not parse_as_session:
+                if not parse_as_session and provider is not Provider.UNKNOWN:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
@@ -2026,7 +2040,10 @@ class LiveBatchProcessor:
                     continue
                 provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
                 source_name = provider.value
-                if not _parse_payload_as_session_artifact(path, provider=provider, payload=payload):
+                if (
+                    not _parse_payload_as_session_artifact(path, provider=provider, payload=payload)
+                    and provider is not Provider.UNKNOWN
+                ):
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
@@ -2079,7 +2096,10 @@ class LiveBatchProcessor:
                     continue
                 provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
                 source_name = provider.value
-                if not _parse_payload_as_session_artifact(path, provider=provider, payload=payload):
+                if (
+                    not _parse_payload_as_session_artifact(path, provider=provider, payload=payload)
+                    and provider is not Provider.UNKNOWN
+                ):
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
@@ -2176,10 +2196,16 @@ class LiveBatchProcessor:
                 for raw_id in raw_by_id
                 if raw_id not in archive_write.raw_ids
                 and raw_id not in archive_write.deferred_raw_ids
+                and raw_id not in archive_write.terminal_raw_ids
                 and raw_id not in archive_write.skipped_raw_ids
             )
             raw_by_id = {
-                (archive_write.raw_ids.get(raw_id) or archive_write.deferred_raw_ids.get(raw_id) or raw_id): path
+                (
+                    archive_write.raw_ids.get(raw_id)
+                    or archive_write.deferred_raw_ids.get(raw_id)
+                    or archive_write.terminal_raw_ids.get(raw_id)
+                    or raw_id
+                ): path
                 for raw_id, path in raw_by_id.items()
             }
             if heartbeat is not None:
@@ -2309,6 +2335,7 @@ class LiveBatchProcessor:
                     break
                 provider: Provider | None = None
                 source_raw_id: str | None = None
+                acquired_at_ms = 0
                 try:
                     record_timings: dict[str, float] = {}
                     t0 = time.perf_counter()
@@ -2425,18 +2452,24 @@ class LiveBatchProcessor:
                             blob_hash=blob_hash,
                             blob_size=record.blob_size,
                         ):
+                            evidence_kind = (
+                                RawFailureEvidenceKind.DEFERRED_CLAUDE_CODE_PARTIAL_JSONL
+                                if provider is Provider.CLAUDE_CODE
+                                else RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE
+                            )
                             archive.record_raw_failure_evidence(
                                 source_raw_id,
                                 provider=provider,
                                 source_path=record.source_path,
                                 source_index=record.source_index or 0,
                                 acquired_at_ms=acquired_at_ms,
-                                kind=RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
+                                kind=evidence_kind,
                             )
                             archive.mark_raw_parse_failed(
                                 source_raw_id,
                                 provider=provider,
                                 error=ValueError("captured JSONL payload ends before a complete record boundary"),
+                                preserve_existing_failure_evidence=True,
                             )
                             result.raw_ids[record.raw_id] = source_raw_id
                             _accumulate_stage_timings(result.stage_timings_s, record_timings)
@@ -2453,6 +2486,7 @@ class LiveBatchProcessor:
                             source_raw_id,
                             provider=provider,
                             error=ValueError("captured JSONL payload ends before a complete record boundary"),
+                            preserve_existing_failure_evidence=True,
                         )
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
@@ -2518,23 +2552,43 @@ class LiveBatchProcessor:
                             with blob_store.open(blob_hash) as payload_handle:
                                 sessions = parse_stream_payload(
                                     provider,
-                                    _iter_json_stream(payload_handle, source_name),
+                                    _iter_json_stream(
+                                        payload_handle,
+                                        source_name,
+                                        fail_on_decode_error=provider is Provider.UNKNOWN,
+                                    ),
                                     fallback_id,
                                     source_path=record.source_path,
                                 )
                         else:
                             sessions = parse_stream_payload(
                                 provider,
-                                _iter_json_stream(BytesIO(payload), source_name),
+                                _iter_json_stream(
+                                    BytesIO(payload),
+                                    source_name,
+                                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                                ),
                                 fallback_id,
                                 source_path=record.source_path,
                             )
                     else:
                         if payload is None:
                             with blob_store.open(blob_hash) as payload_handle:
-                                payloads = list(_iter_json_stream(payload_handle, source_name))
+                                payloads = list(
+                                    _iter_json_stream(
+                                        payload_handle,
+                                        source_name,
+                                        fail_on_decode_error=provider is Provider.UNKNOWN,
+                                    )
+                                )
                         else:
-                            payloads = list(_iter_json_stream(BytesIO(payload), source_name))
+                            payloads = list(
+                                _iter_json_stream(
+                                    BytesIO(payload),
+                                    source_name,
+                                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                                )
+                            )
                         sessions = parse_payload(
                             provider,
                             payloads,
@@ -2560,7 +2614,11 @@ class LiveBatchProcessor:
                             source_path=record.source_path,
                             source_index=record.source_index or 0,
                             acquired_at_ms=acquired_at_ms,
-                            kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE,
+                            kind=(
+                                RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION
+                                if provider is Provider.UNKNOWN
+                                else RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE
+                            ),
                         )
                         archive.mark_raw_parse_failed(
                             source_raw_id,
@@ -2568,6 +2626,7 @@ class LiveBatchProcessor:
                             error=ValueError(
                                 "parsed raw payload produced no sessions with positive conversational evidence"
                             ),
+                            preserve_existing_failure_evidence=True,
                         )
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
@@ -2806,7 +2865,24 @@ class LiveBatchProcessor:
                             )
                         raise
                     if provider is not None and source_raw_id is not None:
-                        archive.mark_raw_parse_failed(source_raw_id, provider=provider, error=exc)
+                        preserve_existing_failure_evidence = False
+                        if provider is Provider.UNKNOWN and _is_json_stream_decode_error(exc):
+                            archive.record_raw_failure_evidence(
+                                source_raw_id,
+                                provider=provider,
+                                source_path=record.source_path,
+                                source_index=record.source_index or 0,
+                                acquired_at_ms=acquired_at_ms,
+                                kind=RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
+                            )
+                            result.terminal_raw_ids[record.raw_id] = source_raw_id
+                            preserve_existing_failure_evidence = True
+                        archive.mark_raw_parse_failed(
+                            source_raw_id,
+                            provider=provider,
+                            error=exc,
+                            preserve_existing_failure_evidence=preserve_existing_failure_evidence,
+                        )
                     logger.warning(
                         "live.watcher: archive full ingest failed for %s: %s: %s",
                         record.source_path,
@@ -3298,6 +3374,10 @@ class LiveBatchProcessor:
         if not source_db.exists():
             return False
         placeholders = ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
+        support_pairs = " OR ".join(
+            "(a.artifact_kind = ? AND a.support_status = ?)"
+            for _ in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS
+        )
         try:
             conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
             try:
@@ -3308,12 +3388,21 @@ class LiveBatchProcessor:
                         FROM raw_sessions AS r
                         JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
                         WHERE r.raw_id = ?
+                          AND r.origin IS a.origin
+                          AND r.source_path IS a.source_path
                           AND r.source_path = ?
+                          AND r.source_index IS a.source_index
                           AND r.parse_error IS NOT NULL
                           AND a.artifact_kind IN ({placeholders})
+                          AND ({support_pairs})
                         LIMIT 1
                         """,
-                        (raw_id, str(path), *sorted(RAW_FAILURE_EVIDENCE_KINDS)),
+                        (
+                            raw_id,
+                            str(path),
+                            *sorted(RAW_FAILURE_EVIDENCE_KINDS),
+                            *[value for pair in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair],
+                        ),
                     ).fetchone()
                     is not None
                 )

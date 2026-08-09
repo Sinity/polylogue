@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -12,6 +12,12 @@ from pydantic import ValidationError
 
 from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.core.json import JSONDocument
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
+    RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
+    RawFailureEvidenceKind,
+)
 from polylogue.daemon.status import (
     DaemonStatus,
     RawFailureSample,
@@ -49,9 +55,43 @@ class TestRawFailureSampleModel:
             RawFailureSample(failure_kind="invalid_kind")  # type: ignore[arg-type]
 
     def test_all_valid_failure_kinds(self) -> None:
-        for kind in ("decode_error", "parse_error", "schema_violation", "maintenance", "unknown"):
-            sample = RawFailureSample(failure_kind=kind)
+        for kind in (
+            "decode_error",
+            "parse_error",
+            "schema_violation",
+            "maintenance",
+            "unknown",
+            *RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
+            *RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
+        ):
+            sample = RawFailureSample(failure_kind=cast(Any, kind))
             assert sample.failure_kind == kind
+
+    def test_raw_evidence_kinds_have_closed_lifecycle_partition(self) -> None:
+        assert (
+            frozenset(
+                {
+                    "deferred_hot_jsonl_capture",
+                    "deferred_claude_code_partial_jsonl",
+                    "deferred_cas_frontier",
+                    "deferred_codex_cas_frontier",
+                }
+            )
+            == RAW_FAILURE_DEFERRED_EVIDENCE_KINDS
+        )
+        assert (
+            frozenset(
+                {
+                    "terminal_corrupt_input",
+                    "terminal_unknown_json_decode",
+                    "terminal_unknown_export_no_session",
+                    "terminal_unsupported_shape",
+                }
+            )
+            == RAW_FAILURE_TERMINAL_EVIDENCE_KINDS
+        )
+        for value in (*RAW_FAILURE_DEFERRED_EVIDENCE_KINDS, *RAW_FAILURE_TERMINAL_EVIDENCE_KINDS):
+            assert RawFailureEvidenceKind(value).lifecycle in {"deferred", "terminal"}
 
     def test_redacts_absolute_file_paths(self) -> None:
         sample = RawFailureSample(
@@ -336,6 +376,60 @@ class TestRawFailureInfoProducesTypedSamples:
         # Non-JSON parse error → "parse_error" (the error IS a parse error, just not JSON-specific)
         assert sample.failure_kind == "parse_error"
 
+    def test_raw_failure_info_prefers_failure_evidence_over_newer_artifact(self, tmp_path: Path) -> None:
+        index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-multi-artifact",
+            origin="claude-code-session",
+            native_id="native-multi-artifact",
+            source_path="/data/failure.jsonl",
+            parse_error="captured JSONL payload ends before a complete record boundary",
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            upsert_raw_artifact(
+                conn,
+                "raw-multi-artifact",
+                ArchiveSourceArtifact(
+                    artifact_id="failure-evidence",
+                    origin="claude-code-session",
+                    source_path="/data/failure.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_claude_code_partial_jsonl",
+                    classification_reason="deferred_claude_code_partial_jsonl",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                    first_observed_at_ms=100,
+                    last_observed_at_ms=100,
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-multi-artifact",
+                ArchiveSourceArtifact(
+                    artifact_id="newer-unrelated-artifact",
+                    origin="claude-code-session",
+                    source_path="/data/newer.sqlite",
+                    source_index=0,
+                    artifact_kind="sqlite_state_database",
+                    classification_reason="sqlite_state_database",
+                    support_status=ArtifactSupportStatus.UNKNOWN,
+                    first_observed_at_ms=200,
+                    last_observed_at_ms=200,
+                ),
+            )
+
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
+            info = _raw_failure_info()
+
+        samples = cast(list[RawFailureSample], info["samples"])
+        assert len(samples) == 1
+        assert samples[0].failure_kind == "deferred_claude_code_partial_jsonl"
+        assert samples[0].lifecycle == "deferred"
+
     def test_raw_failure_info_separates_closed_lifecycle_evidence(self, tmp_path: Path) -> None:
         index_db = _seed_archive_raw_session(
             tmp_path,
@@ -405,6 +499,56 @@ class TestRawFailureInfoProducesTypedSamples:
         assert info["unexplained_failures"] == 1
         samples = cast(list[RawFailureSample], info["samples"])
         assert {sample.lifecycle for sample in samples} == {"deferred", "terminal", "unexplained"}
+        by_kind = {sample.provider_hint: sample.failure_kind for sample in samples}
+        assert by_kind["claude-code-session"] == "deferred_hot_jsonl_capture"
+        assert by_kind["unknown-export"] == "terminal_unsupported_shape"
+        assert by_kind["codex-session"] == "parse_error"
+
+    def test_lifecycle_sampling_prioritizes_every_valid_typed_evidence_pair(self, tmp_path: Path) -> None:
+        """Every closed typed kind remains inspectable before unexplained rows."""
+        for index, (kind, support_status) in enumerate(RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS):
+            _seed_archive_raw_session(
+                tmp_path,
+                raw_id=f"raw-typed-{index}",
+                origin="codex-session",
+                native_id=f"typed-{index}",
+                source_path=f"/data/typed-{index}.jsonl",
+                parse_error=f"typed failure {index}",
+                acquired_at_ms=1_770_000_000_000 + index,
+            )
+            with sqlite3.connect(tmp_path / "source.db") as conn:
+                upsert_raw_artifact(
+                    conn,
+                    f"raw-typed-{index}",
+                    ArchiveSourceArtifact(
+                        artifact_id=f"typed-evidence-{index}",
+                        origin="codex-session",
+                        source_path=f"/data/typed-{index}.jsonl",
+                        source_index=0,
+                        artifact_kind=kind,
+                        classification_reason=kind,
+                        support_status=ArtifactSupportStatus(support_status),
+                    ),
+                )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-unexplained-newest",
+            origin="codex-session",
+            native_id="unexplained-newest",
+            source_path="/data/unexplained-newest.jsonl",
+            parse_error="unexplained failure",
+            acquired_at_ms=1_770_000_000_999,
+        )
+
+        snapshot = read_raw_failure_lifecycle(
+            tmp_path / "source.db",
+            sample_limit=len(RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS),
+        )
+
+        assert {sample["artifact_kind"] for sample in snapshot.samples} == {
+            kind for kind, _support_status in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS
+        }
+        assert all(sample["lifecycle"] in {"deferred", "terminal"} for sample in snapshot.samples)
 
     def test_raw_failure_info_uses_root_source_tier_for_pointer_index(self, tmp_path: Path) -> None:
         generation = tmp_path / "generation"
@@ -510,6 +654,97 @@ class TestRawFailureInfoProducesTypedSamples:
         assert snapshot.unexplained == 2
         assert info["terminal_rejections"] == snapshot.terminal
         assert info["unexplained_failures"] == snapshot.unexplained
+
+    def test_raw_failure_status_does_not_project_unvalidated_typed_kinds(self, tmp_path: Path) -> None:
+        """Status uses the lifecycle reader's validation, support, and kind checks."""
+        index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-validation-failed",
+            origin="codex-session",
+            native_id="validation-failed",
+            source_path="/data/validation-failed.jsonl",
+            validation_status="failed",
+            validation_error="schema drift",
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-kind-contradiction",
+            origin="codex-session",
+            native_id="kind-contradiction",
+            source_path="/data/kind-contradiction.jsonl",
+            parse_error="parser failed after artifact observation",
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-malformed-carrier",
+            origin="codex-session",
+            native_id="malformed-carrier",
+            source_path="/data/malformed-carrier.jsonl",
+            parse_error="parser failed with malformed evidence",
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            upsert_raw_artifact(
+                conn,
+                "raw-validation-failed",
+                ArchiveSourceArtifact(
+                    artifact_id="validation-failed-evidence",
+                    origin="codex-session",
+                    source_path="/data/validation-failed.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.DECODE_FAILED,
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-kind-contradiction",
+                ArchiveSourceArtifact(
+                    artifact_id="kind-contradiction-evidence",
+                    origin="codex-session",
+                    source_path="/data/kind-contradiction.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-malformed-carrier",
+                ArchiveSourceArtifact(
+                    artifact_id="malformed-carrier-evidence",
+                    origin="codex-session",
+                    source_path="/data/malformed-carrier.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.DECODE_FAILED,
+                ),
+            )
+            # Directly mutate the persisted carrier to simulate a malformed
+            # producer row without weakening the typed write boundary.
+            conn.execute(
+                "UPDATE raw_artifacts SET artifact_kind = ? WHERE artifact_id = ?",
+                ("malformed_evidence_kind", "malformed-carrier-evidence"),
+            )
+            conn.commit()
+
+        snapshot = read_raw_failure_lifecycle(tmp_path / "source.db")
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
+            info = _raw_failure_info()
+
+        samples = cast(list[RawFailureSample], info["samples"])
+        by_origin_error = {sample.redacted_error: sample for sample in samples}
+        assert snapshot.unexplained == 3
+        assert info["unexplained_failures"] == 3
+        assert by_origin_error["schema drift"].failure_kind == "schema_violation"
+        assert by_origin_error["parser failed after artifact observation"].failure_kind == "parse_error"
+        assert by_origin_error["parser failed with malformed evidence"].failure_kind == "parse_error"
+        assert all(sample.failure_kind != "terminal_corrupt_input" for sample in samples)
 
     def test_daemon_status_lifecycle_counts_match_the_shared_projection(self, tmp_path: Path) -> None:
         """The health/status source is the same lifecycle projection as preflight."""

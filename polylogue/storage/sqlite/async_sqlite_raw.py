@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.core.enums import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
@@ -35,6 +35,7 @@ class SQLiteRawMixin:
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
+        exclude_terminal_failure_evidence: bool = False,
     ) -> tuple[str, tuple[str, ...]]:
         """Build the canonical scoped raw-ID query."""
         return self.queries.raw_id_query(
@@ -43,6 +44,7 @@ class SQLiteRawMixin:
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,
+            exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
         )
 
     async def iter_raw_ids(
@@ -53,6 +55,7 @@ class SQLiteRawMixin:
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
+        exclude_terminal_failure_evidence: bool = False,
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
         """Iterate raw session IDs for a pipeline state slice."""
@@ -62,6 +65,7 @@ class SQLiteRawMixin:
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,
+            exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
             page_size=page_size,
         ):
             yield rid
@@ -74,6 +78,7 @@ class SQLiteRawMixin:
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
+        exclude_terminal_failure_evidence: bool = False,
         page_size: int = 1000,
     ) -> AsyncIterator[tuple[str, int]]:
         """Iterate raw session IDs with blob sizes for lightweight batching."""
@@ -83,6 +88,7 @@ class SQLiteRawMixin:
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,
+            exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
             page_size=page_size,
         ):
             yield raw_header
@@ -103,6 +109,51 @@ class SQLiteRawMixin:
         """Persist or refresh one durable artifact observation."""
         async with self._get_connection() as conn:
             return await artifacts_q.save_artifact_observation(conn, record, self._transaction_depth)
+
+    async def save_raw_failure_evidence(
+        self,
+        raw_id: str,
+        *,
+        artifact_kind: str,
+        support_status: ArtifactSupportStatus | str,
+        outcome_code: str,
+        retryable: bool | None,
+        evidence_ref: str | None,
+        remediation: str | None,
+        diagnostic: str | None,
+    ) -> None:
+        """Persist typed worker failure evidence in the active source transaction."""
+        async with self._get_connection() as conn:
+            await artifacts_q.save_raw_failure_evidence(
+                conn,
+                raw_id,
+                artifact_kind=artifact_kind,
+                support_status=support_status,
+                outcome_code=outcome_code,
+                retryable=retryable,
+                evidence_ref=evidence_ref,
+                remediation=remediation,
+                diagnostic=diagnostic,
+                transaction_depth=self._transaction_depth,
+            )
+
+    async def supersede_deferred_cas_evidence(self, raw_id: str) -> None:
+        """Expire exact-coordinate CAS retry authority in the active transaction."""
+        async with self._get_connection() as conn:
+            await artifacts_q.supersede_deferred_cas_evidence(
+                conn,
+                raw_id,
+                transaction_depth=self._transaction_depth,
+            )
+
+    async def retire_raw_failure_evidence(self, raw_id: str) -> None:
+        """Retire stale failure evidence for an untyped current attempt."""
+        async with self._get_connection() as conn:
+            await artifacts_q.retire_raw_failure_evidence(
+                conn,
+                raw_id,
+                transaction_depth=self._transaction_depth,
+            )
 
     async def get_raw_session(self, raw_id: str) -> RawSessionRecord | None:
         """Retrieve a raw session by ID."""

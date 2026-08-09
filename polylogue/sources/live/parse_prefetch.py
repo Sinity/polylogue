@@ -141,12 +141,22 @@ def live_parse_worker(
         if is_stream:
             sessions = parse_stream_payload(
                 provider,
-                _iter_json_stream(BytesIO(payload), source_name),
+                _iter_json_stream(
+                    BytesIO(payload),
+                    source_name,
+                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                ),
                 fallback_id,
                 source_path=source_path,
             )
         else:
-            payloads = list(_iter_json_stream(BytesIO(payload), source_name))
+            payloads = list(
+                _iter_json_stream(
+                    BytesIO(payload),
+                    source_name,
+                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                )
+            )
             sessions = parse_payload(provider, payloads, fallback_id, source_path=source_path)
         return cache_key, sessions, None
     except Exception as exc:

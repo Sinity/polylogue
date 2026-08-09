@@ -12,6 +12,10 @@ from typing import Any, cast
 import pytest
 
 from polylogue.config import Config
+from polylogue.core.enums import ArtifactSupportStatus
+from polylogue.core.errors import RawCASFrontierError
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.daemon.status import raw_failure_info_for_root
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import repair as repair_mod
@@ -21,6 +25,7 @@ from polylogue.storage.insights.session.repair_assessment import assess_session_
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -512,16 +517,8 @@ def test_raw_materialization_retries_typed_transient_lock_failure(tmp_path: Path
         ).fetchone() == (1, None)
 
 
-def test_raw_materialization_retries_legacy_frontier_authority_failures(tmp_path: Path) -> None:
-    """polylogue-5iz4: a MembershipReplayConflictError parse_error is retryable.
-
-    The durable raw rows use the exact legacy strings observed in the live
-    frontier: a stale accepted-frontier CAS and the old membership-replay
-    guard.  They are authority refusals, so the real repair selector must
-    reconsider them against the current head.  An unrelated RuntimeError
-    remains excluded, which prevents a broad RuntimeError retry from making
-    the check vacuous.
-    """
+def test_raw_materialization_retries_only_with_deferred_frontier_evidence(tmp_path: Path) -> None:
+    """CAS retryability comes from durable evidence, never parse-error prose."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -533,6 +530,7 @@ def test_raw_materialization_retries_legacy_frontier_authority_failures(tmp_path
         "cas": b'{"mapping":{"cas":{}}}',
         "membership": b'{"mapping":{"membership":{}}}',
         "stale": b'{"mapping":{"stale":{}}}',
+        "sibling": b'{"mapping":{"sibling":{}}}',
     }
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = {
@@ -552,18 +550,68 @@ def test_raw_materialization_retries_legacy_frontier_authority_failures(tmp_path
             UPDATE raw_sessions SET parsed_at_ms = ?, parse_error = ? WHERE raw_id = ?
             """,
             [
-                (
-                    3,
-                    "MembershipReplayConflictError: membership replay cannot replace a head "
-                    "with unresolved byte-append evidence: logical_source_key='codex:whale'",
-                    raw_ids["retryable"],
-                ),
-                (4, "RuntimeError: raw revision CAS rejected an older accepted frontier", raw_ids["cas"]),
-                (4, "RuntimeError: membership replay cannot replace an unconvertible byte head", raw_ids["membership"]),
+                (3, "changed wording for retryable frontier", raw_ids["retryable"]),
+                (4, "another changed wording", raw_ids["cas"]),
+                (4, "third changed wording", raw_ids["membership"]),
                 (4, "RuntimeError: unrelated parser failure", raw_ids["stale"]),
+                (4, "RuntimeError: unrelated parser failure", raw_ids["sibling"]),
             ],
         )
+        for name in ("retryable", "cas", "membership"):
+            upsert_raw_artifact(
+                source_conn,
+                raw_ids[name],
+                ArchiveSourceArtifact(
+                    artifact_id=f"deferred-{name}",
+                    origin="codex-session",
+                    source_path=f"{name}.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_cas_frontier",
+                    classification_reason="deferred_cas_frontier",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                    first_observed_at_ms=100,
+                    last_observed_at_ms=100,
+                ),
+            )
+        upsert_raw_artifact(
+            source_conn,
+            raw_ids["cas"],
+            ArchiveSourceArtifact(
+                artifact_id="newer-unrelated-cas-artifact",
+                origin="codex-session",
+                source_path="cas.sqlite",
+                source_index=0,
+                artifact_kind="sqlite_state_database",
+                classification_reason="sqlite_state_database",
+                support_status=ArtifactSupportStatus.UNKNOWN,
+                first_observed_at_ms=200,
+                last_observed_at_ms=200,
+            ),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_ids["sibling"],
+            ArchiveSourceArtifact(
+                artifact_id="deferred-on-sibling-coordinate",
+                origin="codex-session",
+                source_path="sibling-other.jsonl",
+                source_index=0,
+                artifact_kind="deferred_cas_frontier",
+                classification_reason="deferred_cas_frontier",
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                parse_as_session=True,
+                schema_eligible=True,
+                first_observed_at_ms=100,
+                last_observed_at_ms=100,
+            ),
+        )
         source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(config)
+    assert raw_ids["cas"] in candidates.raw_ids
+    assert raw_ids["sibling"] not in candidates.raw_ids
 
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
 
@@ -573,8 +621,179 @@ def test_raw_materialization_retries_legacy_frontier_authority_failures(tmp_path
     )
 
 
-def test_raw_materialization_repairs_legacy_stale_frontier_failure(tmp_path: Path) -> None:
-    """The legacy CAS failure reaches the real replay actuator and clears only on success."""
+def test_raw_materialization_rejects_contradictory_deferred_evidence(tmp_path: Path) -> None:
+    """A deferred kind with terminal support cannot authorize replay."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"mapping":{"contradictory":true}}',
+            source_path="contradictory.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
+            ("changed wording", raw_id),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="contradictory-deferred-evidence",
+                origin="codex-session",
+                source_path="contradictory.jsonl",
+                source_index=0,
+                artifact_kind="deferred_cas_frontier",
+                classification_reason="deferred_cas_frontier",
+                support_status=ArtifactSupportStatus.DECODE_FAILED,
+                parse_as_session=True,
+                schema_eligible=True,
+            ),
+        )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+
+    assert raw_id not in candidates.raw_ids
+
+
+def test_raw_materialization_requires_exact_failed_artifact_coordinate(tmp_path: Path) -> None:
+    """A deferred neighbor cannot authorize replay for another raw coordinate."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"neighbor":true}',
+            source_path="target.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
+            ("deferred failure", raw_id),
+        )
+        for suffix, origin, source_path, source_index in (
+            ("origin", "claude-code-session", "target.jsonl", 0),
+            ("path", "codex-session", "neighbor.jsonl", 0),
+            ("index", "codex-session", "target.jsonl", 1),
+        ):
+            upsert_raw_artifact(
+                source_conn,
+                raw_id,
+                ArchiveSourceArtifact(
+                    artifact_id=f"neighbor-{suffix}",
+                    origin=origin,
+                    source_path=source_path,
+                    source_index=source_index,
+                    artifact_kind="deferred_cas_frontier",
+                    classification_reason="deferred_cas_frontier",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                ),
+            )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+
+    assert raw_id not in candidates.raw_ids
+
+
+def test_raw_materialization_validation_failure_cannot_reuse_deferred_authority(tmp_path: Path) -> None:
+    """Repair and its public backlog report share the worker validation gate."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"deferred":true}',
+            source_path="validation-failed.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = ?, validation_status = 'failed' WHERE raw_id = ?",
+            ("decode: malformed input", raw_id),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="validation-failed-deferred",
+                origin="codex-session",
+                source_path="validation-failed.jsonl",
+                source_index=0,
+                artifact_kind="deferred_cas_frontier",
+                classification_reason="deferred_cas_frontier",
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                parse_as_session=True,
+                schema_eligible=True,
+            ),
+        )
+        source_conn.commit()
+
+    config = _config(tmp_path)
+    assert raw_id not in repair_mod._raw_materialization_candidate_ids(config).raw_ids
+    backlog = repair_mod.raw_materialization_replay_backlog(config)
+    assert backlog["candidate_count"] == 0
+
+
+@pytest.mark.parametrize("artifact_kind", ["deferred_hot_jsonl_capture", "deferred_claude_code_partial_jsonl"])
+def test_raw_materialization_does_not_replay_hot_partial_capture(tmp_path: Path, artifact_kind: str) -> None:
+    """Hot partial evidence stays deferred until a complete source observation arrives."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"type":"message_start"}\n',
+            source_path="rollout.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
+            ("partial JSONL capture", raw_id),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id=f"{artifact_kind}-{raw_id}",
+                origin="claude-code-session",
+                source_path="rollout.jsonl",
+                source_index=0,
+                artifact_kind=artifact_kind,
+                classification_reason=artifact_kind,
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                parse_as_session=True,
+                schema_eligible=True,
+            ),
+        )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+
+    assert raw_id not in candidates.raw_ids
+
+
+def test_raw_materialization_repairs_deferred_stale_frontier_failure(tmp_path: Path) -> None:
+    """Durable frontier evidence reaches the real replay actuator."""
     from polylogue.core.enums import Provider
     from polylogue.storage.raw_retention import raw_frontier_integrity_projection
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -616,6 +835,432 @@ def test_raw_materialization_repairs_legacy_stale_frontier_failure(tmp_path: Pat
     )
     assert frontier.overall_status == "healthy"
     assert frontier.broken_head_count == 0
+
+
+def test_raw_materialization_preserves_bounded_historical_cas_retry_authority(tmp_path: Path) -> None:
+    """Historical CAS rows remain selectable, while arbitrary prose stays terminal."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    errors = {
+        "prefix": "MembershipReplayConflictError: old guard wording",
+        "frontier": "RuntimeError: raw revision CAS rejected an older accepted frontier",
+        "byte": "RuntimeError: membership replay cannot replace an unconvertible byte head",
+        "unrelated": "RuntimeError: parser failed while decoding a session",
+    }
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = {
+            name: archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f'{{"name":"{name}"}}'.encode(),
+                source_path=f"{name}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            for index, name in enumerate(errors)
+        }
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            "UPDATE raw_sessions SET parsed_at_ms = 2, parse_error = ? WHERE raw_id = ?",
+            [(error, raw_ids[name]) for name, error in errors.items()],
+        )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+
+    assert set(candidates.raw_ids) == {raw_ids["prefix"], raw_ids["frontier"], raw_ids["byte"]}
+
+
+def test_raw_materialization_terminal_carrier_overrides_legacy_cas_marker(tmp_path: Path) -> None:
+    """A reviewed terminal carrier blocks legacy-marker replay authority."""
+    from polylogue.core.enums import Origin, Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"name":"reviewed-terminal"}',
+            source_path="reviewed-terminal.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = ?",
+            ("MembershipReplayConflictError: historical marker", raw_id),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="reviewed-terminal-carrier",
+                origin=Origin.CODEX_SESSION,
+                source_path="reviewed-terminal.jsonl",
+                source_index=0,
+                artifact_kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+                classification_reason="reviewed terminal disposition",
+                support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                parse_as_session=False,
+                schema_eligible=False,
+                first_observed_at_ms=2,
+                last_observed_at_ms=2,
+            ),
+        )
+        source_conn.commit()
+
+    assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
+
+
+def test_raw_cas_frontier_error_is_typed_transient() -> None:
+    error = RawCASFrontierError("frontier changed")
+
+    assert error.is_transient is True
+
+
+def test_non_codex_cas_frontier_failure_persists_provider_neutral_evidence(tmp_path: Path) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"type":"session_meta","payload":{"id":"cas-frontier"}}\n',
+            source_path="rollout.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CLAUDE_CODE,
+            error=RawCASFrontierError("frontier changed"),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == ("deferred_cas_frontier", "partial_decode", 1)
+
+
+def test_generic_parse_state_failure_retires_prior_failure_authority(tmp_path: Path) -> None:
+    """An untyped retained-raw failure cannot reuse an earlier replay carrier."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.raw.models import RawSessionStateUpdate
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"stale-authority"}}\n',
+            source_path="stale-authority.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CODEX,
+            error=RawCASFrontierError("first frontier"),
+        )
+        archive.finalize_raw_parse_state(
+            raw_id,
+            state=RawSessionStateUpdate(
+                parse_error="ValueError: later parser failure",
+                payload_provider=Provider.CODEX,
+            ),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == (
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+            "unknown",
+            0,
+        )
+
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 0
+    assert lifecycle.deferred == 0
+    assert lifecycle.unexplained == 1
+    assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
+
+
+def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(
+    tmp_path: Path,
+) -> None:
+    """Two retained failures at one coordinate keep independent replay authority."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        old_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"revision":"old"}',
+            source_path="same-coordinate.jsonl",
+            source_index=0,
+            acquired_at_ms=1,
+        )
+        new_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"revision":"new"}',
+            source_path="same-coordinate.jsonl",
+            source_index=0,
+            acquired_at_ms=2,
+        )
+        archive.mark_raw_parse_failed(
+            old_raw_id,
+            provider=Provider.CODEX,
+            error=RawCASFrontierError("old frontier"),
+        )
+        archive.mark_raw_parse_failed(
+            new_raw_id,
+            provider=Provider.CODEX,
+            error=RawCASFrontierError("new frontier"),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        rows = source_conn.execute(
+            """
+            SELECT raw_id, origin, source_path, source_index, artifact_kind, support_status
+            FROM raw_artifacts
+            WHERE source_path = 'same-coordinate.jsonl'
+            ORDER BY raw_id
+            """
+        ).fetchall()
+    assert {tuple(row) for row in rows} == {
+        (
+            old_raw_id,
+            "codex-session",
+            "same-coordinate.jsonl",
+            0,
+            RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
+            "partial_decode",
+        ),
+        (
+            new_raw_id,
+            "codex-session",
+            "same-coordinate.jsonl",
+            0,
+            RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
+            "partial_decode",
+        ),
+    }
+
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.deferred == 2
+    assert lifecycle.unexplained == 0
+    assert {sample["raw_id"] for sample in lifecycle.samples} == {old_raw_id, new_raw_id}
+    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+    assert set(candidates.raw_ids) == {old_raw_id, new_raw_id}
+
+
+def test_failed_raw_lifecycle_ignores_newer_ordinary_artifact_at_same_coordinate(
+    tmp_path: Path,
+) -> None:
+    """A newer ordinary observation cannot hide a valid closed failure carrier."""
+    from polylogue.core.enums import Origin
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="coexisting.jsonl",
+            source_index=4,
+            payload=b"unsupported",
+            acquired_at_ms=1,
+            parse_error="worker rejected shape",
+        )
+        upsert_raw_artifact(
+            conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="failure-carrier",
+                origin=Origin.CODEX_SESSION,
+                source_path="coexisting.jsonl",
+                source_index=4,
+                artifact_kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+                classification_reason=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+                support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                first_observed_at_ms=10,
+                last_observed_at_ms=10,
+            ),
+        )
+        upsert_raw_artifact(
+            conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="ordinary-carrier",
+                origin=Origin.CODEX_SESSION,
+                source_path="coexisting.jsonl",
+                source_index=4,
+                artifact_kind="session_export",
+                classification_reason="ordinary re-observation",
+                support_status=ArtifactSupportStatus.SUPPORTED_PARSEABLE,
+                first_observed_at_ms=20,
+                last_observed_at_ms=20,
+            ),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (2,)
+
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 1
+    assert lifecycle.unexplained == 0
+    assert lifecycle.blocking is False
+    assert lifecycle.state == "degraded"
+    assert lifecycle.samples[0]["artifact_kind"] == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
+
+
+def test_cas_failure_evidence_rolls_back_with_parse_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed parse-state write cannot leave a committed CAS evidence receipt."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers import revision_governance
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"revision":"atomic"}',
+            source_path="atomic.jsonl",
+            acquired_at_ms=1,
+        )
+
+        def fail_state_update(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("state update failed")
+
+        monkeypatch.setattr(revision_governance, "apply_source_raw_state_update", fail_state_update)
+        with pytest.raises(RuntimeError, match="state update failed"):
+            archive.mark_raw_parse_failed(
+                raw_id,
+                provider=Provider.CODEX,
+                error=RawCASFrontierError("frontier"),
+            )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            None,
+        )
+        assert source_conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+
+
+def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failure(tmp_path: Path) -> None:
+    """Resolved deferred evidence cannot authorize a later replay attempt."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_success = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"name":"success"}',
+            source_path="success.jsonl",
+            acquired_at_ms=1,
+        )
+        raw_failure = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"name":"failure"}',
+            source_path="failure.jsonl",
+            acquired_at_ms=2,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        for raw_id, source_path, neighbor_path in (
+            (raw_success, "success.jsonl", "success-neighbor.jsonl"),
+            (raw_failure, "failure.jsonl", "failure-neighbor.jsonl"),
+        ):
+            for artifact_id, path in ((f"deferred-{raw_id}", source_path), (f"neighbor-{raw_id}", neighbor_path)):
+                upsert_raw_artifact(
+                    source_conn,
+                    raw_id,
+                    ArchiveSourceArtifact(
+                        artifact_id=artifact_id,
+                        origin="codex-session",
+                        source_path=path,
+                        source_index=0,
+                        artifact_kind="deferred_cas_frontier",
+                        classification_reason="deferred_cas_frontier",
+                        support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                        parse_as_session=True,
+                        schema_eligible=True,
+                    ),
+                )
+        source_conn.commit()
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.mark_raw_parse_succeeded(raw_success, provider=Provider.CODEX)
+        archive.mark_raw_parse_failed(
+            raw_failure,
+            provider=Provider.CODEX,
+            error=ValueError("unrelated parser failure"),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = 3, parse_error = ? WHERE raw_id = ?",
+            ("later unrelated parser failure", raw_success),
+        )
+        source_conn.commit()
+        observations = source_conn.execute(
+            """
+            SELECT raw_id, source_path, artifact_kind, support_status
+            FROM raw_artifacts
+            WHERE raw_id IN (?, ?)
+            ORDER BY raw_id, source_path
+            """,
+            (raw_success, raw_failure),
+        ).fetchall()
+
+    assert {tuple(row) for row in observations if row[1].endswith("neighbor.jsonl")} == {
+        (raw_failure, "failure-neighbor.jsonl", "deferred_cas_frontier", "partial_decode"),
+        (raw_success, "success-neighbor.jsonl", "deferred_cas_frontier", "partial_decode"),
+    }
+    assert {(row[0], row[1], row[2], row[3]) for row in observations if not row[1].endswith("neighbor.jsonl")} == {
+        (
+            raw_failure,
+            "failure.jsonl",
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+            "unknown",
+        ),
+        (
+            raw_success,
+            "success.jsonl",
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+            "unknown",
+        ),
+    }
+
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    # The two CAS replacement receipts are bound, non-failure resolutions.
+    # The later unrelated parser failures therefore remain unexplained rather
+    # than being hidden behind a stale success carrier.
+    assert lifecycle.terminal == 0
+    assert lifecycle.deferred == 0
+    assert lifecycle.unexplained == 2
+    status = raw_failure_info_for_root(tmp_path)
+    assert status["terminal_rejections"] == 0
+    assert status["unexplained_failures"] == 2
+    assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
+    assert repair_mod.raw_materialization_replay_backlog(_config(tmp_path))["candidate_count"] == 0
 
 
 def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_blob(tmp_path: Path) -> None:

@@ -24,8 +24,15 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.protocols import ProgressCallback
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
+    RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+    RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
+    RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS,
+)
 from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
@@ -103,22 +110,15 @@ RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT = 25
 RAW_MATERIALIZATION_COMMIT_BATCH_SIZE = 20
 RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT = 8
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
-#: polylogue-5iz4: ``MembershipReplayConflictError``'s ``parse_error`` text
-#: (``f"{type(exc).__name__}: {exc}"``, set by ``mark_raw_parse_failed`` in
-#: ``storage/sqlite/archive_tiers/revision_governance.py``) always starts
-#: with this exact type name regardless of the exception's own
-#: human-readable message wording, which is not itself stable (it has
-#: already drifted once since PR #2718 introduced this guard under
-#: different phrasing). Matching on the type name here is what keeps a raw
-#: that hit this guard retry-eligible even after the message wording
-#: changes again.
+# Membership replay conflicts are typed on new writes, so their diagnostic
+# wording is not an authority signal. Keep the prefix as a bounded bridge for
+# rows written before typed evidence was persisted. Removing this bridge needs
+# a backup-gated migration or re-observation receipt for every retained row.
 _MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX = "MembershipReplayConflictError:"
-# These are durable parse-error values written before the corresponding
-# revision guards acquired typed exception classes.  They name an authority
-# refusal, not malformed source evidence: replay must reconsider them against
-# the current accepted frontier.  Keep the complete legacy values exact so a
-# broad RuntimeError prefix cannot turn unrelated parser failures into an
-# unbounded repair loop.
+# These complete values are the two legacy CAS refusals observed before the
+# typed exception/evidence path existed. They authorize reconsideration only
+# as exact authority markers, never arbitrary RuntimeError prose. Removal is
+# gated by the same backup-bound migration or re-observation receipt.
 _LEGACY_OLDER_ACCEPTED_FRONTIER_ERROR = "RuntimeError: raw revision CAS rejected an older accepted frontier"
 _LEGACY_UNCONVERTIBLE_BYTE_HEAD_ERROR = "RuntimeError: membership replay cannot replace an unconvertible byte head"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact_byte_and_semantic_proof"
@@ -1221,7 +1221,7 @@ def _cas_refine_quarantined_accepted_raw(
         ),
     )
     if cursor.rowcount != 1:
-        raise RuntimeError(f"source authority CAS failed for {item.raw_id}")
+        raise RawCASFrontierError(f"source authority CAS failed for {item.raw_id}")
 
 
 def inspect_quarantined_accepted_raws(
@@ -2705,13 +2705,13 @@ def _finalize_browser_origin_copy_forward_index(conn: sqlite3.Connection, item: 
             ),
         )
         if cursor.rowcount != 1:
-            raise RuntimeError(f"semantic canonical-head CAS failed for {item.raw_id}")
+            raise RawCASFrontierError(f"semantic canonical-head CAS failed for {item.raw_id}")
     cursor = conn.execute(
         "UPDATE sessions SET raw_id = ? WHERE session_id = ? AND raw_id = ?",
         (item.copy_forward_raw_id, item.session_id, item.raw_id),
     )
     if cursor.rowcount != 1:
-        raise RuntimeError(f"session raw pointer CAS failed for {item.raw_id}")
+        raise RawCASFrontierError(f"session raw pointer CAS failed for {item.raw_id}")
     record_revision_application_sync(
         conn,
         RevisionApplicationReceipt(
@@ -2801,7 +2801,7 @@ def _retire_browser_origin_legacy_head(
         ),
     ).rowcount
     if deleted != 1:
-        raise RuntimeError(f"obsolete browser-origin head CAS failed for {item.raw_id}")
+        raise RawCASFrontierError(f"obsolete browser-origin head CAS failed for {item.raw_id}")
 
 
 def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
@@ -2819,7 +2819,7 @@ def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: Brows
         (item.replacement_raw_id, item.session_id, item.raw_id),
     )
     if cursor.rowcount != 1:
-        raise RuntimeError(f"session raw pointer CAS failed for {item.raw_id}")
+        raise RawCASFrontierError(f"session raw pointer CAS failed for {item.raw_id}")
     _retire_browser_origin_legacy_head(
         conn,
         item,
@@ -3662,7 +3662,7 @@ def _apply_duplicate_raw_identity_repair(conn: sqlite3.Connection, item: Duplica
         (item.canonical_raw_id, item.session_id, item.stale_raw_id),
     )
     if cursor.rowcount != 1:
-        raise RuntimeError(f"session raw pointer CAS failed for {item.stale_raw_id}")
+        raise RawCASFrontierError(f"session raw pointer CAS failed for {item.stale_raw_id}")
     record_revision_application_sync(
         conn,
         RevisionApplicationReceipt(
@@ -3770,6 +3770,16 @@ def _raw_materialization_archive_root(config: Config) -> Path:
     return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
+def _raw_artifact_coordinate_predicate(*, artifact_alias: str, raw_alias: str) -> str:
+    """Correlate evidence with the exact failed artifact observation."""
+    return f"""
+                         AND {artifact_alias}.raw_id IS {raw_alias}.raw_id
+                         AND {artifact_alias}.origin IS {raw_alias}.origin
+                         AND {artifact_alias}.source_path IS {raw_alias}.source_path
+                         AND {artifact_alias}.source_index IS {raw_alias}.source_index
+    """
+
+
 def _raw_materialization_candidate_ids(
     config: Config,
     *,
@@ -3847,11 +3857,22 @@ def _raw_materialization_candidate_ids(
             normalized_root = str(source_root).rstrip("/")
             source_root_filter = " AND (r.source_path = ? OR r.source_path LIKE ?)"
             params.extend((normalized_root, f"{normalized_root}/%"))
+        terminal_pair_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS)
         rows = conn.execute(
             f"""
             SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size,
                    r.acquired_at_ms, r.parsed_at_ms,
                    r.parse_error,
+                   (
+                       SELECT a.artifact_kind
+                       FROM raw_artifacts AS a
+                       WHERE 1 = 1
+                         {_raw_artifact_coordinate_predicate(artifact_alias="a", raw_alias="r")}
+                         AND a.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS)})
+                         AND a.support_status = ?
+                       ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
+                       LIMIT 1
+                   ) AS failure_artifact_kind,
                    EXISTS (
                        SELECT 1
                        FROM index_tier.raw_revision_applications AS a
@@ -3922,29 +3943,38 @@ def _raw_materialization_candidate_ids(
                 s_by_native.native_id IS NULL
                 OR existing_native_raw.raw_id IS NULL
               )
+              -- A failed worker validation is not replay authority.  Keep
+              -- the raw bytes and their diagnostics, but require a fresh
+              -- validation outcome before materialization can select them.
+              AND COALESCE(r.validation_status, '') != 'failed'
               AND (
                 r.parse_error IS NULL
                 OR r.parse_error = 'OperationalError: database is locked'
                 OR (
                   r.parse_error LIKE 'decode:%No such file or directory:%'
                 )
-                OR (
-                  -- polylogue-5iz4: MembershipReplayConflictError
-                  -- (storage/sqlite/archive_tiers/revision_governance.py) is a
-                  -- transient, retry-eligible refusal by construction -- a
-                  -- later pass over the SAME durable raw bytes can succeed
-                  -- once sibling evidence resolves or the accepted head
-                  -- itself changes. Matching by exception TYPE name (stable)
-                  -- rather than the human-readable message text (which has
-                  -- already drifted twice since #2718 introduced this guard)
-                  -- is what keeps this retry-eligible even after the guard's
-                  -- own wording changes again.
-                  r.parse_error LIKE '{_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX}%'
+                OR EXISTS (
+                  SELECT 1
+                  FROM raw_artifacts AS retry_evidence
+                  WHERE 1 = 1
+                    {_raw_artifact_coordinate_predicate(artifact_alias="retry_evidence", raw_alias="r")}
+                    AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS)})
+                    AND retry_evidence.support_status = ?
                 )
+                OR r.parse_error LIKE '{_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX}%'
                 OR r.parse_error IN (
                   '{_LEGACY_OLDER_ACCEPTED_FRONTIER_ERROR}',
                   '{_LEGACY_UNCONVERTIBLE_BYTE_HEAD_ERROR}'
                 )
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM raw_artifacts AS terminal_evidence
+                WHERE 1 = 1
+                  {_raw_artifact_coordinate_predicate(artifact_alias="terminal_evidence", raw_alias="r")}
+                  AND (terminal_evidence.artifact_kind, terminal_evidence.support_status) IN (
+                    {terminal_pair_placeholders}
+                  )
               )
               AND NOT (
                 COALESCE(r.validation_status, '') = 'skipped'
@@ -3956,7 +3986,16 @@ def _raw_materialization_candidate_ids(
               {source_root_filter}
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
             """,
-            [BYTE_AUTHORITY_CENSUS_DETAIL, BYTE_AUTHORITY_CENSUS_DETAIL, *params],
+            [
+                *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
+                RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+                BYTE_AUTHORITY_CENSUS_DETAIL,
+                BYTE_AUTHORITY_CENSUS_DETAIL,
+                *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
+                RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+                *[value for pair in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair],
+                *params,
+            ],
         ).fetchall()
         adoption_deferred = 0
         authority_quarantined = 0
@@ -3992,7 +4031,10 @@ def _raw_materialization_candidate_ids(
                 byte_authority_pending += 1
                 byte_authority_pending_raw_ids.append(row_raw_id)
                 continue
-            if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
+            if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(
+                row["parse_error"],
+                row["failure_artifact_kind"] in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
+            ):
                 continue
             if _raw_materialized_by_source_path_native(materialized_aliases, row):
                 continue
@@ -4175,21 +4217,14 @@ def _raw_materialization_component_stream_safe(
     return all(_raw_materialization_stream_safe(candidates, raw_id) for raw_id in component)
 
 
-def _raw_materialization_retryable_missing_blob_error(parse_error: object) -> bool:
+def _raw_materialization_retryable_missing_blob_error(parse_error: object, durable_retryable: bool = False) -> bool:
+    if durable_retryable:
+        return True
     if not isinstance(parse_error, str):
         return False
     return (
         parse_error == _TRANSIENT_LOCK_PARSE_ERROR
         or (parse_error.startswith("decode:") and "No such file or directory" in parse_error)
-        # polylogue-5iz4: MembershipReplayConflictError
-        # (storage/sqlite/archive_tiers/revision_governance.py) is a
-        # transient, retry-eligible refusal by construction -- see the SQL
-        # candidate query's matching clause above for the full rationale.
-        # This Python-side check re-validates every row the SQL WHERE
-        # clause already passed and is the true single source of truth for
-        # retry eligibility (the SQL clause is a pre-filter, not merely an
-        # optimization the SQL and this function must independently agree,
-        # or a row that clears the SQL gate is silently re-excluded here).
         or parse_error.startswith(_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX)
         or parse_error
         in {
@@ -4512,8 +4547,21 @@ def _raw_replay_plan_outcome(
             SELECT 1
             FROM raw_sessions
             WHERE raw_id IN ({placeholders})
+              AND validation_status = 'failed'
+            UNION ALL
+            SELECT 1
+            FROM raw_sessions
+            WHERE raw_id IN ({placeholders})
               AND parse_error IS NOT NULL
               AND parse_error != ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM raw_artifacts AS retry_evidence
+                  WHERE 1 = 1
+                    {_raw_artifact_coordinate_predicate(artifact_alias="retry_evidence", raw_alias="raw_sessions")}
+                    AND retry_evidence.artifact_kind IN ({", ".join("?" for _ in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS)})
+                    AND retry_evidence.support_status = ?
+              )
             UNION ALL
             SELECT 1
             FROM raw_membership_census
@@ -4526,7 +4574,10 @@ def _raw_replay_plan_outcome(
             *component,
             superseded_json,
             *component,
+            *component,
             _TRANSIENT_LOCK_PARSE_ERROR,
+            *sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS),
+            RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
             *component,
         ),
     ).fetchone()
