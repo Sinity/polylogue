@@ -4,7 +4,7 @@
 
 ## Lane output
 
-The command compares rows by Bead ID and recomputes the source digest with the merged acceptance-contract validator. The report has separate ID sets for `master_only`, `live_only`, `master_newer`, `live_newer`, `same_timestamp_different`, and `contract_refused`. It also records the contract denominator, refused IDs and reasons, the targeted IDs, and equality digests.
+The command compares rows by Bead ID and recomputes the source and dependency digests with the merged acceptance-contract validator. The validator must first emit its deterministic `regeneration_required` report against the canonical snapshot. Reconciliation is blocked when any canonical contract is invalid or stale. The reconciliation report has separate ID sets for `master_only`, `live_only`, `master_newer`, `live_newer`, `same_timestamp_different`, and `contract_refused`. It also records the contract denominator, refused IDs and reasons, the targeted IDs, and equality digests.
 
 The targeted JSONL contains only guarded records. Each record starts as the live row and changes only `acceptance_criteria` and `metadata.acceptance_contract_v1`. Dependencies, comments, status, notes, timestamps, and every other live field remain equal in the non-contract projection; the equality digest removes only the contract key and an empty metadata container, while retaining every non-contract metadata key. A live source digest must equal the contract's `source_digest`; otherwise that ID is refused and is absent from the wave. Malformed live metadata or timestamps are refused explicitly. Live-newer contract rows are separately deferred and are never put in the wave, even when their source digest matches.
 
@@ -39,4 +39,4 @@ The implementation lane stops before this sequence. The coordinator must retain 
 
 ## Residual boundary
 
-This branch refreshes only `polylogue-7rds`'s source digest after checking its closed implementation in `1cb33c351` and its explicit `polylogue-93xe` verification residual. It does not absorb `polylogue-5bxpy`, `polylogue-g8v5z`, or any live-newer record. Those records require post-merge adjudication across the six-PR train. The lane performs no Dolt backup, Beads export, dry-run import, real import, graph-policy check, or live mutation.
+This branch refreshes only `polylogue-7rds`'s source digest after checking its closed implementation in `1cb33c351` and its explicit `polylogue-93xe` verification residual. It does not absorb `polylogue-5bxpy`, `polylogue-g8v5z`, or any live-newer record. Typed-carrier failures, source-span truncation, and source-correctness questions such as `polylogue-gvzkr` remain in the deterministic regeneration/adjudication report until the coordinator has live authority. Those records require post-merge adjudication across the six-PR train. The lane performs no Dolt backup, Beads export, dry-run import, real import, graph-policy check, or live mutation.
