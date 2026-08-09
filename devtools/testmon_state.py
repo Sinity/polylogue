@@ -63,12 +63,17 @@ class TestmonIdentity:
     python: str
     skip_slow: bool
     lab: bool
+    git_tree: str | None = None
+    terminal_authorization: str | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> TestmonIdentity:
         git_head = value.get("git_head")
         if git_head is not None and (not isinstance(git_head, str) or not git_head):
             raise ValueError("identity.git_head must be a non-empty string or null")
+        git_tree = value.get("git_tree")
+        if git_tree is not None and (not isinstance(git_tree, str) or not git_tree):
+            raise ValueError("identity.git_tree must be a non-empty string or null")
         worktree = value.get("worktree_fingerprint")
         python = value.get("python")
         if not isinstance(worktree, str) or not worktree:
@@ -77,7 +82,20 @@ class TestmonIdentity:
             raise ValueError("identity.python must be a non-empty string")
         if not isinstance(value.get("skip_slow"), bool) or not isinstance(value.get("lab"), bool):
             raise ValueError("identity selection flags must be booleans")
-        return cls(git_head, worktree, python, value["skip_slow"], value["lab"])
+        terminal_authorization = value.get("terminal_authorization")
+        if terminal_authorization is not None and terminal_authorization not in {
+            authorization.value for authorization in TerminalAuthorization
+        }:
+            raise ValueError("identity.terminal_authorization is invalid")
+        return cls(
+            git_head,
+            worktree,
+            python,
+            value["skip_slow"],
+            value["lab"],
+            git_tree,
+            terminal_authorization,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +104,8 @@ class TestmonIdentity:
             "python": self.python,
             "skip_slow": self.skip_slow,
             "lab": self.lab,
+            "git_tree": self.git_tree,
+            "terminal_authorization": self.terminal_authorization,
         }
 
 
@@ -750,6 +770,10 @@ def stamp_from_attempt(
     graph = inspect_testmon_database(data_path, [str(nodeid) for nodeid in expected])
     if not graph.usable_for_selection:
         return None
+    try:
+        typed_identity = TestmonIdentity.from_mapping(identity)
+    except ValueError:
+        return None
     baseline = (
         BaselineStatus.GREEN
         if attempt.get("status") == "complete"
@@ -758,17 +782,20 @@ def stamp_from_attempt(
         and not graph.failed_nodeids
         else BaselineStatus.RED
     )
+    raw_scope = attempt.get("verification_scope")
+    if raw_scope is not None and raw_scope not in {scope.value for scope in VerificationScope}:
+        return None
+    terminal_authorized = (
+        typed_identity.skip_slow is True
+        and raw_scope == VerificationScope.NARROW_TERMINAL.value
+        and typed_identity.terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
+    )
+    if baseline is BaselineStatus.GREEN and typed_identity.skip_slow and not terminal_authorized:
+        baseline = BaselineStatus.RED
     raw_permission = attempt.get("release_baseline_allowed")
     if raw_permission is not None and (
         not isinstance(raw_permission, bool) or raw_permission != (baseline is BaselineStatus.GREEN)
     ):
-        return None
-    raw_scope = attempt.get("verification_scope")
-    if raw_scope is not None and raw_scope not in {scope.value for scope in VerificationScope}:
-        return None
-    try:
-        typed_identity = TestmonIdentity.from_mapping(identity)
-    except ValueError:
         return None
     raw_binding = attempt.get("binding")
     if raw_binding is None:

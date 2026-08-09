@@ -57,10 +57,12 @@ def _attempt(data: Path, *, outcomes: tuple[str, str] = ("passed", "failed")) ->
         "status": "reusable",
         "identity": {
             "git_head": "head",
+            "git_tree": "tree-hash",
             "worktree_fingerprint": "tree",
             "python": "python",
             "skip_slow": True,
             "lab": False,
+            "terminal_authorization": "narrow-terminal",
         },
         "selection": {
             "selected_count": len(NODEIDS),
@@ -69,6 +71,8 @@ def _attempt(data: Path, *, outcomes: tuple[str, str] = ("passed", "failed")) ->
         "expected_nodeids": list(NODEIDS),
         "expected_count": len(NODEIDS),
         "expected_digest": hashlib.sha256("\n".join(sorted(NODEIDS)).encode()).hexdigest(),
+        "verification_scope": "narrow-terminal",
+        "release_baseline_allowed": False,
         "node_outcomes": [
             {"nodeid": nodeid, "outcome": outcome} for nodeid, outcome in zip(NODEIDS, outcomes, strict=True)
         ],
@@ -119,6 +123,7 @@ def test_incomplete_attempt_fails_closed(tmp_path: Path) -> None:
     _write_graph(data)
     attempt = _attempt(data, outcomes=("passed", "passed"))
     attempt["exit_code"] = 0
+    attempt["release_baseline_allowed"] = True
     attempt["status"] = "incomplete"
 
     stamp = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)
@@ -131,6 +136,26 @@ def test_incomplete_attempt_fails_closed(tmp_path: Path) -> None:
     assert completed is not None
     assert completed.baseline_status is BaselineStatus.GREEN
     assert completed.release_baseline_allowed
+
+
+def test_green_skipped_slow_attempt_without_typed_terminal_authority_is_selection_only(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data)
+    attempt = _attempt(data, outcomes=("passed", "passed"))
+    attempt["status"] = "complete"
+    attempt["exit_code"] = 0
+    identity = dict(attempt["identity"])
+    identity["terminal_authorization"] = None
+    attempt["identity"] = identity
+    attempt["verification_scope"] = "narrow-terminal"
+    attempt["release_baseline_allowed"] = False
+
+    stamp = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)
+
+    assert stamp is not None
+    assert stamp.baseline_status is BaselineStatus.RED
+    assert stamp.affected_selection_allowed
+    assert not stamp.release_baseline_allowed
 
 
 def test_malformed_sqlite_and_stale_stamp_fail_closed(tmp_path: Path) -> None:
@@ -154,6 +179,7 @@ def test_attempt_and_green_stamp_artifacts_fail_closed_when_malformed(tmp_path: 
     _write_graph(data)
     attempt = _attempt(data, outcomes=("passed", "passed"))
     attempt["exit_code"] = 0
+    attempt["release_baseline_allowed"] = True
     attempt["artifact_dir"] = "/tmp/outside-testmon-run"
     assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
 
