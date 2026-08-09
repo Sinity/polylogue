@@ -29,6 +29,7 @@ README_DOC_DESCRIPTIONS = {
     "Demos and Proofs": "Run the private-data-free tour and see what each demo establishes.",
     "Proof Artifacts": "Links between public claims and reproducible checks.",
     "Architecture": "Storage, data flow, and component responsibilities.",
+    "Code Navigation": "Find the owning package, runtime path, and verification for a code change.",
     "Search & Query": "Search syntax, filters, action queries, ranking, and output formats.",
     "CLI Reference": "Commands and options generated from the current CLI.",
     "MCP Integration": "Configure an MCP client to read or write the archive.",

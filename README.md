@@ -224,6 +224,7 @@ Start with the task-oriented guides below. The complete documentation map is in 
 | [Demos and Proofs](docs/demos.md) | Run the private-data-free tour and see what each demo establishes. |
 | [Proof Artifacts](docs/proof-artifacts.md) | Links between public claims and reproducible checks. |
 | [Architecture](docs/architecture.md) | Storage, data flow, and component responsibilities. |
+| [Code Navigation](docs/code-navigation.md) | Find the owning package, runtime path, and verification for a code change. |
 | [Search & Query](docs/search.md) | Search syntax, filters, action queries, ranking, and output formats. |
 | [CLI Reference](docs/cli-reference.md) | Commands and options generated from the current CLI. |
 | [MCP Integration](docs/mcp-integration.md) | Configure an MCP client to read or write the archive. |

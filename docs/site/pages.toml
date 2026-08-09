@@ -58,6 +58,9 @@ title = "Understand"
 label = "Architecture"
 path = "/architecture/rings/"
 [[nav.items]]
+label = "Code Navigation"
+path = "/architecture/code-navigation/"
+[[nav.items]]
 label = "Internals"
 path = "/architecture/internals/"
 [[nav.items]]
@@ -210,6 +213,11 @@ source = "docs/configuration.md"
 path = "/architecture/rings/"
 title = "Architecture"
 source = "docs/architecture.md"
+
+[[pages]]
+path = "/architecture/code-navigation/"
+title = "Code Navigation"
+source = "docs/code-navigation.md"
 
 [[pages]]
 path = "/architecture/internals/"

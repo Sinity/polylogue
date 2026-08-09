@@ -1,8 +1,10 @@
-"""Verify import layering and production SQLite writer ownership.
+"""Verify package responsibility, import layering, and SQLite writer ownership.
 
 Gate classification: **blocking architectural boundary check**.
 
-The writer doctrine is intentionally rooted in real mutation surfaces rather
+Every regular top-level package explains its responsibility in an
+IDE/agent-visible module docstring. The writer doctrine is intentionally rooted
+in real mutation surfaces rather
 than voluntary class labels.  Each archive-tier module that performs a direct
 SQL mutation must be inventoried in ``docs/plans/layering.yaml`` and declare
 its owned tier(s) in its module docstring.  A module spanning two tiers is
@@ -142,6 +144,42 @@ def _load_baseline(baseline_path: Path) -> set[tuple[str, str, str]]:
             if isinstance(target, str) and isinstance(file_rel, str) and isinstance(imp, str):
                 entries.add((target, file_rel, imp))
     return entries
+
+
+def _top_level_package_docstring_violations(repo_root: Path) -> list[dict[str, object]]:
+    """Return package roots that do not explain their responsibility.
+
+    Top-level package docstrings are the cheapest IDE- and agent-visible
+    architecture map.  Namespace-style directories without ``__init__.py``
+    remain valid; when a package root does define ``__init__.py``, its first
+    statement must be a real module docstring.
+    """
+
+    package_root = repo_root / "polylogue"
+    if not package_root.is_dir():
+        return []
+
+    violations: list[dict[str, object]] = []
+    for package_dir in sorted(path for path in package_root.iterdir() if path.is_dir()):
+        init_path = package_dir / "__init__.py"
+        if not init_path.is_file():
+            continue
+        rel = init_path.relative_to(repo_root).as_posix()
+        try:
+            tree = ast.parse(init_path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            violations.append(
+                {
+                    "file": rel,
+                    "rule": "package_docstring_unreadable",
+                    "detail": str(exc),
+                }
+            )
+            continue
+        docstring = ast.get_docstring(tree, clean=True)
+        if not docstring or not docstring.strip():
+            violations.append({"file": rel, "rule": "package_docstring_missing"})
+    return violations
 
 
 def _collect_imports(package_dir: Path, *, repo_root: Path) -> dict[str, set[str]]:
@@ -679,6 +717,9 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
 
 def _format_violation(violation: dict[str, object]) -> str:
     rule = str(violation.get("rule"))
+    if rule.startswith("package_docstring_"):
+        detail = f" ({violation['detail']})" if "detail" in violation else ""
+        return f"  {violation['file']}: {rule}{detail}"
     if rule.startswith("writer_module_"):
         detail = ""
         if "entrypoint" in violation:
@@ -763,6 +804,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
 
     violations.extend(_collect_writer_module_violations(repo_root, _writer_module_policy(manifest)))
+    violations.extend(_top_level_package_docstring_violations(repo_root))
 
     baseline_refs: set[str] = set()
     for rule in rules:

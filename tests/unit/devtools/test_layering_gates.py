@@ -271,3 +271,40 @@ def test_layering_imported_sql_cannot_hide_a_mutation(tmp_path: Path) -> None:
         and violation["rule"] == "writer_module_imported_sql_opaque"
         for violation in violations
     )
+
+
+def test_top_level_package_docstring_inventory_passes_for_production_tree() -> None:
+    assert verify_layering._top_level_package_docstring_violations(_REPO_ROOT) == []
+
+
+def test_top_level_package_docstring_inventory_rejects_missing_docstring(tmp_path: Path) -> None:
+    package = tmp_path / "polylogue" / "example"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from __future__ import annotations\n", encoding="utf-8")
+
+    namespace_package = tmp_path / "polylogue" / "rendering"
+    namespace_package.mkdir()
+    (namespace_package / "formatter.py").write_text('"""Formatter."""\n', encoding="utf-8")
+
+    assert verify_layering._top_level_package_docstring_violations(tmp_path) == [
+        {
+            "file": "polylogue/example/__init__.py",
+            "rule": "package_docstring_missing",
+        }
+    ]
+
+
+def test_layering_main_fails_closed_on_missing_package_docstring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    package = tmp_path / "polylogue" / "example"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "layering.yaml").write_text("rules: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+
+    assert verify_layering.main([]) == 1
+    assert "polylogue/example/__init__.py: package_docstring_missing" in capsys.readouterr().out

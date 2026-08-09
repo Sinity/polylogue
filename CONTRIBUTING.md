@@ -28,6 +28,12 @@ devtools status
 devtools render all
 ```
 
+Before choosing a module, read [Code Navigation](docs/code-navigation.md). It
+maps common changes to the package that owns their meaning, the production
+route that must be exercised, and the minimum verification expected. The
+ordered placement decision remains in
+[Architecture § Placement Rules](docs/architecture.md#placement-rules).
+
 ## Workflow
 
 All code changes land through feature branches and squash-merged pull requests
