@@ -266,3 +266,15 @@ def test_post_import_equality_digest_rejects_new_live_record(tmp_path: Path) -> 
         assert "record universe" in str(exc)
     else:
         raise AssertionError("post-import equality must reject a newly added record")
+
+
+def test_cli_returns_nonzero_when_canonical_contract_validation_fails(tmp_path: Path) -> None:
+    master = _issue()
+    master["metadata"]["acceptance_contract_v1"]["source_digest"] = "0" * 64
+    live = copy.deepcopy(master)
+    repository_path = tmp_path / "repository.jsonl"
+    live_path = tmp_path / "live.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(live_path, [live])
+
+    assert mod.main(["--repository", str(repository_path), "--live", str(live_path), "--json"]) == 1

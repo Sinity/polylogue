@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -337,7 +338,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.report:
                 args.report.write_text(json_dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     except ReconciliationError as exc:
-        raise SystemExit(str(exc)) from exc
+        print(str(exc), file=sys.stderr)
+        return 1
     print(json_dumps(result, indent=2, sort_keys=True))
     return 0
 
