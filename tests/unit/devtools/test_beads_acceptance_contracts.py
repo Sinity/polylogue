@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
+
+import pytest
+
+from devtools import regenerate_acceptance_contracts
 
 MODULE_PATH = Path(__file__).parents[3] / "devtools" / "beads_acceptance_contracts.py"
 spec = importlib.util.spec_from_file_location("beads_acceptance_contracts", MODULE_PATH)
@@ -11,16 +17,60 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    route_classes = {
+        "implementation": {
+            "class": "ImplementationRoute",
+            "contract_type": "implementation",
+            "dispatch": "production",
+        },
+        "live_operation": {
+            "class": "LiveOperationRoute",
+            "contract_type": "live_operation",
+            "dispatch": "production",
+        },
+        "audit": {"class": "AuditRoute", "contract_type": "audit", "dispatch": "read-only"},
+        "decision": {"class": "DecisionRoute", "contract_type": "decision", "dispatch": "decision"},
+        "documentation": {
+            "class": "DocumentationRoute",
+            "contract_type": "documentation",
+            "dispatch": "documentation",
+        },
+    }
+    monkeypatch.setattr(
+        mod,
+        "resolve_route",
+        lambda identifier: (
+            {
+                "bead_id": "polylogue-test",
+                **route_classes[identifier.removeprefix("test/")],
+                "identifier": identifier,
+                "targets": ["Test production route."],
+            }
+            if isinstance(identifier, str)
+            and identifier.startswith("test/")
+            and identifier.removeprefix("test/") in route_classes
+            else None
+        ),
+    )
+
+
 def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, Any]:
-    contract = {
+    route_dispatch = {
+        "audit": "read-only",
+        "decision": "decision",
+        "documentation": "documentation",
+    }.get(kind, "production")
+    contract: dict[str, Any] = {
         "schema_version": 1,
         "bead_id": "polylogue-test",
         "contract_type": kind,
         "risk": risk,
         "confidence": "high",
         "outcome": "The named behavior is observable through the production route.",
-        "routes": ["Exercise the real production entry point."],
-        "evidence": ["A red-before receipt records the defect."],
+        "routes": ["Test production route."],
+        "evidence": ["A test contract source."],
         "retained_scope": [],
         "verification": [
             "Run a focused production-route regression.",
@@ -30,6 +80,18 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         "safety": ["Dry-run and backup are required."]
         if risk == "durable-mutation" or kind == "live_operation"
         else [],
+        "route_spec": {
+            "mode": "named",
+            "identifier": f"test/{kind}",
+            "class": {
+                "live_operation": "LiveOperationRoute",
+                "audit": "AuditRoute",
+                "decision": "DecisionRoute",
+                "documentation": "DocumentationRoute",
+            }.get(kind, "ImplementationRoute"),
+            "dispatch": route_dispatch,
+        },
+        "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
         "closure": {
             "rule": "Close only with final-head evidence.",
             "disposition": "whole-or-explicit-partial",
@@ -37,7 +99,29 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         },
         "source_digest": "a" * 64,
     }
-    return {
+    if kind == "live_operation":
+        contract["receipt"] = {
+            "kind": "live-operation",
+            "requirement": "required",
+            "bindings": [
+                "archive_identity",
+                "operation",
+                "target",
+                "before_state",
+                "after_state",
+                "result_status",
+            ],
+        }
+    contract["evidence_spans"] = [
+        {
+            "source_field": "description",
+            "snapshot": "A test contract source.",
+            "snapshot_digest": hashlib.sha256(b"A test contract source.").hexdigest(),
+            "range": {"start": 0, "end": len(b"A test contract source.")},
+            "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
+        }
+    ]
+    issue = {
         "id": "polylogue-test",
         "title": "Test contract",
         "description": "A test contract source.",
@@ -48,8 +132,12 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         "issue_type": "task",
         "updated_at": "2026-08-07T00:00:00Z",
         "metadata": {"acceptance_contract_v1": contract},
-        "acceptance_criteria": mod.render(contract),
+        "acceptance_criteria": "",
     }
+    contract["dependency_digest"] = mod.dependency_digest(issue)
+    contract["source_digest"] = mod.source_digest(issue)
+    issue["acceptance_criteria"] = mod.render(contract)
+    return issue
 
 
 def test_valid_contract_round_trips() -> None:
@@ -70,11 +158,16 @@ def test_durable_mutation_requires_safety() -> None:
 def test_live_operation_requires_typed_receipt_verification() -> None:
     issue = _issue(kind="live_operation")
     contract = issue["metadata"]["acceptance_contract_v1"]
+    contract.pop("receipt")
     contract["source_digest"] = mod.source_digest(issue)
-    issue["acceptance_criteria"] = mod.render(contract)
-    assert "live_operation requires typed receipt verification" in mod.validate(issue)
+    issue["acceptance_criteria"] = "malformed contract must not render"
+    assert "receipt must be an object" in mod.validate(issue)
 
-    contract["verification"].append("Record the immutable typed apply receipt and result status.")
+    contract["receipt"] = {
+        "kind": "live-operation",
+        "requirement": "required",
+        "bindings": sorted(mod._REQUIRED_RECEIPT_BINDINGS),
+    }
     issue["acceptance_criteria"] = mod.render(contract)
     assert mod.validate(issue) == []
 
@@ -88,16 +181,18 @@ def test_live_operation_malformed_verification_is_reported_without_crashing() ->
     errors = mod.validate(issue)
 
     assert "verification must be a non-empty list of strings" in errors
-    assert "live_operation requires typed receipt verification" in errors
+    assert "receipt" not in " ".join(errors)
 
 
 def test_live_operation_requires_positive_receipt_clause() -> None:
     issue = _issue(kind="live_operation")
     contract = issue["metadata"]["acceptance_contract_v1"]
-    contract["verification"] = ["No receipt is required for this route."]
-    contract["source_digest"] = mod.source_digest(issue)
+    contract["verification"] = ["Print a receipt."]
+    issue["acceptance_criteria"] = mod.render(contract)
 
-    assert "live_operation requires typed receipt verification" in mod.validate(issue)
+    assert mod.validate(issue) == []
+    contract["receipt"]["bindings"] = ["operation"]
+    assert "receipt.bindings must include each required live-operation dimension exactly once" in mod.validate(issue)
 
 
 def test_closure_disposition_is_typed_and_rendered() -> None:
@@ -109,6 +204,14 @@ def test_closure_disposition_is_typed_and_rendered() -> None:
     errors = mod.validate(issue)
 
     assert "closure.disposition must be whole-or-explicit-partial" in errors
+
+
+def test_partial_closure_requires_a_successor() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["closure"]["successor_required_for_partial"] = False
+
+    assert "whole-or-explicit-partial requires successor_required_for_partial=true" in mod.validate(issue)
 
 
 def test_invalid_confidence_is_rejected() -> None:
@@ -140,6 +243,44 @@ def test_dependency_changes_invalidate_scope_digest() -> None:
     assert "source_digest does not match the Bead source snapshot" in mod.validate(issue)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "label"),
+    [("depends_on_id", 7, "depends_on_id"), ("type", ["blocks"], "type")],
+)
+def test_malformed_dependency_scalars_are_validation_errors_not_sort_tracebacks(
+    field: str, value: object, label: str
+) -> None:
+    issue = _issue()
+    issue["dependencies"] = [
+        {"depends_on_id": "polylogue-parent", "type": "blocks"},
+        {"depends_on_id": "polylogue-child", "type": "blocks"},
+    ]
+    issue["dependencies"][1][field] = value
+
+    errors = mod.validate(issue)
+
+    assert errors == [f"dependencies[1].{label} must be a string or null (got {type(value).__name__})"]
+
+
+def test_title_and_design_changes_invalidate_scope_digest() -> None:
+    issue = _issue()
+    issue["title"] = "Changed title"
+    assert "source_digest does not match the Bead source snapshot" in mod.validate(issue)
+
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    issue["design"] = "Changed design"
+    assert "source_digest does not match the Bead source snapshot" in mod.validate(issue)
+    assert contract["source_digest"] != mod.source_digest(issue)
+
+
+def test_byte_identical_canonical_source_remains_valid() -> None:
+    issue = _issue()
+    clone = dict(issue)
+    assert mod.source_digest(issue) == mod.source_digest(clone)
+    assert mod.dependency_digest(issue) == mod.dependency_digest(clone)
+
+
 def test_read_only_audit_contract_does_not_require_mutation_safety() -> None:
     issue = _issue(kind="audit", risk="read-only")
     contract = issue["metadata"]["acceptance_contract_v1"]
@@ -148,6 +289,15 @@ def test_read_only_audit_contract_does_not_require_mutation_safety() -> None:
 
     assert mod.validate(issue) == []
     assert "Safety:" not in issue["acceptance_criteria"]
+
+
+def test_decision_contract_does_not_promote_example_mutation_to_typed_route() -> None:
+    issue = _issue(kind="decision", risk="durable-mutation")
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["verification"] = ["Consider `polylogue ops maintenance blob-publications --abandon --yes` as an example."]
+    issue["acceptance_criteria"] = mod.render(contract)
+
+    assert mod.validate(issue) == []
 
 
 def test_placeholder_is_rejected() -> None:
@@ -159,12 +309,109 @@ def test_placeholder_is_rejected() -> None:
 
 
 def test_lowercase_evidence_fragment_is_rejected() -> None:
+    """Production dependency: acceptance policy -> validate; catches prose-only truncation authority."""
     issue = _issue()
     contract = issue["metadata"]["acceptance_contract_v1"]
-    contract["evidence"] = ["ed and capped test runs remain red."]
+    contract["evidence"] = [
+        "Measured evidence remains reconciled with this recorded population: ue sets that should remain red."
+    ]
     contract["source_digest"] = mod.source_digest(issue)
 
-    assert "evidence contains a lowercase fragment" in mod.validate(issue)
+    assert "evidence_spans[0].range text does not match the evidence item" in mod.validate(issue)
+
+
+def test_structured_incomplete_evidence_span_is_rejected() -> None:
+    """Production dependency: acceptance policy -> validate; catches trusting a false complete flag."""
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["evidence_spans"] = [{"complete": False}]
+
+    assert (
+        "evidence_spans[0] fields must be exactly source_field, snapshot, snapshot_digest, range, and text_digest"
+        in mod.validate(issue)
+    )
+
+
+def test_evidence_span_must_bind_to_the_declared_bead_source_field() -> None:
+    issue = _issue()
+    span = issue["metadata"]["acceptance_contract_v1"]["evidence_spans"][0]
+    span["snapshot"] = "fabricated evidence"
+    span["snapshot_digest"] = hashlib.sha256(span["snapshot"].encode("utf-8")).hexdigest()
+    span["range"] = {"start": 0, "end": len(span["snapshot"].encode("utf-8"))}
+    span["text_digest"] = span["snapshot_digest"]
+
+    assert "evidence_spans[0].snapshot does not match the Bead source field" in mod.validate(issue)
+
+
+def test_regenerator_rejects_evidence_absent_from_bead_source_fields() -> None:
+    issue = _issue()
+    issue["metadata"]["acceptance_contract_v1"]["evidence"] = ["fabricated evidence"]
+
+    with pytest.raises(ValueError, match="evidence is not present"):
+        regenerate_acceptance_contracts.regenerate([issue], ["polylogue-test"])
+
+
+def test_regenerator_uses_utf8_byte_offsets_for_source_spans() -> None:
+    issue = _issue()
+    issue["description"] = "prefix π evidence suffix"
+    evidence = "π evidence"
+
+    span = regenerate_acceptance_contracts._span("description", issue["description"], evidence)
+
+    assert span["source_field"] == "description"
+    assert span["range"] == {"start": len(b"prefix "), "end": len("prefix π evidence".encode())}
+    assert span["snapshot_digest"] == hashlib.sha256(issue["description"].encode()).hexdigest()
+    assert span["text_digest"] == hashlib.sha256(evidence.encode()).hexdigest()
+
+
+def test_truncated_snapshot_range_is_rejected() -> None:
+    """Production dependency: acceptance policy -> validate; catches a range past truncated snapshot bytes."""
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    span = contract["evidence_spans"][0]
+    span["snapshot"] = span["snapshot"][:-6]
+
+    assert "evidence_spans[0].range exceeds the snapshot byte length" in mod.validate(issue)
+
+
+def test_route_dispatch_must_match_contract_type() -> None:
+    """Production dependency: acceptance policy -> validate; catches live work routed as a decision."""
+    issue = _issue(kind="live_operation")
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["route_spec"]["dispatch"] = "decision"
+    issue["acceptance_criteria"] = mod.render(contract)
+
+    assert "route_spec.dispatch 'decision' is incompatible with contract_type 'live_operation'" in mod.validate(issue)
+
+
+def test_route_authority_requires_a_structured_identifier() -> None:
+    """Production dependency: acceptance policy -> validate; catches prose standing in for route identity."""
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["route_spec"].pop("identifier")
+    issue["acceptance_criteria"] = "untrusted prose"
+
+    assert "route_spec.identifier must be a non-empty named identifier" in mod.validate(issue)
+
+
+def test_unknown_route_identifier_is_rejected_by_the_committed_registry() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["route_spec"]["identifier"] = "acceptance/made-up-route"
+
+    assert "route_spec.identifier 'acceptance/made-up-route' is not registered" in mod.validate(issue)
+
+
+def test_registered_route_class_and_targets_are_authoritative() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["route_spec"]["class"] = "LiveOperationRoute"
+    contract["routes"] = ["A different route authority."]
+
+    errors = mod.validate(issue)
+
+    assert "route_spec.class does not match the contract_type" in errors
+    assert "route_spec targets do not match the registered route authority" in errors
 
 
 def test_render_drift_is_rejected() -> None:
@@ -187,6 +434,98 @@ def test_scalar_clause_and_stale_digest_are_rejected() -> None:
     assert "source_digest does not match the Bead source snapshot" in mod.validate(issue)
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("outcome", None),
+        ("routes", True),
+        ("evidence", 3),
+        ("verification", {"route": "bad"}),
+        ("anti_vacuity", ["ok", 7]),
+        ("retained_scope", None),
+        ("safety", {"backup": True}),
+    ],
+)
+def test_malformed_shapes_return_validation_errors_without_render_tracebacks(key: str, value: object) -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract[key] = value
+
+    errors = mod.validate(issue)
+
+    assert errors
+    assert all(isinstance(error, str) for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("contract_type",), []),
+        (("risk",), {}),
+        (("confidence",), ["high"]),
+        (("route_spec", "mode"), []),
+        (("route_spec", "dispatch"), {}),
+        (("route_spec", "class"), []),
+        (("verification_route", "manager"), []),
+        (("verification_route", "focused"), {}),
+        (("verification_route", "default"), []),
+        (("closure", "disposition"), {}),
+    ],
+)
+def test_untrusted_scalar_membership_values_fail_closed(path: tuple[str, ...], value: object) -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    target: Any = contract
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    errors = mod.validate(issue)
+
+    assert errors
+    assert all(isinstance(error, str) for error in errors)
+
+
+@pytest.mark.parametrize("field", ["kind", "requirement"])
+def test_untrusted_receipt_scalar_membership_values_fail_closed(field: str) -> None:
+    issue = _issue(kind="live_operation")
+    receipt = issue["metadata"]["acceptance_contract_v1"]["receipt"]
+    receipt[field] = []
+
+    errors = mod.validate(issue)
+
+    assert errors
+    assert all(isinstance(error, str) for error in errors)
+
+
+def test_optional_null_lists_use_the_empty_list_canonical_form() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["retained_scope"] = None
+
+    assert "retained_scope must be a list of strings; use [] when empty" in mod.validate(issue)
+
+
+def test_generic_route_placeholder_is_rejected_at_specification_time() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["routes"] = ["Exercise the named production route where applicable."]
+
+    assert "routes contains a generic placeholder; use named route fields" in mod.validate(issue)
+
+
+def test_manifest_loader_rejects_shrinkage_and_invalid_rows(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text("polylogue-test\n", encoding="utf-8")
+
+    try:
+        mod.load_manifest(manifest)
+    except SystemExit as exc:
+        assert "manifest inventory is invalid" in str(exc)
+    else:
+        raise AssertionError("shrunk manifest must fail closed")
+
+
 def test_manifest_is_required_and_cannot_shrink(tmp_path: Path) -> None:
     issues = tmp_path / "issues.jsonl"
     issues.write_text("{}\n", encoding="utf-8")
@@ -207,3 +546,78 @@ def test_manifest_is_required_and_cannot_shrink(tmp_path: Path) -> None:
         assert "manifest inventory is invalid" in str(exc)
     else:
         raise AssertionError("shrunk manifest must fail closed")
+
+
+def test_committed_route_registry_has_exact_manifest_population() -> None:
+    required = mod.load_manifest(mod._DEFAULT_MANIFEST)
+
+    assert mod.validate_route_registry(required) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("bead_id", None, "must bind one non-empty manifest Bead id"),
+        ("class", "*", "invalid class authority"),
+        ("contract_type", "*", "invalid contract_type authority"),
+        ("dispatch", "*", "invalid dispatch authority"),
+    ],
+)
+def test_route_registry_rejects_unbound_or_wildcard_authority(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: object, expected: str
+) -> None:
+    registry: dict[str, dict[str, Any]] = {
+        "test/one": {
+            "bead_id": "polylogue-one",
+            "class": "ImplementationRoute",
+            "contract_type": "implementation",
+            "dispatch": "production",
+            "targets": ["named target"],
+        },
+        "test/two": {
+            "bead_id": "polylogue-two",
+            "class": "ImplementationRoute",
+            "contract_type": "implementation",
+            "dispatch": "production",
+            "targets": ["named target"],
+        },
+    }
+    registry["test/one"][field] = value
+    monkeypatch.setattr(mod, "load_registry", lambda: registry)
+
+    errors = mod.validate_route_registry(("polylogue-one", "polylogue-two"))
+
+    assert any(expected in error for error in errors)
+
+
+def test_route_registry_rejects_duplicate_and_unlisted_bindings(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = {
+        "bead_id": "polylogue-one",
+        "class": "ImplementationRoute",
+        "contract_type": "implementation",
+        "dispatch": "production",
+        "targets": ["named target"],
+    }
+    monkeypatch.setattr(mod, "load_registry", lambda: {"test/one": entry, "test/two": dict(entry)})
+
+    errors = mod.validate_route_registry(("polylogue-one", "polylogue-two"))
+
+    assert any("duplicate Bead bindings" in error for error in errors)
+    assert any("population mismatch" in error for error in errors)
+
+
+def test_validator_reports_route_registry_errors_separately_from_bead_failures(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(mod, "load_manifest", lambda path: ("polylogue-required",))
+    monkeypatch.setattr(mod, "validate_route_registry", lambda required: ["unbound route entry"])
+    monkeypatch.setattr(mod, "load", lambda path: [])
+
+    assert mod.main(["--json"]) == 1
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is False
+    assert report["dispatch_blocked"] is True
+    assert report["route_registry_errors"] == ["unbound route entry"]
+    assert report["failures"] == {"polylogue-required": ["manifest id missing from issues or contract"]}
+    assert all(item["id"] != "__route_registry__" for item in report["regeneration_required"])

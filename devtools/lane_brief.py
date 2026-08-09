@@ -42,6 +42,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import devtools.beads_acceptance_contracts as acceptance_contracts
+from polylogue.core.json import JSONDecodeError
+from polylogue.core.json import loads as strict_json_loads
+
 try:
     from devtools.bead_cluster import _FILE_PAT as _LANE_FILE_PAT
 except ImportError:  # pragma: no cover -- defensive: keep working if bead_cluster moves/breaks
@@ -63,6 +67,7 @@ _ANTI_VACUITY_CONTRACT = (
     "a FAILED lane even if green. State the implementation mutation that would make "
     "your test fail."
 )
+_MISSING_CONTRACT_ERROR = "missing metadata.acceptance_contract_v1"
 
 _HAZARDS = (
     "commit every logical chunk (worktree auto-clean destroys uncommitted work)",
@@ -111,6 +116,11 @@ class BeadRecord:
     notes_tail: str = ""
     dependencies: list[str] = field(default_factory=list)
     contract_confidence: str | None = None
+    contract_errors: list[str] = field(default_factory=list)
+    contract_source_digest: str | None = None
+    computed_source_digest: str | None = None
+    contract_dependency_digest: str | None = None
+    computed_dependency_digest: str | None = None
     error: str = ""
 
 
@@ -146,32 +156,76 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
     if result.returncode != 0:
         return BeadRecord(id=bead_id, found=False, error=result.stderr.strip()[:200] or "bd show failed")
     try:
-        payload = json.loads(result.stdout)
-        record = payload[0] if isinstance(payload, list) else payload
-    except (json.JSONDecodeError, IndexError, TypeError) as exc:
+        payload = strict_json_loads(result.stdout)
+    except (JSONDecodeError, TypeError) as exc:
         return BeadRecord(id=bead_id, found=False, error=f"unparseable bd show output: {exc}")
+    if isinstance(payload, list):
+        if len(payload) != 1:
+            return BeadRecord(
+                id=bead_id,
+                found=False,
+                error=f"bd show returned {len(payload)} records; expected exactly one for {bead_id}",
+            )
+        record = payload[0]
+    else:
+        record = payload
+    if not isinstance(record, dict):
+        return BeadRecord(
+            id=bead_id, found=False, error=f"unparseable bd show output: expected object, got {type(record).__name__}"
+        )
+    record_id = record.get("id")
+    if not isinstance(record_id, str) or not record_id:
+        return BeadRecord(id=bead_id, found=False, error="bd show response is missing a non-empty id")
+    if record_id != bead_id:
+        return BeadRecord(
+            id=bead_id,
+            found=False,
+            error=f"bd show response id {record_id!r} does not match requested id {bead_id!r}",
+        )
 
-    notes = record.get("notes") or ""
+    notes_value = record.get("notes")
+    notes = notes_value if isinstance(notes_value, str) else ""
     metadata = record.get("metadata")
     if isinstance(metadata, str):
         try:
-            metadata = json.loads(metadata)
-        except json.JSONDecodeError:
+            metadata = strict_json_loads(metadata)
+        except JSONDecodeError:
             metadata = {}
     contract = metadata.get("acceptance_contract_v1") if isinstance(metadata, dict) else None
     confidence = contract.get("confidence") if isinstance(contract, dict) else None
+    contract_errors = acceptance_contracts.validate(record) if isinstance(contract, dict) else [_MISSING_CONTRACT_ERROR]
+    try:
+        computed_source_digest = acceptance_contracts.source_digest(record)
+        computed_dependency_digest = acceptance_contracts.dependency_digest(record)
+    except acceptance_contracts.DependencyProjectionError as exc:
+        contract_errors = sorted({*contract_errors, str(exc)})
+        computed_source_digest = None
+        computed_dependency_digest = None
+    contract_source_digest = contract.get("source_digest") if isinstance(contract, dict) else None
+    contract_dependency_digest = contract.get("dependency_digest") if isinstance(contract, dict) else None
+    priority = record.get("priority")
+    issue_type = record.get("issue_type")
+    title = record.get("title")
+    description = record.get("description")
+    design = record.get("design")
+    acceptance_criteria = record.get("acceptance_criteria")
     return BeadRecord(
-        id=record.get("id", bead_id),
+        id=bead_id,
         found=True,
-        priority=record.get("priority"),
-        issue_type=record.get("issue_type"),
-        title=record.get("title", ""),
-        description=record.get("description") or "",
-        design=record.get("design") or "",
-        acceptance_criteria=record.get("acceptance_criteria") or "",
+        priority=priority if isinstance(priority, int) and not isinstance(priority, bool) else None,
+        issue_type=issue_type if isinstance(issue_type, str) else None,
+        title=title if isinstance(title, str) else "",
+        description=description if isinstance(description, str) else "",
+        design=design if isinstance(design, str) else "",
+        acceptance_criteria=acceptance_criteria if isinstance(acceptance_criteria, str) else "",
         notes_tail=notes[-500:],
         dependencies=_dep_labels(record),
         contract_confidence=confidence if isinstance(confidence, str) else None,
+        contract_errors=contract_errors,
+        contract_source_digest=contract_source_digest if isinstance(contract_source_digest, str) else None,
+        computed_source_digest=computed_source_digest,
+        contract_dependency_digest=contract_dependency_digest if isinstance(contract_dependency_digest, str) else None,
+        computed_dependency_digest=computed_dependency_digest,
     )
 
 
@@ -345,9 +399,27 @@ def _render_markdown(
             continue
         lines.append(f"### {r.id} -- P{r.priority} {r.issue_type} -- {r.title}")
         lines.append("")
-        if r.contract_confidence == "planner-review":
+        if r.contract_errors:
+            lines.append("**DISPATCH BLOCKED:** the current acceptance contract is invalid or stale.")
+            lines.append("")
+            for error in r.contract_errors:
+                lines.append(f"- {error}")
+            lines.append("")
+        elif r.contract_confidence == "planner-review":
             lines.append(
                 "**DISPATCH BLOCKED:** this acceptance contract requires planner review before implementation dispatch."
+            )
+            lines.append("")
+        if r.contract_source_digest or r.computed_source_digest:
+            lines.append(
+                f"**Source digest:** contract={r.contract_source_digest or '(missing)'}; "
+                f"current={r.computed_source_digest or '(unavailable)'}"
+            )
+            lines.append("")
+        if r.contract_dependency_digest or r.computed_dependency_digest:
+            lines.append(
+                f"**Dependency digest:** contract={r.contract_dependency_digest or '(missing)'}; "
+                f"current={r.computed_dependency_digest or '(unavailable)'}"
             )
             lines.append("")
         lines.append("**Description:**")
@@ -480,7 +552,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     repo_root = _repo_root()
+    try:
+        acceptance_contracts.load_manifest(acceptance_contracts._DEFAULT_MANIFEST)
+    except SystemExit as exc:
+        print(f"DISPATCH BLOCKED: {exc}", file=sys.stderr)
+        return 2
+    required_ids = set(acceptance_contracts.load_manifest(acceptance_contracts._DEFAULT_MANIFEST))
     records = [_fetch_bead(bead_id) for bead_id in args.bead_ids]
+    for record in records:
+        if record.id not in required_ids:
+            record.contract_errors = [error for error in record.contract_errors if error != _MISSING_CONTRACT_ERROR]
 
     combined_text = _combined_text(records)
     paths = _extract_paths(combined_text)
@@ -508,7 +589,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print(brief)
 
-    return 2 if any(r.contract_confidence == "planner-review" for r in records) else 0
+    return (
+        2 if any(not r.found or r.contract_errors or r.contract_confidence == "planner-review" for r in records) else 0
+    )
 
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from devtools import lane_brief
+from devtools import beads_acceptance_contracts, lane_brief
 
 
 def _bd_show_record(**overrides: object) -> dict[str, object]:
@@ -23,6 +25,74 @@ def _bd_show_record(**overrides: object) -> dict[str, object]:
         "dependencies": [],
     }
     record.update(overrides)
+    return record
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        beads_acceptance_contracts,
+        "resolve_route",
+        lambda identifier: (
+            {
+                "bead_id": "polylogue-a",
+                "class": "ImplementationRoute",
+                "contract_type": "implementation",
+                "dispatch": "production",
+                "targets": ["Test production route."],
+            }
+            if identifier == "test/production"
+            else None
+        ),
+    )
+
+
+def _valid_contract_record(confidence: str = "high") -> dict[str, object]:
+    record = _bd_show_record(
+        description="A source description with observable scope.",
+        design="The design is recorded.",
+        dependencies=[{"depends_on_id": "polylogue-parent", "type": "blocks"}],
+    )
+    contract: dict[str, Any] = {
+        "schema_version": 1,
+        "bead_id": "polylogue-a",
+        "contract_type": "implementation",
+        "risk": "ordinary",
+        "confidence": confidence,
+        "outcome": "The behavior is observable through the production route.",
+        "routes": ["Test production route."],
+        "evidence": ["A source description with observable scope."],
+        "retained_scope": [],
+        "verification": ["Run the focused regression."],
+        "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
+        "anti_vacuity": ["Removing the guard makes the regression fail."],
+        "safety": [],
+        "route_spec": {
+            "mode": "named",
+            "identifier": "test/production",
+            "class": "ImplementationRoute",
+            "dispatch": "production",
+        },
+        "closure": {
+            "rule": "Close only with final-head evidence.",
+            "disposition": "whole-or-explicit-partial",
+            "successor_required_for_partial": True,
+        },
+    }
+    source_snapshot = "A source description with observable scope."
+    contract["evidence_spans"] = [
+        {
+            "source_field": "description",
+            "snapshot": source_snapshot,
+            "snapshot_digest": hashlib.sha256(source_snapshot.encode("utf-8")).hexdigest(),
+            "range": {"start": 0, "end": len(contract["evidence"][0])},
+            "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
+        }
+    ]
+    record["metadata"] = {"acceptance_contract_v1": contract}
+    contract["dependency_digest"] = beads_acceptance_contracts.dependency_digest(record)
+    contract["source_digest"] = beads_acceptance_contracts.source_digest(record)
+    record["acceptance_criteria"] = beads_acceptance_contracts.render(contract)
     return record
 
 
@@ -51,6 +121,59 @@ def test_fetch_bead_parses_serialized_contract_confidence(monkeypatch: pytest.Mo
     assert lane_brief._fetch_bead("polylogue-a").contract_confidence == "planner-review"
 
 
+def test_fetch_bead_validates_full_contract_and_both_digests(monkeypatch: pytest.MonkeyPatch) -> None:
+    record = _valid_contract_record()
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: MagicMock(returncode=0, stdout=json.dumps([record]), stderr=""),
+    )
+
+    fetched = lane_brief._fetch_bead("polylogue-a")
+
+    assert fetched.contract_errors == []
+    assert fetched.contract_source_digest == fetched.computed_source_digest
+    assert fetched.contract_dependency_digest == fetched.computed_dependency_digest
+
+
+def test_fetch_bead_refuses_malformed_dependency_scalars_without_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
+    record = _valid_contract_record()
+    record["dependencies"] = [
+        {"depends_on_id": "polylogue-parent", "type": "blocks"},
+        {"depends_on_id": 7, "type": "blocks"},
+    ]
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: MagicMock(returncode=0, stdout=json.dumps([record]), stderr=""),
+    )
+
+    fetched = lane_brief._fetch_bead("polylogue-a")
+
+    assert fetched.contract_errors == ["dependencies[1].depends_on_id must be a string or null (got int)"]
+    assert fetched.computed_source_digest is None
+    assert fetched.computed_dependency_digest is None
+
+
+@pytest.mark.parametrize("field", ["title", "design", "dependencies"])
+def test_fetch_bead_blocks_source_or_dependency_drift(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+    record = _valid_contract_record()
+    if field == "dependencies":
+        record[field] = [{"depends_on_id": "polylogue-other", "type": "blocks"}]
+    else:
+        record[field] = "drifted source"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: MagicMock(returncode=0, stdout=json.dumps([record]), stderr=""),
+    )
+
+    fetched = lane_brief._fetch_bead("polylogue-a")
+
+    assert fetched.contract_errors
+    assert any("digest" in error for error in fetched.contract_errors)
+
+
 @pytest.mark.parametrize("confidence, expected_rc", [("planner-review", 2), ("high", 0), ("medium", 0)])
 def test_main_dispatches_only_non_planner_contracts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, confidence: str, expected_rc: int
@@ -71,6 +194,60 @@ def test_main_dispatches_only_non_planner_contracts(
     )
 
 
+@pytest.mark.parametrize("confidence", ["high", "medium"])
+def test_main_blocks_invalid_non_planner_contracts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, confidence: str
+) -> None:
+    monkeypatch.setattr(lane_brief, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        lane_brief,
+        "_fetch_bead",
+        lambda bead_id: lane_brief.BeadRecord(
+            id=bead_id, found=True, contract_confidence=confidence, contract_errors=["source digest mismatch"]
+        ),
+    )
+    monkeypatch.setattr(lane_brief, "_load_bd_export", lambda repo_root, tmpdir: [])
+    monkeypatch.setattr(lane_brief, "_verify_footprint", lambda repo_root, paths: [])
+    monkeypatch.setattr(lane_brief, "_find_prior_art", lambda records, paths, exclude_ids: [])
+    monkeypatch.setattr(lane_brief, "_recent_master_commits", lambda repo_root, paths, days: [])
+
+    assert lane_brief.main(["polylogue-a", "--out", str(tmp_path / "brief.md"), "--tmpdir", str(tmp_path)]) == 2
+    assert "DISPATCH BLOCKED" in (tmp_path / "brief.md").read_text()
+
+
+def test_main_allows_non_manifest_bead_without_contract(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(lane_brief, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: ("polylogue-manifest",))
+    monkeypatch.setattr(
+        lane_brief,
+        "_fetch_bead",
+        lambda bead_id: lane_brief.BeadRecord(id=bead_id, found=True, title="Uncontracted non-manifest bead"),
+    )
+    monkeypatch.setattr(lane_brief, "_load_bd_export", lambda repo_root, tmpdir: [])
+    monkeypatch.setattr(lane_brief, "_verify_footprint", lambda repo_root, paths: [])
+    monkeypatch.setattr(lane_brief, "_find_prior_art", lambda records, paths, exclude_ids: [])
+    monkeypatch.setattr(lane_brief, "_recent_master_commits", lambda repo_root, paths, days: [])
+
+    assert (
+        lane_brief.main(["polylogue-non-manifest", "--out", str(tmp_path / "brief.md"), "--tmpdir", str(tmp_path)]) == 0
+    )
+    assert "DISPATCH BLOCKED" not in (tmp_path / "brief.md").read_text()
+
+
+def test_main_blocks_when_required_manifest_is_invalid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(lane_brief, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        beads_acceptance_contracts,
+        "load_manifest",
+        lambda path: (_ for _ in ()).throw(SystemExit("manifest inventory is invalid")),
+    )
+
+    assert lane_brief.main(["polylogue-a", "--tmpdir", str(tmp_path)]) == 2
+    assert "manifest inventory is invalid" in capsys.readouterr().err
+
+
 def test_fetch_bead_reports_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         subprocess,
@@ -80,6 +257,21 @@ def test_fetch_bead_reports_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     record = lane_brief._fetch_bead("polylogue-missing")
     assert not record.found
     assert "bd: no such bead" in record.error
+
+
+def test_fetch_bead_rejects_a_wrong_id_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production dependency: lane-brief -> bd show adapter; catches accepting the first unintended record."""
+    wrong = _bd_show_record(id="polylogue-unintended")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: MagicMock(returncode=0, stdout=json.dumps([wrong]), stderr=""),
+    )
+
+    fetched = lane_brief._fetch_bead("polylogue-requested")
+
+    assert not fetched.found
+    assert "does not match requested id 'polylogue-requested'" in fetched.error
 
 
 def test_dep_labels_prefers_depends_on_id() -> None:

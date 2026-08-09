@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools import verify_bead_graph
+from devtools import beads_acceptance_contracts, verify_bead_graph
 
 EXPECTED_REINDEX_LIVE_PROOF_BLOCKING_EDGES = frozenset(
     {
@@ -41,7 +41,7 @@ def _issue(
     acceptance_criteria: str = "some AC",
     dependencies: list[dict[str, str]] | None = None,
     priority: int = 2,
-    metadata: dict[str, object] | None = None,
+    metadata: dict[str, object] | str | None = None,
 ) -> dict[str, object]:
     return {
         "id": id,
@@ -171,7 +171,7 @@ def test_main_exits_nonzero_and_reports_malformed_wave(
         "_run_bd_list_all",
         lambda: [_issue("polylogue-a", labels=["wave:later"])],
     )
-    monkeypatch.setattr(verify_bead_graph, "REQUIRED_CONTRACT_IDS", frozenset())
+    monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: ())
 
     rc = verify_bead_graph.main([])
 
@@ -186,7 +186,7 @@ def test_main_exits_zero_when_all_waves_are_well_formed(
 ) -> None:
     monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (True, ""))
     monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: [_issue("polylogue-a", labels=["wave:1"])])
-    monkeypatch.setattr(verify_bead_graph, "REQUIRED_CONTRACT_IDS", frozenset())
+    monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: ())
     monkeypatch.setattr(verify_bead_graph, "REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES", ())
     monkeypatch.setattr(verify_bead_graph, "REINDEX_PROOF_EDGE_GUARD_PHASE_BINDINGS", ())
 
@@ -200,10 +200,42 @@ def test_main_exits_zero_when_all_waves_are_well_formed(
     )
 
 
+def test_main_reports_manifest_load_failure_without_invoking_live_graph_commands(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        beads_acceptance_contracts,
+        "load_manifest",
+        lambda path: (_ for _ in ()).throw(SystemExit("manifest inventory is invalid")),
+    )
+    monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: (_ for _ in ()).throw(AssertionError()))
+
+    rc = verify_bead_graph.main(["--json"])
+
+    assert rc == 1
+    assert json.loads(capsys.readouterr().out)["error"] == "manifest inventory is invalid"
+
+
 def test_invalid_structured_contract_is_reported() -> None:
     issue = _issue("polylogue-a", metadata={"acceptance_contract_v1": {"schema_version": 1}})
     findings = verify_bead_graph.collect_findings([issue])
     assert any(f.kind == "invalid-acceptance-contract" and f.bead_id == "polylogue-a" for f in findings)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected"),
+    [
+        (
+            json.dumps({"acceptance_contract_v1": {"schema_version": 1}}),
+            {"acceptance_contract_v1": {"schema_version": 1}},
+        ),
+        ("{malformed", {}),
+        (json.dumps(["not an object"]), {}),
+    ],
+)
+def test_metadata_parses_serialized_objects_and_rejects_non_objects(metadata: str, expected: dict[str, object]) -> None:
+    assert verify_bead_graph._metadata(_issue("polylogue-a", metadata=metadata)) == expected
 
 
 def test_required_contract_removal_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,6 +243,16 @@ def test_required_contract_removal_is_reported(monkeypatch: pytest.MonkeyPatch) 
         [_issue("polylogue-a")], required_contract_ids=frozenset({"polylogue-a"})
     )
     assert [f.kind for f in findings] == ["missing-required-acceptance-contract"]
+
+
+def test_absent_required_contract_bead_is_reported() -> None:
+    findings = verify_bead_graph.collect_findings([], required_contract_ids=frozenset({"polylogue-missing"}))
+
+    assert findings == [
+        verify_bead_graph.Finding(
+            "missing-required-acceptance-contract", "polylogue-missing", "manifest Bead is absent"
+        )
+    ]
 
 
 def test_parent_child_validation_allows_zero_or_one_canonical_parent() -> None:
@@ -357,7 +399,7 @@ def test_main_enforces_reindex_edge_policy(monkeypatch: pytest.MonkeyPatch, caps
     ]
     monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (True, "cycles clean"))
     monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: issues)
-    monkeypatch.setattr(verify_bead_graph, "REQUIRED_CONTRACT_IDS", frozenset())
+    monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: ())
 
     assert verify_bead_graph.main(["--json"]) == 1
     payload = json.loads(capsys.readouterr().out)

@@ -1,0 +1,2188 @@
+{
+  "manifest_count": 218,
+  "manifest_digest": "703df11c81dae8af6d7106bc4737502ca8baddc9013916bbb68922696d8206b5",
+  "routes": [
+    {
+      "bead_id": "polylogue-01fe",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-01fe",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `get/read`, `origin bogus-origin`, `GET /api/sessions?query=x&origin=bogus-origin`, `unknown-export`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-075v",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-075v",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `route/DOM`, `project/title/uuid.`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-07pt",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-07pt",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/build.test.js`, `timing/race`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-0nvk",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-0nvk",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `audits-2026-07-31/leak-surfaces.html`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-0v4tn",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-0v4tn",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `300/300`, `100/100`, `i3zo/PR`, `.agent/scratch/reindex-baseline-2026-08-03.md`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-194qk",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-194qk",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/sources/test_source_laws.py`, `sources/dispatch.py`, `detection/list`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-1c6j",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-1c6j",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/cli-reference.md`, `docs/schemas/cli-output/search-envelope.schema.json`, `hits/total/limit/offset/query/retrieval_lane`, `items/limit/mode/next_cursor/next_offset/offset/origin/query/retrieval_lane/total`, `polylogue --format json`, `env -u POLYLOGUE_ARCHIVE_ROOT polylogue --no-daemon --limit 3 --json find 'frozen_clock'`, `GET /api/sessions?query=frozen_clock&limit=3`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-1fijp",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-1fijp",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `sources/live/batch.py`, `sources/drive/__init__.py`, `2/5`, `rotate/vanish`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-1k9l",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-1k9l",
+      "targets": [
+        "Exercise the real production entry point for “111 raws stuck with parse_error (59 truncated-JSONL claude-code, 25 no-session unknown-export, 19 CAS-frontier, 6 decode, 2 hermes)”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-1suq6",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-1suq6",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/cli/test_status.py`, `tests/unit/daemon/test_daemon_status.py`, `index.db/source.db`, `tests/infra`, `subprocess/git`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-26hv",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-26hv",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `quarantine-2026-07/6a3f9296-3500-83eb-b31b-f4ccf9720574.md`, `id/content`, `quarantine-2026-07/2026-06-27_22-19-13_Claude_Chat_Optimizing_NixOS_Configuration_Blueprints_-_Claude_-_https.md`, `browser-spool-2026-07-10/chatgpt/6a506bcf-852c-83eb-82e6-e23ac8a418e1-d42dead8db48.json`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-2ara",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-2ara",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `closes/unclaims`, `.beads/issues.jsonl`, `feature/devtools/worktree-import-guard`, `reviewed/finished/merged`, `bd invocations from stale worktrees silently revert recent bead writes (live incident: 5 reverts in one hour)`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-2bc2",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-2bc2",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `cyclic/duplicate`, `dedupe/repair`, `bd list --all infinite recursion: tree renderer loops on cyclic/duplicate parent-child edge, wrote 54GB before kill`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-2jga",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-2jga",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/plans/test-closure-matrix.yaml`, `devtools/verify_closure_matrix.py`, `target_files/representative_tests`, `moved/renamed`, `git history (d068d6482, 054dfa9e1, dc6fa632a) shows only refactor/consolidation`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-2kcd",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-2kcd",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `.agent/archive/retired-demos/ handoff files`, `audits-2026-07-31/leak-surfaces.html`, `b4cs/3loh.`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-2t0vp",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-2t0vp",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `codex/sessions`, `mid-rewrite/truncation`, `append/full`, `lb39z/w6hql`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-2ux5m",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-2ux5m",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `BeadDict/JSONL`, `devtools/bead_cluster.py`, `.beads/issues.jsonl`, `devtools/bead_loader.py`, `bd ready --json`, `bd list --json`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-34h3",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-34h3",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `api/archive.py`, `cli/commands/status.py`, `operations/archive_debt.py`, `security/excision.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-3a61",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-3a61",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/core/test_json.py`, `tests/unit/core/test_filters_props.py`, `origins/exclusions`, `try/except`, `com/Sinity/polylogue/pull/3528`, `feature/test/fix-tautological-assertions-3a61`, `assert len(result) >= 1`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-3loh",
+      "class": "ProcessRoute",
+      "contract_type": "process",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-3loh",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `archive/.`, `.beads-hooks/pre-commit`, `devtools/pre_push_gate.py`, `polylogue/security/secret_scan.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-3szyi",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-3szyi",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `storage/sqlite/archive_tiers/common.py`, `storage/sqlite/query_objects.py`, `status/interrupted-vs-cancelled`, `luck/discipline`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-3ycw",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-3ycw",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `seed/tour`, `fresh/cold`, `file/dir`, `0/expected`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-4j9j",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-4j9j",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `feature/perf/pipelined-rebuild-parse-apply`, `dedup/content-cache`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-4n8k",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-4n8k",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `origin/master`, `find/read/analyze/mark/select/delete/continue`, `sessions/actions/messages/observed-events`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-4p1.4",
+      "class": "DecisionRoute",
+      "contract_type": "decision",
+      "dispatch": "decision",
+      "identifier": "acceptance/polylogue-4p1.4",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `message/session`, `surfaces/payloads.py`, `archive/message/models.py`, `target_ref/anchor/actions`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-4uzoo",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-4uzoo",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `pagination/plan_count`, `polylogue/storage/raw_authority.py`, `plan_count/post_plan_count`, `census/blocker`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-54gj",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-54gj",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `x.com/twitter.com`, `archiveProviderForUrl/conversationIdForUrl`, `GraphQL/REST`, `GrokBackfillAdapter/grok.js`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-59qy",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-59qy",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/core/test_schema_generation.py`, `tests/unit/storage/test_insight_materialization_laws.py`, `tests/unit/sources/test_parsers_props.py`, `xfail/skip`, `tests/unit/cost/test_contract_suite.py`, `devtools test tests/unit/core/test_schema_generation.py -v -rs -> 32 passed, 1 SKIPPED`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-5fh4",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-5fh4",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `page-cache/mmap`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-5gjre",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-5gjre",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `backfill/GC`, `acquired_reachable_count/acquired_unreachable_count`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-5jnq",
+      "class": "ProcessRoute",
+      "contract_type": "process",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-5jnq",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `.agent/scratch/live/beads-handling-design-2026-07-31.html`, `descriptions/design/acceptance-criteria`, `insights/work_effects.py`, `.beads/issues.jsonl`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-5slz",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-5slz",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/search.md`, `webui/facet`, `before/after.`, `polylogue/archive/query/retrieval_search.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-5tkbt",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-5tkbt",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `lkrc/hjpx`, `.agent/scratch/archive-invariants-2026-08-03.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-5yig",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-5yig",
+      "targets": [
+        "Exercise the real production entry point for “19 prefix-sharing children whose earliest message predates the branch-point timestamp”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-6j9c",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-6j9c",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `models/gemini-2.5-pro`, `models/gemini-3-pro-preview`, `1.25/10.0`, `input/output`, `python3 -c \"from polylogue.archive.semantic.pricing import _normalize_model; print(_normalize_model('models/gemini-2.5-pro'))\"`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-6kur",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-6kur",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `repair/maintenance`, `storage/repair.py`, `storage/sqlite/connection_profile.py`, `FK/CASCADE`, `claude_workflow`, `sinex_publication`, `repair.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-6olqi",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-6olqi",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/schema.md`, `copy-forward/consent`, `benign-DDL/SEMANTIC_REPARSE`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-6ou1q",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-6ou1q",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/cost/test_contract_suite.py`, `tests/unit/cost/test_outlook.py`, `outlook/plans`, `duplicate/overlapping`, `CLI/MCP`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-6pii",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-6pii",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/demo/test_demo_seed_verify.py`, `direct/GDPR`, `precedence/sequence`, `3179/ingest_precedence.py`, `9/9`, `polylogue-lrdh 3 failing browser-capture title-precedence tests. #3179 added a mirror`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-6tue",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-6tue",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `browsing/search.`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-74wvj",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-74wvj",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `daemon/cli.py`, `check/execute`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-7dgf",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-7dgf",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/core/enums.py`, `polylogue/sources/parsers/base_support.py`, `polylogue/sources/parsers/codex.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-7f8yc",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-7f8yc",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/storage/raw_reconciler.py`, `duplicate/browser-capture/etc.`, `schema/behavior-bearing`, `polylogue/storage/raw_reconciler.py assume a 'planned', unresolved-outcome census plan's`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-7ilr",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-7ilr",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `ambiguous/deferred`, `select_rebuild_raw_ids/all_index_rebuild_raw_ids/next_raw_page`, `storage/index_generation.py`, `storage/sqlite/archive_tiers/archive.py`, `polylogue ops maintenance raw-authority-frontier --apply-plan --yes`, `polylogue ops maintenance raw-authority-debt-summary`, `raw_materialization_replay_backlog`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-7mgx",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-7mgx",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `Producer/consumer`, `archive_tiers/write.py`, `sources/live/hook_paste_enrichment.py`, `daemon/web_shell_paste.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-7qw4",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-7qw4",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/storage/test_store_ops.py`, `tests/benchmarks/test_reader_api.py`, `attachment/provider`, `polylogue/storage/sqlite/queries/stats.py`, `polylogue/cli/query_stats.py`, `AG1/AG2`, `pytest-benchmark timing test with no correctness assertions (tests/benchmarks/test_reader_api.py:112).`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-7rds",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-7rds",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `orphan/dedup`, `2026-07-12/13`, `polylogue/daemon/cli.py`, `polylogue/daemon/blob_gc_periodic.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-7zj4t",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-7zj4t",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `dots/claude/settings.json`, `modules/features/dev/agents/hooks.nix`, `local/share/polylogue/hooks`, `sinnix Codex hooks.nix still bakes stale --sidecar-dir (swqu parity gap)`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-80ks",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-80ks",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `attachments/images/audio`, `browser_capture/models.py`, `parsers/browser_capture.py`, `image/audio`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-8ifs",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-8ifs",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `daemon/http.py`, `timeline/phases/threads`, `false/count`, `daemon/status.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-8u1p",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-8u1p",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `turn/event`, `thoughts/token`, `GROUP_PROVIDERS/STREAM_RECORD_PROVIDERS`, `polylogue-hs3y's fix (dispatch.py + local_agent.py) taught detect_provider`, `.json`, `/`, `.jsonl`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-8ykm",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-8ykm",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `archive_tiers/archive.py`, `Producer/consumer`, `storage/repository/__init__.py`, `get/list_session_latency_profile_records`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-923uc",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-923uc",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `queries/web_content_constructs.py`, `repository/API`, `aggregate/insight`, `search_result, canvas, image_result, and additional construct types`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-9hq2",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-9hq2",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `feature/devtools/backlog-execution-tooling`, `daemon/status.py`, `P0/P1`, `audits-2026-07-31/backlog-execution-design.html`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-9kjtc",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-9kjtc",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `input_tokens/output_tokens`, `polylogue/archive/semantic/cost_compute.py`, `docs/cost-model.md`, `Reprice/reclassify`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-a7xr.24",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-a7xr.24",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `.agent/scratch/dissection-ledger.md`, `stop_reason/is_active_leaf`, `INSERT/SELECT`, `storage/runtime/archive/records.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-a7xr.25",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-a7xr.25",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tool-call/reasoning`, `custom_tool_call/_output`, `tool_use/tool_result/thinking`, `queries/session_events`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-a7xr.26",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-a7xr.26",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `repository/__init__.py`, `ingest_batch/_core`, `cli/shared/types`, `cli/read_views/chronicle.`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-adre",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-adre",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `Producer/consumer`, `user/009_result_set_holdouts.sql`, `user/004_user_settings.sql`, `INSERT/SELECT`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-azh1l",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-azh1l",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `census/byte-authority`, `ds4b4/lb39z`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-b4cs",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-b4cs",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `github.com/Sinity/polylogue.`, `.agent/handoffs/.`, `chatgpt.com/share/`, `.agent/`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-b4n2",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-b4n2",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `rebuild/reclassification`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-bfc7a",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-bfc7a",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `devtools/generated_surfaces.py`, `devtools: make the generated-surfaces gate total (topology-projection + visual-tapes outside GENERATED_SURFACES)`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-bfwg",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-bfwg",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `enrichment_version/family`, `inference_version/family`, `daemon/convergence_stages.py`, `storage/insights/session/status.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-bwo2l",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-bwo2l",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/cli/test_archive_maintenance_cli.py`, `test_live_watcher.py/test_live_batch_support.py`, `response_item/message/input_text`, `vqt48/6mpy`, `devtools test tests/unit/cli/test_archive_maintenance_cli.py`, `polylogue-9ykn: refusing session (codex, source_path= .jsonl)`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-c2qsm",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-c2qsm",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/insights/test_cost_basis_split.py`, `tests/unit/core/test_pricing.py`, `sessions/models`, `dead/unused`, `estimate_session_cost/estimate_message_cost/compute_session_cost`, `Session/Message`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-c5mb",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-c5mb",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/sources/live/tool_result_sidecars.py`, `sources/dispatch.py`, `sources/parsers/claude/code_parser.py`, `forks/resumes/auto-compaction`, `python3 -c \"`, `polylogue ops reset --index && polylogued run`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ck5v",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ck5v",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/sources/drive/__init__.py`, `inbox/polylogue-aistudio-legacy-backfill-sha256`, `_inject_live_drive_attachment_bytes`, `iter_drive_raw_data`, `polylogue/sources/drive/__init__.py:253`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-d0ew",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-d0ew",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/storage/sqlite/queries/sessions_identity.py`, `queries/sessions.py`, `facets/MCP/API`, `polylogue facets --format json`, `provider:`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-d0kj",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-d0kj",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/internals.md`, `devtools/verify_schema_upgrade_lane.py`, `storage/sqlite/archive_tiers/index_convergence.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-d4kq",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-d4kq",
+      "targets": [
+        "Exercise the real production entry point for “Refusal path cannot feed claude_parse_coverage: no session-scoped sink for refused records”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-d70d",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-d70d",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `daemon/fts_startup.py`, `SIGKILL-recovery/trigger-restoration`, `daemon/lineage_startup.py`, `daemon/cli.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-dlmc1",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-dlmc1",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `ops/maintenance`, `polylogue/cli/commands/maintenance/__init__.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-e2uns",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-e2uns",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tested/used`, `devtools/X.py`, `.github/workflows/nightly-scale.yml`, `.github/workflows/mutation-testing.yml`, `python -m devtools.X`, `python devtools/X.py`, `render all --check`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-e6a0",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-e6a0",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/devtools/test_index_v37_fast_forward.py`, `polylogue/storage/sqlite/runtime_indexes.py`, `tables/indexes/triggers`, `work_evidence_edges/nodes/graphs`, `indexes/triggers`, `devtools/index_v37_fast_forward.py computes canonical schema by executing`, `devtools/index_v37_fast_forward.py is a completed one-time migration tool`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ei0d",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ei0d",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `storage/sqlite/archive_tiers/write.py`, `archive_tiers/self_verify.py`, `insights/claude_workflow_materializer.py`, `storage/sqlite/lifecycle.py`, `payload_json`, `insights/claude_workflow_materializer.py:458`, `session_events`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-enrpa",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-enrpa",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `rows/0`, `daemon/http.py`, `routes/modules/tables`, `V6/V7`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-erf3",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-erf3",
+      "targets": [
+        "Exercise the real production entry point for “claude.ai export zip detects as unknown-export at the container level”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-es7b",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-es7b",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `storage/embeddings/materialization.py`, `retry/backoff`, `None/unknown`, `daemon/write_coordinator.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ey3r",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-ey3r",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue ops maintenance verify-archive`, `source-index-coverage`, `superseded_equivalent`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-f7cd",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-f7cd",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `archive/repo`, `feature/devtools/backlog-execution-tooling`, `design/notes`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-f9kk",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-f9kk",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `absent/failing`, `archive/query/retrieval_search.py`, `archive/query/search_hits.py`, `api/archive.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-fbkr",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-fbkr",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/daemon.md`, `byte/provenance-safe`, `polylogue/maintenance/raw_authority_reset.py`, `polylogue-hjpx/lkrc/t93b`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-fe8fv",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-fe8fv",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/sources/test_claude_code_normalization_laws.py`, `eager/streaming`, `positions/active-leaf`, `streaming/eager`, `sidecar_seen/sidecar_persisted/empty_dropped_by_record_type`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-fjg91",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-fjg91",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `devtools/benchmark_compare_nightly.py`, `.github/workflows/nightly-scale.yml`, `devtools/command_catalog.py`, `docs/devtools.md`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-fjvi",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-fjvi",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/architecture-spine.md`, `storage/blob_gc.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-fqnv",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-fqnv",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/core/test_schema_laws.py`, `polylogue/schemas/generation/dynamic_keys.py`, `polylogue-* fixed collapse_dynamic_keys (polylogue/schemas/generation/dynamic_keys.py:243)`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-frqp",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-frqp",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `Producer/consumer`, `list_otlp_spans/read_otlp_span`, `insights/otlp_correlation.py`, `daemon/otlp_receiver.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-fyyro",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-fyyro",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `archive_tiers/self_verify.py`, `devtools/self_verify.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-g16g",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-g16g",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `audits-2026-07-31/leak-surfaces.html`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-g193e",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-g193e",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/cli/test_terminal_snapshots.py`, `tests/infra/pty_cli.py`, `environment/live`, `machine/worktree`, `archive-root/config`, `stale/incidental`, `polylogue ops doctor --help`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-g31s",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-g31s",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `Producer/consumer`, `storage/fts/drift_sampling.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ganm",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ganm",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `feature/chore/purge-meta-machinery`, `docs/plans/topology-target.yaml`, `devtools/build_topology_projection.py`, `devtools/verify_topology.py`, `devtools/build_topology_projection.py, then only checked against itself by`, `devtools/verify_topology.py's orphan/missing/conflict checks (which need only`, `render all --check`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-gb4e",
+      "class": "ProcessRoute",
+      "contract_type": "process",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-gb4e",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `module/table/tool`, `V3/R2`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-gcy1",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-gcy1",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/archive/test_coverage_diagnostics.py`, `analyze_coverage/ArchiveCoverage`, `archive/coverage.py`, `status/insights`, `archive/semantic/subscription_models.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-gmw2",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-gmw2",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `dedup/backoff`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-gody",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-gody",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/storage/search/models.py`, `polylogue/storage/search/query_builders.py`, `polylogue/storage/search/runtime.py`, `polylogue/api/archive.py`, `polylogue/storage/search/models.py:12 -- SearchHit is a frozen dataclass with`, `polylogue/storage/search/query_builders.py:50,111 -- SQL explicitly does`, `s.origin AS source_name`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-grdt",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-grdt",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `operations/archive_debt.py`, `storage/usage.py`, `storage/embeddings/support.py`, `storage/table_existence.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-gvr2",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-gvr2",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/storage/sqlite/archive_tiers/index.py`, `self-standing/indexed`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-gvzkr",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-gvzkr",
+      "targets": [
+        "Trace every table and column through storage/sqlite/archive_tiers/*.py, SELECT and read sites, dataclass and Pydantic consumers, serializers, and write sites.",
+        "Cross-reference each PURGE candidate against repair and restatement owners polylogue-6kur and polylogue-4p1/a7xr.24."
+      ]
+    },
+    {
+      "bead_id": "polylogue-h2sf6",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-h2sf6",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/devtools/test_pytest_witness_repetitions.py`, `devtools/pytest_witness_repetitions.py`, `docs/devtools.md`, `module/tests/docs/catalog`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-hgk1",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-hgk1",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/examples/visual-tapes/browser-capture-tour.gif`, `unrun/pending`, `devtools/visual_vhs.py`, `docs/examples/visual-tapes`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-hhg58",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-hhg58",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/core/test_sampling.py`, `xdist/test-order`, `iter_schema_units/_iter_schema_units_from_db`, `path/singleton`, `polylogue/schemas/sampling_db.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ht3n",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-ht3n",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `Producer/consumer`, `insights/delegation_work_evidence.py`, `materialize-incident-evidence/reconcile-work-effects`, `operations/work_effect_reconciliation.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-hwwtq",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-hwwtq",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `cli/commands/maintenance/_rebuild_index.py`, `88/113`, `run/record`, `V2/R3`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ic5i",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ic5i",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/storage/sqlite/holdout_cohorts.py`, `polylogue/insights/fable_packet.py`, `polylogue/storage/block_anchor.py`, `repository/service`, `polylogue/storage/sqlite/holdout_cohorts.py 260 loc, 10 exports`, `polylogue/insights/fable_packet.py 306 loc, 6 exports`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ihro",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ihro",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/sources/test_dispatch_payloads.py`, `origin/master`, `dispatch/identity`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-iiu6r",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-iiu6r",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `manual/legacy`, `docs/design/convergence-simplification-inventory.md`, `polylogue/daemon/cli.py`, `raw-id/--only-missing/--max-blob-mb/--shard-count/--plan`, `polylogue ops maintenance rebuild-index`, `_maybe_route_daemon_bulk_rebuild`, `_parse_unique_retained_raws`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-in94",
+      "class": "ProcessRoute",
+      "contract_type": "process",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-in94",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `model/effort`, `briefed/dispatched/committed/pushed/PR/merged/beads-closed`, `feature/devtools/lane-init`, `.cache/fanout/lanes.jsonl`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-inoh",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-inoh",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `claude-code-session/hermes-session/grok-export/unknown-export`, `low-priority/different-shape`, `GC/retention`, `set/order/attachment`, `polylogue-hith, polylogue-nuec; all descend from polylogue-bu1i). That`, `polylogue-9dxn's general \"persisted ambiguous verdicts never get`, `parse_payload`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ioz2",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ioz2",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `L19/L20`, `hygiene/observability`, `orphan/temp`, `audits-2026-07-31/leak-surfaces.html`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ioz7",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ioz7",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/maintenance/test_agent_meta_sidecar_purge_apply.py`, `tests/unit/storage/test_index_fast_forward_lifecycle.py/test_index_fast_forward_executor.py/test_schema_policy_contracts.py/test_archive_tiers_ddl.py`, `source_path/artifact_kind`, `feature/maintenance/agent-meta-sidecar-purge`, `polylogue/storage/agent_meta_sidecar_sweep.py`, `dry-run/--apply`, `polylogue backup --output-dir --profile full_evidence --verify`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-iuyr",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-iuyr",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue-shnc/gt1z.`, `archive/semantic/cost_compute.py`, `gpt-5.6-sol/terra`, `polylogue-shnc/gt1z`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-iy3n",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-iy3n",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/storage/test_repair.py`, `raw_sessions/index-tier`, `polylogue/storage/sqlite/archive_tiers/archive.py`, `repair.py/raw_authority.py/revision_application`, `raw_sessions/index.db`, `polylogue/storage/repository/**, and`, `polylogue/storage/sqlite/archive_tiers/archive.py /`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-j1vs",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-j1vs",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/surfaces/projection_spec.py`, `polylogue/cli/query_verbs.py`, `polylogue/cli/query_contracts.py`, `read_views/base.py`, `destination: str`, `RenderFormat.`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-j7sin",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-j7sin",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `daemon/status_snapshot.py`, `raw_parse_failures/raw_validation_failures/raw_quarantined/raw_maintenance_failures/raw_detection_warnings`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-j8yo",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-j8yo",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `fetch/XHR`, `aistudio.google.com/prompts/1cVKebxYa9oOCM05J3BqQQizFzIgfjvyH`, `rpc/google.internal.alkali.applications.makersuite.v1`, `application/json`, `drive.googleapis.com`, `application/json+protobuf`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-jglh",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-jglh",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `audit/census.py`, `archive/viewport/enums.py`, `core/enums.py`, `insights/transforms.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-jtek",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-jtek",
+      "targets": [
+        "Exercise the real production entry point for “rebuild perf: overlap the up-front census classification pass with replay”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-jwqj",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-jwqj",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `RUN_STATE/HIGHLIGHT/PROMPT_EVAL`, `BLOCKER/HANDOFF`, `Producer/consumer`, `writer/reader`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-kbsy5",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-kbsy5",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `clear/visible`, `config/UI`, `session/subagent`, `operator/coordinator`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-kc26",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-kc26",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `.beads/issues.jsonl`, `audits-2026-07-31/leak-surfaces.html`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-kcdg",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-kcdg",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/cli/read_view_handlers.py`, `polylogue/cli/read_views/standard.py`, `polylogue/cli/query_verbs.py`, `rename/removal`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-kea7p",
+      "class": "DecisionRoute",
+      "contract_type": "decision",
+      "dispatch": "decision",
+      "identifier": "acceptance/polylogue-kea7p",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `fingerprint/hash/backfill`, `sessions/messages`, `pipeline/services/ingest_batch/_core.py`, `origins/surfaces`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-knc7",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-knc7",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/cost/plans.py`, `she-llac.com/claude-limits`, `archive/semantic/subscription_pricing.py`, `10/50`, `polylogue/cost/plans.py models only a MONTHLY quota (SubscriptionPlan has quota, quota_basis, billing_cycle_days, cycle_anchor_day). It has NO session-window or weekly field. The two limits that actually bind in practice are therefore unmodelled.`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-lbk1",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-lbk1",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `result_sets/query_runs.exactness`, `Literal/enum`, `archive_tiers/user.py`, `core/enums.py`, `assertions.status`, `nullable_check(\"status\", AssertionStatus)`, `query_edges.edge_kind`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-lk2w",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-lk2w",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `daemon-web/api`, `daemon-http/web`, `archive/query/production_evaluator.py`, `operations/route_observation.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-lm62x",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-lm62x",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `call/request`, `storage/sqlite/archive_tiers/ops.py`, `polylogue/archive/query/production_evaluator.py`, `CLI/MCP`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-lqhi7",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-lqhi7",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/daemon/health.py`, `daemon/cli.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-lzank",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-lzank",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `Merge/retire`, `devtools/bead_batch_show.py`, `id/status/prio/title`, `truncation/formatting`, `devtools/bead_batch_show.py (49 lines) is a subprocess wrapper that calls 'bd show --json' once per argument and reformats to id/status/prio/title + truncated (280-char) desc + deps + truncated (240-char) notes tail.`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-m1s98",
+      "class": "ProcessRoute",
+      "contract_type": "process",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-m1s98",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `total/match`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-m69yv",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-m69yv",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `dumps/2026-01-01_02-58-23_ChatGPT_I._Mathematical_formalization_of_a_system.md`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-m8nj",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-m8nj",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/storage/test_delegations_view.py`, `tests/unit/pipeline/test_delegation_provider_fixtures.py`, `instruction_payload/artifact_text`, `polylogue/storage/sqlite/delegation_facts.py`, `tool_input/output_text`, `bo9n/v6i3`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-mgf6",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-mgf6",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `temperature/topP`, `thinkingLevel/safetySettings/enable`, `polylogue-2qx.4/cgfy`, `archive/query/expression.py`, `COUNT_FIELD COMP_OP INT`, `f\"{table_alias}.{column}\"`, `json_extract(run_settings_json, '$.temperature')`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-mia3",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-mia3",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `pipeline/services/ingest_batch/_core.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-mkk0",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-mkk0",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `daemon/cli.py`, `before/after`, `flag/path`, `session/message/block/session_links`, `polylogue ops maintenance rebuild-index`, `rebuild-index`, `ops maintenance rebuild-index`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-mlqrt",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-mlqrt",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `how/whether`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-mnds",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-mnds",
+      "targets": [
+        "Exercise the real production entry point for “Blob store residue: 1,590 orphan blobs (1.49GB) + 52 stale .blob.* temp files (66MB), all pre-2026-07-19”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-mznm",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-mznm",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `daemon/cli.py`, `product/raw_authority.py`, `storage/repair.py`, `CLI/HTTP`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-mzp8",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-mzp8",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `stale/missing`, `polylogue/maintenance/invalidation.py`, `polylogue/maintenance/preview.py`, `polylogue/archive/semantic/pricing.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-n8ft",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-n8ft",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `repos/repo_checkouts`, `Producer/consumer`, `storage/insights/session/repo_observations.py`, `archive_tiers/write.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-nfl5",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-nfl5",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `SUPERSEDED/receipted`, `message/event/attachment`, `take/keep`, `capture/export`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-nqx2",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-nqx2",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/core/test_message_types.py`, `polylogue/archive/message/artifacts.py`, `cost/user-word`, `2/3/4`, `5/6`, `devtools test tests/unit/core/test_message_types.py -k`, `if False:`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-nvqb",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-nvqb",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `Watchdog/telemetry`, `daemon/cli.py`, `storage/fts/drift_sampling.py`, `daemon/otlp_receiver.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-o2jin",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-o2jin",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `cli/commands/maintenance/_shared.py`, `mcp/server_cutover.py`, `since/until`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-o56w",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-o56w",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `index-rebuild-transactions/857984cb-b4cc-4537-b0fb-eae89ca3fa96.receipts/pass-000000.json`, `revision-chain/membership/quarantine`, `pragma/batching`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ofry",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ofry",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `Producer/consumer`, `pipeline/services/ingest_batch/_core.py`, `try/except.`, `env/config`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-oj4oo",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-oj4oo",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `run/attempt/operation`, `storage/sqlite/archive_tiers/ops.py`, `cli/commands/embed.py`, `polylogue/maintenance/planner.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-om8dh",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-om8dh",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `sites/migration`, `polylogue-lm62x/z22ml/oj4oo/h57ic/3szyi`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-oou3c",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-oou3c",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `production/diagnostic`, `M4/R5`, `cli/commands/maintenance/_run.py`, `apply/dry-run`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-oqib",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-oqib",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/core/test_filters_props.py`, `archive/query/plan.py`, `archive/filter/builder.py`, `archive/query/fields.py`, `archive/query/expression.py`, `sessions.parent_session_id`, `Session.is_root`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-oxrv",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-oxrv",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `read_views/standard.py`, `live/running-daemon`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-p21v",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-p21v",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `origin/master.`, `daemon/metrics.py`, `dashboard/alerting`, `polylogue_embedding_catchup_sessions{state=\"planned\"}`, `polylogue_embedding_catchup_sessions{state=\"processed\"}`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-p6rz",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-p6rz",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/cli/test_color_and_layout.py`, `tests/unit/storage/test_durable_migrations.py`, `polylogue/cli/shared/formatting.py`, `Signature/test`, `cost/usage`, `devtools verify --all (first full run in a while on this branch) surfaced ~30-40 test`, `return no_color`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-pfdf",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-pfdf",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/storage/test_attachment_reacquisition.py`, `com/Sinity/polylogue/pull/3590`, `feature/storage/attachment-reacquisition-backfill`, `polylogue/storage/attachment_reacquisition.py`, `session/message`, `polylogue/storage/attachment_reacquisition.py, mirroring attachment_relink.py (ref-linkage backfill, same real-ingest_record-reparse pattern) and blob_integrity.py's raw actuators:`, `devtools workspace attachment-reacquisition`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-pkst",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-pkst",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `unresolved/resolved/repaired/quarantined`, `core/enums.py`, `storage/sqlite/archive_tiers/index.py`, `storage/sqlite/queries/session_links.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-px4h",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-px4h",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `reserved_at_ms/1000`, `storage/blob_publication.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-pzxm",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-pzxm",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `storage/sqlite/connection_profile.py`, `threads/processes`, `FTS/trigram/action_pairs`, `apply/K`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-q1at",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-q1at",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `CLI/HTTP`, `capability/policy`, `old/disabled`, `None/False.`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-q9hl",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-q9hl",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `storage/fts/sql.py`, `set/clear`, `501/792`, `2206/2268`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-qj5x",
+      "class": "DecisionRoute",
+      "contract_type": "decision",
+      "dispatch": "decision",
+      "identifier": "acceptance/polylogue-qj5x",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `.agent/scratch/live/beads-handling-design-2026-07-31.html`, `249/2`, `descriptions/design/AC`, `insights/work_effects.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ql2fb",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ql2fb",
+      "targets": [
+        "Exercise the real production entry point for “cursor_lag_samples producer never runs under default health_check_tiers=fast”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-qqi1",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-qqi1",
+      "targets": [
+        "Exercise the real production entry point for “read --view summary silently falls through to transcript”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-qut1",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-qut1",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `audits-2026-07-31/leak-surfaces.html`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-qwgi",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-qwgi",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `read/summary`, `profile/usage-table`, `0.0/unknown`, `cost/usage`, `read --json`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-rpuqn",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-rpuqn",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/daemon/cli.py`, `docs/design/convergence-simplification-inventory.md`, `trickle/CLI-built`, `.beads/issues.jsonl`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-rsz1",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-rsz1",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `FTS/status`, `1/1`, `origin/master`, `planned/processed`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-rxfo",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-rxfo",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/core/test_hashing.py`, `tests/unit/pipeline/test_pipeline_ids.py`, `parse_sources/ingest_sources`, `polylogue/pipeline/services/parsing.py`, `_resolve_session_graph/_prefix_sharing_edge_sync`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-s9irb",
+      "class": "LiveOperationRoute",
+      "contract_type": "live_operation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-s9irb",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `devtools/index_fast_forward.py`, `devtools/index_v37_fast_forward.py`, `devtools/archive_schema_fast_forward.py`, `v32/v35/v36`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-sg80",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-sg80",
+      "targets": [
+        "Exercise the real production entry point for “Semantic-frontier quarantine refinement: byte-proof actuator cannot resolve semantically-accepted raws”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-sgdp",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-sgdp",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `origin/master`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-shnc",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-shnc",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `cost/catalog`, `417/3`, `unpriced/contradictory`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-siet",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-siet",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `storage/archive_identity.py`, `devtools/campaign_archive_location.py`, `maintenance/rebuild_index.py`, `storage/index_generation.py`, `devtools/campaign_archive_location.py:70 and maintenance/rebuild_index.py:459.`, `polylogue mark id:X --star`, `delete --yes`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-sr6u",
+      "class": "AuditRoute",
+      "contract_type": "audit",
+      "dispatch": "read-only",
+      "identifier": "acceptance/polylogue-sr6u",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `watch/baseline/retained-run`, `Producer/consumer`, `CLI/MCP`, `daemon/convergence_standing_queries.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-sze30",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-sze30",
+      "targets": [
+        "Exercise the real production entry point for “RETIRED_FULL_REVISION_GOVERNANCE_DETAILS: durable state keyed on a prose sentence, not an enum code”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-t73c2",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-t73c2",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `session/subagent`, `reindex/daemon-restart`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-t83q",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-t83q",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/archive/semantic/subscription_pricing.py`, `docs/cost-model.md`, `10/50`, `6/30`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-tas4",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-tas4",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/daemon/fts_startup.py`, `readiness/repair`, `daemon/convergence_stages.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-tf8p",
+      "class": "DocumentationRoute",
+      "contract_type": "documentation",
+      "dispatch": "documentation",
+      "identifier": "acceptance/polylogue-tf8p",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/infra/mcp.py`, `resources/prompts`, `docs/cli-reference.md`, `root/judge/ops/ops`, `doctor/ops`, `h, --help`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-trjb",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-trjb",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `STALE/PARTIAL/LIVE`, `feature/devtools/bead-landing-check`, `hashes/PR`, `deferred/xfail/not`, `polylogue-4fm3 (consumer check inconclusive on a non-Python change),`, `polylogue-6pii (consumer check found no grep-visible caller despite a`, `devtools workspace bead-landing-check`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-tztk",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-tztk",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `L13/L14/L15`, `type/loc`, `audits-2026-07-31/leak-surfaces.html`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-u8x7",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-u8x7",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `web_content_constructs/file_edits`, `messages/blocks`, `polylogue/storage/sqlite/archive_tiers/write.py`, `_write_web_constructs/_write_file_edits`, `polylogue/storage/sqlite/archive_tiers/write.py).`, `polylogue/storage/sqlite/archive_tiers/write.py.`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ubdxf",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ubdxf",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `1GB/day`, `census_plans/post_plans`, `plan/post-plan`, `whether/where`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ubwg",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ubwg",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/pipeline/ids.py`, `message_identity_hash/attachment_identity_hash/event_base_identity_hash/event_canonical_identity_hash`, `docs/plans/hash-boundary-registry.yaml`, `hashlib/core.hashing`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-uhjv",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-uhjv",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `migrations/user/009_result_set_holdouts.sql`, `archive_tiers/user.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ujitw",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ujitw",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/core/test_synthetic_semantics.py`, `tests/unit/core/test_synthetic_semantic_wiring.py`, `synthetic/test`, `devtools/schemas`, `polylogue/schemas/synthetic/`, `polylogue-h7y0j.`, `*.md.metadata.json`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-upbv",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-upbv",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `ledger/UI`, `popup/badge`, `cheap/idempotent`, `log/state`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ut3r",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ut3r",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/security.md`, `claude/codex`, `audits-2026-07-31/leak-surfaces.html`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-uxrim",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-uxrim",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/api/test_facade_contracts.py`, `tests/infra/frozen_clock.py`, `parsed_at=datetime.now(UTC).isoformat()`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-uyci",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-uyci",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `sessions.display_name/run_settings_json`, `feature/chore/promote-schemas-and-wire-gates`, `CLI/MCP/API`, `polylogue/storage/runtime/archive/records.py`, `display_name`, `read --view`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-v6xh",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-v6xh",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `health_convergence_debt/health_cursor_lag`, `daemon/notifications.py`, `polylogue/config.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-v73m",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-v73m",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `L7/L9`, `audits-2026-07-31/leak-surfaces.html`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-vid0",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-vid0",
+      "targets": [
+        "Exercise the real production entry point for “1,413 unresolved subagent links; 58 of 85 distinct targets already acquired as raws but never parsed”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-vp2ky",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-vp2ky",
+      "targets": [
+        "Exercise the real production entry point for “classify_raw_revision_cohort's check_source_path_identity_split boolean is a missing function split”; direct fixture-row insertion, mocks that bypass the owning layer, and test-only helpers do not satisfy the criterion."
+      ]
+    },
+    {
+      "bead_id": "polylogue-vp9d",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-vp9d",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `1/4`, `parse/ingest`, `1/7`, `py-spy/faulthandler`, `ingest_chunk`, `_periodic_raw_materialization_convergence`, `_browser_capture_spool_has_pending_files()`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-vqt48",
+      "class": "ProcessRoute",
+      "contract_type": "process",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-vqt48",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `test_live_watcher.py/test_live_batch_support.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-vs5x",
+      "class": "TestHarnessRoute",
+      "contract_type": "test_harness",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-vs5x",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/infra/clock_guard.py`, `tests/infra`, `pytest has already imported the test module. A clock read at module level`, `test-clock-allowlist.yaml`, `frozen_clock`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-vwdj",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-vwdj",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `docs/plans/layering.yaml`, `devtools/verify_layering.py`, `polylogue/storage/sqlite/archive_tiers`, `annotations/write.py`, `devtools/verify_layering.py:243-286 (_mutation_calls / _mutation_sql /`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-w96f",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-w96f",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/storage/test_query_objects.py`, `tests/unit/daemon/test_standing_queries.py`, `storage/sqlite/query_objects.py`, `daemon/convergence_standing_queries.py`, `CLI/MCP/insights/api`, `staleness/provenance`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-wbuf",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-wbuf",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `storage/embeddings/progress.py`, `daemon/metrics.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-wf8a",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-wf8a",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/daemon/test_raw_materialization_parse_stage_equivalence.py`, `polylogue/daemon/parse_prefetch.py`, `watcher/catch-up`, `flag-on/off`, `feature/feat/watcher-parallel-parse-stage`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-x1gd",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-x1gd",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `polylogue/sources/live/tool_result_sidecars.py`, `storage/sqlite/lifecycle.py`, `double/triple/N-counted`, `min/max`, `polylogue ops reset --index && polylogued run`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-xecca",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-xecca",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `thread/process`, `M6/R4`, `ingest_batch/_core.py`, `Prereq/context`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-xla90",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-xla90",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `ArchiveStore.write_parsed/SessionRepository.save_parsed_session`, `pipeline/services/ingest_batch/_core.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-y0ven",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-y0ven",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `lag/stuck-files/percentiles/severity`, `DB/blob`, `cursor/stale`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-y9106",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-y9106",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/core/test_sampling.py`, `1/2`, `fixture/db`, `codex/sessions`, `polylogue/schemas/sampling_db.py`, `devtools test tests/unit/core/test_sampling.py -k \\`, `polylogue.schemas.sampling.build_raw_payload_envelope to always raise ValueError,`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-yhgc",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-yhgc",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `storage/sqlite/archive_tiers/write.py`, `api/archive.py`, `archive/query/archive_execution.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-yl8t",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-yl8t",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `tests/unit/sources/test_claude_code_normalization_laws.py`, `streaming/eager`, `origin/master`, `sidecar_seen/empty_drop`, `re-deriving/re-ordering`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-ymqp",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-ymqp",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `local/share/polylogue`, `storage/index_generation.py`, `failed/abandoned`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-z1rdw",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-z1rdw",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `thread_goal_updated/sub_agent_activity/task_started/task_complete/turn_aborted/thread_settings_applied/collab_`, `producer/consumer`, `sources/parsers/codex.py`, `response_item/event_msg`, `_CODEX_KNOWN_RESPONSE_ITEM_TYPES`, `agent_reasoning`, `_compact_response_payload`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-z3sv",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-z3sv",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `core/timestamps.py`, `naive/aware`, `sinex/material_adapter.py`, `archive/query/source_freshness.py`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-zahj",
+      "class": "DecisionRoute",
+      "contract_type": "decision",
+      "dispatch": "decision",
+      "identifier": "acceptance/polylogue-zahj",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `raw_sessions/blob_refs/index.db`, `the `blob/a8/` content-addressed directory shard`, `the `blob/ba/` content-addressed directory shard`, `69GB/100K-object`, `polylogue ops maintenance blob-publications --abandon f1c44ec2-4250-4f12-87d3-97412cd08144 --abandon 0d21f742-779e-49e3-b96f-c8f1abeecc59 --yes`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-zdtqj",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-zdtqj",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `True/False`, `crash-safe/re-derivable`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-zn1k",
+      "class": "ProcessRoute",
+      "contract_type": "process",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-zn1k",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `reparse/purge`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-zocm",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-zocm",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `group.results/items/search_results/sources`, `feature/parsers/chatgpt-april-content-types-and-web-constructs`, `content_references/citations`, `codex/claude`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-zok3",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-zok3",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `origin/master.`, `format/--to`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-zqph",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-zqph",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `replay/rebuild`, `reclassification/removal`, `Code/Codex`, `tracked/repaired`, `polylogue check --cleanup`."
+      ]
+    },
+    {
+      "bead_id": "polylogue-zwyc",
+      "class": "ImplementationRoute",
+      "contract_type": "implementation",
+      "dispatch": "production",
+      "identifier": "acceptance/polylogue-zwyc",
+      "targets": [
+        "Exercise the implementation through these named production surfaces: `stop_reason/tool_result_outcome_unknown_reason`, `storage/hydrators.py`, `MCP/CLI/API`, `PR/commit`, `polylogue/archive/query/archive_execution.py::_message_to_domain and`, `polylogue/api/archive.py::_archive_message_to_domain build Message.blocks`, `stop_reason: str | None = None`."
+      ]
+    }
+  ],
+  "schema_version": 1
+}
