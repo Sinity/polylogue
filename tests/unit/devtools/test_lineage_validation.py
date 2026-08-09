@@ -15,6 +15,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -476,13 +477,13 @@ def test_lineage_validation_rejects_commit_between_reader_snapshot_and_file_hash
     original_snapshot_identity = lineage_validation._snapshot_identity
     snapshot_calls = 0
 
-    def commit_before_first_file_hash(index_db: Path) -> dict[str, object]:
+    def commit_before_first_file_hash(index_db: Path, *, opened_main_fd: int | None = None) -> dict[str, object]:
         nonlocal snapshot_calls
         if snapshot_calls == 0:
             writer.execute("UPDATE session_links SET method = 'concurrent' WHERE src_session_id = 'child'")
             writer.commit()
         snapshot_calls += 1
-        return original_snapshot_identity(index_db)
+        return original_snapshot_identity(index_db, opened_main_fd=opened_main_fd)
 
     monkeypatch.setattr(lineage_validation, "_snapshot_identity", commit_before_first_file_hash)
     try:
@@ -508,12 +509,12 @@ def test_lineage_validation_rejects_unlinked_selected_index_as_incomplete(
     original_snapshot_identity = lineage_validation._snapshot_identity
     unlinked = False
 
-    def unlink_before_observation(index_db: Path) -> dict[str, object]:
+    def unlink_before_observation(index_db: Path, *, opened_main_fd: int | None = None) -> dict[str, object]:
         nonlocal unlinked
         if not unlinked:
             index_db.unlink()
             unlinked = True
-        return original_snapshot_identity(index_db)
+        return original_snapshot_identity(index_db, opened_main_fd=opened_main_fd)
 
     monkeypatch.setattr(lineage_validation, "_snapshot_identity", unlink_before_observation)
     report = lineage_validation.build_report(_args(archive_root))
@@ -528,6 +529,31 @@ def test_lineage_validation_rejects_unlinked_selected_index_as_incomplete(
     assert identity["stable"] is False
     assert report["verdict"]["external_counts_citable"] is False
     assert "index file-set observation was incomplete" in report["verdict"]["reasons"]
+
+
+def test_lineage_validation_rejects_selected_index_replacement_after_reader_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    replacement_root = tmp_path / "replacement"
+    real_open = open_readonly_connection
+    opened_readers = 0
+
+    def replace_after_reader_open(path: Path) -> sqlite3.Connection:
+        nonlocal opened_readers
+        connection = real_open(path)
+        opened_readers += 1
+        if opened_readers == 2:
+            replacement_db = _make_index_db(replacement_root)
+            selected_db.unlink()
+            replacement_db.replace(selected_db)
+        return connection
+
+    monkeypatch.setattr(lineage_validation, "open_readonly_connection", replace_after_reader_open)
+
+    with pytest.raises(RuntimeError, match="selected index path was replaced"):
+        lineage_validation.build_report(_args(archive_root))
 
 
 def test_lineage_validation_rejects_budget_exhaustion_as_cycle_proof(tmp_path: Path) -> None:

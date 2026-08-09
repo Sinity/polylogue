@@ -13,7 +13,7 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
 
-from devtools.index_snapshot import snapshot_index_file_set
+from devtools.index_snapshot import open_index_file_handle, snapshot_index_file_set
 from polylogue.config import Config, get_config
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -48,9 +48,9 @@ class LineageValidationArgs:
     index_db: Path | None = None
 
 
-def _snapshot_identity(index_db: Path) -> dict[str, Any]:
+def _snapshot_identity(index_db: Path, *, opened_main_fd: int | None = None) -> dict[str, Any]:
     """Describe the selected index using the shared SQLite file-set contract."""
-    return snapshot_index_file_set(index_db)
+    return snapshot_index_file_set(index_db, opened_main_fd=opened_main_fd)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -791,17 +791,21 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
 def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
     index_db = (args.index_db or config.db_path).expanduser().resolve()
-    conn = open_readonly_connection(index_db)
+    opened_index_handle = open_index_file_handle(index_db)
+    opened_main_fd = opened_index_handle.__enter__()
+    conn: Connection | None = None
     observer: Connection | None = None
     try:
+        conn = open_readonly_connection(index_db)
         observer = open_readonly_connection(index_db)
+        assert conn is not None
         observer_data_version_before = _data_version(observer)
         conn.execute("BEGIN")
         # BEGIN is deferred. Force the first SQLite read before hashing WAL
         # sidecars so this census's own reader mark cannot make a quiescent
         # snapshot appear to change between the before and after identities.
         index_schema_version = _user_version(conn)
-        snapshot_before = _snapshot_identity(index_db)
+        snapshot_before = _snapshot_identity(index_db, opened_main_fd=opened_main_fd)
         link_columns = _table_columns(conn, "session_links")
         missing_link_columns = sorted(REQUIRED_SESSION_LINK_COLUMNS - link_columns)
         physical_sessions = _count(conn, "sessions")
@@ -892,7 +896,7 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
             elif topology["unresolved_read_sample"]["status"] == "unsafe":
                 reasons.append("sampled unresolved-parent reads did not remain child-local")
 
-        snapshot_after = _snapshot_identity(index_db)
+        snapshot_after = _snapshot_identity(index_db, opened_main_fd=opened_main_fd)
         observer_data_version_after = _data_version(observer)
         observations_complete = bool(
             snapshot_before.get("observation_complete") and snapshot_after.get("observation_complete")
@@ -944,10 +948,12 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
         }
         report["receipt_sha256"] = _receipt_sha256(report)
     finally:
-        conn.rollback()
-        conn.close()
+        if conn is not None:
+            conn.rollback()
+            conn.close()
         if observer is not None:
             observer.close()
+        opened_index_handle.__exit__(None, None, None)
 
     if args.out_dir is not None:
         _write_artifacts(args.out_dir, report)

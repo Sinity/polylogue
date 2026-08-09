@@ -13,6 +13,7 @@ import pytest
 from devtools import affordance_usage
 from polylogue.cli.click_app import cli
 from polylogue.cli.command_inventory import iter_command_paths
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from tests.infra.mcp import EXPECTED_TOOL_NAMES
 
 
@@ -366,13 +367,13 @@ def test_affordance_usage_marks_selected_index_snapshot_unstable_after_change(
     real_observation = affordance_usage._snapshot_observation
     calls = 0
 
-    def observe_with_change(path: Path) -> dict[str, object]:
+    def observe_with_change(path: Path, *, opened_main_fd: int | None = None) -> dict[str, object]:
         nonlocal calls
         calls += 1
         if calls == 2:
             writer.execute("INSERT INTO sessions VALUES ('concurrent', 'codex-session', 'change', 1)")
             writer.commit()
-        return real_observation(path)
+        return real_observation(path, opened_main_fd=opened_main_fd)
 
     monkeypatch.setattr(affordance_usage, "_snapshot_observation", observe_with_change)
     try:
@@ -408,12 +409,12 @@ def test_affordance_usage_rejects_unlinked_selected_index_as_incomplete(
     real_observation = affordance_usage._snapshot_observation
     unlinked = False
 
-    def unlink_before_observation(path: Path) -> dict[str, object]:
+    def unlink_before_observation(path: Path, *, opened_main_fd: int | None = None) -> dict[str, object]:
         nonlocal unlinked
         if not unlinked:
             path.unlink()
             unlinked = True
-        return real_observation(path)
+        return real_observation(path, opened_main_fd=opened_main_fd)
 
     monkeypatch.setattr(affordance_usage, "_snapshot_observation", unlink_before_observation)
     report = affordance_usage.build_report(
@@ -422,7 +423,7 @@ def test_affordance_usage_rejects_unlinked_selected_index_as_incomplete(
             out_dir=None,
             days=36500,
             family=("serena",),
-            detail_pattern=(),
+            detail_pattern=("codebase-memory",),
             sample_limit=10,
             json=True,
             all_time=False,
@@ -436,7 +437,45 @@ def test_affordance_usage_rejects_unlinked_selected_index_as_incomplete(
     assert identity["after"]["present"] is False
     assert identity["before"]["observation_complete"] is False
     assert identity["after"]["observation_complete"] is False
+    assert identity["before"]["files"][0]["sha256"]
     assert identity["stable"] is False
+
+
+def test_affordance_usage_rejects_selected_index_replacement_after_reader_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    replacement_root = tmp_path / "replacement"
+    real_open = open_readonly_connection
+    opened_readers = 0
+
+    def replace_after_reader_open(path: Path) -> sqlite3.Connection:
+        nonlocal opened_readers
+        connection = real_open(path)
+        opened_readers += 1
+        if opened_readers == 2:
+            replacement_db = _make_index_db(replacement_root)
+            selected_db.unlink()
+            replacement_db.replace(selected_db)
+        return connection
+
+    monkeypatch.setattr(affordance_usage, "open_readonly_connection", replace_after_reader_open)
+
+    with pytest.raises(RuntimeError, match="selected index path was replaced"):
+        affordance_usage.build_report(
+            affordance_usage.AffordanceUsageArgs(
+                archive_root=archive_root,
+                out_dir=None,
+                days=36500,
+                family=("serena",),
+                detail_pattern=(),
+                sample_limit=10,
+                json=True,
+                all_time=False,
+                index_db=selected_db,
+            )
+        )
 
 
 def test_affordance_usage_snapshot_includes_a_quiescent_wal_file_set(tmp_path: Path) -> None:

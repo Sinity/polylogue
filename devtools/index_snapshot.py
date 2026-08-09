@@ -4,10 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 _SNAPSHOT_HASH_CHUNK_BYTES = 1024 * 1024
+
+
+class IndexSnapshotRaceError(RuntimeError):
+    """The selected index pathname no longer names the opened database."""
+
+
+@contextmanager
+def open_index_file_handle(index_db: Path) -> Iterator[int]:
+    """Keep the selected main database inode open for evidence snapshots."""
+    descriptor = os.open(index_db, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
 
 
 def _file_sha256(path: Path) -> str:
@@ -18,7 +35,18 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def snapshot_index_file_set(index_db: Path) -> dict[str, Any]:
+def _file_sha256_descriptor(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while True:
+        chunk = os.pread(descriptor, _SNAPSHOT_HASH_CHUNK_BYTES, offset)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
+        offset += len(chunk)
+
+
+def snapshot_index_file_set(index_db: Path, *, opened_main_fd: int | None = None) -> dict[str, Any]:
     """Capture one selected index and its SQLite sidecars under one contract.
 
     Each present file is hashed between two metadata reads. A disappearing or
@@ -29,6 +57,47 @@ def snapshot_index_file_set(index_db: Path) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     complete = True
     for path in paths:
+        if path == index_db and opened_main_fd is not None:
+            handle_metadata = os.fstat(opened_main_fd)
+            try:
+                path_metadata_before = path.stat()
+            except FileNotFoundError:
+                complete = False
+            else:
+                if (path_metadata_before.st_dev, path_metadata_before.st_ino) != (
+                    handle_metadata.st_dev,
+                    handle_metadata.st_ino,
+                ):
+                    raise IndexSnapshotRaceError(
+                        f"selected index path was replaced while its reader was open: {index_db}"
+                    )
+            digest = _file_sha256_descriptor(opened_main_fd)
+            try:
+                path_metadata_after = path.stat()
+            except FileNotFoundError:
+                complete = False
+                path_present = False
+            else:
+                if (path_metadata_after.st_dev, path_metadata_after.st_ino) != (
+                    handle_metadata.st_dev,
+                    handle_metadata.st_ino,
+                ):
+                    raise IndexSnapshotRaceError(
+                        f"selected index path was replaced during snapshot observation: {index_db}"
+                    )
+                path_present = True
+            files.append(
+                {
+                    "path": str(path),
+                    "present": path_present,
+                    "size": handle_metadata.st_size,
+                    "mtime_ns": handle_metadata.st_mtime_ns,
+                    "inode": handle_metadata.st_ino,
+                    "sha256": digest,
+                    "changed_during_observation": False,
+                }
+            )
+            continue
         try:
             metadata_before = path.stat()
         except FileNotFoundError:
