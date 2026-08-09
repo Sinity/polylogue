@@ -279,8 +279,12 @@ def select_canary_sessions(
     selected = set(sampled).union(explicit)
     selected_session_ids = tuple(sorted(selected))
     selected_raw_ids = tuple(
-        sorted(raw_id for session_id in selected if (raw_id := records[session_id][1]) is not None)
+        dict.fromkeys(sorted(raw_id for session_id in selected if (raw_id := records[session_id][1]) is not None))
     )
+    if not selected_session_ids:
+        raise CanarySelectionError("automatic canary selection produced zero sessions; refusing full-source replay")
+    if not selected_raw_ids:
+        raise CanarySelectionError("automatic canary selection produced zero raw ids; refusing full-source replay")
     origin_counts = Counter(records[session_id][0] for session_id in selected)
     from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 
@@ -358,6 +362,7 @@ def run_reindex_canary(
         sample_session_ids=sample_session_ids,
         source_root=root,
     )
+    _validate_nonempty_selection(selection)
     from polylogue.daemon.bulk_rebuild import run_daemon_canary_rebuild
 
     receipt = run_daemon_canary_rebuild(
@@ -394,6 +399,10 @@ def run_reindex_canary(
             candidate_path,
             session_ids=selection.selected_session_ids,
         )
+        if comparison.session_ids != selection.selected_session_ids:
+            raise CanarySelectionError("canary comparator scope does not match the selected sessions")
+        if not comparison.session_ids:
+            raise CanarySelectionError("canary comparator scope is empty; refusing an unbounded comparison")
     except BaseException as exc:
         cleanup_errors = _discard_canary_candidate(root, receipt)
         _add_canary_cleanup_notes(exc, cleanup_errors)
@@ -519,6 +528,19 @@ def _validate_canary_candidate(
     ):
         raise CanarySelectionError("rebuild receipt candidate is outside this archive's generation root")
     return candidate_path
+
+
+def _validate_nonempty_selection(selection: CanarySelection) -> None:
+    """Keep the canary route from inheriting the rebuild engine's full-source default."""
+
+    if not selection.selected_session_ids:
+        raise CanarySelectionError("canary selection contains zero sessions; refusing full-source replay")
+    if not selection.selected_raw_ids:
+        raise CanarySelectionError("canary selection contains zero raw ids; refusing full-source replay")
+    if len(set(selection.selected_session_ids)) != len(selection.selected_session_ids):
+        raise CanarySelectionError("canary selection contains duplicate session ids")
+    if len(set(selection.selected_raw_ids)) != len(selection.selected_raw_ids):
+        raise CanarySelectionError("canary selection contains duplicate raw ids")
 
 
 @dataclass(frozen=True, slots=True)
@@ -748,8 +770,11 @@ def _validate_selection_binding(
     *,
     archive_root: Path | None = None,
 ) -> None:
+    _validate_nonempty_selection(selection)
     if selection.index_path.resolve() != comparison.current_index.resolve():
         raise UnclassifiedCanaryDiffError("canary report selection index does not match the compared current index")
+    if not comparison.session_ids:
+        raise UnclassifiedCanaryDiffError("canary report has an empty comparison scope")
     if selection.selected_session_ids != comparison.session_ids:
         raise UnclassifiedCanaryDiffError("canary report selection sessions do not match the comparison")
     _validate_selection_evidence(
@@ -916,6 +941,7 @@ def _validate_rebuild_receipt(
     candidate_index: Path | str,
     configured_archive_root: Path | None = None,
 ) -> None:
+    requested_raw_ids = tuple(selected_raw_ids)
     if not isinstance(receipt, dict):
         raise UnclassifiedCanaryDiffError("canary report has no rebuild receipt")
     archive_root = receipt.get("archive_root")
@@ -926,7 +952,8 @@ def _validate_rebuild_receipt(
         receipt.get("receipt_schema_version") != 4
         or not isinstance(archive_root, str)
         or not archive_root
-        or selected_raw_count != len(tuple(selected_raw_ids))
+        or not requested_raw_ids
+        or selected_raw_count != len(requested_raw_ids)
         or receipt.get("status") != "replayed"
         or receipt.get("materialized") is not True
         or not isinstance(generation, dict)
@@ -961,7 +988,7 @@ def _validate_rebuild_receipt(
         )
     if Path(generation_index).resolve() != Path(candidate_index).resolve():
         raise UnclassifiedCanaryDiffError("canary report rebuild receipt does not identify the compared candidate")
-    _validate_selection_evidence(receipt, selected_raw_ids, archive_root=configured_archive_root)
+    _validate_selection_evidence(receipt, requested_raw_ids, archive_root=configured_archive_root)
 
 
 def _validate_authoritative_rebuild_receipt(receipt: dict[str, object], candidate_index: Path) -> None:
@@ -1253,7 +1280,11 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         raise UnclassifiedCanaryDiffError("canary report has no selection object")
     selected_raw_ids = selection.get("selected_raw_ids")
     candidate_index = comparison.get("candidate_index")
-    if not isinstance(selected_raw_ids, list) or not all(isinstance(value, str) for value in selected_raw_ids):
+    if (
+        not isinstance(selected_raw_ids, list)
+        or not selected_raw_ids
+        or not all(isinstance(value, str) and value for value in selected_raw_ids)
+    ):
         raise UnclassifiedCanaryDiffError("canary report has invalid selected raw ids")
     if not isinstance(candidate_index, str):
         raise UnclassifiedCanaryDiffError("canary report has no candidate index")
@@ -1264,7 +1295,11 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         configured_archive_root=configured_root,
     )
     selection_sessions = selection.get("selected_session_ids")
-    if not isinstance(selection_sessions, list) or not all(isinstance(value, str) for value in selection_sessions):
+    if (
+        not isinstance(selection_sessions, list)
+        or not selection_sessions
+        or not all(isinstance(value, str) and value for value in selection_sessions)
+    ):
         raise UnclassifiedCanaryDiffError("canary report has invalid selected session ids")
     selection_index = selection.get("index_path")
     sessions_per_origin = selection.get("sessions_per_origin")
@@ -1553,6 +1588,7 @@ _CORE_TABLES = ("sessions", "messages", "blocks", "session_links")
 _SESSION_SCOPE_COLUMNS = (
     "session_id",
     "src_session_id",
+    "resolved_dst_session_id",
     "parent_session_id",
     "child_session_id",
     "thread_id",
