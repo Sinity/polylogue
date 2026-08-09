@@ -461,10 +461,55 @@ async def run_daemon_bulk_rebuild_pass(
     )
 
 
+async def run_daemon_canary_rebuild_pass(
+    *,
+    archive_root: Path,
+    raw_ids: tuple[str, ...],
+    schema_inference_receipt_path: Path,
+    candidate_acceptance_checks: tuple[str, ...],
+) -> RebuildIndexReceipt:
+    """Build one canary generation under the daemon's sole writer gate."""
+    from polylogue.daemon.write_coordinator import daemon_write_coordinator
+    from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+
+    request = RebuildIndexRequest(
+        archive_root=Path(archive_root),
+        raw_ids=raw_ids,
+        promote=False,
+        candidate_acceptance_checks=candidate_acceptance_checks,
+        schema_inference_receipt_path=Path(schema_inference_receipt_path),
+    )
+    return await daemon_write_coordinator().run_sync(
+        "maintenance.reindex_canary",
+        rebuild_index_from_source_sync,
+        request,
+    )
+
+
+def run_daemon_canary_rebuild(
+    *,
+    archive_root: Path,
+    raw_ids: tuple[str, ...],
+    schema_inference_receipt_path: Path,
+    candidate_acceptance_checks: tuple[str, ...],
+) -> RebuildIndexReceipt:
+    """Synchronous bridge for CLI maintenance code to the daemon route."""
+    return asyncio.run(
+        run_daemon_canary_rebuild_pass(
+            archive_root=archive_root,
+            raw_ids=raw_ids,
+            schema_inference_receipt_path=schema_inference_receipt_path,
+            candidate_acceptance_checks=candidate_acceptance_checks,
+        )
+    )
+
+
 __all__ = [
     "DAEMON_BULK_REBUILD_BATCH_SIZE",
     "DAEMON_BULK_REBUILD_OPERATION_ID",
     "has_resumable_daemon_bulk_rebuild_transaction",
     "resolve_or_start_daemon_bulk_rebuild_transaction",
+    "run_daemon_canary_rebuild",
+    "run_daemon_canary_rebuild_pass",
     "run_daemon_bulk_rebuild_pass",
 ]

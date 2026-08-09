@@ -34,6 +34,7 @@ from polylogue.maintenance.reindex_canary import (
     DifferenceClassification,
     DifferenceOperation,
     ExpectedDifference,
+    RowDifference,
     UnclassifiedCanaryDiffError,
     compare_reindex_generations,
     load_canary_report,
@@ -147,14 +148,14 @@ def _seed_index(
                 INSERT INTO sessions(native_id, origin, raw_id, content_hash, message_count)
                 VALUES (?, ?, ?, ?, 1)
                 """,
-                (native_id, origin, f"raw-{native_id}", native_id.encode().ljust(32, b"-")),
+                (native_id, origin, f"raw-{native_id}", hashlib.sha256(native_id.encode()).digest()),
             )
             connection.execute(
                 """
                 INSERT INTO messages(session_id, position, role, material_origin, content_hash)
                 VALUES (?, 0, 'user', 'human_authored', ?)
                 """,
-                (session_id, native_id.encode().ljust(32, b"m")),
+                (session_id, hashlib.sha256((native_id + ":message").encode()).digest()),
             )
             connection.execute(
                 """
@@ -185,6 +186,28 @@ def _seed_action(path: Path, *, tool_input: str) -> None:
             VALUES (?, ?, 1, 'tool_use', 'tool-alpha', ?)
             """,
             (message_id, session_id, tool_input),
+        )
+        connection.execute(
+            """
+            INSERT INTO action_pairs(
+                tool_use_block_id, session_id, message_id, tool_id, use_rank, tool_name
+            ) VALUES (?, ?, ?, 'tool-alpha', 1, 'shell')
+            """,
+            (f"{message_id}:1", session_id, message_id),
+        )
+        connection.commit()
+
+
+def _seed_session_link(path: Path, *, inheritance: str) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO session_links(
+                src_session_id, dst_origin, dst_native_id, link_type,
+                inheritance, observed_at_ms
+            ) VALUES (?, 'codex-session', 'parent', 'resume', ?, 1)
+            """,
+            ("codex-session:alpha", inheritance),
         )
         connection.commit()
 
@@ -463,6 +486,22 @@ def test_differ_compares_canonical_actions_view(tmp_path: Path) -> None:
     assert "tool_input" in action_delta.changed_columns
 
 
+def test_differ_does_not_omit_session_links_from_the_canonical_relation_frame(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate)
+    _seed_session_link(current, inheritance="prefix-sharing")
+    _seed_session_link(candidate, inheritance="spawned-fresh")
+
+    report = compare_reindex_generations(current, candidate)
+
+    link_delta = next(item for item in report.differences if item.table == "session_links")
+    assert link_delta.operation is DifferenceOperation.CHANGED
+    assert "inheritance" in link_delta.changed_columns
+    assert "session_links" in report.compared_tables
+
+
 def test_selected_sessions_bound_the_canary_to_a_real_subset(tmp_path: Path) -> None:
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
@@ -479,6 +518,37 @@ def test_selected_sessions_bound_the_canary_to_a_real_subset(tmp_path: Path) -> 
 
     assert report.session_ids == ("codex-session:kept",)
     assert report.differences == ()
+
+
+def test_parser_fingerprint_binding_fails_closed_when_evidence_changes() -> None:
+    evidence = {
+        "replay_closure": {
+            "raw_session_evidence": [
+                {
+                    "origin": "codex-session",
+                    "parser_fingerprint": "parser-v1",
+                    "lowering_fingerprint": "lower-v1",
+                }
+            ]
+        }
+    }
+    expected = {
+        ("codex-session", "parser-v1"),
+    }
+    reindex_canary_module._validate_parser_binding(
+        evidence,
+        expected_parser_fingerprints=expected,
+        expected_lowering_fingerprint="lower-v1",
+    )
+    changed = json.loads(json.dumps(evidence))
+    changed["replay_closure"]["raw_session_evidence"][0]["parser_fingerprint"] = "parser-v2"
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="parser fingerprints"):
+        reindex_canary_module._validate_parser_binding(
+            changed,
+            expected_parser_fingerprints=expected,
+            expected_lowering_fingerprint="lower-v1",
+        )
 
 
 def test_canary_comparison_is_read_only(tmp_path: Path) -> None:
@@ -562,7 +632,7 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     native_ids = tuple(session_id.split(":", 1)[1] for session_id in pathology_session_ids)
     origins = tuple(session_id.split(":", 1)[0] for session_id in pathology_session_ids)
     _seed_index(current, sessions=native_ids, origins=origins)
-    captured: dict[str, tuple[str, ...]] = {}
+    captured: dict[str, object] = {}
     captured_receipt_path: Path | None = None
 
     class Receipt:
@@ -573,6 +643,7 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
         nonlocal captured_receipt_path
         captured["raw_ids"] = tuple(request.raw_ids)  # type: ignore[attr-defined]
         captured["acceptance_checks"] = tuple(request.candidate_acceptance_checks)  # type: ignore[attr-defined]
+        captured["promote"] = request.promote  # type: ignore[attr-defined]
         captured_receipt_path = request.schema_inference_receipt_path  # type: ignore[attr-defined]
         return Receipt()
 
@@ -599,9 +670,14 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     )
 
     assert result.selection.pathology_session_ids == pathology_session_ids
-    assert set(pathology_session_ids) <= set(captured["session_ids"])
-    assert len(captured["raw_ids"]) == len(pathology_session_ids)
+    captured_session_ids = captured["session_ids"]
+    captured_raw_ids = captured["raw_ids"]
+    assert isinstance(captured_session_ids, tuple)
+    assert isinstance(captured_raw_ids, tuple)
+    assert set(pathology_session_ids) <= set(captured_session_ids)
+    assert len(captured_raw_ids) == len(pathology_session_ids)
     assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
+    assert captured["promote"] is False
     assert captured_receipt_path == receipt_path
 
 
@@ -972,10 +1048,14 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
 
     captured: dict[str, object] = {}
 
+    def fake_rebuild(request: object) -> Receipt:
+        captured["promote"] = request.promote  # type: ignore[attr-defined]
+        return Receipt()
+
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
     )
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", lambda request: Receipt())
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
     )
@@ -992,6 +1072,7 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
 
     assert result.comparison.candidate_index == candidate
     assert captured["paths"] == (current, candidate)
+    assert captured["promote"] is False
 
 
 def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1085,7 +1166,10 @@ def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
     monkeypatch.setattr(rebuild_index, "_repopulate_bulk_build_derived_state", corrupt_candidate_after_replay)
     monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", unexpected_insight_repair)
 
-    with pytest.raises(RuntimeError, match="session-lineage-acyclic|no longer parses to one session"):
+    with pytest.raises(
+        RuntimeError,
+        match="session-lineage-acyclic|no longer parses to one session|raw frontier integrity",
+    ):
         run_reindex_canary(
             zoo.archive_root,
             schema_inference_receipt_path=receipt_path,
@@ -1179,6 +1263,38 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert summary["unclassified_count"] == 0
     assert summary["unexpected_count"] == len(reviews)
     assert "rebuild_receipt" in payload
+    assert all(
+        isinstance(review["authority"], dict) and review["authority"]["kind"] == "successor"
+        for review in payload["reviews"]
+    )
+
+
+def test_review_authority_kind_is_bound_to_classification() -> None:
+    difference = RowDifference(
+        table="blocks",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("block_id", "block"),),
+        before={"text": "before"},
+        after={"text": "after"},
+        changed_columns=("text",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unexpected",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="expected canary differences"):
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.EXPECTED,
+            reference="successor:polylogue-next",
+            rationale="wrong authority kind",
+        )
+    with pytest.raises(UnclassifiedCanaryDiffError, match="unexpected canary differences"):
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="bead:polylogue-0x7nh",
+            rationale="wrong authority kind",
+        )
 
 
 def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) -> None:

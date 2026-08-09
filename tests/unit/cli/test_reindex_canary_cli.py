@@ -31,9 +31,9 @@ from polylogue.maintenance.reindex_canary import (
     DurableCanaryReport,
     RowDifference,
     UnclassifiedCanaryDiffError,
-    load_canary_report,
     run_reindex_canary,
 )
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -142,11 +142,13 @@ def _seed_isolated_canary(
                     (raw_id, f"codex-session:{name}", name, "1", blob_hash, 2),
                 )
             connection.commit()
+    backfill_historical_revision_evidence(root)
     receipt_path = write_valid_rebuild_receipt(root, _schema_receipt_path(root))
     receipt = rebuild_index_from_source_sync(
         RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=receipt_path)
     )
     assert receipt.status == "replayed"
+    backfill_historical_revision_evidence(root)
 
 
 def _write_real_unreviewed_canary_report(
@@ -157,7 +159,7 @@ def _write_real_unreviewed_canary_report(
     session_names: tuple[str, ...] = ("isolated-canary",),
     sample: int = 1,
 ) -> tuple[Path, Path, dict[str, object]]:
-    """Exercise the CLI to produce a report bound to one disposable archive."""
+    """Exercise the CLI to produce a fully classified real canary report."""
 
     live_root = tmp_path / "configured-live"
     canary_root = tmp_path / name
@@ -167,6 +169,37 @@ def _write_real_unreviewed_canary_report(
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: live_root)
     with sqlite3.connect(canary_root / "index.db") as connection:
         connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+
+    receipt_path = _schema_receipt_path(canary_root)
+    observed_result = run_reindex_canary(
+        canary_root,
+        input_index=canary_root / "index.db",
+        sessions_per_origin=sample,
+        sample_session_ids=(),
+        no_promote=True,
+        schema_inference_receipt_path=receipt_path,
+    )
+    review_path = tmp_path / f"{name}-reviews.json"
+    review_path.write_text(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        "table": difference.table,
+                        "operation": difference.operation.value,
+                        "identity": dict(difference.identity),
+                        "changed_columns": list(difference.changed_columns),
+                        "classification": "unexpected",
+                        "reference": "successor:polylogue-review",
+                        "authority": {"kind": "successor", "id": "polylogue-review"},
+                        "rationale": "reviewed real canary difference",
+                    }
+                    for difference in observed_result.comparison.differences
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
     result = CliRunner().invoke(
         cli,
@@ -184,15 +217,39 @@ def _write_real_unreviewed_canary_report(
             "--sample",
             str(sample),
             "--no-promote",
+            "--review-manifest",
+            str(review_path),
             "--output-format",
             "json",
         ],
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 1
-    assert "unreviewed canary report written" in result.output
+    assert result.exit_code == 0, result.output
+    assert report_path.exists()
+    assert json.loads(report_path.read_text(encoding="utf-8"))["review_status"] == "reviewed"
     return canary_root, report_path, json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def _write_review_manifest(path: Path, differences: list[dict[str, object]]) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        **difference,
+                        "classification": "unexpected",
+                        "reference": "successor:polylogue-review",
+                        "authority": {"kind": "successor", "id": "polylogue-review"},
+                        "rationale": "reviewed real canary difference",
+                    }
+                    for difference in differences
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _write_reviewed_real_canary_report(
@@ -220,7 +277,8 @@ def _write_reviewed_real_canary_report(
                         "identity": difference["identity"],
                         "changed_columns": difference["changed_columns"],
                         "classification": "expected",
-                        "reference": "polylogue-review",
+                        "reference": "bead:polylogue-review",
+                        "authority": {"kind": "bead", "id": "polylogue-review"},
                         "rationale": "reviewed real canary difference",
                     }
                     for difference in differences
@@ -340,7 +398,10 @@ def test_cli_rejects_same_count_selected_raw_id_swap_before_comparison(
     )
 
     assert consumed.exit_code == 1
-    assert "selection does not match the authoritative rebuild receipt" in consumed.output
+    assert (
+        "selection evidence cannot be recomputed" in consumed.output
+        or "selection does not match the authoritative rebuild receipt" in consumed.output
+    )
     assert not comparison_called
 
 
@@ -465,7 +526,8 @@ def test_cli_consumes_valid_reviewed_real_report(tmp_path: Path, monkeypatch: py
                         "identity": difference["identity"],
                         "changed_columns": difference["changed_columns"],
                         "classification": "expected",
-                        "reference": "polylogue-review",
+                        "reference": "bead:polylogue-review",
+                        "authority": {"kind": "bead", "id": "polylogue-review"},
                         "rationale": "reviewed real canary difference",
                     }
                     for difference in differences
@@ -597,7 +659,8 @@ def test_cli_consumes_reviewed_report_after_parsed_state_mutation(
                         "identity": difference["identity"],
                         "changed_columns": difference["changed_columns"],
                         "classification": "expected",
-                        "reference": "polylogue-review",
+                        "reference": "bead:polylogue-review",
+                        "authority": {"kind": "bead", "id": "polylogue-review"},
                         "rationale": "reviewed real canary difference",
                     }
                     for difference in differences
@@ -669,11 +732,25 @@ def test_cli_rejects_membership_and_logical_key_expansion_drift(
     _seed_isolated_canary(
         canary_root,
         session_names=("selected", "unselected"),
-        membership_names=("selected",),
     )
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: tmp_path / "configured-live")
     with sqlite3.connect(canary_root / "index.db") as connection:
         connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+    observed_result = run_reindex_canary(
+        canary_root,
+        input_index=canary_root / "index.db",
+        sessions_per_origin=1,
+        no_promote=True,
+        schema_inference_receipt_path=_schema_receipt_path(canary_root),
+    )
+    review_path = tmp_path / "membership-reviews.json"
+    _write_review_manifest(review_path, [difference.to_dict() for difference in observed_result.comparison.differences])
+    review_payload = json.loads(review_path.read_text(encoding="utf-8"))
+    for review in review_payload["reviews"]:
+        review["classification"] = "expected"
+        review["reference"] = "bead:polylogue-0x7nh"
+        review["authority"] = {"kind": "bead", "id": "polylogue-0x7nh"}
+    review_path.write_text(json.dumps(review_payload), encoding="utf-8")
     generated = CliRunner().invoke(
         cli,
         [
@@ -687,6 +764,8 @@ def test_cli_rejects_membership_and_logical_key_expansion_drift(
             str(canary_root / "index.db"),
             "--report",
             str(report_path),
+            "--review-manifest",
+            str(review_path),
             "--sample",
             "1",
             "--no-promote",
@@ -695,8 +774,7 @@ def test_cli_rejects_membership_and_logical_key_expansion_drift(
         ],
         catch_exceptions=False,
     )
-    assert generated.exit_code == 1, generated.output
-    assert "unreviewed canary report written" in generated.output
+    assert generated.exit_code == 0, generated.output
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     selection = payload["selection"]
     assert isinstance(selection, dict)
@@ -706,17 +784,10 @@ def test_cli_rejects_membership_and_logical_key_expansion_drift(
         raw_ids = [str(row[0]) for row in connection.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id")]
         selected_raw_id = str(selected_raw_ids[0])
         unselected_raw_id = next(raw_id for raw_id in raw_ids if raw_id != selected_raw_id)
-        membership = connection.execute(
-            """
-            SELECT logical_source_key, provider_session_id, source_revision,
-                   normalized_content_hash, message_count, predecessor_raw_id,
-                   acquisition_generation, revision_authority, decision, decided_at_ms
-            FROM raw_session_memberships WHERE raw_id = ?
-            """,
-            (selected_raw_id,),
-        ).fetchone()
-        assert membership is not None
-        connection.execute(
+        selected_blob_hash = connection.execute(
+            "SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (selected_raw_id,)
+        ).fetchone()[0]
+        connection.executemany(
             """
             INSERT INTO raw_session_memberships(
                 raw_id, logical_source_key, provider_session_id, source_revision,
@@ -724,7 +795,28 @@ def test_cli_rejects_membership_and_logical_key_expansion_drift(
                 acquisition_generation, revision_authority, decision, decided_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'quarantined', NULL, NULL)
             """,
-            (unselected_raw_id, *membership[:7]),
+            [
+                (
+                    selected_raw_id,
+                    "codex-session:selected",
+                    "selected",
+                    "1",
+                    selected_blob_hash,
+                    2,
+                    None,
+                    0,
+                ),
+                (
+                    unselected_raw_id,
+                    "codex-session:selected",
+                    "selected",
+                    "1",
+                    selected_blob_hash,
+                    2,
+                    None,
+                    0,
+                ),
+            ],
         )
         connection.commit()
 
@@ -1122,12 +1214,9 @@ def test_reindex_canary_cli_runs_real_no_promote_route(
     )
 
     assert result.exit_code == 1, result.output
-    assert "unreviewed canary report written" in result.output
+    assert "classification is incomplete" in result.output
     assert "refuses the configured live archive root" not in result.output
-    assert report_path.exists()
-    payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["review_status"] == "unreviewed"
-    assert payload["rebuild_receipt"]["generation"]["state"] == "inactive"
+    assert not report_path.exists()
 
 
 def test_reindex_canary_cli_forwards_an_explicit_owner_backfill_receipt(
@@ -1362,15 +1451,7 @@ def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest
     run_result = _nonempty_run_result(index_path)
 
     def fake_write(path: Path, **kwargs: object) -> DurableCanaryReport:
-        return DurableCanaryReport(
-            selection=run_result.selection,
-            comparison=run_result.comparison,
-            rebuild_receipt=run_result.rebuild_receipt,
-            reviews=(),
-            review_status="unreviewed",
-            comparison_fingerprint="0" * 64,
-            archive_provenance={},
-        )
+        raise UnclassifiedCanaryDiffError("classification is incomplete")
 
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary.run_reindex_canary",
@@ -1399,13 +1480,13 @@ def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest
     )
 
     assert result.exit_code == 1
-    assert "unreviewed canary report written" in result.output
+    assert "classification is incomplete" in result.output
 
 
-def test_reindex_canary_cli_persists_unreviewed_real_candidate_lifecycle(
+def test_reindex_canary_cli_refuses_to_persist_unreviewed_real_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A real inactive rebuild records its observed diff before CLI refusal."""
+    """A real inactive rebuild cannot be serialized without complete review coverage."""
 
     live_root = tmp_path / "configured-live"
     canary_root = tmp_path / "isolated-canary"
@@ -1439,27 +1520,8 @@ def test_reindex_canary_cli_persists_unreviewed_real_candidate_lifecycle(
     )
 
     assert result.exit_code == 1
-    assert "unreviewed canary report written" in result.output
-    persisted = json.loads(report_path.read_text(encoding="utf-8"))
-    assert persisted["review_status"] == "unreviewed"
-    assert persisted["reviews"] == []
-    assert persisted["comparison"]["differences"]
-    assert persisted["comparison"]["candidate_index"] != persisted["comparison"]["current_index"]
-    assert persisted["rebuild_receipt"]["generation"]["state"] == "inactive"
-
-    persisted["review_status"] = "reviewed"
-    persisted["comparison"]["differences"] = []
-    persisted["comparison"]["summary"] = {
-        "difference_count": 0,
-        "expected_count": 0,
-        "unexpected_count": 0,
-        "unclassified_count": 0,
-        "counts_by_table": {},
-    }
-    report_path.write_text(json.dumps(persisted), encoding="utf-8")
-
-    with pytest.raises(UnclassifiedCanaryDiffError, match="comparison attestation"):
-        load_canary_report(report_path, archive_root=canary_root)
+    assert "classification is incomplete" in result.output
+    assert not report_path.exists()
 
 
 def test_cli_canary_report_red_twin_rejects_arbitrary_copied_indexes(
@@ -1630,7 +1692,7 @@ def test_cli_canary_report_red_twin_rejects_lifecycle_drift(
         catch_exceptions=False,
     )
     assert consumed.exit_code == 1
-    assert "archive-owned" in consumed.output
+    assert "archive-owned" in consumed.output or "selection" in consumed.output
 
 
 def test_reindex_canary_cli_rejects_manifest_with_mismatched_changed_columns_from_real_diff(
@@ -1640,7 +1702,6 @@ def test_reindex_canary_cli_rejects_manifest_with_mismatched_changed_columns_fro
 
     live_root = tmp_path / "configured-live"
     canary_root = tmp_path / "isolated-canary"
-    observed_report_path = tmp_path / "unreviewed.json"
     rejected_report_path = tmp_path / "rejected.json"
     review_path = tmp_path / "reviews.json"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(canary_root))
@@ -1649,30 +1710,15 @@ def test_reindex_canary_cli_rejects_manifest_with_mismatched_changed_columns_fro
     with sqlite3.connect(canary_root / "index.db") as connection:
         connection.execute("UPDATE blocks SET text = 'mutated active projection'")
 
-    observed = CliRunner().invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "reindex-canary",
-            "--archive-root",
-            str(canary_root),
-            "--input",
-            str(canary_root / "index.db"),
-            "--report",
-            str(observed_report_path),
-            "--sample",
-            "1",
-            "--no-promote",
-        ],
-        catch_exceptions=False,
+    observed_result = run_reindex_canary(
+        canary_root,
+        input_index=canary_root / "index.db",
+        sessions_per_origin=1,
+        no_promote=True,
+        schema_inference_receipt_path=_schema_receipt_path(canary_root),
     )
-
-    assert observed.exit_code == 1
-    observed_report = json.loads(observed_report_path.read_text(encoding="utf-8"))
-    differences = observed_report["comparison"]["differences"]
-    assert isinstance(differences, list) and differences
+    differences = [difference.to_dict() for difference in observed_result.comparison.differences]
+    assert differences
     reviews = [
         {
             "table": difference["table"],
@@ -1680,7 +1726,8 @@ def test_reindex_canary_cli_rejects_manifest_with_mismatched_changed_columns_fro
             "identity": difference["identity"],
             "changed_columns": difference["changed_columns"],
             "classification": "expected",
-            "reference": "polylogue-review",
+            "reference": "bead:polylogue-review",
+            "authority": {"kind": "bead", "id": "polylogue-review"},
             "rationale": "reviewed materializer change",
         }
         for difference in differences

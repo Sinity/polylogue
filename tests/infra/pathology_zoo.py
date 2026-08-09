@@ -482,8 +482,19 @@ def _write_generated_members(root: Path, *, indexes: tuple[int, ...] | None = No
     )
     paths: list[Path] = []
     for index in indexes or tuple(range(len(specs))):
-        written = SyntheticCorpus.write_spec_artifacts(specs[index], generated, prefix=f"zoo-{index:02d}")
-        paths.extend(written.files)
+        spec = specs[index]
+        if spec.provider == "antigravity":
+            # Antigravity is intentionally not a generic JSON synthetic route.
+            # Its production parser consumes a language-server .pb inventory,
+            # so keep this fixture on that boundary and let the patched client
+            # provide the transcript export.
+            artifact = generated / "conversations" / "zoo-06-00:zoo-06-00.md.pb"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_bytes(b"synthetic antigravity inventory")
+            paths.append(artifact)
+        else:
+            written = SyntheticCorpus.write_spec_artifacts(spec, generated, prefix=f"zoo-{index:02d}")
+            paths.extend(written.files)
     return tuple(paths)
 
 

@@ -151,17 +151,8 @@ def reindex_canary_command(
             comparison=result.comparison,
             rebuild_receipt=result.rebuild_receipt,
             reviews=reviews,
-            allow_unreviewed=review_manifest is None,
         )
         load_canary_report(report_path, archive_root=archive_root)
-        if result.comparison.differences and review_manifest is None:
-            identities = [dict(item.identity) for item in result.comparison.differences]
-            raise UnclassifiedCanaryDiffError(
-                "unreviewed canary report written to "
-                + str(report_path)
-                + "; observed identities="
-                + json.dumps(identities, sort_keys=True)
-            )
     except UnclassifiedCanaryDiffError as exc:
         raise click.ClickException(str(exc)) from exc
     except (OSError, RuntimeError, ValueError) as exc:
