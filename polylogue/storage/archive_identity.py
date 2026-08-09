@@ -542,16 +542,34 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str, dir_fd: int | None = N
     confirm it's dead -- so retrying the identical ``flock`` call converges
     quickly without ever creating a second inode to race against.
     """
+    lock_flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     if dir_fd is None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, lock_flags, 0o600)
+        except OSError as exc:
+            raise ArchiveOwnershipError(f"cannot open archive ownership lock: {path}") from exc
     else:
-        fd = os.open(
-            path.name,
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=dir_fd,
-        )
+        try:
+            fd = os.open(
+                path.name,
+                lock_flags,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            raise ArchiveOwnershipError(f"cannot open archive ownership lock: {path}") from exc
+    try:
+        _validate_ownership_lock_fd(path, fd)
+    except BaseException:
+        os.close(fd)
+        raise
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exc:
@@ -574,7 +592,24 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str, dir_fd: int | None = N
         else:
             os.close(fd)
             raise ArchiveOwnershipError(f"archive location already owned: {path}") from exc
+    try:
+        _validate_ownership_lock_fd(path, fd)
+    except BaseException:
+        os.close(fd)
+        raise
     os.ftruncate(fd, 0)
     os.write(fd, owner.encode("utf-8"))
     os.fsync(fd)
     return fd
+
+
+def _validate_ownership_lock_fd(path: Path, fd: int) -> None:
+    """Require a private lock to remain one unlinked regular inode."""
+    try:
+        metadata = os.fstat(fd)
+    except OSError as exc:
+        raise ArchiveOwnershipError(f"cannot inspect archive ownership lock: {path}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ArchiveOwnershipError(f"archive ownership lock is not a regular file: {path}")
+    if metadata.st_nlink != 1:
+        raise ArchiveOwnershipError(f"archive ownership lock has unexpected link count: {path}")

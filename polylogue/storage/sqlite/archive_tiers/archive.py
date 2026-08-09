@@ -1752,6 +1752,7 @@ class ArchiveStore:
         source_tier_acquisition: bool = False,
         frozen_source_validation: bool = False,
         frozen_index_path: Path | None = None,
+        opened_index_fd: int | None = None,
     ) -> None:
         if source_tier_acquisition and read_only:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
@@ -1759,10 +1760,13 @@ class ArchiveStore:
             raise ValueError("frozen source validation requires a read-only active archive")
         if frozen_index_path is not None and not read_only:
             raise ValueError("a pinned index path is valid only for read-only archive access")
+        if opened_index_fd is not None and not read_only:
+            raise ValueError("an opened index descriptor is valid only for read-only archive access")
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_source_validation = frozen_source_validation
         self._frozen_index_path = frozen_index_path
+        self._opened_index_fd = opened_index_fd
         self._pinned_read = frozen_index_path is not None
         self._inactive_candidate_durable_read_only = owned_inactive_generation is not None or frozen_source_validation
         self._active_writer_lease = None
@@ -1833,6 +1837,7 @@ class ArchiveStore:
                 initialize=initialize and not source_tier_acquisition and owned_inactive_generation is None,
                 read_only=read_only,
                 read_timeout=read_timeout,
+                opened_index_fd=opened_index_fd,
                 # polylogue-623q: only ever True for a write connection against
                 # an OWNED INACTIVE generation -- never read until promoted,
                 # discarded wholesale on any failure -- so it is safe to open
@@ -1858,6 +1863,7 @@ class ArchiveStore:
         read_only: bool,
         read_timeout: float,
         bulk_build_profile: bool = False,
+        opened_index_fd: int | None = None,
     ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
@@ -1866,6 +1872,8 @@ class ArchiveStore:
         self.user_db_path = archive_root / "user.db"
         self.ops_db_path = archive_root / "ops.db"
         self._read_only = read_only
+        if opened_index_fd is not None and not read_only:
+            raise ValueError("an opened index descriptor is valid only for read-only archive access")
         # Attribute type declarations shared by every open mode (the
         # source-tier acquisition branch below returns early, so inference
         # from a single assignment site would otherwise mistype these).
@@ -1914,7 +1922,11 @@ class ArchiveStore:
         if initialize:
             initialize_active_archive_root(archive_root)
         if read_only:
-            self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True, timeout=read_timeout)
+            self._conn = open_readonly_connection(
+                self.index_db_path,
+                timeout=read_timeout,
+                opened_main_fd=opened_index_fd,
+            )
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
             self._conn = (
@@ -1965,6 +1977,7 @@ class ArchiveStore:
         read_only: bool = True,
         read_timeout: float = 5.0,
         index_path: Path | None = None,
+        opened_main_fd: int | None = None,
     ) -> ArchiveStore:
         """Open archive tier files.
 
@@ -1972,7 +1985,8 @@ class ArchiveStore:
         not create an empty archive and then report it as usable. Writers opt
         into bootstrap by passing ``read_only=False``. Read-only evidence tools
         may pass an already-resolved ``index_path`` to remain pinned to one
-        physical generation across an active-pointer promotion.
+        physical generation across an active-pointer promotion. An opened main
+        descriptor can additionally bind the index connection to that inode.
         """
         if index_path is not None and not read_only:
             raise ValueError("index_path is valid only for read-only archive access")
@@ -1983,6 +1997,7 @@ class ArchiveStore:
             read_only=read_only,
             read_timeout=read_timeout,
             frozen_index_path=index_path,
+            opened_index_fd=opened_main_fd,
         )
 
     @classmethod

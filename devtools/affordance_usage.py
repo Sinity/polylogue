@@ -919,6 +919,7 @@ def _try_product_detail_report(
     args: AffordanceUsageArgs,
     config: Config,
     conn: Connection,
+    opened_main_fd: int,
     recent_cutoff_ms: int,
     effective_detail_patterns: tuple[str, ...],
 ) -> dict[str, Any] | None:
@@ -949,7 +950,11 @@ def _try_product_detail_report(
     since_ms = None if args.all_time else recent_cutoff_ms
     action_scope = "product-action-evidence-all-time" if args.all_time else "product-action-evidence-recent-window"
     try:
-        with ArchiveStore.open_existing(config.archive_root, index_path=selected_index_db) as archive:
+        with ArchiveStore.open_existing(
+            config.archive_root,
+            index_path=selected_index_db,
+            opened_main_fd=opened_main_fd,
+        ) as archive:
             opened_index_db = Path(archive.index_db_path).resolve(strict=True)
             if opened_index_db != selected_index_db:
                 raise RuntimeError(
@@ -1268,9 +1273,11 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
     observer: Connection | None = None
     try:
         conn = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
+        opened_file_set.capture_sidecars(index_db)
         observer = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
         assert conn is not None
         observer_data_version_before = _data_version(observer)
+        opened_file_set.capture_sidecars(index_db)
         conn.execute("BEGIN")
         index_schema_version = _user_version(conn)
         snapshot_before = _snapshot_observation(
@@ -1286,6 +1293,7 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
             args=args,
             config=config,
             conn=conn,
+            opened_main_fd=opened_main_fd,
             recent_cutoff_ms=recent_cutoff_ms,
             effective_detail_patterns=effective_detail_patterns,
         )
@@ -1374,6 +1382,7 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         surface_summary = _surface_inventory_summary(surface_inventory)
         report["surface_inventory"] = surface_inventory
         report["surface_inventory_summary"] = surface_summary
+        opened_file_set.capture_sidecars(index_db)
         snapshot_after = _snapshot_observation(
             index_db,
             opened_main_fd=opened_main_fd,

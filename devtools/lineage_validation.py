@@ -807,9 +807,11 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     observer: Connection | None = None
     try:
         conn = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
+        opened_file_set.capture_sidecars(index_db)
         observer = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
         assert conn is not None
         observer_data_version_before = _data_version(observer)
+        opened_file_set.capture_sidecars(index_db)
         conn.execute("BEGIN")
         # BEGIN is deferred. Force the first SQLite read before hashing WAL
         # sidecars so this census's own reader mark cannot make a quiescent
@@ -910,6 +912,7 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
             elif topology["unresolved_read_sample"]["status"] == "unsafe":
                 reasons.append("sampled unresolved-parent reads did not remain child-local")
 
+        opened_file_set.capture_sidecars(index_db)
         snapshot_after = _snapshot_identity(
             index_db,
             opened_main_fd=opened_main_fd,

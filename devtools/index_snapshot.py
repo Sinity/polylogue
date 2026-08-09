@@ -8,7 +8,7 @@ import os
 import stat
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -23,37 +23,72 @@ class IndexSnapshotUnsafeSidecarError(RuntimeError):
     """A selected SQLite sidecar is not a safe regular file."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class OpenedIndexFileSet:
     """Descriptors retained while SQLite and evidence observe one index."""
 
     main_fd: int
-    sidecar_fds: Mapping[str, int]
+    sidecar_fds: dict[str, int]
+    _descriptors: list[int] = field(repr=False)
+
+    def capture_sidecars(self, index_db: Path) -> None:
+        """Retain every safe sidecar currently visible after SQLite opens."""
+        for suffix in ("-wal", "-shm", "-journal"):
+            path = Path(f"{index_db}{suffix}")
+            try:
+                path_metadata = path.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if suffix in self.sidecar_fds:
+                handle_metadata = os.fstat(self.sidecar_fds[suffix])
+                if (path_metadata.st_dev, path_metadata.st_ino) != (
+                    handle_metadata.st_dev,
+                    handle_metadata.st_ino,
+                ):
+                    raise IndexSnapshotUnsafeSidecarError(f"selected index sidecar was replaced: {path}")
+                continue
+            descriptor = _open_regular_index_file(path, sidecar=True)
+            self._descriptors.append(descriptor)
+            self.sidecar_fds[suffix] = descriptor
+
+
+def _open_regular_index_file(path: Path, *, sidecar: bool, missing_ok: bool = False) -> int:
+    """Open one selected index object without blocking on non-regular files."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        if missing_ok:
+            raise
+        error = IndexSnapshotUnsafeSidecarError if sidecar else IndexSnapshotRaceError
+        label = "selected index sidecar" if sidecar else "selected index"
+        raise error(f"cannot open {label} safely: {path}") from None
+    except OSError as exc:
+        error = IndexSnapshotUnsafeSidecarError if sidecar else IndexSnapshotRaceError
+        label = "selected index sidecar" if sidecar else "selected index"
+        raise error(f"cannot open {label} safely: {path}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            error = IndexSnapshotUnsafeSidecarError if sidecar else IndexSnapshotRaceError
+            label = "selected index sidecar" if sidecar else "selected index"
+            raise error(f"{label} is not a regular file: {path}")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 @contextmanager
 def open_index_file_set(index_db: Path) -> Iterator[OpenedIndexFileSet]:
     """Open the selected database and existing sidecars without following links."""
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptors: list[int] = []
     try:
-        try:
-            main_fd = os.open(index_db, flags)
-        except OSError as exc:
-            raise IndexSnapshotRaceError(f"cannot open selected index safely: {index_db}") from exc
+        main_fd = _open_regular_index_file(index_db, sidecar=False)
         descriptors.append(main_fd)
-        sidecar_fds: dict[str, int] = {}
-        for suffix in ("-wal", "-shm", "-journal"):
-            path = Path(f"{index_db}{suffix}")
-            try:
-                descriptor = os.open(path, flags)
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise IndexSnapshotUnsafeSidecarError(f"cannot open selected index sidecar safely: {path}") from exc
-            descriptors.append(descriptor)
-            sidecar_fds[suffix] = descriptor
-        yield OpenedIndexFileSet(main_fd=main_fd, sidecar_fds=sidecar_fds)
+        file_set = OpenedIndexFileSet(main_fd=main_fd, sidecar_fds={}, _descriptors=descriptors)
+        file_set.capture_sidecars(index_db)
+        yield file_set
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
@@ -110,13 +145,7 @@ def snapshot_index_file_set(
                 continue
             if not stat.S_ISREG(sidecar_metadata.st_mode):
                 raise IndexSnapshotUnsafeSidecarError(f"selected index sidecar is not a regular file: {path}")
-            try:
-                late_sidecar_fd = os.open(
-                    path,
-                    os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-                )
-            except OSError as exc:
-                raise IndexSnapshotUnsafeSidecarError(f"cannot open selected index sidecar safely: {path}") from exc
+            late_sidecar_fd = _open_regular_index_file(path, sidecar=True)
             try:
                 late_sidecar_metadata = os.fstat(late_sidecar_fd)
                 late_sidecar_digest = _file_sha256_descriptor(late_sidecar_fd)
@@ -184,27 +213,29 @@ def snapshot_index_file_set(
             )
             continue
         try:
-            metadata_before = path.stat(follow_symlinks=False)
+            safe_fd = _open_regular_index_file(path, sidecar=path != index_db, missing_ok=True)
         except FileNotFoundError:
             if path == index_db:
-                # A missing sidecar is a normal quiescent SQLite state; a
-                # missing selected database is not evidence of an observed
-                # snapshot, even when an already-open connection can still
-                # serve reads from the unlinked inode.
                 complete = False
             files.append({"path": str(path), "present": False})
             continue
-        if not stat.S_ISREG(metadata_before.st_mode):
-            if path == index_db:
-                raise IndexSnapshotRaceError(f"selected index is not a regular file: {path}")
-            raise IndexSnapshotUnsafeSidecarError(f"selected index sidecar is not a regular file: {path}")
         try:
-            digest = _file_sha256(path)
+            metadata_before = os.fstat(safe_fd)
+            path_metadata_before = path.stat(follow_symlinks=False)
+            if (path_metadata_before.st_dev, path_metadata_before.st_ino) != (
+                metadata_before.st_dev,
+                metadata_before.st_ino,
+            ):
+                error = IndexSnapshotRaceError if path == index_db else IndexSnapshotUnsafeSidecarError
+                raise error(f"selected index file changed before hashing: {path}")
+            digest = _file_sha256_descriptor(safe_fd)
             metadata_after = path.stat(follow_symlinks=False)
         except FileNotFoundError:
             complete = False
             files.append({"path": str(path), "present": False, "changed_during_observation": True})
             continue
+        finally:
+            os.close(safe_fd)
         unchanged = (
             metadata_before.st_dev,
             metadata_before.st_ino,
@@ -228,7 +259,11 @@ def snapshot_index_file_set(
                 "changed_during_observation": not unchanged,
             }
         )
-    encoded = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    digest_files = [
+        ({key: value for key, value in file.items() if key != "sha256"} if path.name.endswith("-shm") else file)
+        for path, file in zip(paths, files, strict=True)
+    ]
+    encoded = json.dumps(digest_files, sort_keys=True, separators=(",", ":")).encode("utf-8")
     main = files[0]
     return {
         "path": str(index_db),
