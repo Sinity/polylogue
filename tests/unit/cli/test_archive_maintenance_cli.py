@@ -2390,7 +2390,7 @@ def test_migrate_tier_cli_wraps_non_collision_publication_error(
     assert not audit_db.exists()
 
 
-@pytest.mark.parametrize("failure_stage", ["image_fsync", "published_lstat", "directory_open", "directory_fsync"])
+@pytest.mark.parametrize("failure_stage", ["image_fsync", "directory_open", "directory_fsync"])
 def test_migrate_tier_cli_cleans_up_after_publication_failure(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
@@ -2420,41 +2420,6 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
         real_fsync(descriptor)
 
     monkeypatch.setattr(f"{module_name}.os.fsync", fail_fsync)
-
-    real_stat = os.stat
-    published_target_stat_calls = 0
-
-    def fail_published_target_stat(
-        file: os.PathLike[str] | str,
-        *,
-        dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> os.stat_result:
-        nonlocal published_target_stat_calls
-        if failure_stage == "published_lstat" and file == "audit.db" and dir_fd is not None:
-            published_target_stat_calls += 1
-            if published_target_stat_calls == 2:
-                raise OSError("published lstat failed")
-        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
-
-    monkeypatch.setattr(f"{module_name}.os.stat", fail_published_target_stat)
-
-    real_lstat = Path.lstat
-    lstat_failure_pending = True
-
-    def fail_published_lstat(candidate: Path) -> os.stat_result:
-        nonlocal lstat_failure_pending
-        if (
-            failure_stage == "published_lstat"
-            and candidate == audit_db
-            and candidate.exists()
-            and lstat_failure_pending
-        ):
-            lstat_failure_pending = False
-            raise OSError("published lstat failed")
-        return real_lstat(candidate)
-
-    monkeypatch.setattr(Path, "lstat", fail_published_lstat)
 
     real_open = os.open
     dup_failure_armed = False
@@ -2515,9 +2480,10 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
 
     assert result.exit_code == 1
     assert f"cannot publish audit tier at {audit_db}" in json.loads(result.stdout)["error"]
-    assert not audit_db.exists()
-    if failure_stage == "published_lstat":
-        assert directory_fsyncs == 1
+    if failure_stage == "directory_fsync":
+        assert audit_db.exists()
+    else:
+        assert not audit_db.exists()
 
 
 def test_migrate_tier_cli_serializes_cleanup_fsync_uncertainty(
@@ -2570,12 +2536,15 @@ def test_migrate_tier_cli_serializes_cleanup_fsync_uncertainty(
     assert result.exit_code == 1
     payload = json.loads(result.stdout)
     assert payload["durable_recovery"] == {
-        "code": "cleanup_directory_fsync_failed",
-        "detail": f"could not fsync durable tier cleanup directory: {root}: cleanup fsync fault",
+        "code": "cleanup_not_atomic",
+        "detail": (
+            f"published durable tier remains after publication failure; cleanup deferred because no conditional "
+            f"inode removal is available: {audit_db}"
+        ),
         "state": "uncertain",
         "target": str(audit_db),
     }
-    assert not audit_db.exists()
+    assert audit_db.exists()
 
 
 def test_migrate_tier_cli_serializes_target_absent_cleanup(
@@ -2704,11 +2673,9 @@ def test_migrate_tier_cli_preserves_replacement_after_cleanup_final_check(
     _stage_uninitialized_archive(cli_workspace)
     root = cli_workspace["archive_root"]
     audit_db = root / "audit.db"
-    foreign = root / "foreign-audit.db"
-    real_rename = os.rename
     rename_calls = 0
 
-    def swap_after_final_check(
+    def reject_unsafe_cleanup_rename(
         source: str | os.PathLike[str],
         destination: str | os.PathLike[str],
         *,
@@ -2716,13 +2683,8 @@ def test_migrate_tier_cli_preserves_replacement_after_cleanup_final_check(
         dst_dir_fd: int | None = None,
     ) -> None:
         nonlocal rename_calls
-        if source == "audit.db" and str(destination).startswith(".audit.db.cleanup-"):
-            rename_calls += 1
-            assert rename_calls == 1
-            audit_db.unlink()
-            foreign.write_bytes(b"foreign after final check")
-            foreign.rename(audit_db)
-        real_rename(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        rename_calls += 1
+        raise AssertionError(f"unsafe cleanup rename attempted: {source} -> {destination}")
 
     real_fsync = os.fsync
     directory_fsyncs = 0
@@ -2735,7 +2697,7 @@ def test_migrate_tier_cli_preserves_replacement_after_cleanup_final_check(
                 raise OSError("publication fsync fault")
         real_fsync(descriptor)
 
-    monkeypatch.setattr("polylogue.operations.durable_change_train.os.rename", swap_after_final_check)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.rename", reject_unsafe_cleanup_rename)
     monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_after_publish)
     result = cli_runner.invoke(
         cli,
@@ -2753,9 +2715,9 @@ def test_migrate_tier_cli_preserves_replacement_after_cleanup_final_check(
     )
 
     assert result.exit_code == 1
-    assert json.loads(result.stdout)["durable_recovery"]["code"] == "leaf_replaced"
-    assert audit_db.read_bytes() == b"foreign after final check"
-    assert not list(root.glob(".audit.db.cleanup-*.tmp"))
+    assert json.loads(result.stdout)["durable_recovery"]["code"] == "cleanup_not_atomic"
+    assert audit_db.exists()
+    assert rename_calls == 0
 
 
 def test_migrate_tier_cli_serializes_cleanup_inspection_uncertainty(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -242,7 +241,14 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier, *, directory_
     published_target = False
 
     def cleanup_published_target(primary: BaseException) -> DurableCleanupOutcome:
-        """Remove only our inode after a post-link publication failure."""
+        """Assess a published target without mutating an uncertain pathname.
+
+        POSIX pathname operations do not provide a portable conditional unlink
+        or rename keyed by ``(st_dev, st_ino)``. A checked ``rename`` can still
+        move a foreign inode after the final identity check, and restoring it
+        can overwrite a newer target. Preserve the target and surface the
+        uncertainty unless it is already absent or has visibly changed.
+        """
         if not published_target or publication_identity is None:
             return DurableCleanupOutcome("not_attempted")
         try:
@@ -263,67 +269,12 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier, *, directory_
             detail = f"published durable tier changed before recovery; preserving foreign target: {path}"
             primary.add_note(detail)
             return DurableCleanupOutcome("uncertain", "leaf_replaced", str(path), detail)
-        cleanup_name = f".{target_name}.cleanup-{uuid.uuid4().hex}.tmp"
-        try:
-            leaf_descriptor = os.open(
-                target_name,
-                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
-                dir_fd=directory_descriptor,
-            )
-            try:
-                leaf_metadata = os.fstat(leaf_descriptor)
-                if (leaf_metadata.st_dev, leaf_metadata.st_ino) != publication_identity:
-                    detail = f"published durable tier changed before recovery; preserving foreign target: {path}"
-                    primary.add_note(detail)
-                    return DurableCleanupOutcome("uncertain", "leaf_replaced", str(path), detail)
-                current_metadata = adoption_lstat(target_name, "published durable tier")
-                if current_metadata is None:
-                    return DurableCleanupOutcome("target_absent", target=str(path))
-                if (current_metadata.st_dev, current_metadata.st_ino) != publication_identity:
-                    detail = f"published durable tier changed before recovery; preserving foreign target: {path}"
-                    primary.add_note(detail)
-                    return DurableCleanupOutcome("uncertain", "leaf_replaced", str(path), detail)
-                os.rename(
-                    target_name,
-                    cleanup_name,
-                    src_dir_fd=directory_descriptor,
-                    dst_dir_fd=directory_descriptor,
-                )
-                moved_metadata = os.stat(cleanup_name, dir_fd=directory_descriptor, follow_symlinks=False)
-                if (moved_metadata.st_dev, moved_metadata.st_ino) != publication_identity:
-                    detail = f"published durable tier changed before recovery; preserving foreign target: {path}"
-                    try:
-                        os.rename(
-                            cleanup_name,
-                            target_name,
-                            src_dir_fd=directory_descriptor,
-                            dst_dir_fd=directory_descriptor,
-                        )
-                    except OSError as restore_exc:
-                        primary.add_note(
-                            f"could not restore foreign durable tier after checked cleanup: {path}: {restore_exc}"
-                        )
-                    return DurableCleanupOutcome("uncertain", "leaf_replaced", str(path), detail)
-                os.unlink(cleanup_name, dir_fd=directory_descriptor)
-            finally:
-                os.close(leaf_descriptor)
-            try:
-                os.fsync(directory_descriptor)
-            except OSError as exc:
-                detail = f"could not fsync durable tier cleanup directory: {archive_root}: {exc}"
-                primary.add_note(detail)
-                return DurableCleanupOutcome("uncertain", "cleanup_directory_fsync_failed", str(path), detail)
-            return DurableCleanupOutcome("cleaned", target=str(path))
-        except FileNotFoundError:
-            return DurableCleanupOutcome("target_absent", target=str(path))
-        except MigrationError as exc:
-            detail = f"could not inspect published durable tier during recovery: {path}: {exc}"
-            primary.add_note(detail)
-            return DurableCleanupOutcome("uncertain", "leaf_inspection_failed", str(path), detail)
-        except OSError as exc:
-            detail = f"could not remove partially published durable tier during recovery: {path}: {exc}"
-            primary.add_note(detail)
-            return DurableCleanupOutcome("uncertain", "leaf_unlink_failed", str(path), detail)
+        detail = (
+            f"published durable tier remains after publication failure; cleanup deferred because no conditional "
+            f"inode removal is available: {path}"
+        )
+        primary.add_note(detail)
+        return DurableCleanupOutcome("uncertain", "cleanup_not_atomic", str(path), detail)
 
     try:
         try:

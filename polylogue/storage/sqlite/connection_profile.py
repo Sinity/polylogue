@@ -15,6 +15,7 @@ thread-local cached connection used by the async runtime, use the factories in
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -539,6 +540,34 @@ def open_daemon_connection(
     return conn
 
 
+def _descriptor_database_uri(opened_main_fd: int, suffix: str) -> str | None:
+    """Return a validated descriptor URI on platforms that expose one."""
+    descriptor_metadata = os.fstat(opened_main_fd)
+    for directory in ("/dev/fd", "/proc/self/fd"):
+        candidate = f"{directory}/{opened_main_fd}"
+        try:
+            alias_metadata = os.stat(candidate)
+        except OSError:
+            continue
+        if (alias_metadata.st_dev, alias_metadata.st_ino) == (
+            descriptor_metadata.st_dev,
+            descriptor_metadata.st_ino,
+        ):
+            return f"file:{candidate}{suffix}"
+    return None
+
+
+def _validate_opened_path(path: str | Path, opened_main_fd: int) -> None:
+    """Require the selected pathname to still name the opened inode."""
+    path_metadata = os.stat(path, follow_symlinks=False)
+    descriptor_metadata = os.fstat(opened_main_fd)
+    if (path_metadata.st_dev, path_metadata.st_ino) != (
+        descriptor_metadata.st_dev,
+        descriptor_metadata.st_ino,
+    ):
+        raise RuntimeError(f"selected SQLite path was replaced while its reader was opening: {path}")
+
+
 def open_readonly_connection(
     path: str | Path,
     *,
@@ -564,16 +593,33 @@ def open_readonly_connection(
     obtained the snapshot.
 
     When ``opened_main_fd`` is supplied, the reader is bound to that opened
-    inode through ``/proc/self/fd`` while SQLite retains its normal WAL and
-    journal lookup behavior.
+    inode through a validated ``/dev/fd`` or ``/proc/self/fd`` alias where
+    available. Platforms without either alias use the pathname only after an
+    inode check before and after SQLite opens it.
     """
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     if opened_main_fd is not None and immutable:
         raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
-    database_uri = (
-        f"file:/proc/self/fd/{opened_main_fd}{suffix}" if opened_main_fd is not None else f"file:{path}{suffix}"
-    )
+    path_fallback = False
+    opened_fd = opened_main_fd
+    if opened_fd is None:
+        database_uri = f"file:{path}{suffix}"
+    else:
+        descriptor_uri = _descriptor_database_uri(opened_fd, suffix)
+        if descriptor_uri is not None:
+            database_uri = descriptor_uri
+        else:
+            _validate_opened_path(path, opened_fd)
+            database_uri = f"file:{path}{suffix}"
+            path_fallback = True
     conn = sqlite3.connect(database_uri, uri=True, timeout=timeout)
+    if path_fallback:
+        try:
+            assert opened_fd is not None
+            _validate_opened_path(path, opened_fd)
+        except BaseException:
+            conn.close()
+            raise
     try:
         for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
             conn.execute(stmt)

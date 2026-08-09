@@ -764,6 +764,23 @@ def test_lineage_validation_writes_demo_artifacts(tmp_path: Path) -> None:
     assert "external counts citable: `true`" in readme
 
 
+def test_lineage_validation_artifacts_attribute_selected_index(tmp_path: Path) -> None:
+    configured_root = tmp_path / "configured"
+    candidate_root = tmp_path / "candidate"
+    _make_index_db(configured_root)
+    candidate_db = _make_index_db(candidate_root)
+    out_dir = tmp_path / "out"
+
+    report = lineage_validation.build_report(_args(configured_root, out_dir, index_db=candidate_db))
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    readme = (out_dir / "README.md").read_text(encoding="utf-8")
+    assert summary["index_db"] == report["index_db"] == str(candidate_db.resolve())
+    assert summary["snapshot_identity"] == report["snapshot_identity"]
+    assert f"Evidence index: `{candidate_db.resolve()}`" in readme
+    assert f"Evidence snapshot SHA-256: `{report['snapshot_identity']['sha256']}`" in readme
+
+
 def test_lineage_validation_command_registered() -> None:
     spec = COMMANDS["workspace lineage-validation"]
     assert spec.module == "devtools.lineage_validation"
