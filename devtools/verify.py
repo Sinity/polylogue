@@ -2235,6 +2235,28 @@ def _read_testmon_seed_attempt() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _testmon_release_baseline_permission() -> bool | None:
+    """Return release permission for current testmon state, or ``None`` when not applicable."""
+    if TESTMON_SEED_STAMP.exists():
+        stamp = validate_stamp(
+            TESTMON_SEED_STAMP,
+            TESTMON_DATA,
+            checkout_root=ROOT,
+            protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+        )
+        return stamp.release_baseline_allowed if stamp is not None else False
+    attempt = _read_testmon_seed_attempt()
+    if attempt is None:
+        return False
+    stamp = stamp_from_attempt(
+        attempt,
+        TESTMON_DATA,
+        checkout_root=ROOT,
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+    )
+    return stamp.release_baseline_allowed if stamp is not None else False
+
+
 def _safe_testmon_artifact_dir(raw: object, *, require_run_root: bool = False) -> Path | None:
     if not isinstance(raw, str) or not raw:
         return None
@@ -2573,9 +2595,12 @@ def _finalize_testmon_seed_attempt(
         "testmon_data": _file_fingerprint(TESTMON_DATA),
         "pytest_step": dict(pytest_step) if pytest_step is not None else None,
     }
+    payload["release_baseline_allowed"] = bool(reusable_stamp is not None and reusable_stamp.release_baseline_allowed)
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
-    if reusable_stamp is not None:
+    if reusable_stamp is not None and reusable_stamp.release_baseline_allowed:
         _atomic_write_json(TESTMON_SEED_STAMP, reusable_stamp.as_dict())
+    else:
+        TESTMON_SEED_STAMP.unlink(missing_ok=True)
     return payload
 
 
@@ -2803,8 +2828,22 @@ def main(argv: list[str] | None = None) -> int:
             "resume": seed_receipt["resume"],
             "expected_count": seed_receipt["expected_count"],
             "attempt_path": str(TESTMON_SEED_ATTEMPT),
-            "stamp_path": str(TESTMON_SEED_STAMP) if seed_receipt["status"] in {"complete", "reusable"} else None,
+            "stamp_path": str(TESTMON_SEED_STAMP) if seed_receipt["release_baseline_allowed"] else None,
+            "release_baseline_allowed": seed_receipt["release_baseline_allowed"],
         }
+
+    if args.quick or args.commit:
+        release_baseline_allowed: bool | None = None
+    elif full_pytest:
+        release_baseline_allowed = exit_code == 0
+    else:
+        release_baseline_allowed = _testmon_release_baseline_permission()
+    history_entry["release_baseline_allowed"] = release_baseline_allowed
+    if release_baseline_allowed is False and tier in {"testmon", "lab", "seed-testmon"}:
+        sys.stderr.write(
+            "verify: affected-test selection is usable, but the current testmon state does not grant "
+            "release-baseline permission.\n"
+        )
 
     if use_json:
         _print_json(history_entry)

@@ -87,6 +87,7 @@ class BootstrapDecision:
     main_seed_attempt: Path | None = None
     main_checkout_root: Path | None = None
     protocol_version: int = 4
+    selection_only: bool = False
 
 
 def _checkout_root_for_data(data_path: Path) -> Path:
@@ -183,11 +184,13 @@ def decide_testmon_bootstrap(
             attempt = None
         if (
             isinstance(attempt, dict)
-            and stamp_from_attempt(
-                attempt,
-                main_testmon_data,
-                checkout_root=root,
-                protocol_version=protocol_version,
+            and (
+                attempt_stamp := stamp_from_attempt(
+                    attempt,
+                    main_testmon_data,
+                    checkout_root=root,
+                    protocol_version=protocol_version,
+                )
             )
             is not None
         ):
@@ -198,6 +201,7 @@ def decide_testmon_bootstrap(
                 main_seed_attempt=main_seed_attempt,
                 main_checkout_root=root,
                 protocol_version=protocol_version,
+                selection_only=not attempt_stamp.release_baseline_allowed,
             )
     if main_seed_stamp.is_file():
         return BootstrapDecision(False, "main checkout seed stamp is stale, malformed, or graph-incomplete")
@@ -341,7 +345,7 @@ def bootstrap_testmon_seed_files(
     if stamp is None:
         return False
     try:
-        if decision.main_seed_attempt is not None:
+        if decision.main_seed_attempt is not None and decision.selection_only:
             local_seed_stamp.unlink(missing_ok=True)
         _atomic_copy_sqlite_db(decision.main_testmon_data, local_testmon_data)
         rebound = stamp.rebound(checkout_root=destination_root, inherited_from=source_root)
@@ -357,7 +361,7 @@ def bootstrap_testmon_seed_files(
             run_id=refreshed.run_id,
         ):
             return False
-        if decision.main_seed_attempt is not None:
+        if decision.main_seed_attempt is not None and decision.selection_only:
             assert local_seed_attempt is not None
             source_attempt = json.loads(decision.main_seed_attempt.read_text(encoding="utf-8"))
             if not isinstance(source_attempt, dict):
@@ -466,7 +470,7 @@ def maybe_bootstrap_testmon_seed(
             f"verify: bootstrapped pytest-testmon seed into {local_testmon_data.parent}, "
             "but could not record its checkout provenance"
         )
-    if decision.main_seed_attempt is not None:
+    if decision.main_seed_attempt is not None and decision.selection_only:
         return (
             f"verify: bootstrapped pytest-testmon graph from main checkout {main_checkout} "
             f"into {local_testmon_data.parent} as a selection-only attempt receipt (no seed.json)"

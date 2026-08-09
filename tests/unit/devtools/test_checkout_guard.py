@@ -223,6 +223,26 @@ def test_checkout_environment_fingerprint_accepts_current_in_progress_seed_attem
     assert attempt.is_file()
 
 
+def test_checkout_environment_fingerprint_accepts_finalized_selection_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    attempt = _write_in_progress_seed_attempt(root, status="reusable")
+    (root / ".cache" / "testmon" / "testmondata").write_text("complete graph")
+    package_path = root / "polylogue" / "__init__.py"
+    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
+
+    fingerprint = assert_polylogue_matches_checkout(
+        root,
+        context="affected selection",
+        python_executable=root / ".venv" / "bin" / "python",
+    )
+
+    assert fingerprint.clean
+    assert fingerprint.testmon_state_origin is None
+    assert attempt.is_file()
+
+
 @pytest.mark.parametrize(
     ("status", "overrides"),
     [

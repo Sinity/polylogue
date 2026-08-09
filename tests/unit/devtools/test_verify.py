@@ -922,6 +922,34 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
     assert stamp["status"] == "usable"
     assert stamp["collection"]["expected_count"] == 2
 
+    _write_run_receipt(tmp_path, "run-red")
+    with sqlite3.connect(TESTMON_DATA) as connection:
+        connection.execute("update test_execution set failed = 1 where test_name = ?", (expected[0],))
+    red_receipt = _finalize_testmon_seed_attempt(
+        prepared={
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {
+                "git_head": "head",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": True,
+                "lab": False,
+            },
+            "resume": False,
+            "expected_nodeids": [],
+            "run_id": "run-red",
+            "artifact_dir": ".cache/verify/runs/run-red",
+        },
+        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 1}],
+        exit_code=1,
+    )
+    assert red_receipt["status"] == "reusable"
+    assert red_receipt["release_baseline_allowed"] is False
+    persisted_attempt = json.loads((tmp_path / ".cache" / "testmon" / "seed-attempt.json").read_text())
+    assert persisted_attempt["release_baseline_allowed"] is False
+    assert not (tmp_path / ".cache" / "testmon" / "seed.json").exists()
+
     (artifact_dir / "events.jsonl").write_text("")
     stale_database = _finalize_testmon_seed_attempt(
         prepared={

@@ -98,7 +98,7 @@ def test_failed_complete_graph_is_selection_only_and_rebindable(tmp_path: Path) 
 
     stamp_path = tmp_path / "seed.json"
     stamp_path.write_text(json.dumps(stamp.as_dict()))
-    assert validate_stamp(stamp_path, data, checkout_root=tmp_path, protocol_version=PROTOCOL) == stamp
+    assert validate_stamp(stamp_path, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
 
 
 def test_omitted_interrupted_and_uncovered_nodes_fail_closed(tmp_path: Path) -> None:

@@ -218,6 +218,29 @@ def _command_skips_tests(command: str) -> bool:
     return not any(marker in lowered for marker in _LOOKS_LIKE_TESTS_MARKERS)
 
 
+def _release_baseline_permission(stdout: str) -> bool | None:
+    """Read the structured verify decision when the command emitted one."""
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("release_baseline_allowed")
+    return value if isinstance(value, bool) else None
+
+
+def _requires_release_baseline(command: str) -> bool:
+    """Identify verification commands whose success can claim a release baseline."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    if argv[:2] != ["devtools", "verify"]:
+        return False
+    return len(argv) == 2 or any(option in argv[2:] for option in ("--all", "--full", "--lab", "--seed-testmon"))
+
+
 def cmd_record(pr: int, command: str) -> int:
     info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft"])
     head_sha = info["headRefOid"]
@@ -272,6 +295,7 @@ def cmd_record(pr: int, command: str) -> int:
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
+        "release_baseline_allowed": _release_baseline_permission(result.stdout),
         "exit_code": result.returncode,
         "duration_s": duration_s,
         "recorded_at": time.time(),
@@ -478,6 +502,15 @@ def cmd_check(
             if receipt.get("exit_code", 1) != 0:
                 verdict.ok = False
                 verdict.reasons.append(f"receipt exit_code is {receipt.get('exit_code')}, not 0")
+            if (
+                _requires_release_baseline(str(receipt.get("command", "")))
+                and receipt.get("release_baseline_allowed") is not True
+            ):
+                verdict.ok = False
+                verdict.reasons.append(
+                    "verification receipt does not grant release_baseline_allowed=true; a selection-only "
+                    "testmon attempt cannot satisfy the release merge gate"
+                )
             if receipt.get("skips_tests"):
                 verdict.reasons.append(
                     f"advisory: receipt command {receipt.get('command')!r} does not look like it ran tests "

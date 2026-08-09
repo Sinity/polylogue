@@ -277,7 +277,7 @@ def _is_valid_in_progress_testmon_seed_attempt(attempt: Path) -> bool:
         payload = json.loads(attempt.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
-    if not isinstance(payload, Mapping) or payload.get("status") not in {"running", "incomplete"}:
+    if not isinstance(payload, Mapping) or payload.get("status") not in {"running", "incomplete", "reusable"}:
         return False
     protocol_version = payload.get("protocol_version")
     if not isinstance(protocol_version, int) or isinstance(protocol_version, bool) or protocol_version <= 0:

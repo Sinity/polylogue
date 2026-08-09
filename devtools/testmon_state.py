@@ -523,6 +523,8 @@ def validate_stamp(
         if not isinstance(payload, Mapping):
             return None
         stamp = TestmonSeedStamp.from_mapping(payload, protocol_version=protocol_version)
+        if not stamp.release_baseline_allowed:
+            return None
         if Path(stamp.binding.checkout_root).resolve() != checkout_root.resolve():
             return None
         if file_fingerprint(data_path) != stamp.testmon_data:

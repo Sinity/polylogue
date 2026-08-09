@@ -8,14 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from devtools.testmon_bootstrap import BootstrapDecision, bootstrap_testmon_seed_files
-from devtools.testmon_state import (
-    BaselineStatus,
-    file_fingerprint,
-    inspect_testmon_database,
-    stamp_from_attempt,
-    validate_stamp,
-)
+import pytest
+
+from devtools import testmon_bootstrap, verify
+from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
+from devtools.testmon_state import file_fingerprint, inspect_testmon_database
 
 
 def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(tmp_path: Path) -> None:
@@ -75,35 +72,45 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    stamp = stamp_from_attempt(attempt, data, checkout_root=source, protocol_version=4)
-    assert stamp is not None and stamp.baseline_status is BaselineStatus.RED
-    source_stamp = source / ".cache" / "testmon" / "seed.json"
-    source_stamp.parent.mkdir(parents=True, exist_ok=True)
-    source_stamp.write_text(json.dumps(stamp.as_dict()), encoding="utf-8")
+    source_attempt = source / ".cache" / "testmon" / "seed-attempt.json"
+    source_attempt.parent.mkdir(parents=True, exist_ok=True)
+    source_attempt.write_text(json.dumps(attempt), encoding="utf-8")
 
     lane = tmp_path / "lane"
-    local_data = lane / ".cache" / "testmon" / "testmondata"
-    local_stamp = lane / ".cache" / "testmon" / "seed.json"
-    decision = BootstrapDecision(
-        True,
-        "real graph",
-        main_testmon_data=data,
-        main_seed_stamp=source_stamp,
-        protocol_version=4,
+    lane.mkdir()
+    (lane / "test_sample.py").write_text(
+        "def test_passed():\n    assert 1 == 1\n\ndef test_failed():\n    assert 1 == 1\n",
+        encoding="utf-8",
     )
-    assert bootstrap_testmon_seed_files(
-        decision,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        checkout_root=lane,
-        inherited_from=source,
-    )
-    rebound = validate_stamp(local_stamp, local_data, checkout_root=lane, protocol_version=4)
-    assert rebound is not None
-    assert rebound.baseline_status is BaselineStatus.RED
-    assert rebound.binding.checkout_root == str(lane.resolve())
-    assert rebound.affected_selection_allowed
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(testmon_bootstrap, "_git_worktree_info", lambda _root: (True, source))
+        message = maybe_bootstrap_testmon_seed(lane, protocol_version=4)
+        assert message is not None and "selection-only attempt receipt" in message
 
-    with sqlite3.connect(local_data) as connection:
-        connection.execute("delete from test_execution_file_fp where test_execution_id = 1")
-    assert validate_stamp(local_stamp, local_data, checkout_root=lane, protocol_version=4) is None
+        local_data = lane / ".cache" / "testmon" / "testmondata"
+        local_stamp = lane / ".cache" / "testmon" / "seed.json"
+        local_attempt = lane / ".cache" / "testmon" / "seed-attempt.json"
+        assert local_data.is_file()
+        assert local_attempt.is_file()
+        assert not local_stamp.exists()
+
+        monkeypatch.chdir(lane)
+        monkeypatch.setattr(verify, "ROOT", lane)
+        assert verify._testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is None
+        selected = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "--testmon"],
+            cwd=lane,
+            env={**env, "TESTMON_DATAFILE": str(local_data)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert selected.returncode == 0, selected.stdout + selected.stderr
+        assert "1 passed" in selected.stdout
+        assert verify._testmon_release_baseline_permission() is False
+        with sqlite3.connect(local_data) as connection:
+            connection.execute("delete from test_execution_file_fp")
+        assert verify._testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is not None
+    finally:
+        monkeypatch.undo()
