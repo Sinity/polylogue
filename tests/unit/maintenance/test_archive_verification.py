@@ -1828,7 +1828,11 @@ def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic
     """The Claude registry check fails for hash and either membership verdict drift."""
     zoo = build_pathology_zoo(tmp_path / "zoo")
     green = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
-    assert _check(green, "pathology-zoo-invariants").status is OutcomeStatus.OK
+    green_check = _check(green, "pathology-zoo-invariants")
+    assert green_check.status is OutcomeStatus.OK
+    assert green_check.evidence["active"] is True
+    assert "claude-vintage-live-proof" in green_check.evidence["checked_member_ids"]
+    assert "claude-vintage-live-proof" not in green_check.evidence["failed_member_ids"]
 
     for drift in ("hash", "applied", "superseded_equivalent"):
         mutated_root = tmp_path / f"claude-vintage-{drift}"
