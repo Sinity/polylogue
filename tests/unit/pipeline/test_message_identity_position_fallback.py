@@ -24,10 +24,10 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
-from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 
 
-def _session(messages: list[ParsedMessage]) -> ParsedSession:
+def _session(messages: list[ParsedMessage], attachments: list[ParsedAttachment] | None = None) -> ParsedSession:
     return ParsedSession(
         source_name=Provider.CHATGPT,
         provider_session_id="conv-1",
@@ -35,7 +35,7 @@ def _session(messages: list[ParsedMessage]) -> ParsedSession:
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=messages,
-        attachments=[],
+        attachments=attachments or [],
     )
 
 
@@ -98,3 +98,35 @@ def test_timestamp_less_idless_duplicates_preserve_unordered_multiplicity() -> N
     assert classification.accepted_raw_ids == ("one", "two")
     assert not classification.equivalent_raw_ids
     assert not classification.ambiguous_raw_ids
+
+
+def test_duplicate_idless_attachment_owner_reassignment_changes_hash() -> None:
+    """Duplicate content anchors still distinguish position-linked owners.
+
+    The messages remain the same content in both revisions. Only the stable
+    transport owner coordinate of one attachment moves from occurrence zero
+    to occurrence one. A content-only owner anchor would make this a false
+    re-ingest skip.
+    """
+    repeated = [
+        _id_less("assistant", "repeat", "2024-01-01T00:00:00Z").model_copy(update={"position": position})
+        for position in (0, 1)
+    ]
+    attachment = ParsedAttachment(
+        provider_attachment_id="drive-doc",
+        message_provider_id="",
+        message_position=0,
+        name="note.txt",
+        mime_type="text/plain",
+    )
+    moved = attachment.model_copy(update={"message_position": 1})
+
+    first = session_revision_projection(_session(repeated, [attachment]))
+    second = session_revision_projection(_session(repeated, [moved]))
+    reordered = session_revision_projection(_session(list(reversed(repeated)), [attachment]))
+
+    assert first.message_contents == second.message_contents
+    assert first.message_contents == reordered.message_contents
+    assert first.attachment_identities == reordered.attachment_identities
+    assert first.attachment_identities != second.attachment_identities
+    assert first.session_hash != second.session_hash

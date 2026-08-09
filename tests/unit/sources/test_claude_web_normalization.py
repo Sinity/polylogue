@@ -436,6 +436,83 @@ def test_claude_multiple_idless_messages_remain_distinct_and_choose_one_leaf() -
     )
 
 
+def test_claude_same_timestamp_idless_rows_keep_private_association_keys() -> None:
+    rows = {
+        "first": {
+            "sender": "human",
+            "text": "The first same-timestamp turn.",
+            "created_at": "2026-07-01T10:00:00Z",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tool-first",
+                    "name": "lookup",
+                    "input": {"query": "first"},
+                    "start_timestamp": "2026-07-01T10:00:00.100Z",
+                    "display_content": {"type": "text", "text": "first evidence"},
+                }
+            ],
+            "files": [{"file_uuid": "file-first", "file_name": "first.txt", "file_type": "text/plain"}],
+            "is_active_leaf": False,
+        },
+        "leaf": {
+            "sender": "assistant",
+            "text": "The active same-timestamp turn.",
+            "created_at": "2026-07-01T10:00:00Z",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tool-leaf",
+                    "name": "lookup",
+                    "input": {"query": "leaf"},
+                    "start_timestamp": "2026-07-01T10:00:00.200Z",
+                    "display_content": {"type": "text", "text": "leaf evidence"},
+                }
+            ],
+            "files": [{"file_uuid": "file-leaf", "file_name": "leaf.txt", "file_type": "text/plain"}],
+            "is_active_leaf": True,
+        },
+    }
+    forward = parse_payload(
+        Provider.CLAUDE_AI,
+        {"uuid": "claude-idless-same-timestamp", "chat_messages": [rows["first"], rows["leaf"]]},
+        "fallback",
+    )[0]
+    reversed_rows = parse_payload(
+        Provider.CLAUDE_AI,
+        {"uuid": "claude-idless-same-timestamp", "chat_messages": [rows["leaf"], rows["first"]]},
+        "fallback",
+    )[0]
+
+    assert [message.provider_message_id for message in forward.messages] == ["", ""]
+    assert [message.provider_message_id for message in reversed_rows.messages] == ["", ""]
+    assert (
+        session_revision_projection(forward).message_contents
+        == session_revision_projection(reversed_rows).message_contents
+    )
+
+    for normalized in (forward, reversed_rows):
+        messages_by_text = {message.text: message for message in normalized.messages}
+        assert [message.text for message in normalized.messages if message.is_active_leaf] == [
+            "The active same-timestamp turn."
+        ]
+        assert normalized.active_leaf_message_provider_id == ""
+        assert {attachment.message_provider_id for attachment in normalized.attachments} == {""}
+        assert {attachment.message_position: attachment.name for attachment in normalized.attachments} == {
+            messages_by_text["The first same-timestamp turn."].position: "first.txt",
+            messages_by_text["The active same-timestamp turn."].position: "leaf.txt",
+        }
+
+        tool_events = [
+            event for event in normalized.session_events if event.event_type == "claude_ai_web_tool_evidence"
+        ]
+        assert [event.source_message_provider_id for event in tool_events] == ["", ""]
+        assert {json.dumps(event.payload["display_content"], sort_keys=True) for event in tool_events} == {
+            '{"text": "first evidence", "type": "text"}',
+            '{"text": "leaf evidence", "type": "text"}',
+        }
+
+
 def test_authenticated_browser_capture_uses_native_payload_and_enriches_attachment() -> None:
     """Mutations: detector-order theft or attachment replacement loss must fail."""
     direct = _parse_real_route(_native_claude_payload())

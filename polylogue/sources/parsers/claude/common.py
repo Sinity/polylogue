@@ -21,6 +21,7 @@ from ..base import (
     attachment_from_meta,
     content_blocks_from_segments,
     human_authored_override,
+    synthetic_message_id,
 )
 
 CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG = "degraded:claude-missing-message-id"
@@ -43,7 +44,8 @@ class ClaudeMessageNormalization:
 
 @dataclass(frozen=True, slots=True)
 class _ClaudeMessageEvidence:
-    provider_message_id: str
+    evidence_key: str
+    native_provider_message_id: str
     raw: Mapping[str, object]
     original_index: int
     role: Role
@@ -64,11 +66,6 @@ class _ClaudeMessageEvidence:
     delivery_status: str | None
     end_turn: bool | None
     thinking_configuration: dict[str, object] | None
-
-    @property
-    def local_id(self) -> str:
-        """Return a parser-local key without inventing a provider identity."""
-        return self.provider_message_id or f"__idless:{self.original_index}"
 
     @property
     def has_material(self) -> bool:
@@ -444,7 +441,7 @@ def _web_tool_evidence_events(evidence: _ClaudeMessageEvidence) -> list[ParsedSe
             ParsedSessionEvent(
                 event_type="claude_ai_web_tool_evidence",
                 timestamp=start_timestamp if isinstance(start_timestamp, str) else evidence.timestamp,
-                source_message_provider_id=evidence.provider_message_id,
+                source_message_provider_id=evidence.native_provider_message_id,
                 payload={"block_index": block_index, **block_evidence},
             )
         )
@@ -651,7 +648,7 @@ def _sibling_sort_key(evidence: _ClaudeMessageEvidence) -> tuple[int, int, float
         explicit_variant if explicit_variant is not None else explicit_branch or 0,
         _timestamp_sort_value(evidence.timestamp),
         _timestamp_sort_value(evidence.updated_at),
-        evidence.local_id,
+        evidence.evidence_key,
     )
 
 
@@ -734,21 +731,21 @@ def _deduplicate_variant_collisions(
     """
     by_position: dict[int, list[_ClaudeMessageEvidence]] = defaultdict(list)
     for evidence in emitted:
-        by_position[position_by_id[evidence.local_id]].append(evidence)
+        by_position[position_by_id[evidence.evidence_key]].append(evidence)
     for group in by_position.values():
-        variants = [variant_index_by_id[evidence.local_id] for evidence in group]
+        variants = [variant_index_by_id[evidence.evidence_key] for evidence in group]
         if len(set(variants)) == len(variants):
             continue
         ordered = sorted(
             group,
             key=lambda evidence: (
-                variant_index_by_id[evidence.local_id],
+                variant_index_by_id[evidence.evidence_key],
                 _timestamp_sort_value(evidence.timestamp),
-                evidence.local_id,
+                evidence.evidence_key,
             ),
         )
         for rank, evidence in enumerate(ordered):
-            variant_index_by_id[evidence.local_id] = rank
+            variant_index_by_id[evidence.evidence_key] = rank
 
 
 def _merge_attachment_rows(attachments: list[ParsedAttachment]) -> list[ParsedAttachment]:
@@ -763,6 +760,9 @@ def _merge_attachment_rows(attachments: list[ParsedAttachment]) -> list[ParsedAt
         merged[candidate.provider_attachment_id] = preferred.model_copy(
             update={
                 "message_provider_id": preferred.message_provider_id or other.message_provider_id,
+                "message_position": preferred.message_position
+                if preferred.message_position is not None
+                else other.message_position,
                 "name": preferred.name or other.name,
                 "mime_type": preferred.mime_type or other.mime_type,
                 "size_bytes": preferred.size_bytes if preferred.size_bytes is not None else other.size_bytes,
@@ -825,7 +825,7 @@ def _active_path_state(
         leaf_id = None
 
     explicit_leaf_ids = [
-        evidence.local_id for evidence in evidence_by_id.values() if evidence.explicit_is_active_leaf is True
+        evidence.evidence_key for evidence in evidence_by_id.values() if evidence.explicit_is_active_leaf is True
     ]
     if leaf_id is None and len(explicit_leaf_ids) == 1:
         leaf_id = explicit_leaf_ids[0]
@@ -846,7 +846,7 @@ def _active_path_state(
         active_children = {
             evidence.parent_message_provider_id
             for evidence in evidence_by_id.values()
-            if evidence.local_id in active_ids and evidence.parent_message_provider_id in active_ids
+            if evidence.evidence_key in active_ids and evidence.parent_message_provider_id in active_ids
         }
         candidates = sorted(active_ids - active_children)
         if len(candidates) == 1:
@@ -866,7 +866,7 @@ def _active_path_state(
         parent_ids = {
             evidence.parent_message_provider_id
             for evidence in evidence_by_id.values()
-            if evidence.local_id in emitted_ids and evidence.parent_message_provider_id in emitted_ids
+            if evidence.evidence_key in emitted_ids and evidence.parent_message_provider_id in emitted_ids
         }
         terminal_ids = emitted_ids - parent_ids
         if len(terminal_ids) == 1:
@@ -903,12 +903,13 @@ def normalize_chat_messages(
     """
 
     raw_evidence: list[_ClaudeMessageEvidence] = []
+    evidence_key_counts: dict[str, int] = {}
     ingest_flags: list[str] = []
     for index, raw_item in enumerate(chat_messages, start=1):
         if not isinstance(raw_item, Mapping):
             continue
         item = dict(raw_item)
-        message_id = _first_identity_field(
+        native_message_id = _first_identity_field(
             item,
             "uuid",
             "id",
@@ -916,8 +917,8 @@ def normalize_chat_messages(
             "messageId",
             "provider_message_id",
         )
-        if message_id is None:
-            message_id = ""
+        if native_message_id is None:
+            native_message_id = ""
             ingest_flags.append(CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG)
 
         raw_role = _raw_role(item)
@@ -940,17 +941,30 @@ def normalize_chat_messages(
 
         raw_created_at = item.get("created_at") or item.get("create_time") or item.get("timestamp")
         raw_updated_at = item.get("updated_at") or item.get("update_time") or item.get("edited_at")
-        attachments = _message_attachments(item, message_id)
+        timestamp = normalize_timestamp(raw_created_at if isinstance(raw_created_at, (int, float, str)) else None)
+        base_evidence_key = native_message_id or synthetic_message_id(
+            role=role,
+            text=text,
+            timestamp=timestamp,
+            kind="claude-web-evidence",
+        )
+        occurrence = evidence_key_counts.get(base_evidence_key, 0)
+        evidence_key_counts[base_evidence_key] = occurrence + 1
+        evidence_key = (
+            base_evidence_key
+            if native_message_id or occurrence == 0
+            else f"{base_evidence_key}:occurrence:{occurrence}"
+        )
+        attachments = _message_attachments(item, native_message_id)
         raw_evidence.append(
             _ClaudeMessageEvidence(
-                provider_message_id=message_id,
+                evidence_key=evidence_key,
+                native_provider_message_id=native_message_id,
                 raw=item,
                 original_index=index,
                 role=role,
                 text=text,
-                timestamp=normalize_timestamp(
-                    raw_created_at if isinstance(raw_created_at, (int, float, str)) else None
-                ),
+                timestamp=timestamp,
                 updated_at=normalize_timestamp(
                     raw_updated_at if isinstance(raw_updated_at, (int, float, str)) else None
                 ),
@@ -974,18 +988,18 @@ def normalize_chat_messages(
     evidence_by_id: dict[str, _ClaudeMessageEvidence] = {}
     duplicate_ids: set[str] = set()
     for evidence in raw_evidence:
-        evidence_id = evidence.local_id
+        evidence_id = evidence.evidence_key
         existing = evidence_by_id.get(evidence_id)
         if existing is None:
             evidence_by_id[evidence_id] = evidence
             continue
-        duplicate_ids.add(evidence.provider_message_id)
+        duplicate_ids.add(evidence.native_provider_message_id)
         evidence_by_id[evidence_id] = max((existing, evidence), key=_evidence_richness)
     if duplicate_ids:
         ingest_flags.append(CLAUDE_DUPLICATE_MESSAGE_ID_INGEST_FLAG)
 
     emitted = [evidence for evidence in evidence_by_id.values() if evidence.has_material]
-    emitted_ids = {evidence.local_id for evidence in emitted}
+    emitted_ids = {evidence.evidence_key for evidence in emitted}
     flat_mode = not any(evidence.parent_message_provider_id for evidence in evidence_by_id.values())
 
     branch_index_by_id: dict[str, int] = {}
@@ -996,26 +1010,26 @@ def normalize_chat_messages(
                 evidence.explicit_position if evidence.explicit_position is not None else 2**31,
                 0 if evidence.timestamp is not None else 1,
                 _timestamp_sort_value(evidence.timestamp),
-                evidence.local_id if evidence.timestamp is not None else "",
+                evidence.evidence_key if evidence.timestamp is not None else "",
                 evidence.original_index,
             ),
         )
         position_by_id = {
-            evidence.local_id: (evidence.explicit_position if evidence.explicit_position is not None else position)
+            evidence.evidence_key: (evidence.explicit_position if evidence.explicit_position is not None else position)
             for position, evidence in enumerate(ordered_flat)
         }
         for evidence in emitted:
-            branch_index_by_id[evidence.local_id] = evidence.explicit_branch_index or 0
+            branch_index_by_id[evidence.evidence_key] = evidence.explicit_branch_index or 0
     else:
         depths, cycle_detected = _lineage_depths(evidence_by_id)
         if cycle_detected:
             ingest_flags.append(CLAUDE_LINEAGE_CYCLE_INGEST_FLAG)
-        minimum_emitted_depth = min((depths[evidence.local_id] for evidence in emitted), default=0)
+        minimum_emitted_depth = min((depths[evidence.evidence_key] for evidence in emitted), default=0)
         position_by_id = {
-            evidence.local_id: (
+            evidence.evidence_key: (
                 evidence.explicit_position
                 if evidence.explicit_position is not None
-                else max(0, depths[evidence.local_id] - minimum_emitted_depth)
+                else max(0, depths[evidence.evidence_key] - minimum_emitted_depth)
             )
             for evidence in emitted
         }
@@ -1024,24 +1038,24 @@ def normalize_chat_messages(
             siblings_by_parent[evidence.parent_message_provider_id].append(evidence)
         for siblings in siblings_by_parent.values():
             for rank, evidence in enumerate(sorted(siblings, key=_sibling_sort_key)):
-                branch_index_by_id[evidence.local_id] = (
+                branch_index_by_id[evidence.evidence_key] = (
                     evidence.explicit_branch_index if evidence.explicit_branch_index is not None else rank
                 )
 
     if flat_mode:
         variant_index_by_id = {
-            evidence.local_id: (
+            evidence.evidence_key: (
                 evidence.explicit_variant_index
                 if evidence.explicit_variant_index is not None
-                else branch_index_by_id.get(evidence.local_id, 0)
+                else branch_index_by_id.get(evidence.evidence_key, 0)
             )
             for evidence in emitted
         }
     else:
         resolved_variants: dict[str, int] = {}
         variant_index_by_id = {
-            evidence.local_id: _resolve_variant_index(
-                evidence.local_id,
+            evidence.evidence_key: _resolve_variant_index(
+                evidence.evidence_key,
                 evidence_by_id,
                 branch_index_by_id,
                 resolved_variants,
@@ -1053,10 +1067,10 @@ def normalize_chat_messages(
     # `_deduplicate_variant_collisions` docstring.
     _deduplicate_variant_collisions(emitted, position_by_id, variant_index_by_id)
     order_key_by_id = {
-        evidence.local_id: (
-            position_by_id[evidence.local_id],
-            variant_index_by_id[evidence.local_id],
-            evidence.local_id,
+        evidence.evidence_key: (
+            position_by_id[evidence.evidence_key],
+            variant_index_by_id[evidence.evidence_key],
+            evidence.evidence_key,
         )
         for evidence in emitted
     }
@@ -1074,17 +1088,17 @@ def normalize_chat_messages(
 
     messages = [
         ParsedMessage(
-            provider_message_id=evidence.provider_message_id,
+            provider_message_id=evidence.native_provider_message_id,
             role=evidence.role,
             text=evidence.text,
             timestamp=evidence.timestamp,
             blocks=evidence.blocks,
             parent_message_provider_id=evidence.parent_message_provider_id,
-            position=position_by_id[evidence.local_id],
-            branch_index=branch_index_by_id.get(evidence.local_id, 0),
-            variant_index=variant_index_by_id[evidence.local_id],
-            is_active_path=path_values.get(evidence.local_id),
-            is_active_leaf=leaf_values.get(evidence.local_id),
+            position=position_by_id[evidence.evidence_key],
+            branch_index=branch_index_by_id.get(evidence.evidence_key, 0),
+            variant_index=variant_index_by_id[evidence.evidence_key],
+            is_active_path=path_values.get(evidence.evidence_key),
+            is_active_leaf=leaf_values.get(evidence.evidence_key),
             model_name=evidence.model_name,
             model_effort=evidence.model_effort,
             duration_ms=evidence.duration_ms,
@@ -1106,10 +1120,16 @@ def normalize_chat_messages(
                 ),
             ),
         )
-        for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.local_id])
+        for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.evidence_key])
     ]
 
-    attachments = _merge_attachment_rows([attachment for evidence in emitted for attachment in evidence.attachments])
+    attachments = _merge_attachment_rows(
+        [
+            attachment.model_copy(update={"message_position": position_by_id[evidence.evidence_key]})
+            for evidence in emitted
+            for attachment in evidence.attachments
+        ]
+    )
     models_used: list[str] = []
     for model_name in [session_model, *(message.model_name for message in messages)]:
         if model_name and model_name not in models_used:
@@ -1132,7 +1152,7 @@ def normalize_chat_messages(
             )
         )
 
-    for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.local_id]):
+    for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.evidence_key]):
         session_events.extend(_web_tool_evidence_events(evidence))
         if evidence.thinking_configuration:
             payload: dict[str, object] = {"thinking": evidence.thinking_configuration}
@@ -1144,7 +1164,7 @@ def normalize_chat_messages(
                 ParsedSessionEvent(
                     event_type="model_configuration",
                     timestamp=evidence.updated_at or evidence.timestamp,
-                    source_message_provider_id=evidence.provider_message_id,
+                    source_message_provider_id=evidence.native_provider_message_id,
                     payload=payload,
                 )
             )
@@ -1171,7 +1191,7 @@ def normalize_chat_messages(
                         else "provider_message_update"
                     ),
                     timestamp=evidence.updated_at,
-                    source_message_provider_id=evidence.provider_message_id,
+                    source_message_provider_id=evidence.native_provider_message_id,
                     payload=update_payload,
                 )
             )
@@ -1194,7 +1214,9 @@ def normalize_chat_messages(
         messages=messages,
         attachments=attachments,
         active_leaf_message_provider_id=(
-            evidence_by_id[normalized_active_leaf].provider_message_id if normalized_active_leaf is not None else None
+            evidence_by_id[normalized_active_leaf].native_provider_message_id
+            if normalized_active_leaf is not None
+            else None
         ),
         models_used=models_used,
         session_events=session_events,

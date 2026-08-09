@@ -277,6 +277,38 @@ def _message_comparison_id(message: ParsedMessage) -> str:
     return f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(_message_comparison_payload(message))}"
 
 
+def _message_owner_anchors(messages: list[ParsedMessage], comparison_ids: list[str]) -> dict[int, str]:
+    """Resolve attachment owners without changing public message identity.
+
+    A content anchor is intentionally shared by duplicate id-less messages.
+    That is correct for message revision comparison, but it is not enough to
+    identify which occurrence owns an attachment. When an anchor occurs more
+    than once, add a private discriminator derived from the parser-normalized
+    message position. The position is a transport coordinate already used by
+    ``ParsedAttachment.message_position``; it never enters the public
+    ``provider_message_id`` or the message comparison payload.
+
+    Messages without a position cannot be addressed by a position-linked
+    attachment either, so they retain the content anchor in this owner map.
+    """
+    counts = Counter(comparison_ids)
+    anchors: dict[int, str] = {}
+    for message, comparison_id in zip(messages, comparison_ids, strict=True):
+        if message.position is None:
+            continue
+        if counts[comparison_id] == 1:
+            anchors[message.position] = comparison_id
+            continue
+        occurrence = hash_payload(
+            {
+                "position": message.position,
+                "variant_index": _normalize_for_hash(message.variant_index),
+            }
+        )
+        anchors[message.position] = f"{comparison_id}:occurrence:{occurrence}"
+    return anchors
+
+
 def message_identity_hash(*, id: str) -> bytes:
     """The sole constructor of a message's comparison identity (polylogue-aggz).
 
@@ -525,11 +557,7 @@ def _session_hash_components(
         _message_hash_payload(message, comparison_id)
         for message, comparison_id in zip(convo.messages, message_comparison_ids, strict=True)
     ]
-    owner_anchor_by_position = {
-        message.position: comparison_id
-        for message, comparison_id in zip(convo.messages, message_comparison_ids, strict=True)
-        if message.position is not None
-    }
+    owner_anchor_by_position = _message_owner_anchors(convo.messages, message_comparison_ids)
     attachments_payload = [
         _attachment_hash_payload(
             attachment,

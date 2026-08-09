@@ -1199,6 +1199,61 @@ def test_archive_tiers_archive_facade_hash_skips_identical_content_and_refreshes
     assert stored_raw_id == second.raw_id
 
 
+def test_archive_tiers_archive_facade_reingests_duplicate_idless_owner_reassignment(tmp_path: Path) -> None:
+    def session(message_position: int) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="duplicate-idless-owner-reassignment",
+            title="Duplicate idless owners",
+            updated_at="2026-04-03T00:00:00Z",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="",
+                    role=Role.USER,
+                    text="same duplicate turn",
+                    timestamp="2026-04-03T00:00:00Z",
+                    position=0,
+                ),
+                ParsedMessage(
+                    provider_message_id="",
+                    role=Role.USER,
+                    text="same duplicate turn",
+                    timestamp="2026-04-03T00:00:00Z",
+                    position=1,
+                ),
+            ],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="drive-doc",
+                    message_provider_id="",
+                    message_position=message_position,
+                    name="note.txt",
+                    mime_type="text/plain",
+                )
+            ],
+        )
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            session(0),
+            payload=b'{"owner":0}',
+            source_path="/tmp/duplicate-owner-first.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        reassigned = facade.write_raw_and_parsed_result(
+            session(1),
+            payload=b'{"owner":1}',
+            source_path="/tmp/duplicate-owner-second.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    assert first.content_changed is True
+    assert reassigned.content_changed is True
+    assert reassigned.counts["sessions"] == 1
+    assert reassigned.counts["skipped_sessions"] == 0
+
+
 def test_archive_tiers_archive_facade_replaces_same_size_changed_attachment_bytes(tmp_path: Path) -> None:
     def session(payload: bytes) -> ParsedSession:
         return ParsedSession(
