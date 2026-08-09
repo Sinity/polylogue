@@ -198,27 +198,31 @@ def _seed_action(path: Path, *, tool_input: str) -> None:
         connection.commit()
 
 
-def _seed_session_link(path: Path, *, inheritance: str) -> None:
+def _seed_session_link(path: Path, *, inheritance: str, resolved_parent: bool = False) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute(
             """
             INSERT INTO session_links(
                 src_session_id, dst_origin, dst_native_id, link_type,
-                inheritance, observed_at_ms
-            ) VALUES (?, 'codex-session', 'parent', 'resume', ?, 1)
+                resolved_dst_session_id, inheritance, observed_at_ms
+            ) VALUES (?, 'codex-session', 'parent', 'resume', ?, ?, 1)
             """,
-            ("codex-session:alpha", inheritance),
+            (
+                "codex-session:alpha",
+                "codex-session:parent" if resolved_parent else None,
+                inheritance,
+            ),
         )
         connection.commit()
 
 
-def _empty_selection(index_path: Path) -> CanarySelection:
+def _test_selection(index_path: Path) -> CanarySelection:
     return CanarySelection(
         index_path=index_path,
         sessions_per_origin=1,
-        selected_session_ids=(),
-        selected_raw_ids=(),
-        sampled_session_ids=(),
+        selected_session_ids=("codex-session:alpha",),
+        selected_raw_ids=("raw-alpha",),
+        sampled_session_ids=("codex-session:alpha",),
         pathology_session_ids=(),
         sample_session_ids=(),
         origin_counts=(),
@@ -502,6 +506,27 @@ def test_differ_does_not_omit_session_links_from_the_canonical_relation_frame(tm
     assert "session_links" in report.compared_tables
 
 
+def test_differ_includes_parent_incident_session_link_when_parent_is_selected(tmp_path: Path) -> None:
+    """Parent-side incident edges remain in scope for a parent-selected canary."""
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current, sessions=("parent", "alpha"))
+    _seed_index(candidate, sessions=("parent", "alpha"))
+    _seed_session_link(current, inheritance="prefix-sharing", resolved_parent=True)
+    _seed_session_link(candidate, inheritance="spawned-fresh", resolved_parent=True)
+
+    report = compare_reindex_generations(current, candidate, session_ids=("codex-session:parent",))
+
+    link_delta = next(item for item in report.differences if item.table == "session_links")
+    assert link_delta.operation is DifferenceOperation.CHANGED
+    assert link_delta.identity == (
+        ("src_session_id", "codex-session:alpha"),
+        ("dst_origin", "codex-session"),
+        ("dst_native_id", "parent"),
+        ("link_type", "resume"),
+    )
+
+
 def test_selected_sessions_bound_the_canary_to_a_real_subset(tmp_path: Path) -> None:
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
@@ -656,6 +681,9 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
         "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_authoritative_rebuild_receipt", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_canary_candidate", lambda *args, **kwargs: current
     )
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
@@ -679,6 +707,34 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
     assert captured["promote"] is False
     assert captured_receipt_path == receipt_path
+
+
+def test_selector_refuses_empty_automatic_selection_before_daemon_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source row with no indexed session cannot trigger full-source replay."""
+    root = tmp_path / "archive"
+    _prepare_candidate_ready_archive(root)
+    with sqlite3.connect(root / "index.db") as connection:
+        connection.execute("DELETE FROM sessions")
+        connection.commit()
+    rebuild_called = False
+
+    def unexpected_rebuild(*args: object, **kwargs: object) -> None:
+        nonlocal rebuild_called
+        rebuild_called = True
+        raise AssertionError("empty canary selection must not reach the rebuild engine")
+
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", unexpected_rebuild)
+
+    with pytest.raises(CanarySelectionError, match="zero sessions|zero raw ids|full-source replay"):
+        run_reindex_canary(
+            root,
+            schema_inference_receipt_path=_receipt_path(tmp_path),
+            sessions_per_origin=1,
+            no_promote=True,
+        )
+    assert not rebuild_called
 
 
 def test_run_reindex_canary_rejects_missing_receipt_even_with_ambient_valid_receipt(
@@ -729,23 +785,22 @@ def test_run_reindex_canary_cleans_candidate_after_comparison_failure(
     assert (anchor.read_bytes() if anchor.exists() else None) == expected_anchor
 
 
-def test_run_reindex_canary_clean_success_retains_a_valid_inactive_candidate(tmp_path: Path) -> None:
-    """A successful canary returns the candidate for its comparison evidence."""
+def test_run_reindex_canary_refuses_source_rows_without_indexed_sessions(tmp_path: Path) -> None:
+    """A canary never widens an empty index selection to a full source replay."""
     root = tmp_path / "archive"
     _prepare_candidate_ready_archive(root)
+    with sqlite3.connect(root / "index.db") as connection:
+        connection.execute("DELETE FROM sessions")
+        connection.commit()
     receipt_path = _write_candidate_receipt(root, tmp_path / "receipt.json")
 
-    result = run_reindex_canary(
-        root,
-        schema_inference_receipt_path=receipt_path,
-        sessions_per_origin=1,
-        no_promote=True,
-    )
-
-    generation = result.rebuild_receipt["generation"]
-    assert isinstance(generation, dict)
-    assert generation["state"] == "inactive"
-    assert Path(str(generation["index_path"])).is_file()
+    with pytest.raises(CanarySelectionError, match="zero sessions|full-source replay"):
+        run_reindex_canary(
+            root,
+            schema_inference_receipt_path=receipt_path,
+            sessions_per_origin=1,
+            no_promote=True,
+        )
 
 
 def test_run_reindex_canary_rejects_input_index_outside_archive_root(
@@ -1027,7 +1082,7 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
     candidate = tmp_path / ".index-generations" / generation_id / "index.db"
     candidate.parent.mkdir(parents=True)
     candidate.touch()
-    selection = _empty_selection(current)
+    selection = _test_selection(current)
 
     class Receipt:
         archive_root = str(root.resolve())
@@ -1059,6 +1114,9 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
     )
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_authoritative_rebuild_receipt", lambda *args, **kwargs: None
+    )
 
     def fake_compare(current_path: Path, candidate_path: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
         captured.update({"paths": (current_path, candidate_path), "session_ids": session_ids})
@@ -1080,11 +1138,11 @@ def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, m
     current.touch()
     arbitrary = tmp_path / "arbitrary.db"
     arbitrary.touch()
-    selection = _empty_selection(current)
+    selection = _test_selection(current)
 
     class Receipt:
         archive_root = str(tmp_path.resolve())
-        selected_raw_count = 0
+        selected_raw_count = len(selection.selected_raw_ids)
         status = "replayed"
         materialized = True
         generation = {
@@ -1179,6 +1237,70 @@ def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
         )
 
     assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
+
+
+def test_real_daemon_canary_candidate_mutation_reaches_report_writer_red_twin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-build canonical mutation is observed and cannot bypass review."""
+    from polylogue.daemon import bulk_rebuild
+
+    root = tmp_path / "archive"
+    _prepare_candidate_ready_archive(root)
+    receipt_path = _write_candidate_receipt(root, tmp_path / "receipt.json")
+    rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            promote=True,
+            schema_inference_receipt_path=receipt_path,
+        )
+    )
+    active_index = ArchiveLocation.resolve(root).active_index_path
+    active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
+    real_rebuild = bulk_rebuild.run_daemon_canary_rebuild
+
+    def build_then_mutate(
+        *,
+        archive_root: Path,
+        raw_ids: tuple[str, ...],
+        schema_inference_receipt_path: Path,
+        candidate_acceptance_checks: tuple[str, ...],
+    ) -> Any:
+        receipt = real_rebuild(
+            archive_root=archive_root,
+            raw_ids=raw_ids,
+            schema_inference_receipt_path=schema_inference_receipt_path,
+            candidate_acceptance_checks=candidate_acceptance_checks,
+        )
+        generation = receipt.generation
+        candidate = Path(str(generation["index_path"]))
+        with sqlite3.connect(candidate) as connection:
+            connection.execute("UPDATE blocks SET text = 'post-build candidate mutation'")
+            connection.commit()
+        return receipt
+
+    monkeypatch.setattr(bulk_rebuild, "run_daemon_canary_rebuild", build_then_mutate)
+    result = run_reindex_canary(
+        root,
+        schema_inference_receipt_path=receipt_path,
+        sessions_per_origin=1,
+        no_promote=True,
+    )
+
+    assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
+    mutation = next(item for item in result.comparison.differences if item.table == "blocks")
+    assert mutation.operation is DifferenceOperation.CHANGED
+    assert mutation.changed_columns == ("text",)
+    report_path = tmp_path / "reports" / "mutation.json"
+    with pytest.raises(UnclassifiedCanaryDiffError, match="classification is incomplete"):
+        write_canary_report(
+            report_path,
+            selection=result.selection,
+            comparison=result.comparison,
+            rebuild_receipt=result.rebuild_receipt,
+            reviews=(),
+        )
+    assert not report_path.exists()
 
 
 def test_run_reindex_canary_refuses_foreign_input_index_before_rebuild(
