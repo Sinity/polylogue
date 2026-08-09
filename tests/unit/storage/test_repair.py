@@ -861,6 +861,115 @@ def test_non_codex_cas_frontier_failure_persists_provider_neutral_evidence(tmp_p
         ).fetchone() == ("deferred_cas_frontier", "partial_decode", 1)
 
 
+def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(
+    tmp_path: Path,
+) -> None:
+    """Two retained failures at one coordinate keep independent replay authority."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        old_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"revision":"old"}',
+            source_path="same-coordinate.jsonl",
+            source_index=0,
+            acquired_at_ms=1,
+        )
+        new_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"revision":"new"}',
+            source_path="same-coordinate.jsonl",
+            source_index=0,
+            acquired_at_ms=2,
+        )
+        archive.mark_raw_parse_failed(
+            old_raw_id,
+            provider=Provider.CODEX,
+            error=RawCASFrontierError("old frontier"),
+        )
+        archive.mark_raw_parse_failed(
+            new_raw_id,
+            provider=Provider.CODEX,
+            error=RawCASFrontierError("new frontier"),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        rows = source_conn.execute(
+            """
+            SELECT raw_id, origin, source_path, source_index, artifact_kind, support_status
+            FROM raw_artifacts
+            WHERE source_path = 'same-coordinate.jsonl'
+            ORDER BY raw_id
+            """
+        ).fetchall()
+    assert {tuple(row) for row in rows} == {
+        (
+            old_raw_id,
+            "codex-session",
+            "same-coordinate.jsonl",
+            0,
+            RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
+            "partial_decode",
+        ),
+        (
+            new_raw_id,
+            "codex-session",
+            "same-coordinate.jsonl",
+            0,
+            RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
+            "partial_decode",
+        ),
+    }
+
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.deferred == 2
+    assert lifecycle.unexplained == 0
+    assert {sample["raw_id"] for sample in lifecycle.samples} == {old_raw_id, new_raw_id}
+    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+    assert set(candidates.raw_ids) == {old_raw_id, new_raw_id}
+
+
+def test_cas_failure_evidence_rolls_back_with_parse_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed parse-state write cannot leave a committed CAS evidence receipt."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers import revision_governance
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"revision":"atomic"}',
+            source_path="atomic.jsonl",
+            acquired_at_ms=1,
+        )
+
+        def fail_state_update(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("state update failed")
+
+        monkeypatch.setattr(revision_governance, "apply_source_raw_state_update", fail_state_update)
+        with pytest.raises(RuntimeError, match="state update failed"):
+            archive.mark_raw_parse_failed(
+                raw_id,
+                provider=Provider.CODEX,
+                error=RawCASFrontierError("frontier"),
+            )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            None,
+        )
+        assert source_conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+
+
 def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failure(tmp_path: Path) -> None:
     """Resolved deferred evidence cannot authorize a later replay attempt."""
     from polylogue.core.enums import Provider

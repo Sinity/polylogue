@@ -3031,28 +3031,32 @@ def mark_raw_parse_failed(
     store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider, error: BaseException
 ) -> None:
     """Persist a bounded parse/index failure for retained raw evidence."""
-    if isinstance(error, RawCASFrontierError):
-        row = (
-            store._ensure_source_conn()
-            .execute(
+    conn = store._ensure_source_conn()
+    with conn:
+        if isinstance(error, RawCASFrontierError):
+            row = conn.execute(
                 "SELECT source_path, source_index, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
                 (raw_id,),
-            )
-            .fetchone()
+            ).fetchone()
+            if row is not None:
+                record_raw_failure_evidence(
+                    store,
+                    raw_id,
+                    provider=provider,
+                    source_path=str(row[0] or raw_id),
+                    source_index=int(row[1] or 0),
+                    acquired_at_ms=int(row[2] or int(time.time() * 1000)),
+                    kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
+                    manage_transaction=False,
+                )
+        else:
+            _supersede_deferred_cas_evidence(store, raw_id, provider=provider, manage_transaction=False)
+        apply_source_raw_state_update(
+            conn,
+            raw_id,
+            state=_raw_parse_failure_state(provider, error),
+            manage_transaction=False,
         )
-        if row is not None:
-            record_raw_failure_evidence(
-                store,
-                raw_id,
-                provider=provider,
-                source_path=str(row[0] or raw_id),
-                source_index=int(row[1] or 0),
-                acquired_at_ms=int(row[2] or int(time.time() * 1000)),
-                kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
-            )
-    else:
-        _supersede_deferred_cas_evidence(store, raw_id, provider=provider)
-    finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, error))
 
 
 def record_raw_failure_evidence(
@@ -3064,6 +3068,7 @@ def record_raw_failure_evidence(
     source_index: int,
     acquired_at_ms: int,
     kind: RawFailureEvidenceKind,
+    manage_transaction: bool = True,
 ) -> None:
     """Persist a closed parse-outcome classification beside retained bytes."""
     from hashlib import sha256
@@ -3088,6 +3093,7 @@ def record_raw_failure_evidence(
             first_observed_at_ms=acquired_at_ms,
             last_observed_at_ms=acquired_at_ms,
         ),
+        manage_transaction=manage_transaction,
     )
 
 
@@ -3096,6 +3102,7 @@ def _supersede_deferred_cas_evidence(
     raw_id: str,
     *,
     provider: Provider,
+    manage_transaction: bool = True,
 ) -> None:
     """Terminalize deferred CAS evidence once its attempt has resolved.
 
@@ -3148,13 +3155,21 @@ def _supersede_deferred_cas_evidence(
         source_index=int(source_index or 0),
         acquired_at_ms=int(time.time() * 1000),
         kind=RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
+        manage_transaction=manage_transaction,
     )
 
 
 def mark_raw_parse_succeeded(store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider) -> None:
     """Finalize one retained raw payload after every derived session commits."""
-    _supersede_deferred_cas_evidence(store, raw_id, provider=provider)
-    finalize_raw_parse_state(store, raw_id, state=_raw_parse_success_state(provider))
+    conn = store._ensure_source_conn()
+    with conn:
+        _supersede_deferred_cas_evidence(store, raw_id, provider=provider, manage_transaction=False)
+        apply_source_raw_state_update(
+            conn,
+            raw_id,
+            state=_raw_parse_success_state(provider),
+            manage_transaction=False,
+        )
 
 
 def _flush_pending_raw_parse_states(store: RawRevisionGovernanceHost) -> None:
@@ -3165,7 +3180,12 @@ def _flush_pending_raw_parse_states(store: RawRevisionGovernanceHost) -> None:
         for raw_id, state in store._pending_raw_parse_states:
             provider = state.payload_provider
             if isinstance(provider, Provider) and isinstance(state.parsed_at, str) and state.parse_error is None:
-                _supersede_deferred_cas_evidence(store, raw_id, provider=provider)
+                _supersede_deferred_cas_evidence(
+                    store,
+                    raw_id,
+                    provider=provider,
+                    manage_transaction=False,
+                )
             apply_source_raw_state_update(
                 source_conn,
                 raw_id,

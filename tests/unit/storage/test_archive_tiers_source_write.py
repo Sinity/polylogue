@@ -23,6 +23,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     read_history_sidecar,
     read_hook_event,
     read_raw_artifact,
+    upsert_raw_artifact,
     write_history_sidecar,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
@@ -163,6 +164,116 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
         session_native_id="session-1",
     )
     assert list_hook_events(conn, origin=Origin.CLAUDE_CODE_SESSION, session_native_id="session-1") == (hook_event,)
+
+
+def test_source_artifact_upsert_keeps_coordinate_deduplication_and_raw_failure_fanout(
+    tmp_path: Path,
+) -> None:
+    conn = _connect(tmp_path / "source.db")
+    raw_ids = [
+        write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/shared.jsonl",
+            source_index=0,
+            payload=f"payload-{suffix}".encode(),
+            acquired_at_ms=index + 1,
+        )
+        for index, suffix in enumerate(("old", "new"))
+    ]
+
+    upsert_raw_artifact(
+        conn,
+        raw_ids[0],
+        ArchiveSourceArtifact(
+            artifact_id="failure-old",
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/shared.jsonl",
+            source_index=0,
+            artifact_kind="deferred_cas_frontier",
+            classification_reason="deferred_cas_frontier",
+            support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+        ),
+    )
+    upsert_raw_artifact(
+        conn,
+        raw_ids[1],
+        ArchiveSourceArtifact(
+            artifact_id="failure-new",
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/shared.jsonl",
+            source_index=0,
+            artifact_kind="deferred_cas_frontier",
+            classification_reason="deferred_cas_frontier",
+            support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+        ),
+    )
+    upsert_raw_artifact(
+        conn,
+        raw_ids[0],
+        ArchiveSourceArtifact(
+            artifact_id="failure-old-refresh",
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/shared.jsonl",
+            source_index=0,
+            artifact_kind="terminal_corrupt_input",
+            classification_reason="terminal_corrupt_input",
+            support_status=ArtifactSupportStatus.DECODE_FAILED,
+        ),
+    )
+
+    rows = conn.execute(
+        """
+        SELECT raw_id, origin, source_path, source_index, artifact_kind, support_status
+        FROM raw_artifacts
+        WHERE origin = ? AND source_path = ? AND source_index = 0
+        ORDER BY raw_id
+        """,
+        (Origin.CODEX_SESSION.value, "/tmp/shared.jsonl"),
+    ).fetchall()
+    assert {tuple(row) for row in rows} == {
+        (
+            raw_ids[0],
+            Origin.CODEX_SESSION.value,
+            "/tmp/shared.jsonl",
+            0,
+            "terminal_corrupt_input",
+            ArtifactSupportStatus.DECODE_FAILED.value,
+        ),
+        (
+            raw_ids[1],
+            Origin.CODEX_SESSION.value,
+            "/tmp/shared.jsonl",
+            0,
+            "deferred_cas_frontier",
+            ArtifactSupportStatus.PARTIAL_DECODE.value,
+        ),
+    }
+
+    upsert_raw_artifact(
+        conn,
+        raw_ids[0],
+        ArchiveSourceArtifact(
+            artifact_id="ordinary-coordinate",
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/shared.jsonl",
+            source_index=0,
+            artifact_kind="session_export",
+            classification_reason="session_export",
+            support_status=ArtifactSupportStatus.SUPPORTED_PARSEABLE,
+        ),
+    )
+    ordinary = conn.execute(
+        """
+        SELECT artifact_id, raw_id, artifact_kind
+        FROM raw_artifacts
+        WHERE origin = ? AND source_path = ? AND source_index = 0
+          AND artifact_kind = 'session_export'
+        """,
+        (Origin.CODEX_SESSION.value, "/tmp/shared.jsonl"),
+    ).fetchone()
+    assert ordinary is not None
+    assert tuple(ordinary) == ("ordinary-coordinate", raw_ids[0], "session_export")
 
 
 def test_archive_tiers_source_writer_replays_hook_events_idempotently(tmp_path: Path) -> None:

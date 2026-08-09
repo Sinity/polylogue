@@ -15,6 +15,7 @@ from typing import Literal
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
@@ -50,6 +51,11 @@ class ContentExcisedError(RuntimeError):
 
 
 PENDING_RAW_LOGICAL_SOURCE_PREFIX = "pending-raw:"
+
+
+def _is_raw_failure_artifact_kind(artifact_kind: object) -> bool:
+    value = getattr(artifact_kind, "value", artifact_kind)
+    return str(value) in RAW_FAILURE_EVIDENCE_KINDS
 
 
 def pending_raw_logical_source_key(*, origin: Origin | str, source_path: str, source_index: int, raw_id: str) -> str:
@@ -1251,16 +1257,46 @@ def _insert_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSou
     )
 
 
-def upsert_raw_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSourceArtifact) -> None:
-    """Attach or refresh typed artifact evidence for an existing raw row."""
-    with conn:
+def upsert_raw_artifact(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    artifact: ArchiveSourceArtifact,
+    *,
+    manage_transaction: bool = True,
+) -> None:
+    """Attach or refresh typed artifact evidence for an existing raw row.
+
+    Ordinary artifact observations retain one carrier per source coordinate.
+    Failure evidence is attempt-scoped, so each retained raw gets its own
+    carrier while repeated evidence for that raw and coordinate remains an
+    idempotent replacement.
+    """
+    failure_kind = _is_raw_failure_artifact_kind(artifact.artifact_kind)
+    coordinate_predicate = (
+        "raw_id = ? AND origin = ? AND source_path = ? AND source_index = ?"
+        if failure_kind
+        else "origin = ? AND source_path = ? AND source_index = ? AND artifact_kind NOT IN ("
+        + ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
+        + ")"
+    )
+    coordinate_params: tuple[object, ...]
+    if failure_kind:
+        coordinate_params = (raw_id, _enum_value(artifact.origin), artifact.source_path, artifact.source_index)
+    else:
+        coordinate_params = (
+            _enum_value(artifact.origin),
+            artifact.source_path,
+            artifact.source_index,
+            *sorted(RAW_FAILURE_EVIDENCE_KINDS),
+        )
+    with conn if manage_transaction else nullcontext():
         existing = conn.execute(
-            """
+            f"""
             SELECT artifact_id
             FROM raw_artifacts
-            WHERE origin = ? AND source_path = ? AND source_index = ?
+            WHERE {coordinate_predicate}
             """,
-            (_enum_value(artifact.origin), artifact.source_path, artifact.source_index),
+            coordinate_params,
         ).fetchone()
         if existing is not None:
             artifact = replace(artifact, artifact_id=str(existing[0]))
