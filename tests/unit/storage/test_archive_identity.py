@@ -180,6 +180,41 @@ def test_owned_location_rejects_concurrent_acquire_before_any_sqlite_file_exists
         assert not (root / name).exists(), f"{name} must not exist: ownership must fail before SQLite opens"
 
 
+def test_owned_location_rejects_archive_root_replacement_during_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lease must retain the root inode it validated, not a replacement pathname."""
+    root = tmp_path / "archive"
+    moved_root = tmp_path / "moved-archive"
+    root.mkdir()
+    location = ArchiveLocation.resolve(root)
+    real_open = os.open
+    swapped = False
+
+    def swap_after_root_open(
+        file: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        descriptor = real_open(file, flags, mode, dir_fd=dir_fd)
+        if not swapped and dir_fd is None and Path(file) == root and flags & getattr(os, "O_DIRECTORY", 0):
+            root.rename(moved_root)
+            root.mkdir()
+            swapped = True
+        return descriptor
+
+    monkeypatch.setattr("polylogue.storage.archive_identity.os.open", swap_after_root_open)
+    with pytest.raises(ArchiveOwnershipError, match="archive root changed"):
+        OwnedArchiveLocation.acquire(location)
+
+    assert swapped is True
+    assert not (root / ".archive-ownership.lock").exists()
+    assert not (moved_root / ".archive-ownership.lock").exists()
+
+
 def test_owned_location_reclaims_lock_left_by_dead_process(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     root.mkdir()

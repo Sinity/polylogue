@@ -2322,24 +2322,20 @@ def test_migrate_tier_cli_rejects_archive_directory_swap_before_publication(
     _stage_uninitialized_archive(cli_workspace)
     root = cli_workspace["archive_root"]
     moved_root = root.with_name("archive-moved")
-    real_open = os.open
     swapped = False
 
-    def swap_before_directory_anchor(
-        file: os.PathLike[str] | str,
-        flags: int,
-        mode: int = 0o777,
-        *,
-        dir_fd: int | None = None,
-    ) -> int:
+    def swap_after_archive_ownership(_root: Path) -> str:
         nonlocal swapped
-        if not swapped and dir_fd is None and Path(file) == root and flags & getattr(os, "O_DIRECTORY", 0):
+        if not swapped:
             root.rename(moved_root)
             root.mkdir()
             swapped = True
-        return real_open(file, flags, mode, dir_fd=dir_fd)
+        return "proof:daemon-stopped"
 
-    monkeypatch.setattr("polylogue.operations.durable_change_train.os.open", swap_before_directory_anchor)
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._migrate_tier._require_stopped_daemon",
+        swap_after_archive_ownership,
+    )
 
     result = cli_runner.invoke(
         cli,
@@ -2461,6 +2457,18 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
     monkeypatch.setattr(Path, "lstat", fail_published_lstat)
 
     real_open = os.open
+    dup_failure_armed = False
+
+    from polylogue.cli.commands.maintenance import _migrate_tier
+
+    real_require_stopped_daemon = _migrate_tier._require_stopped_daemon
+
+    def arm_dup_failure(path: Path) -> str:
+        nonlocal dup_failure_armed
+        dup_failure_armed = True
+        return real_require_stopped_daemon(path)
+
+    monkeypatch.setattr(_migrate_tier, "_require_stopped_daemon", arm_dup_failure)
 
     def fail_directory_open(
         file: os.PathLike[str] | str,
@@ -2471,6 +2479,7 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
     ) -> int:
         if (
             failure_stage == "directory_open"
+            and dup_failure_armed
             and Path(file) == root
             and flags & getattr(os, "O_DIRECTORY", 0)
             and flags & getattr(os, "O_TMPFILE", 0) != getattr(os, "O_TMPFILE", 0)
@@ -2479,6 +2488,15 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
         return real_open(file, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(f"{module_name}.os.open", fail_directory_open)
+
+    real_dup = os.dup
+
+    def fail_directory_dup(descriptor: int) -> int:
+        if failure_stage == "directory_open" and dup_failure_armed:
+            raise OSError("directory open failed")
+        return real_dup(descriptor)
+
+    monkeypatch.setattr(f"{module_name}.os.dup", fail_directory_dup)
 
     result = cli_runner.invoke(
         cli,
@@ -2500,6 +2518,183 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
     assert not audit_db.exists()
     if failure_stage == "published_lstat":
         assert directory_fsyncs == 1
+
+
+def test_migrate_tier_cli_serializes_cleanup_fsync_uncertainty(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cleanup fsync fault is durable-recovery uncertainty, not a lost note."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    real_stat = os.stat
+    published_stat_calls = 0
+
+    def fail_published_stat(
+        file: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal published_stat_calls
+        if file == "audit.db" and dir_fd is not None:
+            published_stat_calls += 1
+            if published_stat_calls == 2:
+                raise OSError("published identity fault")
+        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    real_fsync = os.fsync
+
+    def fail_cleanup_fsync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("cleanup fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", fail_published_stat)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_cleanup_fsync)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["durable_recovery"] == {
+        "code": "cleanup_directory_fsync_failed",
+        "detail": f"could not fsync durable tier cleanup directory: {root}: cleanup fsync fault",
+        "state": "uncertain",
+        "target": str(audit_db),
+    }
+    assert not audit_db.exists()
+
+
+def test_migrate_tier_cli_serializes_target_absent_cleanup(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vanished publication target is reported distinctly from cleanup uncertainty."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    real_stat = os.stat
+    published_stat_calls = 0
+
+    def remove_target_before_cleanup_stat(
+        file: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal published_stat_calls
+        if file == "audit.db" and dir_fd is not None:
+            published_stat_calls += 1
+            if published_stat_calls == 3:
+                audit_db.unlink()
+        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    real_fsync = os.fsync
+    directory_fsyncs = 0
+
+    def fail_after_publish(descriptor: int) -> None:
+        nonlocal directory_fsyncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsyncs += 1
+            if directory_fsyncs == 1:
+                raise OSError("publication fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", remove_target_before_cleanup_stat)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_after_publish)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["durable_recovery"] == {
+        "code": None,
+        "detail": None,
+        "state": "target_absent",
+        "target": str(audit_db),
+    }
+
+
+def test_migrate_tier_cli_preserves_replacement_during_checked_leaf_cleanup(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cleanup mutation swaps in a foreign leaf before the checked unlink."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    foreign = root / "foreign-audit.db"
+    real_stat = os.stat
+    published_stat_calls = 0
+
+    def replace_target_before_checked_unlink(
+        file: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal published_stat_calls
+        if file == "audit.db" and dir_fd is not None:
+            published_stat_calls += 1
+            if published_stat_calls == 3:
+                audit_db.unlink()
+                foreign.write_bytes(b"foreign target")
+                foreign.rename(audit_db)
+        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    real_fsync = os.fsync
+    directory_fsyncs = 0
+
+    def fail_after_publish(descriptor: int) -> None:
+        nonlocal directory_fsyncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsyncs += 1
+            if directory_fsyncs == 1:
+                raise OSError("publication fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", replace_target_before_checked_unlink)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_after_publish)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["durable_recovery"]["code"] == "leaf_replaced"
+    assert audit_db.read_bytes() == b"foreign target"
 
 
 def test_migrate_tier_cli_refuses_named_staging_when_anonymous_publication_is_unsupported(

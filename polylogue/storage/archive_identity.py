@@ -6,6 +6,7 @@ import fcntl
 import logging
 import os
 import socket
+import stat
 import sys
 import threading
 import time
@@ -20,7 +21,7 @@ from polylogue.version import VERSION_INFO
 logger = logging.getLogger(__name__)
 
 _LOCAL_ARCHIVE_OWNERS_LOCK = threading.RLock()
-_LOCAL_ARCHIVE_OWNERS: dict[Path, tuple[int, int, str]] = {}
+_LOCAL_ARCHIVE_OWNERS: dict[tuple[int, int], tuple[int, int, int, str]] = {}
 
 ArchiveTierName = Literal["source", "index", "embeddings", "user", "ops", "audit"]
 TIER_FILENAMES: tuple[tuple[ArchiveTierName, str], ...] = (
@@ -336,11 +337,20 @@ class OwnedArchiveLocation:
     for that generation.
     """
 
-    def __init__(self, location: ArchiveLocation) -> None:
+    def __init__(self, location: ArchiveLocation, *, root_fd: int, root_identity: tuple[int, int]) -> None:
         self.location = location
         self.lock_path = location.configured_root / ".archive-ownership.lock"
         self.owner_id: str | None = None
         self._fd: int | None = None
+        self._root_fd = root_fd
+        self.root_identity = root_identity
+
+    @property
+    def directory_fd(self) -> int:
+        """Return the descriptor that pins the owned archive-root directory."""
+        if self._root_fd < 0:
+            raise ArchiveOwnershipError("archive ownership root descriptor is closed")
+        return self._root_fd
 
     @classmethod
     def acquire(
@@ -359,33 +369,57 @@ class OwnedArchiveLocation:
         blocker, matching ``index_generation``'s stale-lease handling.
         """
         owner = owner_id or f"pid={os.getpid()} host={socket.gethostname()} token={uuid.uuid4().hex}"
-        instance = cls(location)
+        root_fd = _open_archive_root_fd(location.configured_root)
+        root_metadata = os.fstat(root_fd)
+        instance = cls(
+            location,
+            root_fd=root_fd,
+            root_identity=(root_metadata.st_dev, root_metadata.st_ino),
+        )
+        root_key = instance.root_identity
         with _LOCAL_ARCHIVE_OWNERS_LOCK:
-            existing = _LOCAL_ARCHIVE_OWNERS.get(instance.lock_path)
-            if existing is None or not allow_reentrant:
-                fd = _acquire_ownership_lock_fd(instance.lock_path, owner=owner)
-                _LOCAL_ARCHIVE_OWNERS[instance.lock_path] = (fd, 1, owner)
-                instance.owner_id = owner
-            else:
-                fd, references, existing_owner = existing
-                _LOCAL_ARCHIVE_OWNERS[instance.lock_path] = (fd, references + 1, existing_owner)
-                instance.owner_id = existing_owner
-            instance._fd = fd
+            try:
+                existing = _LOCAL_ARCHIVE_OWNERS.get(root_key)
+                if existing is None or not allow_reentrant:
+                    fd = _acquire_ownership_lock_fd(instance.lock_path, owner=owner, dir_fd=root_fd)
+                    _LOCAL_ARCHIVE_OWNERS[root_key] = (fd, root_fd, 1, owner)
+                    instance.owner_id = owner
+                else:
+                    fd, existing_root_fd, references, existing_owner = existing
+                    os.close(root_fd)
+                    instance._root_fd = existing_root_fd
+                    _LOCAL_ARCHIVE_OWNERS[root_key] = (fd, existing_root_fd, references + 1, existing_owner)
+                    instance.owner_id = existing_owner
+                instance._fd = fd
+                _assert_archive_root_identity(
+                    instance.location.configured_root,
+                    instance.directory_fd,
+                    instance.root_identity,
+                )
+            except BaseException:
+                if instance._fd is not None:
+                    instance.release()
+                elif instance._root_fd >= 0:
+                    os.close(instance._root_fd)
+                    instance._root_fd = -1
+                raise
         return instance
 
     def release(self) -> None:
         if self._fd is not None:
             with _LOCAL_ARCHIVE_OWNERS_LOCK:
-                existing = _LOCAL_ARCHIVE_OWNERS.get(self.lock_path)
+                existing = _LOCAL_ARCHIVE_OWNERS.get(self.root_identity)
                 if existing is not None and existing[0] == self._fd:
-                    fd, references, owner = existing
+                    fd, root_fd, references, owner = existing
                     if references <= 1:
-                        _LOCAL_ARCHIVE_OWNERS.pop(self.lock_path, None)
+                        _LOCAL_ARCHIVE_OWNERS.pop(self.root_identity, None)
                         fcntl.flock(fd, fcntl.LOCK_UN)
                         os.close(fd)
+                        os.close(root_fd)
                     else:
-                        _LOCAL_ARCHIVE_OWNERS[self.lock_path] = (fd, references - 1, owner)
+                        _LOCAL_ARCHIVE_OWNERS[self.root_identity] = (fd, root_fd, references - 1, owner)
             self._fd = None
+            self._root_fd = -1
 
     def __enter__(self) -> OwnedArchiveLocation:
         return self
@@ -415,6 +449,7 @@ def assert_owns_archive_location(owned: OwnedArchiveLocation, location: ArchiveL
             "archive ownership proof does not cover this location: "
             f"owned={owned.location.configured_root} target={location.configured_root}"
         )
+    _assert_archive_root_identity(owned.location.configured_root, owned.directory_fd, owned.root_identity)
     if not owned.location.active_index.same_file(location.active_index):
         raise ArchiveOwnershipError(
             "archive ownership proof is stale for the current active generation: "
@@ -423,10 +458,10 @@ def assert_owns_archive_location(owned: OwnedArchiveLocation, location: ArchiveL
         )
 
 
-def _lock_holder_pid(path: Path) -> int | None:
+def _lock_holder_pid(path: Path, *, fd: int | None = None) -> int | None:
     """Best-effort recorded pid from an existing lock file; ``None`` if absent/unreadable."""
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8") if fd is None else os.pread(fd, 4096, 0).decode("utf-8")
     except OSError:
         return None
     for token in text.split():
@@ -456,7 +491,37 @@ _STALE_RECLAIM_ATTEMPTS = 20
 _STALE_RECLAIM_RETRY_SECONDS = 0.01
 
 
-def _acquire_ownership_lock_fd(path: Path, *, owner: str) -> int:
+def _open_archive_root_fd(path: Path) -> int:
+    """Open one archive-root directory and reject a path swap around the open."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        raise ArchiveOwnershipError(f"cannot open archive root directory: {path}") from exc
+    try:
+        _assert_archive_root_identity(path, fd, None)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _assert_archive_root_identity(path: Path, fd: int, expected: tuple[int, int] | None) -> None:
+    """Prove the configured root still names the directory held by ``fd``."""
+    metadata = os.fstat(fd)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ArchiveOwnershipError(f"archive root is not a directory: {path}")
+    identity = (metadata.st_dev, metadata.st_ino)
+    if expected is not None and identity != expected:
+        raise ArchiveOwnershipError(f"archive root descriptor changed: {path}")
+    try:
+        path_metadata = path.stat()
+    except OSError as exc:
+        raise ArchiveOwnershipError(f"archive root disappeared during ownership validation: {path}") from exc
+    if (path_metadata.st_dev, path_metadata.st_ino) != identity:
+        raise ArchiveOwnershipError(f"archive root changed during ownership validation: {path}")
+
+
+def _acquire_ownership_lock_fd(path: Path, *, owner: str, dir_fd: int | None = None) -> int:
     """Open ``path`` and take an exclusive, non-blocking ``flock`` proving ownership.
 
     Never opens a sqlite3 connection -- callers rely on this to fail before
@@ -477,12 +542,20 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str) -> int:
     confirm it's dead -- so retrying the identical ``flock`` call converges
     quickly without ever creating a second inode to race against.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    if dir_fd is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    else:
+        fd = os.open(
+            path.name,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=dir_fd,
+        )
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exc:
-        holder_pid = _lock_holder_pid(path)
+        holder_pid = _lock_holder_pid(path, fd=fd)
         if holder_pid is None or _pid_is_alive(holder_pid):
             os.close(fd)
             suffix = f" (pid={holder_pid})" if holder_pid is not None else ""

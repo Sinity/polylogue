@@ -6,7 +6,9 @@ import os
 import sqlite3
 import stat
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -22,13 +24,39 @@ from polylogue.storage.sqlite.durable_change_train import (
 from polylogue.storage.sqlite.migration_runner import DurableRuntimeConsumerResult, MigrationError
 
 
+@dataclass(frozen=True, slots=True)
+class DurableCleanupOutcome:
+    """Operator-facing result of recovering a partially visible publication."""
+
+    state: Literal["not_attempted", "target_absent", "cleaned", "uncertain"]
+    code: str | None = None
+    target: str | None = None
+    detail: str | None = None
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "state": self.state,
+            "code": self.code,
+            "target": self.target,
+            "detail": self.detail,
+        }
+
+
+class DurablePublicationError(MigrationError):
+    """Publication failure carrying durable cleanup uncertainty for operators."""
+
+    def __init__(self, message: str, *, cleanup: DurableCleanupOutcome | None = None) -> None:
+        super().__init__(message)
+        self.cleanup = cleanup
+
+
 def acquire_durable_archive_ownership(root: Path, *, owner_id: str) -> OwnedArchiveLocation:
     """Acquire the stable archive lease shared by daemon and maintenance."""
     location = ArchiveLocation.resolve(root)
     return OwnedArchiveLocation.acquire(location, owner_id=owner_id)
 
 
-def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
+def initialize_missing_durable_tier(path: Path, tier: ArchiveTier, *, directory_fd: int | None = None) -> int:
     """Initialize one absent durable tier while the caller owns the archive.
 
     This is deliberately separate from migration. A missing tier has no
@@ -57,10 +85,16 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
 
     directory_descriptor: int | None = None
     try:
-        directory_descriptor = os.open(
-            archive_root,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
+        if directory_fd is not None:
+            directory_descriptor = os.dup(directory_fd)
+        else:
+            directory_descriptor = os.open(
+                archive_root,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
     except OSError as exc:
         raise MigrationError(
             f"cannot publish {tier.value} tier at {path}: cannot anchor durable tier parent directory"
@@ -205,32 +239,59 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     publication_identity: tuple[int, int] | None = None
     published_target = False
 
-    def cleanup_published_target(primary: BaseException) -> None:
+    def cleanup_published_target(primary: BaseException) -> DurableCleanupOutcome:
         """Remove only our inode after a post-link publication failure."""
         if not published_target or publication_identity is None:
-            return
+            return DurableCleanupOutcome("not_attempted")
         try:
             published_metadata = adoption_lstat(target_name, "published durable tier")
             if published_metadata is None:
-                return
+                return DurableCleanupOutcome("target_absent", target=str(path))
         except FileNotFoundError:
-            return
+            return DurableCleanupOutcome("target_absent", target=str(path))
         except OSError as exc:
-            primary.add_note(f"could not inspect published durable tier during recovery: {path}: {exc}")
-            return
+            detail = f"could not inspect published durable tier during recovery: {path}: {exc}"
+            primary.add_note(detail)
+            return DurableCleanupOutcome("uncertain", "leaf_inspection_failed", str(path), detail)
         if (published_metadata.st_dev, published_metadata.st_ino) != publication_identity:
-            primary.add_note(f"published durable tier changed before recovery; preserving foreign target: {path}")
-            return
+            detail = f"published durable tier changed before recovery; preserving foreign target: {path}"
+            primary.add_note(detail)
+            return DurableCleanupOutcome("uncertain", "leaf_replaced", str(path), detail)
         try:
+            leaf_descriptor = os.open(
+                target_name,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_descriptor,
+            )
+            try:
+                leaf_metadata = os.fstat(leaf_descriptor)
+                if (leaf_metadata.st_dev, leaf_metadata.st_ino) != publication_identity:
+                    detail = f"published durable tier changed before recovery; preserving foreign target: {path}"
+                    primary.add_note(detail)
+                    return DurableCleanupOutcome("uncertain", "leaf_replaced", str(path), detail)
+                current_metadata = adoption_lstat(target_name, "published durable tier")
+                if current_metadata is None:
+                    return DurableCleanupOutcome("target_absent", target=str(path))
+                if (current_metadata.st_dev, current_metadata.st_ino) != publication_identity:
+                    detail = f"published durable tier changed before recovery; preserving foreign target: {path}"
+                    primary.add_note(detail)
+                    return DurableCleanupOutcome("uncertain", "leaf_replaced", str(path), detail)
+            finally:
+                os.close(leaf_descriptor)
             os.unlink(target_name, dir_fd=directory_descriptor)
             try:
                 os.fsync(directory_descriptor)
             except OSError as exc:
-                primary.add_note(f"could not fsync durable tier cleanup directory: {archive_root}: {exc}")
+                detail = f"could not fsync durable tier cleanup directory: {archive_root}: {exc}"
+                primary.add_note(detail)
+                return DurableCleanupOutcome("uncertain", "cleanup_directory_fsync_failed", str(path), detail)
+            return DurableCleanupOutcome("cleaned", target=str(path))
         except FileNotFoundError:
-            return
+            return DurableCleanupOutcome("target_absent", target=str(path))
         except OSError as exc:
-            primary.add_note(f"could not remove partially published durable tier during recovery: {path}: {exc}")
+            detail = f"could not remove partially published durable tier during recovery: {path}: {exc}"
+            primary.add_note(detail)
+            return DurableCleanupOutcome("uncertain", "leaf_unlink_failed", str(path), detail)
 
     try:
         try:
@@ -291,15 +352,17 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             raise MigrationError(f"published durable tier identity does not match the staged database: {path}")
         os.fsync(directory_descriptor)
     except MigrationError as exc:
-        cleanup_published_target(exc)
+        cleanup = cleanup_published_target(exc)
         if published_target:
-            raise MigrationError(
-                f"cannot publish {tier.value} tier at {path} via anonymous durable publication"
+            raise DurablePublicationError(
+                f"cannot publish {tier.value} tier at {path} via anonymous durable publication", cleanup=cleanup
             ) from exc
         raise
     except OSError as exc:
-        cleanup_published_target(exc)
-        raise MigrationError(f"cannot publish {tier.value} tier at {path} via anonymous durable publication") from exc
+        cleanup = cleanup_published_target(exc)
+        raise DurablePublicationError(
+            f"cannot publish {tier.value} tier at {path} via anonymous durable publication", cleanup=cleanup
+        ) from exc
     finally:
         if publication_descriptor is not None:
             try:
