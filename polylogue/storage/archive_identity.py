@@ -80,6 +80,11 @@ def archive_file_set_root(*, archive_root: Path, db_path: Path) -> Path:
     :class:`~polylogue.config.Config` instance) so this also serves fakes
     that only duck-type those two attributes.
     """
+    # A promoted generation may live outside the durable-tier root.  The
+    # pointer is the explicit marker that its source/user/blob siblings still
+    # belong to the configured archive root, not to the generation directory.
+    if (archive_root / ".index-active-pointer").exists():
+        return archive_root
     return db_path.parent if db_path.name == "index.db" else archive_root
 
 

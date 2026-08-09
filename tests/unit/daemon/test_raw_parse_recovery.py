@@ -32,6 +32,7 @@ from polylogue.core.enums import Provider
 from polylogue.daemon.convergence import DaemonConverger, StageState
 from polylogue.daemon.convergence_stages import make_raw_parse_recovery_stage
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -180,6 +181,20 @@ def test_raw_parse_recovery_missing_source_is_no_backlog(tmp_path: Path) -> None
     assert state.error_count == 0
 
 
+def test_raw_parse_recovery_missing_source_tier_is_retryable(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    (tmp_path / "source.db").rename(tmp_path / "source.db.unavailable")
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+    converger = DaemonConverger(stages=(stage,))
+
+    states, _timings = converger.converge_batch([tmp_path / "missing-source.json"])
+
+    state = states[tmp_path / "missing-source.json"]
+    assert state.stages["raw_parse_recovery"] is StageState.FAILED
+    assert state.converged is False
+    assert state.error_count == 1
+
+
 def test_raw_parse_recovery_no_qualifying_rows_is_done(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
@@ -209,14 +224,31 @@ def test_raw_parse_recovery_uses_active_index_pointer(tmp_path: Path) -> None:
         assert origin is not None
         conn.execute(
             "INSERT INTO sessions (native_id, origin, raw_id, content_hash) VALUES (?, ?, ?, zeroblob(32))",
-            ("conv-stuck", origin[0], raw_id),
+            ("conv-stuck", origin[0], "stale-index-only-raw"),
         )
         conn.commit()
 
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
 
-    assert stage.check(path) is False
+    assert archive_file_set_root(archive_root=tmp_path, db_path=active_index) == tmp_path
+    assert stage.check(path) is True
+
+
+def test_raw_parse_recovery_retries_authorized_parse_failure(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "retryable.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET parse_error = ?, parsed_at_ms = NULL WHERE raw_id = ?",
+            ("OperationalError: database is locked", raw_id),
+        )
+        conn.commit()
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+
+    assert stage.check(path) is True
 
 
 def test_raw_parse_recovery_source_open_failure_is_failed_and_retryable(
