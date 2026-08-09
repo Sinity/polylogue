@@ -183,6 +183,7 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | --- | --- |
 | `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab lanes` | Run named validation lanes. |
+| `devtools lab policy acceptance-contract-apply` | Apply an exact acceptance wave to a guarded JSONL file copy. |
 | `devtools lab policy acceptance-contract-reconcile` | Reconcile canonical acceptance contracts with a read-only live Beads export. |
 | `devtools lab policy acceptance-contracts` | Validate structured Beads acceptance contracts and the committed contract manifest. |
 | `devtools lab policy backlog-hygiene` | Verify Beads backlog structure invariants (.beads/issues.jsonl). |

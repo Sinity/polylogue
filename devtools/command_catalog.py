@@ -1894,8 +1894,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools lab policy acceptance-contract-reconcile --repository .beads/issues.jsonl "
             "--live /path/live.jsonl --wave /path/targeted.jsonl --report /path/report.json",
-            "devtools lab policy acceptance-contract-reconcile --verify-before /path/before.jsonl "
+            "devtools lab policy acceptance-contract-reconcile --verify-repository .beads/issues.jsonl "
+            "--verify-report /path/report.json --verify-before /path/before.jsonl "
             "--verify-after /path/after.jsonl --verify-wave /path/targeted.jsonl --json",
+        ),
+    ),
+    CommandSpec(
+        "lab policy acceptance-contract-apply",
+        "verification lab",
+        "Apply an exact acceptance wave to a guarded JSONL file copy.",
+        "devtools.beads_acceptance_applier",
+        use_when=(
+            "Exercise the local guarded applier against an exact reconciliation report and wave. "
+            "This route never invokes bd or mutates the Beads database and accepts an identical "
+            "prior output idempotently."
+        ),
+        examples=(
+            "devtools lab policy acceptance-contract-apply --repository .beads/issues.jsonl "
+            "--before RUN/live-before.jsonl --wave RUN/targeted.jsonl --report RUN/reconciliation.json "
+            "--output RUN/applied.jsonl --json",
         ),
     ),
     CommandSpec(
