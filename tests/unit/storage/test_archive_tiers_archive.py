@@ -11,6 +11,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider
+from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.scenarios.workload import (
     BudgetVerdict,
     WorkloadPhaseObservation,
@@ -1213,6 +1214,7 @@ def test_archive_tiers_archive_facade_reingests_duplicate_idless_owner_reassignm
                     text="same duplicate turn",
                     timestamp="2026-04-03T00:00:00Z",
                     position=0,
+                    owner_coordinate=MessageOwnerCoordinate("owner-first", 0, 0),
                 ),
                 ParsedMessage(
                     provider_message_id="",
@@ -1220,6 +1222,7 @@ def test_archive_tiers_archive_facade_reingests_duplicate_idless_owner_reassignm
                     text="same duplicate turn",
                     timestamp="2026-04-03T00:00:00Z",
                     position=1,
+                    owner_coordinate=MessageOwnerCoordinate("owner-second", 1, 0),
                 ),
             ],
             attachments=[

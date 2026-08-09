@@ -644,13 +644,12 @@ def _owner_stable_key(
     block_ids = sorted(block.tool_id for block in blocks if block.tool_id)
     if block_ids:
         evidence["tool_ids"] = block_ids
-    attachment_ids = sorted(
-        (attachment.provider_attachment_id, attachment.provider_file_id, attachment.provider_drive_id)
-        for attachment in attachments
-        if attachment.provider_attachment_id or attachment.provider_file_id or attachment.provider_drive_id
-    )
-    if attachment_ids:
-        evidence["attachment_ids"] = [list(values) for values in attachment_ids]
+    # Attachment identity is deliberately excluded from owner evidence. A
+    # Claude export can move an idless file between same-role, same-timestamp
+    # turns while retaining the file id. Including that id makes the file's
+    # stable key follow the file instead of the owning turn, so the session
+    # hash can remain unchanged and re-ingest can skip the reassignment. The
+    # parser-provided position/variant coordinate is the independent fallback.
     if not evidence:
         return None
     return f"claude-owner-evidence:{hash_payload(evidence)}"

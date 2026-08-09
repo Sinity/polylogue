@@ -210,6 +210,75 @@ async def test_message_user_state_projects_owner_for_opaque_session_native_ids(
     assert filtered_annotations == [annotations[0]]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alias_kind", ["native", "provider", "prefix"])
+async def test_message_user_state_resolves_durable_alias_after_index_row_disappears(
+    workspace_env: dict[str, Path],
+    alias_kind: str,
+) -> None:
+    """Durable mark/annotation owners resolve accepted aliases without index rows."""
+    db_path = db_setup(workspace_env)
+    builder = (
+        SessionBuilder(db_path, "durable-alias-session")
+        .provider("claude-code")
+        .add_message(message_id="message-native", text="hello")
+    )
+    builder.save()
+    session_id = builder.native_session_id()
+    native_id = session_id.split(":", 1)[1]
+    origin = session_id.split(":", 1)[0]
+    alias = {
+        "native": native_id,
+        "provider": f"claude-code:{native_id}",
+        "prefix": f"{origin}:{native_id[:10]}",
+    }[alias_kind]
+    message_id = f"{session_id}:n:message-native"
+
+    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+        assert await poly.add_mark(session_id, "pin", target_type="message", message_id=message_id) is True
+        assert (
+            await poly.save_annotation(
+                "durable-alias-note",
+                session_id,
+                "important",
+                target_type="message",
+                message_id=message_id,
+            )
+            is True
+        )
+        assert await poly.delete_session(session_id) is True
+
+        marks = await poly.list_marks(session_id=alias, mark_type="pin")
+        annotations = await poly.list_annotations(session_id=alias)
+
+    assert marks[0]["session_id"] == session_id
+    assert annotations[0]["session_id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_durable_session_alias_matching_fails_closed_when_ambiguous(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A durable bare-native prefix never selects one of multiple owners."""
+    db_path = db_setup(workspace_env)
+    builders = [
+        SessionBuilder(db_path, native_id)
+        .provider("claude-code")
+        .add_message(message_id="message-native", text=native_id)
+        for native_id in ("ambiguous-one", "ambiguous-two")
+    ]
+    for builder in builders:
+        builder.save()
+    session_ids = [builder.native_session_id() for builder in builders]
+
+    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+        for session_id in session_ids:
+            assert await poly.add_mark(session_id, "pin") is True
+            assert await poly.delete_session(session_id) is True
+        with pytest.raises(ValueError, match="ambiguous"):
+            await poly.list_marks(session_id="ext-ambiguous", mark_type="pin")
+
+
 # ---------------------------------------------------------------------------
 # The core #1114 acceptance: marks survive hard delete and rebind on reimport
 # ---------------------------------------------------------------------------

@@ -22,8 +22,6 @@ from polylogue.sources.parsers.browser_capture import (
 )
 from polylogue.sources.parsers.claude.common import (
     CLAUDE_LINEAGE_CYCLE_INGEST_FLAG,
-    _message_attachments,
-    _owner_stable_key,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection import open_connection
@@ -542,35 +540,16 @@ def _duplicate_idless_owner_payload(order: tuple[str, ...]) -> dict[str, Any]:
 
 
 def test_claude_duplicate_idless_owner_evidence_survives_parser_reorder() -> None:
-    """Real parser reorder: provider file evidence, not assigned position, owns each attachment."""
+    """Real parser reorder fails closed without owner-independent evidence."""
     forward = _parse_real_route(_duplicate_idless_owner_payload(("first", "second")))
     reordered = _parse_real_route(_duplicate_idless_owner_payload(("second", "first")))
 
     assert [message.provider_message_id for message in forward.messages] == ["", ""]
     assert [message.provider_message_id for message in reordered.messages] == ["", ""]
-    assert (
-        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
-    )
-    assert (
-        session_revision_projection(forward).attachment_identities
-        == session_revision_projection(reordered).attachment_identities
-    )
-
-    def owners(session: ParsedSession) -> dict[str, tuple[str | None, int | None, int | None]]:
-        return {
-            attachment.name or "": (
-                attachment.owner_coordinate.stable_key if attachment.owner_coordinate else None,
-                attachment.message_position,
-                attachment.message_variant_index,
-            )
-            for attachment in session.attachments
-        }
-
-    assert owners(forward).keys() == owners(reordered).keys()
-    assert {key: value[0] for key, value in owners(forward).items()} == {
-        key: value[0] for key, value in owners(reordered).items()
-    }
-    assert owners(forward)["first.txt"][1:] != owners(reordered)["first.txt"][1:]
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(forward)
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(reordered)
 
 
 def test_claude_indistinguishable_duplicate_idless_owner_is_typed_ambiguity() -> None:
@@ -824,40 +803,74 @@ def test_claude_duplicate_native_attachment_owner_keeps_variant_coordinate(
     assert rows == [("att-variant-a", 0), ("att-variant-b", 1)]
 
 
-def test_claude_repeated_position_owner_evidence_keeps_attachment_identity() -> None:
-    """Attachment evidence remains distinct even before variant repair.
+def test_claude_idless_file_reassignment_changes_owner_hash_and_reingests(
+    tmp_path: Path,
+) -> None:
+    """A moved idless Claude file changes the real archive owner and hash."""
 
-    This directly exercises the private owner-key constructor with repeated
-    explicit positions and omitted variants. Removing attachment evidence from
-    ``_owner_stable_key`` makes the two keys collide and the assertion fails.
-    """
-    first = {"position": 4, "files": [{"id": "owner-a", "file_name": "a.txt"}]}
-    second = {"position": 4, "files": [{"id": "owner-b", "file_name": "b.txt"}]}
+    def payload(file_owner: int) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = [
+            {
+                "sender": "assistant",
+                "text": "first same-timestamp turn",
+                "created_at": "2026-07-01T10:00:00Z",
+            },
+            {
+                "sender": "assistant",
+                "text": "second same-timestamp turn",
+                "created_at": "2026-07-01T10:00:00Z",
+            },
+        ]
+        rows[file_owner]["files"] = [{"id": "reassigned-file", "file_name": "shared.txt", "file_type": "text/plain"}]
+        return {"uuid": "claude-idless-file-reassignment", "chat_messages": rows}
 
-    first_attachments = _message_attachments(first, "")
-    second_attachments = _message_attachments(second, "")
-    first_key = _owner_stable_key(
-        first,
-        parent_message_provider_id=None,
-        explicit_position=4,
-        explicit_branch_index=None,
-        explicit_variant_index=None,
-        blocks=[],
-        attachments=first_attachments,
+    first_payload = payload(0)
+    second_payload = payload(1)
+    first = _parse_real_route(first_payload)
+    second = _parse_real_route(second_payload)
+    first_position = first.attachments[0].message_position
+    second_position = second.attachments[0].message_position
+    assert first_position is not None
+    assert second_position is not None
+
+    assert (
+        session_revision_projection(first).attachment_identities
+        != session_revision_projection(second).attachment_identities
     )
-    second_key = _owner_stable_key(
-        second,
-        parent_message_provider_id=None,
-        explicit_position=4,
-        explicit_branch_index=None,
-        explicit_variant_index=None,
-        blocks=[],
-        attachments=second_attachments,
-    )
+    assert first_position != second_position
 
-    assert first_key is not None
-    assert second_key is not None
-    assert first_key != second_key
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        initial = facade.write_raw_and_parsed_result(
+            first,
+            payload=json.dumps(first_payload).encode(),
+            source_path="/tmp/claude-idless-file-reassignment-before.json",
+            acquired_at_ms=1_775_000_000_000,
+        )
+        reassigned = facade.write_raw_and_parsed_result(
+            second,
+            payload=json.dumps(second_payload).encode(),
+            source_path="/tmp/claude-idless-file-reassignment-after.json",
+            acquired_at_ms=1_775_000_000_001,
+        )
+
+    assert initial.content_changed is True
+    assert reassigned.content_changed is True
+    assert reassigned.counts["skipped_sessions"] == 0
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            """
+            SELECT m.position
+            FROM attachment_refs AS r
+            JOIN messages AS m ON m.message_id = r.message_id
+            WHERE r.session_id = ?
+            """,
+            ("claude-ai-export:claude-idless-file-reassignment",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == (second_position,)
 
 
 def test_claude_duplicate_native_owner_move_changes_real_ingest_hash_and_owner(

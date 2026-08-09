@@ -32,7 +32,7 @@ from polylogue.context.compiler import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
 )
-from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, TitleSource
+from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider, TitleSource
 from polylogue.core.errors import PolylogueError
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.refs import (
@@ -44,6 +44,7 @@ from polylogue.core.refs import (
     parse_delegation_subtree_object_id,
     parse_public_ref,
 )
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
@@ -294,6 +295,62 @@ class SessionNotFoundError(PolylogueError):
     """Raised when a requested session does not exist in the archive."""
 
     http_status_code = 404
+
+
+def _resolve_durable_user_state_session_id(archive_root: Path, token: str) -> str | None:
+    """Resolve a session alias from canonical mark/annotation owners.
+
+    The index is rebuildable, while mark and annotation ownership is durable.
+    When the index cannot resolve a token, match it against the canonical
+    session ids already persisted in those user-state rows. Every accepted
+    alias shape is checked against the complete durable owner set, and an
+    ambiguous prefix fails closed instead of selecting an arbitrary owner.
+    """
+    if not token:
+        return None
+    user_db = archive_root / "user.db"
+    if not user_db.exists():
+        return None
+    try:
+        with closing(open_readonly_connection(user_db)) as conn:
+            rows = conn.execute(
+                """
+                SELECT target_ref, scope_ref
+                FROM assertions
+                WHERE kind IN (?, ?)
+                  AND COALESCE(status, 'active') != 'deleted'
+                """,
+                (AssertionKind.MARK.value, AssertionKind.ANNOTATION.value),
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+
+    canonical_ids: set[str] = set()
+    for row in rows:
+        for value in (row[0], row[1]):
+            if not isinstance(value, str):
+                continue
+            if value.startswith("session:"):
+                canonical_id = value[len("session:") :]
+                if canonical_id:
+                    canonical_ids.add(canonical_id)
+
+    matches = {canonical_id for canonical_id in canonical_ids if _durable_session_alias_matches(token, canonical_id)}
+    if len(matches) > 1:
+        raise ValueError(f"session id alias {token!r} is ambiguous")
+    return next(iter(matches), None)
+
+
+def _durable_session_alias_matches(token: str, canonical_id: str) -> bool:
+    """Apply the same exact/provider/prefix/suffix alias shapes as the index."""
+    if token == canonical_id or canonical_id.startswith(token):
+        return True
+    if ":" in token:
+        provider_token, native_id = token.split(":", 1)
+        provider_origin = origin_from_provider(Provider.from_string(provider_token)).value
+        return canonical_id == f"{provider_origin}:{native_id}"
+    _, separator, native_id = canonical_id.partition(":")
+    return bool(separator and (native_id == token or native_id.startswith(token)))
 
 
 def _archive_query_date_ms(field: str, value: str | None) -> int | None:
@@ -6761,10 +6818,19 @@ class PolylogueArchiveMixin:
         }
 
     async def _resolve_user_state_session_id(self, session_id: str) -> str:
-        archive_resolved = await self._archive_resolve_session_id(session_id)
-        if archive_resolved is None:
-            raise SessionNotFoundError(session_id)
-        return archive_resolved
+        try:
+            archive_resolved = await self._archive_resolve_session_id(session_id)
+        except SessionNotFoundError:
+            archive_resolved = None
+        if archive_resolved is not None:
+            return archive_resolved
+        durable_resolved = _resolve_durable_user_state_session_id(
+            _active_archive_root(self.config),
+            session_id,
+        )
+        if durable_resolved is not None:
+            return durable_resolved
+        raise SessionNotFoundError(session_id)
 
     async def _user_state_message_exists(self, session_id: str, message_id: str) -> bool:
         return bool(await self._archive_message_exists(session_id, message_id))
