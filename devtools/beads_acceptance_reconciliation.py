@@ -102,7 +102,7 @@ def non_contract_equality_digest(rows: Mapping[str, Mapping[str, Any]], ids: Ite
     """Hash rows after removing only the two contract fields."""
     scrubbed: dict[str, dict[str, Any]] = {}
     for bead_id in ids:
-        row = copy.deepcopy(rows[bead_id])
+        row = dict(copy.deepcopy(rows[bead_id]))
         row.pop("acceptance_criteria", None)
         metadata = _metadata_object(row.get("metadata"))
         if metadata is not None:
@@ -118,7 +118,11 @@ def _classify_timestamp(master: Mapping[str, Any], live: Mapping[str, Any]) -> s
     if not isinstance(master_timestamp, str) or not isinstance(live_timestamp, str):
         return None
     if master_timestamp == live_timestamp:
-        return "same_timestamp_same" if source_digest(master) == source_digest(live) else "same_timestamp_different"
+        return (
+            "same_timestamp_same"
+            if source_digest(dict(master)) == source_digest(dict(live))
+            else "same_timestamp_different"
+        )
     if master_timestamp > live_timestamp:
         return "master_newer"
     return "live_newer"
