@@ -31,6 +31,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.classification import ConstructSupport, classify_schema_constructs
 from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticSchemaSelection
 from polylogue.schemas.synthetic.wire_formats import (
+    CATALOG_ELEMENT_UNSUPPORTED_REASON,
     PROVIDER_WIRE_FORMATS,
     ConstructCoverage,
     WireFormat,
@@ -572,13 +573,9 @@ def _catalog_entries(
     return tuple(result)
 
 
-def _wire_support_entry_from_manifest(
+def _wire_support_entry_index(
     manifest: InferredCorpusManifest,
-    *,
-    provider: str,
-    package_version: str,
-    element_kind: str,
-) -> WireSupportEntry | None:
+) -> dict[tuple[str, str | None, str | None], WireSupportEntry]:
     """Recover the exact wire decision bound into a persisted manifest.
 
     The manifest stores the canonical receipt payload so a campaign read can
@@ -589,20 +586,18 @@ def _wire_support_entry_from_manifest(
 
     receipt = manifest.wire_support_receipt
     if receipt is None:
-        return None
+        return {}
     raw_entries = receipt.get("entries")
     if not isinstance(raw_entries, list):
         raise ValueError("wire_support_receipt entries must be a list")
+    index: dict[tuple[str, str | None, str | None], WireSupportEntry] = {}
     for raw_entry in raw_entries:
         if not isinstance(raw_entry, Mapping):
             raise ValueError("wire_support_receipt entries must be objects")
-        if (
-            raw_entry.get("provider"),
-            raw_entry.get("package_version"),
-            raw_entry.get("element_kind"),
-        ) == (provider, package_version, element_kind):
-            return _wire_support_entry_from_payload(raw_entry)
-    return None
+        entry = _wire_support_entry_from_payload(raw_entry)
+        key = (entry.provider, entry.package_version, entry.element_kind)
+        index.setdefault(key, entry)
+    return index
 
 
 def _wire_support_entry_from_payload(payload: Mapping[str, object]) -> WireSupportEntry:
@@ -703,6 +698,25 @@ def _wire_support_entry_from_payload(payload: Mapping[str, object]) -> WireSuppo
     )
 
 
+def _schema_unsupported_reason(
+    *,
+    element: SchemaElementManifest,
+    schema: SchemaRecord | None,
+    wire_format: WireFormat | None,
+    construct_support: tuple[ConstructSupport, ...],
+) -> UnsupportedCorpusRecord | None:
+    if not element.supported:
+        return UnsupportedCorpusRecord("unsupported_element")
+    if schema is None or element.schema_file is None:
+        return UnsupportedCorpusRecord("missing_schema")
+    if wire_format is None:
+        return UnsupportedCorpusRecord("provider_without_wire_format")
+    unsupported_constructs = tuple(item.construct for item in construct_support if item.state == "unsupported")
+    if unsupported_constructs:
+        return UnsupportedCorpusRecord("unsupported_json_schema_construct", unsupported_constructs)
+    return None
+
+
 def _unsupported_reason(
     *,
     element: SchemaElementManifest,
@@ -716,7 +730,7 @@ def _unsupported_reason(
         if support_entry.status == "unsupported":
             reason: UnsupportedCorpusReason = (
                 "unsupported_element"
-                if support_entry.reason == "catalog element is marked unsupported"
+                if support_entry.reason == CATALOG_ELEMENT_UNSUPPORTED_REASON
                 else "unsupported_wire_route"
             )
             return UnsupportedCorpusRecord(
@@ -738,16 +752,12 @@ def _unsupported_reason(
             "wire_support_selection_unwitnessed",
             (f"no exact parser witness for {element.schema_file!r}",),
         )
-    if not element.supported:
-        return UnsupportedCorpusRecord("unsupported_element")
-    if schema is None or element.schema_file is None:
-        return UnsupportedCorpusRecord("missing_schema")
-    if wire_format is None:
-        return UnsupportedCorpusRecord("provider_without_wire_format")
-    unsupported_constructs = tuple(item.construct for item in construct_support if item.state == "unsupported")
-    if unsupported_constructs:
-        return UnsupportedCorpusRecord("unsupported_json_schema_construct", unsupported_constructs)
-    return None
+    return _schema_unsupported_reason(
+        element=element,
+        schema=schema,
+        wire_format=wire_format,
+        construct_support=construct_support,
+    )
 
 
 def _compile_entry(
@@ -921,6 +931,7 @@ def _validate_inference_handoff(
         raise ValueError("schema-inference handoff package/version/element hashes do not match the registry")
 
     catalog_entries = _catalog_entries(registry, providers)
+    support_entries = _wire_support_entry_index(manifest)
     expected_coverage = {(provider, origin_from_provider(provider).value) for provider, *_rest in catalog_entries}
     actual_coverage = {(item.provider, item.origin) for item in receipt.coverage_decisions}
     if actual_coverage != expected_coverage:
@@ -968,28 +979,23 @@ def _validate_inference_handoff(
             raise ValueError("schema-inference manifest is missing a live registry entry")
         live_schema = registry.get_element_schema(provider, version=package.version, element_kind=element.element_kind)
         live_constructs = _schema_constructs(live_schema)
-        if not element.supported or element.schema_file is None:
-            schema_reason: str | None = "unsupported_element" if not element.supported else "missing_schema"
-            schema_details: tuple[str, ...] = ()
-        elif provider not in PROVIDER_WIRE_FORMATS:
-            schema_reason = "provider_without_wire_format"
-            schema_details = ()
-        elif not isinstance(live_schema, dict):
-            schema_reason = "missing_schema"
-            schema_details = ()
-        else:
-            schema_unsupported = tuple(item.construct for item in live_constructs if item.state == "unsupported")
-            schema_reason = "unsupported_json_schema_construct" if schema_unsupported else None
-            schema_details = schema_unsupported
-        if schema_reason is not None:
+        schema_unsupported = _schema_unsupported_reason(
+            element=element,
+            schema=live_schema if isinstance(live_schema, dict) else None,
+            wire_format=PROVIDER_WIRE_FORMATS.get(provider),
+            construct_support=live_constructs,
+        )
+        if schema_unsupported is not None:
             expected_unsupported.add(
                 (
                     provider,
                     package.version,
                     element.element_kind,
-                    "nonrepresentable" if schema_reason == "unsupported_json_schema_construct" else "unsupported",
-                    schema_reason,
-                    schema_details,
+                    "nonrepresentable"
+                    if schema_unsupported.reason == "unsupported_json_schema_construct"
+                    else "unsupported",
+                    schema_unsupported.reason,
+                    schema_unsupported.details,
                 )
             )
         if live_entry.key.construct_support != live_constructs:
@@ -999,12 +1005,7 @@ def _validate_inference_handoff(
             schema=live_schema if isinstance(live_schema, dict) else None,
             wire_format=PROVIDER_WIRE_FORMATS.get(provider),
             construct_support=live_constructs,
-            support_entry=_wire_support_entry_from_manifest(
-                manifest,
-                provider=provider,
-                package_version=package.version,
-                element_kind=element.element_kind,
-            ),
+            support_entry=support_entries.get((provider, package.version, element.element_kind)),
             support_receipt_bound=manifest.wire_support_receipt is not None,
         )
         if (live_entry.unsupported is None) != (live_unsupported is None):

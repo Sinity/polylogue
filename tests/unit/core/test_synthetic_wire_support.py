@@ -79,6 +79,19 @@ def test_support_receipt_preserves_an_explicitly_empty_provider_selection() -> N
     assert receipt.missing_routes == ()
 
 
+def test_support_receipt_deduplicates_sorted_provider_selection() -> None:
+    registry = SchemaRegistry()
+    available = registry.list_providers()
+    providers = (available[1], available[0], available[1])
+
+    receipt = wire_formats.build_wire_support_receipt(registry=registry, providers=providers)
+
+    assert receipt.catalog_providers == tuple(sorted(set(providers)))
+    assert len({(entry.provider, entry.package_version, entry.element_kind) for entry in receipt.entries}) == len(
+        receipt.entries
+    )
+
+
 def test_support_receipt_counts_a_missing_route_before_skipping_unsupported_elements(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -101,7 +114,7 @@ def test_support_receipt_counts_a_missing_route_before_skipping_unsupported_elem
 
     assert receipt.missing_routes == (provider,)
     assert receipt.entries
-    assert all(entry.reason == "catalog element is marked unsupported" for entry in receipt.entries)
+    assert all(entry.reason == wire_formats.CATALOG_ELEMENT_UNSUPPORTED_REASON for entry in receipt.entries)
     assert not receipt.complete
 
 
@@ -605,7 +618,9 @@ def test_chatgpt_v1_media_waiver_does_not_hide_parser_relevant_omissions() -> No
 
     receipt = wire_formats.build_wire_support_receipt(registry=registry)
     receipt_entry = next(
-        entry for entry in receipt.entries if (entry.provider, entry.package_version) == ("chatgpt", "v1")
+        entry
+        for entry in receipt.entries
+        if (entry.provider, entry.package_version, entry.element_kind) == ("chatgpt", "v1", selection.element_kind)
     )
     assert receipt_entry.construct_coverage is not None
     assert parser_relevant in receipt_entry.construct_coverage.missing_keywords

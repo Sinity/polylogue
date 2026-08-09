@@ -632,6 +632,28 @@ def test_missing_element_schema_becomes_explicit_unsupported_record() -> None:
     assert target.unsupported.reason == "missing_schema"
 
 
+def test_missing_element_schema_precedes_missing_wire_format() -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    target_provider = registry.list_providers()[0]
+    catalog = registry.load_package_catalog(target_provider)
+    assert catalog is not None
+    target_package = catalog.packages[0]
+    target_element = target_package.elements[0]
+    proxy.schema_overrides[(target_provider, target_package.version, target_element.element_kind)] = None
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy, wire_formats={})  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (target_provider, target_package.version, target_element.element_kind)
+    )
+
+    assert target.unsupported is not None
+    assert target.unsupported.reason == "missing_schema"
+
+
 def test_catalog_element_marked_unsupported_is_retained_as_a_typed_record() -> None:
     registry = _registry()
     proxy = _RegistryProxy(registry)

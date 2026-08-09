@@ -141,7 +141,8 @@ def _mock_live_ingest(
     def fake_append_ingest(plans: list[Any]) -> _AppendResult:
         return _AppendResult(succeeded=plans, failed=[], worker_count=1)
 
-    def fake_existing_provider_session_id(path: Path) -> str | None:
+    def fake_existing_provider_session_id(path: Path, *, expected_origin: str) -> str | None:
+        del expected_origin
         return existing_ids.get(path)
 
     with (
@@ -206,7 +207,7 @@ def test_claude_code_append_plan_consumes_identity_capability_gate(
         return original_receipt(**kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(live_batch, "append_capability_receipt", capture_receipt)
-    monkeypatch.setattr(proc, "_existing_provider_session_id", lambda _path: None)
+    monkeypatch.setattr(proc, "_existing_provider_session_id", lambda _path, **_kwargs: None)
     monkeypatch.setattr(
         proc,
         "_claude_code_tail_matches_existing_identity",
@@ -232,10 +233,10 @@ def test_claude_code_append_reuses_identity_for_tail_matching(
     matched_identity: list[str | None] = []
     original_lookup = proc._existing_provider_session_id
 
-    def count_lookup(candidate: Path) -> str | None:
+    def count_lookup(candidate: Path, *, expected_origin: str) -> str | None:
         nonlocal lookup_count
         lookup_count += 1
-        return original_lookup(candidate)
+        return original_lookup(candidate, expected_origin=expected_origin)
 
     def capture_identity(_path: Path, _payload: bytes, *, existing_id: str | None) -> bool:
         matched_identity.append(existing_id)

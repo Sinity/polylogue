@@ -55,6 +55,7 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
     RawFailureEvidenceKind,
 )
+from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -3634,7 +3635,10 @@ class LiveBatchProcessor:
         """
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         if provider in {Provider.CODEX, Provider.CLAUDE_CODE}:
-            identity = self._existing_provider_session_id(path)
+            identity = self._existing_provider_session_id(
+                path,
+                expected_origin=origin_from_provider(provider).value,
+            )
             capability = append_capability_receipt(
                 provider=provider.value,
                 package_version="live",
@@ -3670,10 +3674,12 @@ class LiveBatchProcessor:
             return None
         return payload, None
 
-    def _existing_provider_session_id(self, path: Path) -> str | None:
-        identity = self._existing_archive_session_native_id(path)
+    def _existing_provider_session_id(self, path: Path, *, expected_origin: str) -> str | None:
+        identity = self._existing_archive_session_native_id(path, expected_origin=expected_origin)
         if identity is not None:
             return identity
+        if expected_origin != Origin.CODEX_SESSION.value:
+            return None
         codex_identity = self._codex_session_meta_native_id(path)
         if codex_identity is None:
             return None
@@ -3724,7 +3730,7 @@ class LiveBatchProcessor:
             return False
         return row is not None
 
-    def _existing_archive_session_native_id(self, path: Path) -> str | None:
+    def _existing_archive_session_native_id(self, path: Path, *, expected_origin: str) -> str | None:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         index_db = ArchiveLocation.resolve(archive_root).active_index_path
         source_db = archive_root / "source.db"
@@ -3739,11 +3745,11 @@ class LiveBatchProcessor:
                     SELECT s.native_id
                     FROM sessions AS s
                     JOIN source_tier.raw_sessions AS r ON r.raw_id = s.raw_id
-                    WHERE r.source_path = ?
+                    WHERE s.origin = ? AND r.source_path = ?
                     ORDER BY s.sort_key_ms DESC, s.created_at_ms DESC, s.session_id DESC
                     LIMIT 1
                     """,
-                    (str(path),),
+                    (expected_origin, str(path)),
                 ).fetchone()
                 conn.execute("DETACH DATABASE source_tier")
             finally:

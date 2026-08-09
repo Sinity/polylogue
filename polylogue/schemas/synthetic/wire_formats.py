@@ -257,6 +257,7 @@ PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
 
 # All catalog providers must have a route here.  The unsupported routes
 # are explicit capabilities, not implicit generator fallbacks.
+CATALOG_ELEMENT_UNSUPPORTED_REASON = "catalog element is marked unsupported"
 PROVIDER_WIRE_ROUTES: dict[str, WireRoute] = {
     **{
         provider: WireRoute(status="supported", wire_format=wire_format)
@@ -1082,7 +1083,7 @@ def build_wire_support_receipt(
     from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 
     catalog_providers = tuple(
-        sorted(registry.list_providers() if providers is None else providers)  # type: ignore[attr-defined]
+        sorted(dict.fromkeys(registry.list_providers() if providers is None else providers))  # type: ignore[attr-defined]
     )
     entries: list[WireSupportEntry] = []
     missing_routes: list[str] = []
@@ -1114,7 +1115,7 @@ def build_wire_support_receipt(
                     WireSupportEntry(
                         provider=provider,
                         status="unsupported",
-                        reason="catalog element is marked unsupported",
+                        reason=CATALOG_ELEMENT_UNSUPPORTED_REASON,
                         package_version=package_version,
                         element_kind=element_kind,
                         schema_valid=None,
@@ -1334,6 +1335,7 @@ def build_wire_support_receipt(
 
 __all__ = [
     "ConstructCoverage",
+    "CATALOG_ELEMENT_UNSUPPORTED_REASON",
     "PROVIDER_WIRE_FORMATS",
     "PROVIDER_WIRE_CAPABILITIES",
     "PROVIDER_WIRE_ROUTES",
