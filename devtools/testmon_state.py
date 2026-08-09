@@ -667,6 +667,11 @@ def validate_stamp(
         stamp = TestmonSeedStamp.from_mapping(payload, protocol_version=protocol_version)
         if not stamp.release_baseline_allowed:
             return None
+        if (
+            stamp.identity.skip_slow
+            and stamp.identity.terminal_authorization != TerminalAuthorization.NARROW_TERMINAL.value
+        ):
+            return None
         if Path(stamp.binding.checkout_root).resolve() != checkout_root.resolve():
             return None
         if file_fingerprint(data_path) != stamp.testmon_data:
@@ -793,6 +798,14 @@ def stamp_from_attempt(
     if baseline is BaselineStatus.GREEN and typed_identity.skip_slow and not terminal_authorized:
         baseline = BaselineStatus.RED
     raw_permission = attempt.get("release_baseline_allowed")
+    if baseline is BaselineStatus.GREEN and (
+        raw_scope != VerificationScope.NARROW_TERMINAL.value
+        if typed_identity.skip_slow
+        else raw_scope != VerificationScope.RELEASE_BASELINE.value
+    ):
+        baseline = BaselineStatus.RED
+    if baseline is BaselineStatus.GREEN and raw_permission is not True:
+        baseline = BaselineStatus.RED
     if raw_permission is not None and (
         not isinstance(raw_permission, bool) or raw_permission != (baseline is BaselineStatus.GREEN)
     ):

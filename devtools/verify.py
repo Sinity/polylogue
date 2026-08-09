@@ -2620,6 +2620,9 @@ def _finalize_testmon_seed_attempt(
         "run_id": prepared.get("run_id"),
         "artifact_dir": prepared.get("artifact_dir"),
         "testmon_data": _file_fingerprint(TESTMON_DATA),
+        "verification_scope": seed_scope,
+        "terminal_authorization": (TerminalAuthorization.NARROW_TERMINAL.value if terminal_authorized else None),
+        "release_baseline_allowed": release_eligible,
     }
     reusable_stamp = stamp_from_attempt(
         attempt_candidate,

@@ -112,7 +112,7 @@ def _write_real_testmon_state(nodeids: tuple[str, ...] = ("tests/test_a.py::test
         True,
         0,
         GraphInspection(GraphStatus.COMPLETE, len(nodeids), len(nodeids), (), 0, 0, None, ()),
-        _TestmonIdentity("current-head", "covered", "python", True, False),
+        _TestmonIdentity("current-head", "covered", "python", True, False, None, "narrow-terminal"),
         _TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())),
         file_fingerprint(TESTMON_DATA),
         "seed",
@@ -990,6 +990,31 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
     stamp = json.loads((tmp_path / ".cache" / "testmon" / "seed.json").read_text())
     assert stamp["status"] == "usable"
     assert stamp["collection"]["expected_count"] == 2
+
+    _write_run_receipt(tmp_path, "run-authorized")
+    authorized_receipt = _finalize_testmon_seed_attempt(
+        prepared={
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {
+                "git_head": "head",
+                "git_tree": "tree-hash",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": True,
+                "lab": False,
+                "terminal_authorization": "narrow-terminal",
+            },
+            "resume": False,
+            "expected_nodeids": [],
+            "run_id": "run-authorized",
+            "artifact_dir": ".cache/verify/runs/run-authorized",
+        },
+        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 0}],
+        exit_code=0,
+    )
+    assert authorized_receipt["status"] == "complete"
+    assert authorized_receipt["release_baseline_allowed"] is True
 
     _write_run_receipt(tmp_path, "run-red")
     with sqlite3.connect(TESTMON_DATA) as connection:
@@ -2003,19 +2028,19 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
 
 
 @pytest.mark.parametrize(
-    ("authorization", "expected_permission"),
-    [(None, False), ("narrow-terminal", True)],
+    ("argv", "expected_scope", "expected_permission"),
+    [
+        (["--all", "--skip-slow"], "narrow-terminal", False),
+        (["--all", "--skip-slow", "--terminal-authorization", "narrow-terminal"], "narrow-terminal", True),
+    ],
 )
 def test_verify_main_types_skip_slow_terminal_authority(
-    capsys: pytest.CaptureFixture[str], authorization: str | None, expected_permission: bool
+    capsys: pytest.CaptureFixture[str], argv: list[str], expected_scope: str, expected_permission: bool
 ) -> None:
     def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
         del label, command, kwargs
         return 0, 0.01, {}
 
-    argv = ["--all", "--skip-slow"]
-    if authorization is not None:
-        argv.extend(["--terminal-authorization", authorization])
     with (
         patch("devtools.verify._run", side_effect=fake_run),
         patch("devtools.verify.build_verify_steps", return_value=[("pytest full", ["pytest"])]),
@@ -2027,9 +2052,9 @@ def test_verify_main_types_skip_slow_terminal_authority(
         assert main([*argv, "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["verification_scope"] == "narrow-terminal"
+    assert payload["verification_scope"] == expected_scope
     assert payload["release_baseline_allowed"] is expected_permission
-    assert payload["terminal_authorization"] == authorization
+    assert payload["terminal_authorization"] == ("narrow-terminal" if expected_permission else None)
 
 
 def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.CaptureFixture[str]) -> None:

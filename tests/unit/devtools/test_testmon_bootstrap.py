@@ -66,7 +66,7 @@ def _write_valid_seed_stamp(path: Path, *, protocol_version: int = PROTOCOL_VERS
         True,
         0,
         graph,
-        _TestmonIdentity("head", "tree", "python", True, False),
+        _TestmonIdentity("head", "tree", "python", True, False, None, "narrow-terminal"),
         _TestmonBinding(BindingMode.EXACT, str(path.parent.resolve())),
         file_fingerprint(data),
         "seed",
@@ -361,6 +361,70 @@ def test_complete_red_attempt_bootstraps_as_selection_only_state(tmp_path: Path)
     )
     assert not rebound_decision.should_bootstrap
     assert "checkout-bound selection attempt" in rebound_decision.reason
+
+
+def test_complete_untyped_green_attempt_bootstraps_only_as_selection_state(tmp_path: Path) -> None:
+    main_root = tmp_path / "main"
+    main_data = main_root / "testmondata"
+    _write_sqlite_db(main_data, rows=("tests/test.py::test_passed",))
+    attempt = main_root / "seed-attempt.json"
+    attempt.write_text(
+        json.dumps(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "status": "complete",
+                "identity": {
+                    "git_head": "head",
+                    "worktree_fingerprint": "tree",
+                    "python": "python",
+                    "skip_slow": False,
+                    "lab": False,
+                },
+                "selection": {"selected_count": 1, "selected_nodeids_omitted": 0},
+                "expected_nodeids": ["tests/test.py::test_passed"],
+                "expected_count": 1,
+                "expected_digest": hashlib.sha256(b"tests/test.py::test_passed").hexdigest(),
+                "node_outcomes": [{"nodeid": "tests/test.py::test_passed", "outcome": "passed"}],
+                "exit_code": 0,
+                "run_id": "green-run",
+                "artifact_dir": ".cache/verify/runs/green-run",
+                "testmon_data": file_fingerprint(main_data),
+            }
+        )
+    )
+    artifact = main_root / ".cache" / "verify" / "runs" / "green-run"
+    artifact.mkdir(parents=True)
+    (artifact / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "green-run",
+                "checkout_root": str(main_root.resolve()),
+                "artifact_dir": ".cache/verify/runs/green-run",
+            }
+        )
+    )
+
+    decision = decide_testmon_bootstrap(
+        is_linked_worktree=True,
+        local_testmon_data=tmp_path / "lane" / "testmondata",
+        local_seed_stamp=tmp_path / "lane" / "seed.json",
+        main_testmon_data=main_data,
+        main_seed_stamp=main_root / "seed.json",
+        main_seed_attempt=attempt,
+        protocol_version=PROTOCOL_VERSION,
+    )
+
+    assert decision.should_bootstrap
+    assert decision.selection_only
+    assert bootstrap_testmon_seed_files(
+        decision,
+        local_testmon_data=tmp_path / "lane" / "testmondata",
+        local_seed_stamp=tmp_path / "lane" / "seed.json",
+        local_seed_attempt=tmp_path / "lane" / "seed-attempt.json",
+        checkout_root=tmp_path / "lane",
+        inherited_from=main_root,
+    )
+    assert not (tmp_path / "lane" / "seed.json").exists()
 
 
 def test_local_seed_missing_only_stamp_still_bootstraps(tmp_path: Path) -> None:
