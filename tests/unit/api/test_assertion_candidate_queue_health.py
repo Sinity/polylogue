@@ -345,8 +345,8 @@ def test_failed_scheduler_receipt_is_not_converged(tmp_path: Path) -> None:
     assert any("retry" in caveat for caveat in health.caveats)
 
 
-def test_stale_parked_scheduler_receipt_expires_after_configured_cadence(tmp_path: Path) -> None:
-    """An old parked receipt must not hide a scheduler that stopped reporting.
+def test_parked_scheduler_receipt_covers_coalesced_tick_before_expiring(tmp_path: Path) -> None:
+    """A coalesced parked tick stays truthful until its next write window ends.
 
     Anti-vacuity: the production dependency is the queue-health projection's
     receipt-age calculation. Removing the parked-receipt freshness branch
@@ -367,16 +367,19 @@ def test_stale_parked_scheduler_receipt_expires_after_configured_cadence(tmp_pat
             now_ms=now_ms - 25 * _DAY_MS,
         )
     grace_s = max(config.judgment_automation_interval_s // 10, 5 * 60)
-    cadence_ms = (config.judgment_automation_interval_s + grace_s) * 1000
+    cadence_ms = (2 * config.judgment_automation_interval_s + grace_s) * 1000
     emit_daemon_event(
         "judgment-automation",
         archive_root_path=tmp_path,
-        observed_at_ms=now_ms - cadence_ms - 1,
+        observed_at_ms=now_ms - cadence_ms,
         payload={"status": "parked", "reason": "capability_gate_disabled", "retryable": True},
     )
 
-    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
+    at_boundary = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
+    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms + 1)
 
+    assert at_boundary.state == "parked-pending"
+    assert at_boundary.judgment_scheduler_receipt_age_ms == cadence_ms
     assert health.state == "scheduler-stalled"
     assert health.judgment_scheduler_receipt_status == "parked"
     assert health.judgment_scheduler_receipt_age_ms == cadence_ms + 1

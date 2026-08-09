@@ -33,9 +33,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
-from polylogue.config import load_polylogue_config
+from polylogue.config import JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT, load_polylogue_config
 from polylogue.core.enums import AssertionKind
 from polylogue.logging import get_logger
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -80,12 +80,23 @@ class JudgmentAutomationReceiptOutcome(StrEnum):
 def _judgment_automation_receipt_coalescing_horizon_ms(interval_s: int) -> int:
     """Return the bounded horizon for coalescing an identical scheduler receipt."""
 
+    return judgment_automation_receipt_freshness_window_ms(interval_s)
+
+
+def judgment_automation_receipt_freshness_window_ms(interval_s: int, *, parked: bool = False) -> int:
+    """Return the bounded health window for one scheduler receipt.
+
+    A parked receipt is coalesced at the next cadence boundary, so it remains
+    truthful through that boundary and the following bounded grace period.
+    """
+
     effective_interval_s = max(interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)
     grace_s = min(
         max(effective_interval_s // 10, JUDGMENT_AUTOMATION_RECEIPT_GRACE_MIN_SECONDS),
         JUDGMENT_AUTOMATION_RECEIPT_GRACE_MAX_SECONDS,
     )
-    return (effective_interval_s + grace_s) * 1000
+    cadence_count = 2 if parked else 1
+    return (cadence_count * effective_interval_s + grace_s) * 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +162,45 @@ def _receipt_state(payload: object) -> tuple[object, ...] | None:
     )
 
 
+def _require_positive_batch_limit(value: object) -> int:
+    """Validate the scheduler's bounded-work authority at runtime."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("judgment automation batch_limit must be a positive integer")
+    return value
+
+
+def _judgment_automation_receipt_payload(
+    *,
+    status: JudgmentAutomationReceiptStatus,
+    reason: str,
+    batch_limit: int,
+    result: JudgmentAutomationSweepResult | None,
+    retryable: bool,
+    receipt_persistence_degraded: bool,
+    receipt_persistence_recovered: bool,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "status": status,
+        "reason": reason,
+        "retryable": retryable,
+        "retry_route": "next enabled judgment-automation tick",
+        "batch_limit": batch_limit,
+        "receipt_persistence_degraded": receipt_persistence_degraded,
+        "receipt_persistence_recovered": receipt_persistence_recovered,
+    }
+    if result is not None:
+        payload.update(
+            considered=result.considered,
+            accepted=result.accepted,
+            rejected=result.rejected,
+            escalated=result.escalated,
+            idempotent=result.idempotent,
+            failed=result.failed,
+        )
+    return payload
+
+
 def _record_judgment_automation_receipt(
     root: Path,
     *,
@@ -164,31 +214,25 @@ def _record_judgment_automation_receipt(
     receipt_context: _JudgmentAutomationReceiptContext | None = None,
     suppress_identical_for_ms: int | None = None,
     receipt_persistence_degraded: bool = False,
+    receipt_persistence_recovered: bool = False,
     user_tier_committed: bool = False,
 ) -> JudgmentAutomationReceiptOutcome:
     """Persist one scheduler outcome in the existing daemon event ledger."""
 
+    _require_positive_batch_limit(batch_limit)
     if not (root / "ops.db").exists():
         return JudgmentAutomationReceiptOutcome.FAILED
     from polylogue.daemon.events import current_epoch_ms, emit_daemon_event, get_latest_daemon_event
 
-    payload: dict[str, object] = {
-        "status": status,
-        "reason": reason,
-        "retryable": retryable,
-        "retry_route": "next enabled judgment-automation tick",
-        "batch_limit": batch_limit,
-        "receipt_persistence_degraded": receipt_persistence_degraded,
-    }
-    if result is not None:
-        payload.update(
-            considered=result.considered,
-            accepted=result.accepted,
-            rejected=result.rejected,
-            escalated=result.escalated,
-            idempotent=result.idempotent,
-            failed=result.failed,
-        )
+    payload = _judgment_automation_receipt_payload(
+        status=status,
+        reason=reason,
+        batch_limit=batch_limit,
+        result=result,
+        retryable=retryable,
+        receipt_persistence_degraded=receipt_persistence_degraded,
+        receipt_persistence_recovered=receipt_persistence_recovered,
+    )
     observed_at_ms = current_epoch_ms() if now_ms is None else now_ms
     try:
         if suppress_identical_for_ms is not None:
@@ -220,6 +264,134 @@ def _record_judgment_automation_receipt(
             reason=reason,
             user_tier_committed=user_tier_committed,
         ) from None
+
+
+def _sweep_result_from_receipt_payload(payload: Mapping[str, object]) -> JudgmentAutomationSweepResult | None:
+    """Rehydrate committed sweep counters stored in an outbox marker."""
+
+    names = ("considered", "accepted", "rejected", "escalated", "idempotent", "failed")
+    values = [payload.get(name) for name in names]
+    if not all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+        return None
+    typed_values = cast(tuple[int, int, int, int, int, int], tuple(values))
+    return JudgmentAutomationSweepResult(
+        considered=typed_values[0],
+        accepted=typed_values[1],
+        rejected=typed_values[2],
+        escalated=typed_values[3],
+        idempotent=typed_values[4],
+        failed=typed_values[5],
+    )
+
+
+def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | None = None) -> int:
+    """Drain committed user-tier receipt markers using their original IDs.
+
+    Recovery is deliberately idempotent: an existing ops event for the marker
+    operation is acknowledged without another write; otherwise exactly that
+    operation ID is used for the recovered event. A failed ops write leaves the
+    marker active for the next process or tick.
+    """
+
+    user_db = root / "user.db"
+    if not user_db.exists():
+        return 0
+    from polylogue.daemon.events import get_latest_daemon_event
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ack_judgment_automation_receipt_outbox,
+        list_judgment_automation_receipt_outbox,
+    )
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    conn = open_connection(user_db)
+    conn.row_factory = sqlite3.Row
+    acknowledged = 0
+    try:
+        for marker in list_judgment_automation_receipt_outbox(conn):
+            value = marker.value if isinstance(marker.value, dict) else {}
+            operation_id = value.get("operation_id")
+            receipt = value.get("receipt")
+            if not isinstance(operation_id, str) or not operation_id or not isinstance(receipt, dict):
+                logger.error("judgment_automation: malformed receipt outbox marker %s", marker.assertion_id)
+                continue
+            latest = get_latest_daemon_event(
+                JUDGMENT_AUTOMATION_STAGE,
+                operation_id=operation_id,
+                archive_root_path=root,
+            )
+            if latest is not None:
+                acknowledged += int(ack_judgment_automation_receipt_outbox(conn, marker, now_ms=now_ms))
+                continue
+            raw_status_value = receipt.get("status")
+            raw_reason = receipt.get("reason")
+            if raw_status_value not in {"completed", "parked", "failed"} or not isinstance(raw_reason, str):
+                logger.error("judgment_automation: malformed receipt payload in marker %s", marker.assertion_id)
+                continue
+            raw_status = cast(JudgmentAutomationReceiptStatus, raw_status_value)
+            raw_batch_limit = receipt.get("batch_limit", JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT)
+            try:
+                batch_limit = _require_positive_batch_limit(raw_batch_limit)
+            except ValueError:
+                batch_limit = JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT
+            result = _sweep_result_from_receipt_payload(receipt)
+            try:
+                outcome = _record_judgment_automation_receipt(
+                    root,
+                    status=raw_status,
+                    reason=raw_reason,
+                    now_ms=now_ms,
+                    batch_limit=batch_limit,
+                    result=result,
+                    retryable=bool(receipt.get("retryable", True)),
+                    operation_id=operation_id,
+                    receipt_persistence_recovered=True,
+                )
+            except Exception:
+                logger.warning("judgment_automation: receipt outbox recovery write failed", exc_info=True)
+                continue
+            if outcome is JudgmentAutomationReceiptOutcome.PERSISTED:
+                acknowledged += int(ack_judgment_automation_receipt_outbox(conn, marker, now_ms=now_ms))
+        if acknowledged:
+            conn.commit()
+    finally:
+        conn.close()
+    return acknowledged
+
+
+def _judgment_automation_receipt_outbox_pending(root: Path) -> bool:
+    """Read whether recovery work exists without taking the daemon writer slot."""
+
+    user_db = root / "user.db"
+    if not user_db.exists():
+        return False
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE,
+    )
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    try:
+        conn = open_readonly_connection(user_db)
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("judgment_automation: outbox probe could not open user.db: %s", exc)
+        return False
+    try:
+        return (
+            conn.execute(
+                """
+                SELECT 1
+                FROM assertions
+                WHERE scope_ref = ? AND kind = ? AND status = 'active'
+                LIMIT 1
+                """,
+                (JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE, AssertionKind.RUN_STATE.value),
+            ).fetchone()
+            is not None
+        )
+    except sqlite3.Error as exc:
+        logger.warning("judgment_automation: outbox probe query failed: %s", exc)
+        return False
+    finally:
+        conn.close()
 
 
 def _coerce_confidence(value: object) -> float | None:
@@ -373,10 +545,13 @@ def run_judgment_automation_sweep_once(
     bounded no-op, not an error -- the daemon must tolerate an archive that
     hasn't been judged even once yet.
     """
+    _require_positive_batch_limit(batch_limit)
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ArchiveAssertionBulkJudgmentItemEnvelope,
+        ack_judgment_automation_receipt_outbox,
         judge_assertion_candidates,
         list_assertion_candidates,
+        upsert_judgment_automation_receipt_outbox,
     )
     from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -505,8 +680,6 @@ def run_judgment_automation_sweep_once(
 
         for ref in escalated_refs:
             _write_escalation_handoff(conn, candidates_by_ref[ref], decisions[ref], now_ms=now_ms)
-        conn.commit()
-
         result = JudgmentAutomationSweepResult(
             considered=len(candidates),
             accepted=accepted,
@@ -517,8 +690,25 @@ def run_judgment_automation_sweep_once(
         )
         receipt_status: JudgmentAutomationReceiptStatus = "failed" if result.failed else "completed"
         receipt_reason = "candidate_judgment_failures" if result.failed else "sweep_completed"
+        outbox_marker = None
+        if operation_id is not None:
+            outbox_marker = upsert_judgment_automation_receipt_outbox(
+                conn,
+                operation_id=operation_id,
+                receipt_payload=_judgment_automation_receipt_payload(
+                    status=receipt_status,
+                    reason=receipt_reason,
+                    batch_limit=batch_limit,
+                    result=result,
+                    retryable=bool(result.failed),
+                    receipt_persistence_degraded=False,
+                    receipt_persistence_recovered=False,
+                ),
+                now_ms=now_ms,
+            )
+        conn.commit()
         try:
-            record_receipt(
+            recorded = record_receipt(
                 status=receipt_status,
                 reason=receipt_reason,
                 now_ms=now_ms,
@@ -526,6 +716,10 @@ def run_judgment_automation_sweep_once(
                 retryable=bool(result.failed),
                 user_tier_committed=True,
             )
+            if operation_id is not None and recorded is JudgmentAutomationReceiptOutcome.PERSISTED:
+                assert outbox_marker is not None
+                ack_judgment_automation_receipt_outbox(conn, outbox_marker, now_ms=now_ms)
+                conn.commit()
         except _JudgmentAutomationReceiptPersistenceError as exc:
             raise _JudgmentAutomationReceiptPersistenceError(
                 str(exc),
@@ -570,16 +764,50 @@ async def periodic_judgment_automation_sweep(
     """
     from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
-    from polylogue.paths import archive_root
+    from polylogue.paths import archive_root, data_home
 
     await _await_catch_up_gate(catch_up_complete, loop_name="judgment automation sweep")
     coordinator = daemon_write_coordinator()
+    last_valid_root: Path | None = None
+
+    def receipt_root() -> Path:
+        """Resolve the archive root without letting a reload error kill the loop."""
+
+        nonlocal last_valid_root
+        try:
+            root = archive_root()
+        except Exception:
+            logger.warning("judgment_automation: archive root resolution failed", exc_info=True)
+            return last_valid_root if last_valid_root is not None else data_home()
+        last_valid_root = root
+        return root
+
+    async def recover_receipt_outbox(root: Path) -> None:
+        """Drain committed user-tier receipt markers before config can gate recovery."""
+
+        if not root.exists() or not _judgment_automation_receipt_outbox_pending(root):
+            return
+        try:
+            await coordinator.run_sync(
+                "maintenance.judgment_automation.recover",
+                recover_pending_judgment_automation_receipts,
+                root,
+            )
+        except Exception:
+            logger.warning("judgment_automation: receipt outbox recovery failed", exc_info=True)
+
+    # Recovery is a durability obligation, not an enabled-feature sweep. Run it
+    # before the first config load so a malformed reload cannot strand a marker
+    # left by a prior process in the user tier.
+    await recover_receipt_outbox(receipt_root())
 
     async def persist_failure_fallback(
         exc: Exception,
         *,
         default_reason: str,
         operation_id: str,
+        root: Path,
+        batch_limit: int,
     ) -> None:
         result = exc.result if isinstance(exc, _JudgmentAutomationReceiptPersistenceError) else None
         status = (
@@ -601,7 +829,7 @@ async def periodic_judgment_automation_sweep(
                 status=status,
                 reason=("receipt_persistence_degraded" if degraded else reason),
                 now_ms=None,
-                batch_limit=cfg.judgment_automation_batch_limit,
+                batch_limit=batch_limit,
                 result=result,
                 retryable=bool(result.failed) if result is not None else True,
                 operation_id=operation_id,
@@ -616,19 +844,62 @@ async def periodic_judgment_automation_sweep(
         }:
             logger.warning("judgment_automation: failure receipt fallback was not persisted")
 
+    last_valid_interval_s = JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS
+    last_valid_batch_limit = JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT
     while True:
-        cfg = load_polylogue_config()
-        interval = max(cfg.judgment_automation_interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)
+        root = receipt_root()
+        try:
+            pacing_cfg = load_polylogue_config()
+            pacing_interval_s = pacing_cfg.judgment_automation_interval_s
+            pacing_batch_limit = pacing_cfg.judgment_automation_batch_limit
+            _require_positive_batch_limit(pacing_batch_limit)
+        except Exception as exc:
+            if root.exists():
+                await persist_failure_fallback(
+                    exc,
+                    default_reason="configuration_reload_failed",
+                    operation_id=f"judgment-automation:{uuid.uuid4().hex}",
+                    root=root,
+                    batch_limit=last_valid_batch_limit,
+                )
+            logger.warning("judgment_automation: pre-sleep configuration reload failed", exc_info=True)
+            interval = last_valid_interval_s
+        else:
+            last_valid_interval_s = max(
+                pacing_interval_s,
+                JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS,
+            )
+            last_valid_batch_limit = pacing_batch_limit
+            interval = last_valid_interval_s
         await asyncio.sleep(interval)
         # Config is reloadable at the daemon-loop boundary. The pre-sleep
         # snapshot controls pacing only; gating and batch settings must come
         # from the post-sleep snapshot so a config flip during the wait takes
         # effect on this tick.
-        cfg = load_polylogue_config()
-        root = archive_root()
+        root = receipt_root()
         if not root.exists():
             continue
-        if not (cfg.judgment_automation_enabled and cfg.mcp_judge_enabled):
+        try:
+            cfg = load_polylogue_config()
+            cfg_interval_s = cfg.judgment_automation_interval_s
+            cfg_batch_limit = cfg.judgment_automation_batch_limit
+            cfg_automation_enabled = cfg.judgment_automation_enabled
+            cfg_judge_enabled = cfg.mcp_judge_enabled
+            _require_positive_batch_limit(cfg_batch_limit)
+        except Exception as exc:
+            await persist_failure_fallback(
+                exc,
+                default_reason="configuration_reload_failed",
+                operation_id=f"judgment-automation:{uuid.uuid4().hex}",
+                root=root,
+                batch_limit=last_valid_batch_limit,
+            )
+            logger.warning("judgment_automation: post-sleep configuration reload failed", exc_info=True)
+            continue
+        last_valid_interval_s = max(cfg_interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)
+        last_valid_batch_limit = cfg_batch_limit
+        await recover_receipt_outbox(root)
+        if not (cfg_automation_enabled and cfg_judge_enabled):
             try:
                 recorded = await coordinator.run_sync(
                     "maintenance.judgment_automation.receipt",
@@ -637,11 +908,9 @@ async def periodic_judgment_automation_sweep(
                     status="parked",
                     reason="capability_gate_disabled",
                     now_ms=None,
-                    batch_limit=cfg.judgment_automation_batch_limit,
+                    batch_limit=cfg_batch_limit,
                     retryable=True,
-                    suppress_identical_for_ms=_judgment_automation_receipt_coalescing_horizon_ms(
-                        cfg.judgment_automation_interval_s
-                    ),
+                    suppress_identical_for_ms=_judgment_automation_receipt_coalescing_horizon_ms(cfg_interval_s),
                 )
             except Exception:
                 logger.warning("judgment_automation: parked receipt write failed; retrying next tick", exc_info=True)
@@ -658,7 +927,7 @@ async def periodic_judgment_automation_sweep(
                 "maintenance.judgment_automation",
                 run_judgment_automation_sweep_once,
                 root,
-                batch_limit=cfg.judgment_automation_batch_limit,
+                batch_limit=cfg_batch_limit,
                 operation_id=receipt_context.operation_id,
                 _receipt_context=receipt_context,
             )
@@ -685,6 +954,8 @@ async def periodic_judgment_automation_sweep(
                     exc,
                     default_reason=reason,
                     operation_id=receipt_context.operation_id,
+                    root=root,
+                    batch_limit=last_valid_batch_limit,
                 )
             if reason == "transient_sqlite_lock":
                 logger.info("judgment_automation: archive busy; retrying on next tick: %s", exc)
@@ -700,6 +971,8 @@ async def periodic_judgment_automation_sweep(
                         else "sweep_exception"
                     ),
                     operation_id=receipt_context.operation_id,
+                    root=root,
+                    batch_limit=last_valid_batch_limit,
                 )
             logger.warning("judgment_automation: sweep failed", exc_info=True)
 
@@ -718,5 +991,7 @@ __all__ = [
     "evaluate_candidate",
     "parse_judgment_automation_policy",
     "periodic_judgment_automation_sweep",
+    "recover_pending_judgment_automation_receipts",
     "run_judgment_automation_sweep_once",
+    "judgment_automation_receipt_freshness_window_ms",
 ]

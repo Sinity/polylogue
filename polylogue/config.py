@@ -28,6 +28,9 @@ class ConfigError(PolylogueError):
     """Configuration error."""
 
 
+JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT = 200
+
+
 @dataclass(frozen=True, slots=True)
 class Source:
     """A session source (local path, Drive folder, or both)."""
@@ -840,7 +843,16 @@ class PolylogueConfig:
     @property
     def judgment_automation_batch_limit(self) -> int:
         """Maximum candidates judged per judgment-automation sweep (polylogue-6qjc)."""
-        return int(str(self._data.get("judgment_automation_batch_limit", 200)))
+        raw_value = self._data.get("judgment_automation_batch_limit", JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT)
+        if isinstance(raw_value, bool):
+            raise ConfigError("judgment_automation_batch_limit must be a positive integer")
+        try:
+            value = int(str(raw_value).strip(), 10)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("judgment_automation_batch_limit must be a positive integer") from exc
+        if value <= 0:
+            raise ConfigError("judgment_automation_batch_limit must be a positive integer")
+        return value
 
     @property
     def judgment_automation_policy(self) -> dict[str, object]:
@@ -2907,6 +2919,7 @@ __all__ = [
     "DEFAULT_SITE_CONFIG_PATH",
     "DriveConfig",
     "IndexConfig",
+    "JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT",
     "PolylogueConfig",
     "SECRET_CONFIG_KEYS",
     "SECRET_SET_PLACEHOLDER",

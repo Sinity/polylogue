@@ -100,7 +100,8 @@ writer_modules:
         upsert_blackboard_note, upsert_comparative_judgment_assertion, upsert_correction, upsert_mark,
         upsert_pathology_findings_as_assertions,
         upsert_recall_pack, upsert_saved_view, upsert_session_metadata_assertion, upsert_session_tag_assertion,
-        upsert_suppression, upsert_transform_candidate_assertions, upsert_findings_as_assertions, upsert_workspace]
+        upsert_suppression, upsert_transform_candidate_assertions, upsert_findings_as_assertions, upsert_workspace,
+        ack_judgment_automation_receipt_outbox, upsert_judgment_automation_receipt_outbox]
     - path: polylogue/storage/sqlite/archive_tiers/user_annotations.py
       surfaces:
         - tier: user
