@@ -370,7 +370,9 @@ def _replay_preflight(root: Path, *, limit: int) -> dict[str, object]:
     # includes authority/resource debt.  The backlog already computes the
     # executable authority-component population, so use that typed relation
     # to distinguish executable work from blocked-only work.
-    state = "fail" if executable_component_count else "warn" if blocked_count else "pass"
+    state = (
+        "fail" if executable_component_count else "warn" if blocked_count else "unknown" if candidate_count else "pass"
+    )
     return _status(
         state=state,
         reason=(
@@ -378,6 +380,8 @@ def _replay_preflight(root: Path, *, limit: int) -> dict[str, object]:
             if state == "fail"
             else "raw replay candidates are authority/resource blocked"
             if state == "warn"
+            else "raw replay candidates lack executable or blocked classification"
+            if state == "unknown"
             else None
         ),
         available=True,

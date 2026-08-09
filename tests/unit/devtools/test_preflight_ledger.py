@@ -241,6 +241,19 @@ def test_preflight_warns_when_replay_candidates_are_all_resource_blocked(
     assert replay["executable_authority_component_count"] == 0
 
 
+def test_preflight_is_unknown_when_replay_candidates_are_unclassified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _initialize_all_tiers(tmp_path)
+    monkeypatch.setattr(preflight_ledger, "raw_materialization_replay_backlog", _replay_backlog(1, 0, 0))
+
+    report = build_preflight_ledger(tmp_path, limit=10)
+    replay = _mapping(_mapping(report["checks"])["replay_backlog"])
+
+    assert replay["state"] == "unknown"
+    assert report["ok"] is False
+
+
 def test_preflight_reports_every_non_null_raw_parse_error(tmp_path: Path) -> None:
     _initialize_all_tiers(tmp_path)
     _insert_raws(
