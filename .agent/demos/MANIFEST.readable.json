@@ -85,7 +85,7 @@
     },
     {
       "path": "agent-affordance-usage/recent-30d-tool-counts.csv",
-      "bytes": 255,
+      "bytes": 1,
       "readable": true
     },
     {
@@ -240,7 +240,7 @@
     },
     {
       "path": "basic-usage/01-find-query.txt",
-      "bytes": 1197,
+      "bytes": 1204,
       "readable": true
     },
     {
@@ -250,7 +250,7 @@
     },
     {
       "path": "basic-usage/03-search.txt",
-      "bytes": 657,
+      "bytes": 664,
       "readable": true
     },
     {
@@ -285,12 +285,12 @@
     },
     {
       "path": "basic-usage/COLD_READER_GATE.md",
-      "bytes": 2114,
+      "bytes": 2945,
       "readable": true
     },
     {
       "path": "basic-usage/README.md",
-      "bytes": 10109,
+      "bytes": 10073,
       "readable": true
     },
     {
@@ -345,7 +345,7 @@
     },
     {
       "path": "d4-behavioral-archaeology/PROMPT.md",
-      "bytes": 1800,
+      "bytes": 1807,
       "readable": true
     },
     {
@@ -355,7 +355,7 @@
     },
     {
       "path": "d4-behavioral-archaeology/evidence.ndjson",
-      "bytes": 1702,
+      "bytes": 1872,
       "readable": false
     },
     {
@@ -370,17 +370,17 @@
     },
     {
       "path": "d4-behavioral-archaeology/queries.ndjson",
-      "bytes": 794,
+      "bytes": 861,
       "readable": false
     },
     {
       "path": "d4-behavioral-archaeology/report.md",
-      "bytes": 5556,
+      "bytes": 5770,
       "readable": true
     },
     {
       "path": "d4-behavioral-archaeology/run.log",
-      "bytes": 5483,
+      "bytes": 5656,
       "readable": false
     },
     {
