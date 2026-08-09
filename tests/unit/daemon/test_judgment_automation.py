@@ -31,6 +31,8 @@ from polylogue.daemon.events import emit_daemon_event
 from polylogue.daemon.judgment_automation import (
     JUDGMENT_AUTOMATION_ACTOR_REF,
     JudgmentAutomationPolicyRule,
+    _JudgmentAutomationReceiptContext,
+    _JudgmentAutomationReceiptPersistenceError,
     evaluate_candidate,
     parse_judgment_automation_policy,
     periodic_judgment_automation_sweep,
@@ -304,6 +306,40 @@ def test_sweep_receipt_and_bounded_retry_drain(tmp_path: Path) -> None:
     assert receipt["status"] == "completed"
     assert row[0] == 2_000
     assert receipt["accepted"] == 1
+
+
+def test_missing_ops_receipt_failure_preserves_committed_result_metadata(tmp_path: Path) -> None:
+    """A false receipt outcome still carries the committed sweep result.
+
+    Anti-vacuity: the production dependency is the real sweep's user-tier
+    commit followed by the ops-tier receipt result. Removing the explicit
+    result and commit-state fields from the persistence error makes this
+    regression lose the accepted count and claim that no user-tier commit
+    occurred.
+    """
+    _init_user_db(tmp_path / "user.db")
+    _insert_candidate(tmp_path, assertion_id="cand-missing-ops", kind=AssertionKind.PATHOLOGY, confidence=0.95)
+    context = _JudgmentAutomationReceiptContext(operation_id="judgment-automation:missing-ops")
+    policy = {AssertionKind.PATHOLOGY: JudgmentAutomationPolicyRule(auto_accept_min_confidence=0.9)}
+
+    with pytest.raises(_JudgmentAutomationReceiptPersistenceError) as raised:
+        run_judgment_automation_sweep_once(
+            tmp_path,
+            batch_limit=200,
+            policy=policy,
+            _receipt_context=context,
+        )
+
+    error = raised.value
+    assert error.user_tier_committed is True
+    assert error.status == "completed"
+    assert error.reason == "sweep_completed"
+    assert error.result is not None
+    assert error.result.accepted == 1
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert conn.execute("SELECT status FROM assertions WHERE assertion_id = 'cand-missing-ops'").fetchone() == (
+            AssertionStatus.ACCEPTED.value,
+        )
 
 
 def test_empty_policy_receipt_parks_pending_queue_for_safe_retry(tmp_path: Path) -> None:
@@ -952,6 +988,40 @@ def test_periodic_false_fallback_is_logged_as_unpersisted(tmp_path: Path, caplog
     assert "failure receipt fallback was not persisted" in caplog.text
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM daemon_events").fetchone() == (0,)
+
+
+def test_periodic_non_lock_sqlite_failure_is_logged_at_warning_severity(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Persistent SQLite failures remain visible above informational logs."""
+    _init_ops_db(tmp_path / "ops.db")
+    cfg = SimpleNamespace(
+        judgment_automation_enabled=True,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={},
+    )
+    write_coordinator = AsyncMock()
+
+    async def _fake_run_sync(actor, function, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return function(*args, **kwargs)
+
+    write_coordinator.run_sync.side_effect = _fake_run_sync
+    with (
+        patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+        patch(
+            "polylogue.daemon.judgment_automation.run_judgment_automation_sweep_once",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ),
+    ):
+        caplog.set_level("INFO")
+        asyncio.run(_run_one_tick())
+
+    assert "archive operation failed; retrying on next tick" in caplog.text
+    assert "archive busy; retrying on next tick" not in caplog.text
 
 
 def test_periodic_disabled_receipt_failure_is_logged_and_retried(

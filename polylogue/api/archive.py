@@ -1742,12 +1742,22 @@ def _archive_assertion_candidate_queue_health(
         and judgment_receipt_age_ms is not None
         and judgment_receipt_age_ms <= receipt_freshness_window_ms
     )
+    judgment_parked_receipt_fresh = (
+        judgment_scheduler_receipt_status == "parked"
+        and judgment_receipt_age_ms is not None
+        and judgment_receipt_age_ms <= receipt_freshness_window_ms
+    )
 
     state: AssertionCandidateQueueState
     if producer_debt_count or producer_status in failed_producer_statuses or scheduler_state in {"stale", "stopped"}:
         state = "producer-stalled"
     elif stale_pending_count:
         state = "stale-pending"
+    elif pending_count and judgment_scheduler_receipt_status == "parked" and not judgment_parked_receipt_fresh:
+        state = "scheduler-stalled"
+        caveats.append(
+            "judgment scheduler has no fresh parked receipt; the bounded retry route is the next daemon tick"
+        )
     elif pending_count and judgment_scheduler_receipt_status in {"parked", "unknown"}:
         state = "parked-pending"
         if judgment_scheduler_receipt_status == "parked":

@@ -345,6 +345,44 @@ def test_failed_scheduler_receipt_is_not_converged(tmp_path: Path) -> None:
     assert any("retry" in caveat for caveat in health.caveats)
 
 
+def test_stale_parked_scheduler_receipt_expires_after_configured_cadence(tmp_path: Path) -> None:
+    """An old parked receipt must not hide a scheduler that stopped reporting.
+
+    Anti-vacuity: the production dependency is the queue-health projection's
+    receipt-age calculation. Removing the parked-receipt freshness branch
+    makes this real user/ops ledger fixture remain ``parked-pending`` instead
+    of becoming ``scheduler-stalled`` after the cadence horizon.
+    """
+    config = _initialize(tmp_path)
+    now_ms = 1_800_000_000_000
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="candidate-expired-parked",
+            target_ref="session:queue-health",
+            kind=AssertionKind.LESSON,
+            body_text="A pending judgment candidate",
+            author_ref="agent:standing-queries",
+            author_kind="agent",
+            now_ms=now_ms - 25 * _DAY_MS,
+        )
+    grace_s = max(config.judgment_automation_interval_s // 10, 5 * 60)
+    cadence_ms = (config.judgment_automation_interval_s + grace_s) * 1000
+    emit_daemon_event(
+        "judgment-automation",
+        archive_root_path=tmp_path,
+        observed_at_ms=now_ms - cadence_ms - 1,
+        payload={"status": "parked", "reason": "capability_gate_disabled", "retryable": True},
+    )
+
+    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
+
+    assert health.state == "scheduler-stalled"
+    assert health.judgment_scheduler_receipt_status == "parked"
+    assert health.judgment_scheduler_receipt_age_ms == cadence_ms + 1
+    assert any("fresh parked receipt" in caveat for caveat in health.caveats)
+
+
 def test_producer_failure_or_debt_overrides_empty_queue(tmp_path: Path) -> None:
     config = _initialize(tmp_path)
     now_ms = 1_800_000_000_000

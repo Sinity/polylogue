@@ -422,8 +422,10 @@ def run_judgment_automation_sweep_once(
         if _receipt_context is not None and recorded is JudgmentAutomationReceiptOutcome.FAILED:
             raise _JudgmentAutomationReceiptPersistenceError(
                 "judgment automation scheduler receipt could not be persisted",
+                result=result,
                 status=status,
                 reason=reason,
+                user_tier_committed=user_tier_committed,
             )
         return recorded
 
@@ -684,7 +686,10 @@ async def periodic_judgment_automation_sweep(
                     default_reason=reason,
                     operation_id=receipt_context.operation_id,
                 )
-            logger.info("judgment_automation: archive busy; retrying on next tick: %s", exc)
+            if reason == "transient_sqlite_lock":
+                logger.info("judgment_automation: archive busy; retrying on next tick: %s", exc)
+            else:
+                logger.warning("judgment_automation: archive operation failed; retrying on next tick: %s", exc)
         except Exception as exc:
             if not receipt_context.recorded:
                 await persist_failure_fallback(

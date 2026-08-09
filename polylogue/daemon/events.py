@@ -119,8 +119,7 @@ def emit_daemon_event(
     observed_at_ms: int | None = None,
 ) -> None:
     """Emit a daemon event to the event ledger."""
-    path = (archive_root() if archive_root_path is None else archive_root_path) / "ops.db"
-    conn = _ensure_events_db(path)
+    conn = _ensure_events_db() if archive_root_path is None else _ensure_events_db(archive_root_path / "ops.db")
     try:
         conn.execute(
             "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
@@ -144,8 +143,7 @@ def get_latest_daemon_event(
 ) -> dict[str, object] | None:
     """Return the latest structured event for a kind and optional operation."""
 
-    path = (archive_root() if archive_root_path is None else archive_root_path) / "ops.db"
-    conn = _open_events_reader(path)
+    conn = _open_events_reader() if archive_root_path is None else _open_events_reader(archive_root_path / "ops.db")
     if conn is None:
         return None
     try:
