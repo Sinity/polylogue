@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 MODULE_PATH = Path(__file__).parents[3] / "devtools" / "beads_acceptance_reconciliation.py"
 spec = importlib.util.spec_from_file_location("beads_acceptance_reconciliation", MODULE_PATH)
 assert spec and spec.loader
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+
+@pytest.fixture(autouse=True)
+def _test_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep synthetic tests on the same reconciliation entry point with a tiny ratchet."""
+    monkeypatch.setattr(mod._contracts, "load_manifest", lambda path: ("polylogue-test",))
 
 
 def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:00:00Z") -> dict[str, Any]:
@@ -42,6 +51,8 @@ def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:
         "verification": ["Run a focused regression.", "Run `devtools verify` for the affected baseline."],
         "anti_vacuity": ["Removing the guard makes the regression fail."],
         "safety": [],
+        "route_spec": {"mode": "named", "identifier": "production-route", "dispatch": "production"},
+        "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
         "closure": {
             "rule": "Close only with final-head evidence.",
             "disposition": "whole-or-explicit-partial",
@@ -49,6 +60,14 @@ def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:
         },
     }
     contract["source_digest"] = mod.source_digest(issue)
+    contract["dependency_digest"] = mod._contracts.dependency_digest(issue)
+    contract["evidence_spans"] = [
+        {
+            "snapshot_digest": "b" * 64,
+            "range": {"start": 0, "end": len(contract["evidence"][0])},
+            "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
+        }
+    ]
     issue["metadata"]["acceptance_contract_v1"] = contract
     issue["acceptance_criteria"] = mod.render(contract)
     return issue
@@ -144,7 +163,10 @@ def test_guarded_wave_preserves_live_dependencies_comments_status_and_timestamp(
     assert target["metadata"]["acceptance_contract_v1"] == master["metadata"]["acceptance_contract_v1"]
 
 
-def test_master_only_and_live_only_are_reported_without_wave_records(tmp_path: Path) -> None:
+def test_master_only_and_live_only_are_reported_without_wave_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mod._contracts, "load_manifest", lambda path: ("polylogue-master-only", "polylogue-shared"))
     master = _issue(bead_id="polylogue-master-only")
     live = _issue(bead_id="polylogue-shared")
     live["acceptance_criteria"] = None
@@ -197,6 +219,45 @@ def test_malformed_timestamp_is_an_explicit_contract_refusal(tmp_path: Path) -> 
         "updated_at must be a string on both repository and live records"
     ]
     assert wave == []
+
+
+def test_malformed_string_timestamp_cannot_authorize_a_wave(tmp_path: Path) -> None:
+    """Production dependency: reconcile -> _classify_timestamp; catches lexicographic stale-wave authorization."""
+    master = _issue()
+    live = copy.deepcopy(master)
+    live["updated_at"] = "z"
+    live["acceptance_criteria"] = None
+    live["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    live_path = tmp_path / "live.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(live_path, [live])
+
+    report, wave = mod.reconcile(repository_path, live_path)
+
+    assert report["ids"]["contract_refused"] == ["polylogue-test"]
+    assert report["contract_refused_reasons"]["polylogue-test"] == [
+        "updated_at must be a valid canonical Beads timestamp"
+    ]
+    assert wave == []
+
+
+def test_reconciliation_refuses_a_partial_manifest_before_wave_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production dependency: reconcile -> load_manifest; catches len(master_contracts) replacing the 218 denominator."""
+    monkeypatch.setattr(mod._contracts, "load_manifest", lambda path: ("polylogue-test", "polylogue-required"))
+    master = _issue()
+    live = copy.deepcopy(master)
+    live["acceptance_criteria"] = None
+    live["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    live_path = tmp_path / "live.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(live_path, [live])
+
+    with pytest.raises(mod.ReconciliationError, match="manifest is incomplete"):
+        mod.reconcile(repository_path, live_path)
 
 
 def test_null_metadata_representation_is_preserved_by_non_contract_digest(tmp_path: Path) -> None:

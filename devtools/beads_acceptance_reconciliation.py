@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import copy
+import datetime as dt
 import hashlib
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -40,6 +42,7 @@ _REPORT_CATEGORIES = (
     "same_timestamp_different",
     "contract_refused",
 )
+_BEADS_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 
 
 class ReconciliationError(ValueError):
@@ -122,11 +125,23 @@ def non_contract_equality_digest(rows: Mapping[str, Mapping[str, Any]], ids: Ite
     return equality_digest(scrubbed)
 
 
-def _classify_timestamp(master: Mapping[str, Any], live: Mapping[str, Any]) -> str | None:
-    master_timestamp = master.get("updated_at")
-    live_timestamp = live.get("updated_at")
-    if not isinstance(master_timestamp, str) or not isinstance(live_timestamp, str):
-        return None
+def _parse_beads_timestamp(value: object) -> dt.datetime:
+    if not isinstance(value, str):
+        raise ValueError("updated_at must be a string on both repository and live records")
+    if not _BEADS_TIMESTAMP.fullmatch(value):
+        raise ValueError("updated_at must be a valid canonical Beads timestamp")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("updated_at must be a valid canonical Beads timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("updated_at must include a timezone")
+    return parsed.astimezone(dt.UTC)
+
+
+def _classify_timestamp(master: Mapping[str, Any], live: Mapping[str, Any]) -> str:
+    master_timestamp = _parse_beads_timestamp(master.get("updated_at"))
+    live_timestamp = _parse_beads_timestamp(live.get("updated_at"))
     if master_timestamp == live_timestamp:
         return (
             "same_timestamp_same"
@@ -164,7 +179,12 @@ def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     )
 
 
-def reconcile(repository: Path, live_export: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def reconcile(
+    repository: Path,
+    live_export: Path,
+    *,
+    manifest: Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return a report and a minimal guarded import wave.
 
     A contract is eligible only when the live source digest equals the digest
@@ -172,12 +192,29 @@ def reconcile(repository: Path, live_export: Path) -> tuple[dict[str, Any], list
     never used as an authority choice. A malformed live metadata document is
     an explicit contract refusal.
     """
+    try:
+        required_ids = _contracts.load_manifest(manifest or _contracts._DEFAULT_MANIFEST)
+    except SystemExit as exc:
+        raise ReconciliationError(str(exc)) from exc
     master = load_jsonl(repository)
     live = load_jsonl(live_export)
-    master_contracts = {
-        bead_id: contract for bead_id, row in master.items() if (contract := _contract(row)) is not None
-    }
-    invalid_contracts = {bead_id: errors for bead_id in master_contracts if (errors := validate(master[bead_id]))}
+    missing_manifest_ids = sorted(set(required_ids) - set(master))
+    if missing_manifest_ids:
+        raise ReconciliationError(
+            "canonical acceptance-contract manifest is incomplete: "
+            f"missing {len(missing_manifest_ids)} IDs {missing_manifest_ids}"
+        )
+    master_contracts: dict[str, dict[str, Any]] = {}
+    invalid_contracts: dict[str, list[str]] = {}
+    for bead_id in required_ids:
+        contract = _contract(master[bead_id])
+        if contract is None:
+            invalid_contracts[bead_id] = ["missing metadata.acceptance_contract_v1"]
+            continue
+        master_contracts[bead_id] = contract
+        errors = validate(master[bead_id])
+        if errors:
+            invalid_contracts[bead_id] = errors
     if invalid_contracts:
         details = "; ".join(f"{bead_id}: {', '.join(errors)}" for bead_id, errors in sorted(invalid_contracts.items()))
         raise ReconciliationError(f"canonical contract validation failed: {details}")
@@ -189,8 +226,8 @@ def reconcile(repository: Path, live_export: Path) -> tuple[dict[str, Any], list
         "live_export": str(live_export),
         "counts": dict.fromkeys(_REPORT_CATEGORIES, 0),
         "ids": {category: [] for category in _REPORT_CATEGORIES},
-        "contract_denominator": len(master_contracts),
-        "contract_present_denominator": len(set(master_contracts) & live_ids),
+        "contract_denominator": len(required_ids),
+        "contract_present_denominator": len(set(required_ids) & live_ids),
         "contract_guarded_count": 0,
         "contract_refused_denominator": 0,
         "contract_refused_reasons": {},
@@ -211,7 +248,12 @@ def reconcile(repository: Path, live_export: Path) -> tuple[dict[str, Any], list
     for bead_id in sorted(master_ids & live_ids):
         master_row = master[bead_id]
         live_row = live[bead_id]
-        timestamp_category = _classify_timestamp(master_row, live_row)
+        timestamp_error: str | None = None
+        try:
+            timestamp_category = _classify_timestamp(master_row, live_row)
+        except ValueError as exc:
+            timestamp_category = None
+            timestamp_error = str(exc)
         if timestamp_category in {"master_newer", "live_newer", "same_timestamp_different"}:
             report["ids"][timestamp_category].append(bead_id)
             report["counts"][timestamp_category] += 1
@@ -227,8 +269,8 @@ def reconcile(repository: Path, live_export: Path) -> tuple[dict[str, Any], list
             reasons.append(f"source digest mismatch: expected contract {expected_digest}, live {actual_digest}")
         if _metadata_object(live_row.get("metadata")) is None:
             reasons.append("live metadata is not a JSON object")
-        if timestamp_category is None:
-            reasons.append("updated_at must be a string on both repository and live records")
+        if timestamp_error is not None:
+            reasons.append(timestamp_error)
         if reasons:
             report["ids"]["contract_refused"].append(bead_id)
             report["counts"]["contract_refused"] += 1
@@ -311,6 +353,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repository", type=Path, help="canonical repository JSONL")
     parser.add_argument("--live", type=Path, help="read-only live Beads export")
+    parser.add_argument(
+        "--manifest", type=Path, default=_contracts._DEFAULT_MANIFEST, help="ratcheted contract ID manifest"
+    )
     parser.add_argument("--wave", type=Path, help="write the guarded targeted import JSONL")
     parser.add_argument("--report", type=Path, help="write the reconciliation report JSON")
     parser.add_argument("--verify-before", type=Path, help="before export for post-import verification")
@@ -332,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if not args.repository or not args.live:
                 raise ReconciliationError("reconciliation requires --repository and --live")
-            result, wave = reconcile(args.repository, args.live)
+            result, wave = reconcile(args.repository, args.live, manifest=args.manifest)
             if args.wave:
                 _write_jsonl(args.wave, wave)
             if args.report:
