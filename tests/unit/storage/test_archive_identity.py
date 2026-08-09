@@ -161,6 +161,35 @@ def test_missing_index_cannot_bypass_split_root_preflight(tmp_path: Path, missin
     assert not (missing_root / "index.db").exists()
 
 
+def test_owned_location_rejects_hardlinked_lock_before_truncate(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    external_lock = tmp_path / "external-lock"
+    external_lock.write_bytes(b"preserve me")
+    lock_path = root / ".archive-ownership.lock"
+    lock_path.hardlink_to(external_lock)
+
+    with pytest.raises(ArchiveOwnershipError, match="link count"):
+        OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+
+    assert external_lock.read_bytes() == b"preserve me"
+    assert lock_path.read_bytes() == b"preserve me"
+
+
+@pytest.mark.parametrize("object_kind", ["directory", "fifo"])
+def test_owned_location_rejects_nonregular_lock_without_blocking(tmp_path: Path, object_kind: str) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    lock_path = root / ".archive-ownership.lock"
+    if object_kind == "directory":
+        lock_path.mkdir()
+    else:
+        os.mkfifo(lock_path)
+
+    with pytest.raises(ArchiveOwnershipError, match="lock"):
+        OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+
+
 def test_owned_location_rejects_concurrent_acquire_before_any_sqlite_file_exists(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     root.mkdir()

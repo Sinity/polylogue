@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import shutil
 import sqlite3
+import stat
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
@@ -99,6 +101,16 @@ def _make_index_db(root: Path) -> Path:
                 ('s1', 'm1', 'tool_use', 'search_code', 't7', NULL, '', '', 'search_code query', NULL, NULL),
                 ('s1', 'm1', 'tool_use', 'mcp__polylogue__query', 't8', NULL, '', '', 'messages where text:timeout', NULL, NULL),
                 ('s1', 'm1', 'tool_use', 'functions.exec_command', 't9', NULL, 'polylogue read session:s1 --view summary', '', '', NULL, NULL);
+            """
+        )
+        conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(text)")
+        conn.execute(
+            """
+            INSERT INTO messages_fts(rowid, text)
+            SELECT rowid, lower(
+                coalesce(tool_command, '') || ' ' || coalesce(tool_path, '') || ' ' || coalesce(tool_input, '')
+            )
+            FROM blocks
             """
         )
         conn.commit()
@@ -321,6 +333,7 @@ def test_affordance_usage_product_fast_path_stays_pinned_across_promotion(
         read_only: bool = True,
         read_timeout: float = 5.0,
         index_path: Path | None = None,
+        opened_main_fd: int | None = None,
     ) -> ArchiveStore:
         nonlocal opened_index_path, promoted
         active.unlink()
@@ -332,6 +345,7 @@ def test_affordance_usage_product_fast_path_stays_pinned_across_promotion(
             read_only=read_only,
             read_timeout=read_timeout,
             index_path=index_path,
+            opened_main_fd=opened_main_fd,
         )
 
     monkeypatch.setattr(ArchiveStore, "open_existing", promote_before_open)
@@ -354,6 +368,69 @@ def test_affordance_usage_product_fast_path_stays_pinned_across_promotion(
     assert report["index_db"] == str(old_db.resolve())
     assert report["snapshot_identity"]["sha256"] == affordance_usage._snapshot_observation(old_db)["sha256"]
     assert {row["family"]: row["actions"] for row in report["family_counts"]}["codebase-memory"] == 2
+
+
+def test_affordance_usage_product_fast_path_consumes_opened_inode_after_selected_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The product route must not reopen a selected path after its reader is pinned."""
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    replacement_root = tmp_path / "replacement"
+    saved_db = tmp_path / "saved-index.db"
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    real_open_existing = ArchiveStore.open_existing
+    replaced = False
+
+    def replace_selected_path(
+        root: Path,
+        *,
+        read_only: bool = True,
+        read_timeout: float = 5.0,
+        index_path: Path | None = None,
+        opened_main_fd: int | None = None,
+    ) -> Any:
+        nonlocal replaced
+        replacement_db = _make_index_db(replacement_root)
+        with sqlite3.connect(replacement_db) as replacement:
+            replacement.execute("DELETE FROM blocks")
+            replacement.commit()
+        selected_db.rename(saved_db)
+        replacement_db.rename(selected_db)
+        try:
+            archive = real_open_existing(
+                root,
+                read_only=read_only,
+                read_timeout=read_timeout,
+                index_path=index_path,
+                opened_main_fd=opened_main_fd,
+            )
+        finally:
+            selected_db.unlink()
+            saved_db.rename(selected_db)
+        replaced = True
+        return archive
+
+    monkeypatch.setattr(ArchiveStore, "open_existing", replace_selected_path)
+    report = affordance_usage.build_report(
+        affordance_usage.AffordanceUsageArgs(
+            archive_root=archive_root,
+            out_dir=None,
+            days=36500,
+            family=(),
+            detail_pattern=("codebase-memory",),
+            sample_limit=10,
+            json=True,
+            all_time=False,
+            index_db=selected_db,
+        )
+    )
+
+    assert replaced is True
+    assert {row["family"]: row["actions"] for row in report["family_counts"]}["codebase-memory"] == 2
+    assert report["snapshot_identity"]["stable"] is True
 
 
 def test_affordance_usage_marks_selected_index_snapshot_unstable_after_change(
@@ -663,6 +740,96 @@ def test_affordance_usage_snapshot_includes_a_quiescent_wal_file_set(tmp_path: P
     assert before_files["index.db-wal"]["present"] is True
 
 
+def test_affordance_usage_captures_reader_created_sqlite_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WAL, SHM, and journal names created after reader open enter the authority set."""
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    from devtools.index_snapshot import OpenedIndexFileSet
+
+    real_capture = OpenedIndexFileSet.capture_sidecars
+    capture_calls = 0
+
+    def create_sidecars_after_census(self: OpenedIndexFileSet, path: Path) -> None:
+        nonlocal capture_calls
+        capture_calls += 1
+        if capture_calls == 4:
+            for suffix in ("-wal", "-shm", "-journal"):
+                Path(f"{path}{suffix}").write_bytes(b"created after reader open")
+        real_capture(self, path)
+
+    monkeypatch.setattr(OpenedIndexFileSet, "capture_sidecars", create_sidecars_after_census)
+    monkeypatch.setattr(affordance_usage, "_data_version", lambda _connection: 1)
+    report = affordance_usage.build_report(
+        affordance_usage.AffordanceUsageArgs(
+            archive_root=archive_root,
+            out_dir=None,
+            days=36500,
+            family=("serena",),
+            detail_pattern=(),
+            sample_limit=10,
+            json=True,
+            all_time=False,
+            index_db=selected_db,
+        )
+    )
+
+    before_files = {Path(row["path"]).name: row for row in report["snapshot_identity"]["before"]["files"]}
+    after_files = {Path(row["path"]).name: row for row in report["snapshot_identity"]["after"]["files"]}
+    assert all(not before_files[f"index.db{suffix}"]["present"] for suffix in ("-wal", "-shm", "-journal"))
+    assert all(after_files[f"index.db{suffix}"]["present"] for suffix in ("-wal", "-shm", "-journal"))
+    assert report["snapshot_identity"]["stable"] is False
+
+
+@pytest.mark.parametrize(
+    ("target", "kind"),
+    [
+        ("main", "directory"),
+        ("main", "fifo"),
+        ("sidecar", "directory"),
+        ("sidecar", "fifo"),
+        ("main", "device"),
+        ("sidecar", "device"),
+    ],
+)
+def test_affordance_usage_rejects_nonregular_main_and_sidecar_objects(
+    tmp_path: Path,
+    target: str,
+    kind: str,
+) -> None:
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    object_path = selected_db if target == "main" else Path(f"{selected_db}-wal")
+    if target == "main":
+        selected_db.unlink()
+    if kind == "directory":
+        object_path.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(object_path)
+    else:
+        try:
+            os.mknod(object_path, stat.S_IFCHR | 0o600, os.makedev(1, 3))
+        except PermissionError:
+            pytest.skip("device nodes are unavailable in this test environment")
+
+    with pytest.raises(RuntimeError, match="regular|safely|sidecar"):
+        affordance_usage.build_report(
+            affordance_usage.AffordanceUsageArgs(
+                archive_root=archive_root,
+                out_dir=None,
+                days=36500,
+                family=("serena",),
+                detail_pattern=(),
+                sample_limit=10,
+                json=True,
+                all_time=False,
+                index_db=selected_db,
+            )
+        )
+
+
 def test_affordance_usage_rejects_nonpositive_recent_window(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     _make_index_db(archive_root)
@@ -688,6 +855,8 @@ def test_affordance_usage_rejects_nonpositive_recent_window(tmp_path: Path) -> N
 def test_affordance_usage_can_match_shell_command_details(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     _make_index_db(archive_root)
+    selected_db = archive_root / "selected-index.db"
+    shutil.copy2(archive_root / "index.db", selected_db)
     args = affordance_usage.AffordanceUsageArgs(
         archive_root=archive_root,
         out_dir=None,
@@ -697,6 +866,7 @@ def test_affordance_usage_can_match_shell_command_details(tmp_path: Path) -> Non
         sample_limit=10,
         json=True,
         all_time=False,
+        index_db=selected_db,
     )
 
     report = affordance_usage.build_report(args)
@@ -714,6 +884,8 @@ def test_affordance_usage_can_match_shell_command_details(tmp_path: Path) -> Non
 def test_affordance_usage_treats_like_wildcards_as_literals(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     _make_index_db(archive_root)
+    selected_db = archive_root / "selected-index.db"
+    shutil.copy2(archive_root / "index.db", selected_db)
     args = affordance_usage.AffordanceUsageArgs(
         archive_root=archive_root,
         out_dir=None,
@@ -723,6 +895,7 @@ def test_affordance_usage_treats_like_wildcards_as_literals(tmp_path: Path) -> N
         sample_limit=10,
         json=True,
         all_time=False,
+        index_db=selected_db,
     )
 
     report = affordance_usage.build_report(args)

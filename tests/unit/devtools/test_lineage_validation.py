@@ -613,6 +613,37 @@ def test_lineage_validation_reader_stays_on_opened_inode_across_path_replacement
     assert report["snapshot_identity"]["stable"] is True
 
 
+def test_lineage_validation_captures_reader_created_sqlite_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lineage evidence adopts sidecars created by the second SQLite reader."""
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    from devtools.index_snapshot import OpenedIndexFileSet
+
+    real_capture = OpenedIndexFileSet.capture_sidecars
+    capture_calls = 0
+
+    def create_sidecars_after_census(self: OpenedIndexFileSet, path: Path) -> None:
+        nonlocal capture_calls
+        capture_calls += 1
+        if capture_calls == 4:
+            for suffix in ("-wal", "-shm", "-journal"):
+                Path(f"{path}{suffix}").write_bytes(b"created after reader open")
+        real_capture(self, path)
+
+    monkeypatch.setattr(OpenedIndexFileSet, "capture_sidecars", create_sidecars_after_census)
+    monkeypatch.setattr(lineage_validation, "_data_version", lambda _connection: 1)
+    report = lineage_validation.build_report(_args(archive_root, index_db=selected_db))
+
+    before_files = {Path(row["path"]).name: row for row in report["snapshot_identity"]["before"]["files"]}
+    after_files = {Path(row["path"]).name: row for row in report["snapshot_identity"]["after"]["files"]}
+    assert all(not before_files[f"index.db{suffix}"]["present"] for suffix in ("-wal", "-shm", "-journal"))
+    assert all(after_files[f"index.db{suffix}"]["present"] for suffix in ("-wal", "-shm", "-journal"))
+    assert report["snapshot_identity"]["stable"] is False
+
+
 def test_lineage_validation_rejects_budget_exhaustion_as_cycle_proof(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     db = _make_index_db(archive_root)

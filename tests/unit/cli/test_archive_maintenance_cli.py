@@ -2697,7 +2697,127 @@ def test_migrate_tier_cli_preserves_replacement_during_checked_leaf_cleanup(
     assert audit_db.read_bytes() == b"foreign target"
 
 
-def test_migrate_tier_cli_refuses_named_staging_when_anonymous_publication_is_unsupported(
+def test_migrate_tier_cli_preserves_replacement_after_cleanup_final_check(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cleanup rename must not unlink a leaf swapped after its final check."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    foreign = root / "foreign-audit.db"
+    real_rename = os.rename
+    rename_calls = 0
+
+    def swap_after_final_check(
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal rename_calls
+        if source == "audit.db" and str(destination).startswith(".audit.db.cleanup-"):
+            rename_calls += 1
+            assert rename_calls == 1
+            audit_db.unlink()
+            foreign.write_bytes(b"foreign after final check")
+            foreign.rename(audit_db)
+        real_rename(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    real_fsync = os.fsync
+    directory_fsyncs = 0
+
+    def fail_after_publish(descriptor: int) -> None:
+        nonlocal directory_fsyncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsyncs += 1
+            if directory_fsyncs == 1:
+                raise OSError("publication fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.rename", swap_after_final_check)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_after_publish)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["durable_recovery"]["code"] == "leaf_replaced"
+    assert audit_db.read_bytes() == b"foreign after final check"
+    assert not list(root.glob(".audit.db.cleanup-*.tmp"))
+
+
+def test_migrate_tier_cli_serializes_cleanup_inspection_uncertainty(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup inspection failure remains typed while the publication error survives."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    real_stat = os.stat
+    target_stat_calls = 0
+
+    def fail_cleanup_inspection(
+        file: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal target_stat_calls
+        if file == "audit.db" and dir_fd is not None:
+            target_stat_calls += 1
+            if target_stat_calls == 3:
+                raise OSError("cleanup inspection fault")
+        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    real_fsync = os.fsync
+    directory_fsyncs = 0
+
+    def fail_after_publish(descriptor: int) -> None:
+        nonlocal directory_fsyncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsyncs += 1
+            if directory_fsyncs == 1:
+                raise OSError("publication fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", fail_cleanup_inspection)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_after_publish)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert "cannot publish audit tier" in payload["error"]
+    assert payload["durable_recovery"]["code"] == "leaf_inspection_failed"
+    assert "could not inspect published durable tier" in payload["durable_recovery"]["detail"]
+    assert audit_db.exists()
+
+
+def test_migrate_tier_cli_uses_named_staging_when_anonymous_publication_is_unavailable(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _stage_uninitialized_archive(cli_workspace)
@@ -2719,9 +2839,9 @@ def test_migrate_tier_cli_refuses_named_staging_when_anonymous_publication_is_un
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 1
-    assert "durable publication requires anonymous O_TMPFILE support" in json.loads(result.stdout)["error"]
-    assert not audit_db.exists()
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["initialized"] is True
+    assert audit_db.is_file()
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 
@@ -2764,7 +2884,13 @@ def test_migrate_tier_cli_refuses_to_initialize_a_tier_in_an_established_archive
 @pytest.mark.parametrize("missing_name", ["source.db", "user.db"])
 @pytest.mark.parametrize(
     "retained_evidence",
-    ["index.db", ".index-generations", ".index-rebuild-transactions", "source-continuity-pending"],
+    [
+        "index.db",
+        ".index-generations",
+        ".index-rebuild-transactions",
+        "source-continuity-pending",
+        "source-continuity-refreshes",
+    ],
 )
 def test_migrate_tier_cli_missing_initialization_refuses_retained_archive_evidence(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, missing_name: str, retained_evidence: str
@@ -2775,7 +2901,7 @@ def test_migrate_tier_cli_missing_initialization_refuses_retained_archive_eviden
     retained_path = root / retained_evidence
     if retained_evidence == "index.db":
         retained_path.touch()
-    elif retained_evidence == "source-continuity-pending":
+    elif retained_evidence in {"source-continuity-pending", "source-continuity-refreshes"}:
         retained_path = root / ".maintenance-state" / retained_evidence
         retained_path.mkdir(parents=True)
         (retained_path / "intent.json").write_text("{}", encoding="utf-8")
