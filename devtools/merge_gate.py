@@ -255,22 +255,6 @@ def _terminal_authorization(stdout: str) -> str | None:
     return value if value in {authorization.value for authorization in TerminalAuthorization} else None
 
 
-def _command_verification_scope(command: str) -> str | None:
-    """Classify legacy commands by argv shape, never by emitted log text."""
-    try:
-        argv = shlex.split(command)
-    except ValueError:
-        return None
-    if argv[:2] != ["devtools", "verify"]:
-        return None
-    options = set(argv[2:])
-    if options & {"--all", "--full", "--seed-testmon"}:
-        return VerificationScope.RELEASE_BASELINE.value
-    if options & {"--quick", "--commit"}:
-        return VerificationScope.NON_TEST.value
-    return VerificationScope.AFFECTED.value
-
-
 def cmd_record(pr: int, command: str) -> int:
     info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft"])
     head_sha = info["headRefOid"]
@@ -325,7 +309,7 @@ def cmd_record(pr: int, command: str) -> int:
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
-        "verification_scope": _verification_scope(result.stdout) or _command_verification_scope(command),
+        "verification_scope": _verification_scope(result.stdout),
         "release_baseline_allowed": _release_baseline_permission(result.stdout),
         "terminal_authorization": _terminal_authorization(result.stdout),
         "exit_code": result.returncode,
@@ -535,12 +519,16 @@ def cmd_check(
                 verdict.ok = False
                 verdict.reasons.append(f"receipt exit_code is {receipt.get('exit_code')}, not 0")
             verification_scope = receipt.get("verification_scope")
-            if verification_scope is None:
-                verification_scope = _command_verification_scope(str(receipt.get("command", "")))
-            if (
-                verification_scope == VerificationScope.RELEASE_BASELINE.value
-                and receipt.get("release_baseline_allowed") is not True
-            ):
+            if verification_scope not in {scope.value for scope in VerificationScope}:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "verification receipt lacks a valid typed verification_scope; command text cannot grant authority"
+                )
+            release_allowed = receipt.get("release_baseline_allowed")
+            if not isinstance(release_allowed, bool):
+                verdict.ok = False
+                verdict.reasons.append("verification receipt lacks typed release_baseline_allowed permission")
+            if verification_scope == VerificationScope.RELEASE_BASELINE.value and release_allowed is not True:
                 verdict.ok = False
                 verdict.reasons.append(
                     "release-baseline verification receipt does not grant release_baseline_allowed=true"

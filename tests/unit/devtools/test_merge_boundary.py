@@ -87,7 +87,11 @@ def _fake_run(
             return MagicMock(returncode=0, stdout=local_head_sha + "\n", stderr="")
         if cmd[:2] == ["git", "status"]:
             return MagicMock(returncode=0, stdout="", stderr="")
-        return MagicMock(returncode=local_exit, stdout="ok\n", stderr="")
+        return MagicMock(
+            returncode=local_exit,
+            stdout=json.dumps({"verification_scope": "affected", "release_baseline_allowed": False}),
+            stderr="",
+        )
 
     return _run
 
@@ -320,12 +324,24 @@ def test_merge_with_verify_records_terminal_full_verify(monkeypatch: pytest.Monk
         if cmd[:3] == ["devtools", "verify", "--all"]:
             return MagicMock(
                 returncode=0,
-                stdout=json.dumps({"verification_scope": "release-baseline", "release_baseline_allowed": True}),
+                stdout=json.dumps(
+                    {
+                        "git_head": "merged-master",
+                        "verification_scope": "release-baseline",
+                        "release_baseline_allowed": True,
+                    }
+                ),
                 stderr="",
             )
         return base(cmd, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(merge_boundary, "_fetched_merged_default_branch_sha", lambda _pr: "merged-master")
+    monkeypatch.setattr(
+        merge_boundary,
+        "_run_post_merge_terminal_verify",
+        lambda command, target: merge_boundary.cmd_record_full_verify(command, target_sha=target),
+    )
 
     exit_code = merge_boundary.cmd_merge(
         42,
@@ -344,6 +360,108 @@ def test_merge_with_verify_records_terminal_full_verify(monkeypatch: pytest.Monk
     assert ledger["last_full_verify"]["exit_code"] == 0
     # train-status should now report clean.
     assert merge_boundary.cmd_train_status(as_json=False) == 0
+
+
+def test_merge_with_verify_returns_nonzero_when_terminal_authority_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+    monkeypatch.setattr(merge_boundary, "_fetched_merged_default_branch_sha", lambda _pr: "merged-master")
+    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", lambda _command, _target: 1)
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=True,
+            verify_command="devtools verify --all",
+        )
+        == 1
+    )
+    assert merge_boundary._read_ledger()["merges"]
+
+
+def test_post_merge_terminal_verify_rejects_stale_feature_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda _cmd, **_kwargs: MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "git_head": "feature-head",
+                    "verification_scope": "release-baseline",
+                    "release_baseline_allowed": True,
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master") == 1
+    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
+
+
+def test_fetched_default_branch_must_include_squash_merge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **_kwargs: Any) -> MagicMock:
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return MagicMock(returncode=0, stdout=json.dumps({"defaultBranchRef": {"name": "master"}}), stderr="")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps({"state": "MERGED", "mergeCommit": {"oid": "squash-sha"}}),
+                stderr="",
+            )
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:3] == ["git", "rev-parse", "FETCH_HEAD"]:
+            return MagicMock(returncode=0, stdout="stale-feature-sha\n", stderr="")
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return MagicMock(returncode=1, stdout="", stderr="")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert merge_boundary._fetched_merged_default_branch_sha(42) is None
+    assert ["git", "fetch", "origin", "master"] in calls
+
+
+def test_fetched_default_branch_sha_is_the_verified_terminal_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def run(cmd: list[str], **_kwargs: Any) -> MagicMock:
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return MagicMock(returncode=0, stdout=json.dumps({"defaultBranchRef": {"name": "master"}}), stderr="")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps({"state": "MERGED", "mergeCommit": {"oid": "squash-sha"}}),
+                stderr="",
+            )
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:3] == ["git", "rev-parse", "FETCH_HEAD"]:
+            return MagicMock(returncode=0, stdout="merged-master-sha\n", stderr="")
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert merge_boundary._fetched_merged_default_branch_sha(42) == "merged-master-sha"
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +559,7 @@ def test_record_full_verify_rejects_success_without_structured_release_permissio
         lambda _cmd, **_kwargs: MagicMock(returncode=0, stdout="all good\n", stderr=""),
     )
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all") == 0
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all") == 1
     ledger = merge_boundary._read_ledger()
     assert ledger["last_full_verify"]["accepted"] is False
     assert merge_boundary.cmd_train_status(as_json=False) == 1
@@ -462,12 +580,12 @@ def test_record_full_verify_rejects_skip_slow_without_typed_authorization(
         ),
     )
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow") == 0
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow") == 1
     assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
-def test_record_full_verify_accepts_explicit_typed_narrow_terminal_authorization(
+def test_record_full_verify_rejects_explicit_typed_narrow_terminal_authorization(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -488,9 +606,9 @@ def test_record_full_verify_accepts_explicit_typed_narrow_terminal_authorization
         ),
     )
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow") == 0
-    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is True
-    assert merge_boundary.cmd_train_status(as_json=False) == 0
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow") == 1
+    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
 def test_record_full_verify_rejects_untyped_scope_even_when_permission_is_true(
@@ -508,6 +626,6 @@ def test_record_full_verify_rejects_untyped_scope_even_when_permission_is_true(
         ),
     )
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all") == 0
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all") == 1
     assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
     assert merge_boundary.cmd_train_status(as_json=False) == 1

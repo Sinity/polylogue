@@ -67,12 +67,13 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
 from devtools import merge_gate
-from devtools.testmon_state import TerminalAuthorization, VerificationScope
+from devtools.testmon_state import VerificationScope
 
 _LEDGER_PATH = Path(".cache/verify/merge-gate/merge-train-ledger.json")
 
@@ -135,16 +136,12 @@ def _append_merge_entry(pr: int, head_sha: str, title: str) -> None:
 def _pending_prs_since_last_full_verify(ledger: dict[str, Any]) -> list[dict[str, Any]]:
     last_verify = ledger.get("last_full_verify") or {}
     scope = last_verify.get("verification_scope")
-    terminal_authorized = scope == VerificationScope.RELEASE_BASELINE.value or (
-        scope == VerificationScope.NARROW_TERMINAL.value
-        and last_verify.get("terminal_authorization") == TerminalAuthorization.NARROW_TERMINAL.value
-    )
     last_verify_at = (
         last_verify.get("at", 0.0)
         if last_verify.get("accepted") is True
         and last_verify.get("exit_code") == 0
         and last_verify.get("release_baseline_allowed") is True
-        and terminal_authorized
+        and scope == VerificationScope.RELEASE_BASELINE.value
         else 0.0
     )
     return [entry for entry in ledger.get("merges", []) if entry.get("merged_at", 0.0) > last_verify_at]
@@ -158,6 +155,76 @@ def _receipt_is_fresh_for_head(pr: int, head_sha: str, max_age_s: int) -> bool:
         return False
     age_s = time.time() - float(receipt.get("recorded_at", 0))
     return bool(age_s <= max_age_s)
+
+
+def _fetched_merged_default_branch_sha(pr: int) -> str | None:
+    """Fetch the default branch and return its post-merge commit only."""
+    try:
+        repo = _gh_json(["repo", "view", "--json", "defaultBranchRef"])
+        default_ref = repo.get("defaultBranchRef")
+        branch = default_ref.get("name") if isinstance(default_ref, dict) else None
+        if not isinstance(branch, str) or not branch:
+            return None
+        merged = _gh_json(["pr", "view", str(pr), "--json", "state,mergeCommit"])
+        merge_commit = merged.get("mergeCommit")
+        merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+        if merged.get("state") != "MERGED" or not isinstance(merge_sha, str) or not merge_sha:
+            return None
+        fetch = subprocess.run(
+            ["git", "fetch", "origin", branch],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if fetch.returncode != 0:
+            return None
+        target = subprocess.run(
+            ["git", "rev-parse", "FETCH_HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if target.returncode != 0:
+            return None
+        target_sha = target.stdout.strip()
+        if not target_sha:
+            return None
+        included = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", merge_sha, target_sha],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return target_sha if included.returncode == 0 else None
+    except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def _run_post_merge_terminal_verify(command: str, target_sha: str) -> int:
+    """Run terminal verification in a detached worktree at the fetched target."""
+    repo_root = Path.cwd()
+    with tempfile.TemporaryDirectory(prefix="polylogue-merge-terminal-") as raw_worktree:
+        worktree = Path(raw_worktree)
+        add = subprocess.run(
+            ["git", "worktree", "add", "--detach", str(worktree), target_sha],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=repo_root,
+        )
+        if add.returncode != 0:
+            print(f"REFUSING terminal verify: could not materialize fetched target {target_sha[:8]}", file=sys.stderr)
+            return 1
+        try:
+            return cmd_record_full_verify(command, target_sha=target_sha, cwd=worktree)
+        finally:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=repo_root,
+            )
 
 
 def cmd_merge(
@@ -234,8 +301,15 @@ def cmd_merge(
     _append_merge_entry(pr, head_sha, clean_title)
 
     if with_verify:
+        target_sha = _fetched_merged_default_branch_sha(pr)
+        if target_sha is None:
+            print(
+                "REFUSING terminal verify: the fetched default branch does not prove this squash merge is included",
+                file=sys.stderr,
+            )
+            return 1
         print(f"running post-merge broad verify (merge-train terminal step): {verify_command!r}")
-        return cmd_record_full_verify(verify_command)
+        return _run_post_merge_terminal_verify(verify_command, target_sha)
 
     print(
         "REMINDER: this merge-train's terminal ledger step (one full-suite verify since the last "
@@ -280,14 +354,14 @@ def cmd_train_status(as_json: bool) -> int:
     return 1
 
 
-def cmd_record_full_verify(command: str) -> int:
+def cmd_record_full_verify(command: str, *, target_sha: str | None = None, cwd: Path | None = None) -> int:
     argv = command.split()
     if not argv:
         print("REFUSING: --command is empty after splitting", file=sys.stderr)
         return 2
     started = time.time()
     try:
-        result = subprocess.run(argv, capture_output=True, text=True)
+        result = subprocess.run(argv, capture_output=True, text=True, cwd=cwd)
     except OSError as exc:
         print(f"REFUSING: could not run {command!r}: {exc}", file=sys.stderr)
         return 2
@@ -295,13 +369,16 @@ def cmd_record_full_verify(command: str) -> int:
     release_allowed = merge_gate._release_baseline_permission(result.stdout)
     verification_scope = merge_gate._verification_scope(result.stdout)
     terminal_authorization = merge_gate._terminal_authorization(result.stdout)
+    try:
+        structured = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError):
+        structured = None
+    verified_head = structured.get("git_head") if isinstance(structured, dict) else None
     accepted = (
         result.returncode == 0
         and release_allowed is True
-        and (
-            verification_scope == "release-baseline"
-            or (verification_scope == "narrow-terminal" and terminal_authorization == "narrow-terminal")
-        )
+        and verification_scope == VerificationScope.RELEASE_BASELINE.value
+        and (target_sha is None or verified_head == target_sha)
     )
 
     ledger = _read_ledger()
@@ -313,6 +390,8 @@ def cmd_record_full_verify(command: str) -> int:
         "verification_scope": verification_scope,
         "release_baseline_allowed": release_allowed,
         "terminal_authorization": terminal_authorization,
+        "verified_head_sha": verified_head,
+        "target_sha": target_sha,
         "accepted": accepted,
     }
     _write_ledger(ledger)
@@ -323,9 +402,15 @@ def cmd_record_full_verify(command: str) -> int:
     )
     if not accepted and result.returncode == 0:
         print(
-            "POST-MERGE BROAD VERIFY DID NOT GRANT release-baseline permission; train-status remains incomplete.",
+            "POST-MERGE BROAD VERIFY DID NOT GRANT typed release-baseline authority for the selected target; "
+            "train-status remains incomplete.",
             file=sys.stderr,
         )
+        if target_sha is not None and verified_head != target_sha:
+            print(
+                f"terminal verify reported git_head={verified_head!r}, expected fetched target {target_sha}",
+                file=sys.stderr,
+            )
     if result.returncode != 0:
         print(result.stdout[-4000:])
         print(result.stderr[-4000:], file=sys.stderr)
@@ -335,7 +420,7 @@ def cmd_record_full_verify(command: str) -> int:
             "before merging further PRs in this train.",
             file=sys.stderr,
         )
-    return result.returncode
+    return result.returncode if result.returncode != 0 else (0 if accepted else 1)
 
 
 def main(argv: list[str] | None = None) -> int:
