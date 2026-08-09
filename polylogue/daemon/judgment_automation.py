@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 from polylogue.config import JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT, load_polylogue_config
-from polylogue.core.enums import AssertionKind
+from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.logging import get_logger
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
@@ -284,6 +284,30 @@ def _sweep_result_from_receipt_payload(payload: Mapping[str, object]) -> Judgmen
     )
 
 
+def _valid_judgment_automation_receipt_payload(payload: object) -> bool:
+    """Check that a durable receipt contains enough evidence to acknowledge a marker."""
+
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("status") not in {"completed", "parked", "failed"}:
+        return False
+    if not isinstance(payload.get("reason"), str) or not payload["reason"]:
+        return False
+    if not isinstance(payload.get("retryable"), bool):
+        return False
+    if not isinstance(payload.get("retry_route"), str) or not payload["retry_route"]:
+        return False
+    try:
+        _require_positive_batch_limit(payload.get("batch_limit"))
+    except ValueError:
+        return False
+    for key in ("receipt_persistence_degraded", "receipt_persistence_recovered"):
+        if not isinstance(payload.get(key), bool):
+            return False
+    counter_keys = {"considered", "accepted", "rejected", "escalated", "idempotent", "failed"}
+    return not (counter_keys & payload.keys()) or _sweep_result_from_receipt_payload(payload) is not None
+
+
 def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | None = None) -> int:
     """Drain committed user-tier receipt markers using their original IDs.
 
@@ -319,13 +343,21 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
                 operation_id=operation_id,
                 archive_root_path=root,
             )
-            if latest is not None:
+            if (
+                latest is not None
+                and latest.get("operation_id") == operation_id
+                and _valid_judgment_automation_receipt_payload(latest.get("payload"))
+            ):
                 acknowledged += int(ack_judgment_automation_receipt_outbox(conn, marker, now_ms=now_ms))
                 continue
+            if latest is not None:
+                logger.error("judgment_automation: refusing malformed receipt event for marker %s", marker.assertion_id)
             raw_status_value = receipt.get("status")
             raw_reason = receipt.get("reason")
-            if raw_status_value not in {"completed", "parked", "failed"} or not isinstance(raw_reason, str):
+            if not _valid_judgment_automation_receipt_payload(receipt):
                 logger.error("judgment_automation: malformed receipt payload in marker %s", marker.assertion_id)
+                continue
+            if raw_status_value not in {"completed", "parked", "failed"} or not isinstance(raw_reason, str):
                 continue
             raw_status = cast(JudgmentAutomationReceiptStatus, raw_status_value)
             raw_batch_limit = receipt.get("batch_limit", JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT)
@@ -380,10 +412,14 @@ def _judgment_automation_receipt_outbox_pending(root: Path) -> bool:
                 """
                 SELECT 1
                 FROM assertions
-                WHERE scope_ref = ? AND kind = ? AND status = 'active'
+                WHERE scope_ref = ? AND kind = ? AND status = ?
                 LIMIT 1
                 """,
-                (JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE, AssertionKind.RUN_STATE.value),
+                (
+                    JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE,
+                    AssertionKind.RUN_STATE.value,
+                    AssertionStatus.ACTIVE.value,
+                ),
             ).fetchone()
             is not None
         )
@@ -718,8 +754,20 @@ def run_judgment_automation_sweep_once(
             )
             if operation_id is not None and recorded is JudgmentAutomationReceiptOutcome.PERSISTED:
                 assert outbox_marker is not None
-                ack_judgment_automation_receipt_outbox(conn, outbox_marker, now_ms=now_ms)
-                conn.commit()
+                try:
+                    acknowledged = ack_judgment_automation_receipt_outbox(conn, outbox_marker, now_ms=now_ms)
+                    if not acknowledged:
+                        raise RuntimeError("judgment automation receipt outbox marker was not acknowledged")
+                    conn.commit()
+                except Exception as exc:
+                    conn.rollback()
+                    raise _JudgmentAutomationReceiptPersistenceError(
+                        "judgment automation receipt acknowledgement could not be persisted",
+                        result=result,
+                        status=receipt_status,
+                        reason=receipt_reason,
+                        user_tier_committed=True,
+                    ) from exc
         except _JudgmentAutomationReceiptPersistenceError as exc:
             raise _JudgmentAutomationReceiptPersistenceError(
                 str(exc),
@@ -886,6 +934,7 @@ async def periodic_judgment_automation_sweep(
             cfg_automation_enabled = cfg.judgment_automation_enabled
             cfg_judge_enabled = cfg.mcp_judge_enabled
             _require_positive_batch_limit(cfg_batch_limit)
+            resolved_policy = parse_judgment_automation_policy(cfg.judgment_automation_policy)
         except Exception as exc:
             await persist_failure_fallback(
                 exc,
@@ -928,6 +977,7 @@ async def periodic_judgment_automation_sweep(
                 run_judgment_automation_sweep_once,
                 root,
                 batch_limit=cfg_batch_limit,
+                policy=resolved_policy,
                 operation_id=receipt_context.operation_id,
                 _receipt_context=receipt_context,
             )

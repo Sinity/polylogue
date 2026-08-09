@@ -393,6 +393,117 @@ def test_committed_judgment_receipt_outbox_recovers_after_ops_crash(tmp_path: Pa
         assert list_judgment_automation_receipt_outbox(conn) == []
 
 
+def test_post_receipt_ack_failure_keeps_one_authoritative_receipt(tmp_path: Path) -> None:
+    """A second user-tier commit failure cannot overwrite a durable success."""
+
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    _insert_candidate(tmp_path, assertion_id="cand-ack-failure", kind=AssertionKind.PATHOLOGY, confidence=0.95)
+    operation_id = "judgment-automation:ack-failure"
+    context = _JudgmentAutomationReceiptContext(operation_id=operation_id)
+    policy = {AssertionKind.PATHOLOGY: JudgmentAutomationPolicyRule(auto_accept_min_confidence=0.9)}
+
+    from polylogue.storage.sqlite.connection_profile import open_connection as real_open_connection
+
+    class _FailSecondCommit:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+            self.commit_count = 0
+
+        def commit(self) -> None:
+            self.commit_count += 1
+            if self.commit_count == 2:
+                raise sqlite3.OperationalError("injected acknowledgement commit failure")
+            self._connection.commit()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._connection, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name in {"_connection", "commit_count"}:
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._connection, name, value)
+
+    connections: list[_FailSecondCommit] = []
+
+    def open_with_failing_ack(path: Path) -> _FailSecondCommit:
+        wrapped = _FailSecondCommit(real_open_connection(path))
+        connections.append(wrapped)
+        return wrapped
+
+    with patch(
+        "polylogue.storage.sqlite.connection_profile.open_connection",
+        side_effect=open_with_failing_ack,
+    ):
+        with pytest.raises(_JudgmentAutomationReceiptPersistenceError):
+            run_judgment_automation_sweep_once(
+                tmp_path,
+                batch_limit=200,
+                policy=policy,
+                operation_id=operation_id,
+                _receipt_context=context,
+                now_ms=10_000,
+            )
+
+    assert connections[0].commit_count == 2
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute(
+            "SELECT operation_id, payload_json FROM daemon_events WHERE kind = 'judgment-automation'"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == operation_id
+    assert json.loads(rows[0][1])["status"] == "completed"
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert len(list_judgment_automation_receipt_outbox(conn)) == 1
+
+    assert recover_pending_judgment_automation_receipts(tmp_path, now_ms=11_000) == 1
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM daemon_events WHERE kind = 'judgment-automation'").fetchone() == (1,)
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert list_judgment_automation_receipt_outbox(conn) == []
+
+
+def test_recovery_retains_marker_when_latest_durable_event_is_malformed(tmp_path: Path) -> None:
+    """Malformed ops data is not evidence that permits deleting the marker."""
+
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    operation_id = "judgment-automation:malformed-event"
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        upsert_judgment_automation_receipt_outbox(
+            conn,
+            operation_id=operation_id,
+            receipt_payload={
+                "status": "completed",
+                "reason": "sweep_completed",
+                "retryable": False,
+                "retry_route": "next enabled judgment-automation tick",
+                "batch_limit": 200,
+                "receipt_persistence_degraded": False,
+                "receipt_persistence_recovered": False,
+            },
+            now_ms=10_000,
+        )
+        conn.commit()
+    emit_daemon_event(
+        "judgment-automation",
+        operation_id=operation_id,
+        payload={"status": "completed"},
+        archive_root_path=tmp_path,
+        observed_at_ms=10_500,
+    )
+
+    with patch(
+        "polylogue.daemon.judgment_automation._record_judgment_automation_receipt",
+        side_effect=RuntimeError("recovery write unavailable"),
+    ):
+        assert recover_pending_judgment_automation_receipts(tmp_path, now_ms=11_000) == 0
+
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert len(list_judgment_automation_receipt_outbox(conn)) == 1
+
+
 def test_coalesced_receipt_keeps_outbox_marker_for_operation_recovery(tmp_path: Path) -> None:
     """Coalescing another event cannot erase this operation's receipt obligation."""
 
@@ -443,6 +554,9 @@ def test_periodic_recovers_receipt_outbox_before_invalid_config_reload(tmp_path:
             receipt_payload={
                 "status": "completed",
                 "reason": "sweep_completed",
+                "retry_route": "next enabled judgment-automation tick",
+                "receipt_persistence_degraded": False,
+                "receipt_persistence_recovered": False,
                 "batch_limit": 200,
                 "considered": 1,
                 "accepted": 1,
@@ -734,6 +848,42 @@ def test_periodic_survives_invalid_post_sleep_config_reload(tmp_path: Path) -> N
     receipt = json.loads(row[0])
     assert receipt["status"] == "failed"
     assert receipt["reason"] == "configuration_reload_failed"
+
+
+def test_periodic_classifies_inner_policy_reload_failure_as_configuration_reload(
+    tmp_path: Path,
+) -> None:
+    _init_ops_db(tmp_path / "ops.db")
+    cfg = SimpleNamespace(
+        judgment_automation_enabled=True,
+        mcp_judge_enabled=True,
+        judgment_automation_interval_s=60,
+        judgment_automation_batch_limit=200,
+        judgment_automation_policy={"pathology": {"auto_accept_min_confidence": 0.9}},
+    )
+    write_coordinator = AsyncMock()
+
+    async def _fake_run_sync(actor, function, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return function(*args, **kwargs)
+
+    with (
+        patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
+        patch(
+            "polylogue.daemon.judgment_automation.parse_judgment_automation_policy",
+            side_effect=ConfigError("malformed policy reload"),
+        ),
+        patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
+        patch("polylogue.paths.archive_root", return_value=tmp_path),
+    ):
+        write_coordinator.run_sync.side_effect = _fake_run_sync
+        asyncio.run(_run_one_tick())
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM daemon_events WHERE kind = 'judgment-automation' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    assert json.loads(row[0])["reason"] == "configuration_reload_failed"
 
 
 def test_periodic_coalesces_identical_disabled_receipt_through_default_interval(
