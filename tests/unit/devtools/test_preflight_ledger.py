@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -24,8 +25,24 @@ def _list(value: object) -> list[object]:
     return cast(list[object], value)
 
 
-def _mixed_replay_backlog(*_args: object, **_kwargs: object) -> dict[str, object]:
-    return {"available": True, "candidate_count": 2, "blocked_candidate_count": 5}
+def _replay_backlog(
+    candidate_count: int,
+    blocked_candidate_count: int,
+    executable_authority_component_count: int | None = None,
+) -> Callable[..., dict[str, object]]:
+    def backlog(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "available": True,
+            "candidate_count": candidate_count,
+            "blocked_candidate_count": blocked_candidate_count,
+            "executable_authority_component_count": (
+                candidate_count
+                if executable_authority_component_count is None
+                else executable_authority_component_count
+            ),
+        }
+
+    return backlog
 
 
 def _initialize_all_tiers(root: Path) -> None:
@@ -184,16 +201,60 @@ def test_preflight_fails_closed_on_missing_census_relation(tmp_path: Path) -> No
 def test_preflight_fails_when_executable_replay_candidates_coexist_with_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(preflight_ledger, "raw_materialization_replay_backlog", _mixed_replay_backlog)
+    _initialize_all_tiers(tmp_path)
+    monkeypatch.setattr(preflight_ledger, "raw_materialization_replay_backlog", _replay_backlog(2, 5))
 
-    replay = preflight_ledger._replay_preflight(tmp_path, limit=10)
+    report = build_preflight_ledger(tmp_path, limit=10)
+    replay = _mapping(_mapping(report["checks"])["replay_backlog"])
 
     assert replay["state"] == "fail"
     assert replay["candidate_count"] == 2
     assert replay["blocked_candidate_count"] == 5
 
 
-def test_preflight_ignores_blank_parse_errors_in_origin_and_totals(tmp_path: Path) -> None:
+def test_preflight_fails_when_executable_replay_candidates_outnumber_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _initialize_all_tiers(tmp_path)
+    monkeypatch.setattr(preflight_ledger, "raw_materialization_replay_backlog", _replay_backlog(5, 2))
+
+    report = build_preflight_ledger(tmp_path, limit=10)
+    replay = _mapping(_mapping(report["checks"])["replay_backlog"])
+
+    assert replay["state"] == "fail"
+    assert replay["candidate_count"] == 5
+    assert replay["blocked_candidate_count"] == 2
+
+
+def test_preflight_warns_when_replay_candidates_are_all_resource_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _initialize_all_tiers(tmp_path)
+    monkeypatch.setattr(preflight_ledger, "raw_materialization_replay_backlog", _replay_backlog(5, 5, 0))
+
+    report = build_preflight_ledger(tmp_path, limit=10)
+    replay = _mapping(_mapping(report["checks"])["replay_backlog"])
+
+    assert replay["state"] == "warn"
+    assert replay["candidate_count"] == 5
+    assert replay["blocked_candidate_count"] == 5
+    assert replay["executable_authority_component_count"] == 0
+
+
+def test_preflight_is_unknown_when_replay_candidates_are_unclassified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _initialize_all_tiers(tmp_path)
+    monkeypatch.setattr(preflight_ledger, "raw_materialization_replay_backlog", _replay_backlog(1, 0, 0))
+
+    report = build_preflight_ledger(tmp_path, limit=10)
+    replay = _mapping(_mapping(report["checks"])["replay_backlog"])
+
+    assert replay["state"] == "unknown"
+    assert report["ok"] is False
+
+
+def test_preflight_reports_every_non_null_raw_parse_error(tmp_path: Path) -> None:
     _initialize_all_tiers(tmp_path)
     _insert_raws(
         tmp_path,
@@ -224,9 +285,9 @@ def test_preflight_ignores_blank_parse_errors_in_origin_and_totals(tmp_path: Pat
     by_origin = {str(item["origin"]): item for item in (_mapping(value) for value in _list(source["by_origin"]))}
     origin = by_origin["codex-session"]
     eligibility = _mapping(origin["eligibility"])
-    assert totals["parse_failures"] == 1
-    assert origin["parse_failures"] == 1
-    assert eligibility["actionable_count"] == 1
+    assert totals["parse_failures"] == 3
+    assert origin["parse_failures"] == 3
+    assert eligibility["actionable_count"] == 3
 
 
 def test_preflight_blocks_unexplained_raw_failure_lifecycle(tmp_path: Path) -> None:
