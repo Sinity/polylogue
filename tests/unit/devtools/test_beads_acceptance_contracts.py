@@ -14,6 +14,25 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        mod,
+        "resolve_route",
+        lambda identifier: (
+            {
+                "bead_id": None,
+                "class": "*",
+                "contract_type": "*",
+                "dispatch": "*",
+                "targets": ["Test production route."],
+            }
+            if identifier == "test/production"
+            else None
+        ),
+    )
+
+
 def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, Any]:
     route_dispatch = {
         "audit": "read-only",
@@ -27,7 +46,7 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         "risk": risk,
         "confidence": "high",
         "outcome": "The named behavior is observable through the production route.",
-        "routes": ["Exercise the real production entry point."],
+        "routes": ["Test production route."],
         "evidence": ["A red-before receipt records the defect."],
         "retained_scope": [],
         "verification": [
@@ -38,7 +57,17 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         "safety": ["Dry-run and backup are required."]
         if risk == "durable-mutation" or kind == "live_operation"
         else [],
-        "route_spec": {"mode": "named", "identifier": "production-route", "dispatch": route_dispatch},
+        "route_spec": {
+            "mode": "named",
+            "identifier": "test/production",
+            "class": {
+                "live_operation": "LiveOperationRoute",
+                "audit": "AuditRoute",
+                "decision": "DecisionRoute",
+                "documentation": "DocumentationRoute",
+            }.get(kind, "ImplementationRoute"),
+            "dispatch": route_dispatch,
+        },
         "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
         "closure": {
             "rule": "Close only with final-head evidence.",
@@ -287,6 +316,26 @@ def test_route_authority_requires_a_structured_identifier() -> None:
     issue["acceptance_criteria"] = "untrusted prose"
 
     assert "route_spec.identifier must be a non-empty named identifier" in mod.validate(issue)
+
+
+def test_unknown_route_identifier_is_rejected_by_the_committed_registry() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["route_spec"]["identifier"] = "acceptance/made-up-route"
+
+    assert "route_spec.identifier 'acceptance/made-up-route' is not registered" in mod.validate(issue)
+
+
+def test_registered_route_class_and_targets_are_authoritative() -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["route_spec"]["class"] = "LiveOperationRoute"
+    contract["routes"] = ["A different route authority."]
+
+    errors = mod.validate(issue)
+
+    assert "route_spec.class does not match the contract_type" in errors
+    assert "route_spec targets do not match the registered route authority" in errors
 
 
 def test_render_drift_is_rejected() -> None:

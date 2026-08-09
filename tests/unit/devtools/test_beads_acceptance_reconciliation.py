@@ -20,6 +20,22 @@ spec.loader.exec_module(mod)
 def _test_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep synthetic tests on the same reconciliation entry point with a tiny ratchet."""
     monkeypatch.setattr(mod._contracts, "load_manifest", lambda path: ("polylogue-test",))
+    monkeypatch.setattr(mod._contracts, "validate_route_registry", lambda ids: [])
+    monkeypatch.setattr(
+        mod._contracts,
+        "resolve_route",
+        lambda identifier: (
+            {
+                "bead_id": None,
+                "class": "*",
+                "contract_type": "*",
+                "dispatch": "*",
+                "targets": ["Test production route."],
+            }
+            if identifier == "test/production"
+            else None
+        ),
+    )
 
 
 def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:00:00Z") -> dict[str, Any]:
@@ -45,13 +61,18 @@ def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:
         "risk": "ordinary",
         "confidence": "high",
         "outcome": "The behavior is observable through the production route.",
-        "routes": ["Exercise the real production route."],
+        "routes": ["Test production route."],
         "evidence": ["A red-before receipt records the defect."],
         "retained_scope": [],
         "verification": ["Run a focused regression.", "Run `devtools verify` for the affected baseline."],
         "anti_vacuity": ["Removing the guard makes the regression fail."],
         "safety": [],
-        "route_spec": {"mode": "named", "identifier": "production-route", "dispatch": "production"},
+        "route_spec": {
+            "mode": "named",
+            "identifier": "test/production",
+            "class": "ImplementationRoute",
+            "dispatch": "production",
+        },
         "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
         "closure": {
             "rule": "Close only with final-head evidence.",
@@ -316,7 +337,12 @@ def test_post_import_equality_digest_rejects_unrelated_mutation(tmp_path: Path) 
     _write_export(after_path, [after])
 
     try:
-        mod.verify_post_import(before=before_path, after=after_path, wave=wave_path)
+        report, wave = mod.reconcile(repository_path, before_path)
+        report_path = tmp_path / "report.json"
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        mod.verify_post_import(
+            repository=repository_path, before=before_path, after=after_path, wave=wave_path, report=report_path
+        )
     except mod.ReconciliationError as exc:
         assert "non-contract fields" in str(exc)
     else:
@@ -341,7 +367,12 @@ def test_post_import_equality_digest_rejects_new_live_record(tmp_path: Path) -> 
     _write_export(after_path, [wave[0], after])
 
     try:
-        mod.verify_post_import(before=before_path, after=after_path, wave=wave_path)
+        report, wave = mod.reconcile(repository_path, before_path)
+        report_path = tmp_path / "report.json"
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        mod.verify_post_import(
+            repository=repository_path, before=before_path, after=after_path, wave=wave_path, report=report_path
+        )
     except mod.ReconciliationError as exc:
         assert "record universe" in str(exc)
     else:
@@ -358,3 +389,92 @@ def test_cli_returns_nonzero_when_canonical_contract_validation_fails(tmp_path: 
     _write_export(live_path, [live])
 
     assert mod.main(["--repository", str(repository_path), "--live", str(live_path), "--json"]) == 1
+
+
+def test_post_import_rejects_a_modified_wave_contract(tmp_path: Path) -> None:
+    master = _issue()
+    before = copy.deepcopy(master)
+    before["acceptance_criteria"] = None
+    before["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    before_path = tmp_path / "before.jsonl"
+    wave_path = tmp_path / "wave.jsonl"
+    report_path = tmp_path / "report.json"
+    after_path = tmp_path / "after.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(before_path, [before])
+    report, wave = mod.reconcile(repository_path, before_path)
+    wave[0]["acceptance_criteria"] = "altered after reconciliation"
+    _write_export(wave_path, wave)
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    _write_export(after_path, wave)
+
+    with pytest.raises(mod.ReconciliationError, match="targeted wave digest"):
+        mod.verify_post_import(
+            repository=repository_path,
+            before=before_path,
+            after=after_path,
+            wave=wave_path,
+            report=report_path,
+        )
+
+
+def test_post_import_revalidates_stale_before_source(tmp_path: Path) -> None:
+    master = _issue()
+    before = copy.deepcopy(master)
+    before["acceptance_criteria"] = None
+    before["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    before_path = tmp_path / "before.jsonl"
+    wave_path = tmp_path / "wave.jsonl"
+    report_path = tmp_path / "report.json"
+    after_path = tmp_path / "after.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(before_path, [before])
+    report, wave = mod.reconcile(repository_path, before_path)
+    _write_export(wave_path, wave)
+    before["title"] = "stale live source"
+    report["live_population_digest"] = mod.equality_digest({before["id"]: before})
+    _write_export(before_path, [before])
+    _write_export(after_path, wave)
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(mod.ReconciliationError, match="stale source digest"):
+        mod.verify_post_import(
+            repository=repository_path,
+            before=before_path,
+            after=after_path,
+            wave=wave_path,
+            report=report_path,
+        )
+
+
+def test_post_import_rejects_reordered_wave_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mod._contracts, "load_manifest", lambda path: ("polylogue-a", "polylogue-b"))
+    master_a = _issue(bead_id="polylogue-a")
+    master_b = _issue(bead_id="polylogue-b")
+    before_a = copy.deepcopy(master_a)
+    before_b = copy.deepcopy(master_b)
+    for row in (before_a, before_b):
+        row["acceptance_criteria"] = None
+        row["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    before_path = tmp_path / "before.jsonl"
+    wave_path = tmp_path / "wave.jsonl"
+    report_path = tmp_path / "report.json"
+    after_path = tmp_path / "after.jsonl"
+    _write_export(repository_path, [master_a, master_b])
+    _write_export(before_path, [before_a, before_b])
+    report, wave = mod.reconcile(repository_path, before_path)
+    _write_export(wave_path, list(reversed(wave)))
+    _write_export(after_path, wave)
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(mod.ReconciliationError, match="order or population"):
+        mod.verify_post_import(
+            repository=repository_path,
+            before=before_path,
+            after=after_path,
+            wave=wave_path,
+            report=report_path,
+        )

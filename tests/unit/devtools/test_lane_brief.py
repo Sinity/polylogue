@@ -28,6 +28,25 @@ def _bd_show_record(**overrides: object) -> dict[str, object]:
     return record
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        beads_acceptance_contracts,
+        "resolve_route",
+        lambda identifier: (
+            {
+                "bead_id": None,
+                "class": "*",
+                "contract_type": "*",
+                "dispatch": "*",
+                "targets": ["Test production route."],
+            }
+            if identifier == "test/production"
+            else None
+        ),
+    )
+
+
 def _valid_contract_record(confidence: str = "high") -> dict[str, object]:
     record = _bd_show_record(
         description="A source description with observable scope.",
@@ -41,14 +60,19 @@ def _valid_contract_record(confidence: str = "high") -> dict[str, object]:
         "risk": "ordinary",
         "confidence": confidence,
         "outcome": "The behavior is observable through the production route.",
-        "routes": ["Exercise the real production route."],
+        "routes": ["Test production route."],
         "evidence": ["A red-before receipt records the defect."],
         "retained_scope": [],
         "verification": ["Run the focused regression."],
         "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
         "anti_vacuity": ["Removing the guard makes the regression fail."],
         "safety": [],
-        "route_spec": {"mode": "named", "identifier": "production-route", "dispatch": "production"},
+        "route_spec": {
+            "mode": "named",
+            "identifier": "test/production",
+            "class": "ImplementationRoute",
+            "dispatch": "production",
+        },
         "closure": {
             "rule": "Close only with final-head evidence.",
             "disposition": "whole-or-explicit-partial",
