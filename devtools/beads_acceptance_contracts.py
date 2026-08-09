@@ -7,6 +7,12 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from devtools.acceptance_route_registry import (
+    AcceptanceRouteRegistryError,
+    load_registry,
+    registry_digest,
+    resolve_route,
+)
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import dumps as json_dumps
 from polylogue.core.json import loads as json_loads
@@ -36,6 +42,16 @@ _ROUTE_DISPATCH_BY_TYPE = {
     "test_harness": frozenset({"production"}),
     "process": frozenset({"production"}),
     "documentation": frozenset({"documentation"}),
+}
+_ROUTE_CLASS_BY_TYPE = {
+    "implementation": "ImplementationRoute",
+    "live_operation": "LiveOperationRoute",
+    "audit": "AuditRoute",
+    "decision": "DecisionRoute",
+    "epic": "EpicRoute",
+    "test_harness": "TestHarnessRoute",
+    "process": "ProcessRoute",
+    "documentation": "DocumentationRoute",
 }
 _EVIDENCE_SPAN_FIELDS = frozenset({"snapshot", "snapshot_digest", "range", "text_digest"})
 _EVIDENCE_RANGE_FIELDS = frozenset({"start", "end"})
@@ -147,6 +163,9 @@ def _validate_route_spec(errors: list[str], contract: dict[str, Any]) -> bool:
     if route_spec is None:
         return False
     valid = True
+    if set(route_spec) != {"mode", "identifier", "class", "dispatch"}:
+        errors.append("route_spec fields must be exactly mode, identifier, class, and dispatch")
+        valid = False
     if route_spec.get("mode") not in _ALLOWED_ROUTE_MODES:
         errors.append("route_spec.mode must be named")
         valid = False
@@ -171,6 +190,40 @@ def _validate_route_spec(errors: list[str], contract: dict[str, Any]) -> bool:
                 f"contract_type {contract.get('contract_type')!r}"
             )
             valid = False
+    identifier = route_spec.get("identifier")
+    try:
+        registered = resolve_route(identifier)
+    except AcceptanceRouteRegistryError as exc:
+        errors.append(str(exc))
+        return False
+    if registered is None:
+        errors.append(f"route_spec.identifier {identifier!r} is not registered")
+        return False
+    registered_bead_id = registered.get("bead_id")
+    if registered_bead_id not in {None, contract.get("bead_id")}:
+        errors.append("route_spec.identifier is registered for a different Bead")
+        valid = False
+    if registered_bead_id is not None and registered.get("contract_type") != contract.get("contract_type"):
+        errors.append("route_spec.identifier is registered for a different contract_type")
+        valid = False
+    if registered.get("dispatch") not in {"*", route_spec.get("dispatch")}:
+        errors.append("route_spec.dispatch does not match the registered route class")
+        valid = False
+    contract_type = contract.get("contract_type")
+    expected_class = _ROUTE_CLASS_BY_TYPE.get(contract_type if isinstance(contract_type, str) else "")
+    if route_spec.get("class") != expected_class:
+        errors.append("route_spec.class does not match the contract_type")
+        valid = False
+    if registered.get("class") not in {"*", route_spec.get("class")}:
+        errors.append("route_spec.class does not match the registered route class")
+        valid = False
+    targets = registered.get("targets")
+    if not isinstance(targets, list):
+        errors.append("registered route authority has no target list")
+        valid = False
+    elif targets != contract.get("routes"):
+        errors.append("route_spec targets do not match the registered route authority")
+        valid = False
     return valid
 
 
@@ -448,6 +501,24 @@ def load(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def validate_route_registry(required_ids: Iterable[str]) -> list[str]:
+    """Check that the committed route authority covers exactly the manifest IDs."""
+    try:
+        registry = load_registry()
+    except AcceptanceRouteRegistryError as exc:
+        return [str(exc)]
+    required = set(required_ids)
+    canonical = {entry.get("bead_id") for entry in registry.values() if isinstance(entry.get("bead_id"), str)}
+    errors: list[str] = []
+    if canonical != required:
+        errors.append(f"route registry Bead population mismatch: expected {len(required)}, found {len(canonical)}")
+    return errors
+
+
+def route_registry_digest() -> str:
+    return registry_digest()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate structured Beads acceptance contracts without guessing from prose."
@@ -462,8 +533,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     required_values = load_manifest(args.manifest)
+    registry_errors = validate_route_registry(required_values)
+    failures = {"__route_registry__": registry_errors} if registry_errors else {}
     required = set(required_values)
-    failures: dict[str, list[str]] = {}
     seen = set()
     for issue in load(args.issues):
         bid = issue.get("id")
