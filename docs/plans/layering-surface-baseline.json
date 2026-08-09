@@ -232,11 +232,6 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/click_app.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/click_app.py",
     "import": "polylogue.storage.sqlite.archive_tiers.index"
   },
   {
@@ -1446,11 +1441,6 @@
   },
   {
     "target": "polylogue/daemon",
-    "file": "polylogue/daemon/similarity.py",
-    "import": "polylogue.storage.sqlite.sqlite_vec_extension"
-  },
-  {
-    "target": "polylogue/daemon",
     "file": "polylogue/daemon/status.py",
     "import": "polylogue.sources.live"
   },
@@ -1553,11 +1543,6 @@
     "target": "polylogue/mcp",
     "file": "polylogue/mcp/server_prompts.py",
     "import": "polylogue.storage.sqlite.archive_tiers.archive"
-  },
-  {
-    "target": "polylogue/mcp",
-    "file": "polylogue/mcp/server_prompts.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.write"
   },
   {
     "target": "polylogue/mcp",
