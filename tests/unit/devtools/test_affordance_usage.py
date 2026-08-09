@@ -367,13 +367,22 @@ def test_affordance_usage_marks_selected_index_snapshot_unstable_after_change(
     real_observation = affordance_usage._snapshot_observation
     calls = 0
 
-    def observe_with_change(path: Path, *, opened_main_fd: int | None = None) -> dict[str, object]:
+    def observe_with_change(
+        path: Path,
+        *,
+        opened_main_fd: int | None = None,
+        opened_sidecar_fds: dict[str, int] | None = None,
+    ) -> dict[str, object]:
         nonlocal calls
         calls += 1
         if calls == 2:
             writer.execute("INSERT INTO sessions VALUES ('concurrent', 'codex-session', 'change', 1)")
             writer.commit()
-        return real_observation(path, opened_main_fd=opened_main_fd)
+        return real_observation(
+            path,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=opened_sidecar_fds,
+        )
 
     monkeypatch.setattr(affordance_usage, "_snapshot_observation", observe_with_change)
     try:
@@ -409,12 +418,21 @@ def test_affordance_usage_rejects_unlinked_selected_index_as_incomplete(
     real_observation = affordance_usage._snapshot_observation
     unlinked = False
 
-    def unlink_before_observation(path: Path, *, opened_main_fd: int | None = None) -> dict[str, object]:
+    def unlink_before_observation(
+        path: Path,
+        *,
+        opened_main_fd: int | None = None,
+        opened_sidecar_fds: dict[str, int] | None = None,
+    ) -> dict[str, object]:
         nonlocal unlinked
         if not unlinked:
             path.unlink()
             unlinked = True
-        return real_observation(path, opened_main_fd=opened_main_fd)
+        return real_observation(
+            path,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=opened_sidecar_fds,
+        )
 
     monkeypatch.setattr(affordance_usage, "_snapshot_observation", unlink_before_observation)
     report = affordance_usage.build_report(
@@ -450,9 +468,9 @@ def test_affordance_usage_rejects_selected_index_replacement_after_reader_open(
     real_open = open_readonly_connection
     opened_readers = 0
 
-    def replace_after_reader_open(path: Path) -> sqlite3.Connection:
+    def replace_after_reader_open(path: Path, *, opened_main_fd: int | None = None) -> sqlite3.Connection:
         nonlocal opened_readers
-        connection = real_open(path)
+        connection = real_open(path, opened_main_fd=opened_main_fd)
         opened_readers += 1
         if opened_readers == 2:
             replacement_db = _make_index_db(replacement_root)
@@ -463,6 +481,140 @@ def test_affordance_usage_rejects_selected_index_replacement_after_reader_open(
     monkeypatch.setattr(affordance_usage, "open_readonly_connection", replace_after_reader_open)
 
     with pytest.raises(RuntimeError, match="selected index path was replaced"):
+        affordance_usage.build_report(
+            affordance_usage.AffordanceUsageArgs(
+                archive_root=archive_root,
+                out_dir=None,
+                days=36500,
+                family=("serena",),
+                detail_pattern=(),
+                sample_limit=10,
+                json=True,
+                all_time=False,
+                index_db=selected_db,
+            )
+        )
+
+
+def test_affordance_usage_reader_stays_on_opened_inode_across_path_replacement_and_restoration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production reader must use the inode opened before the pathname mutation."""
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    replacement_root = tmp_path / "replacement"
+    original_path = tmp_path / "original-index.db"
+    real_open = open_readonly_connection
+    swapped = False
+
+    def replace_before_reader_open(path: Path, *, opened_main_fd: int | None = None) -> sqlite3.Connection:
+        nonlocal swapped
+        if not swapped:
+            replacement_db = _make_index_db(replacement_root)
+            with sqlite3.connect(replacement_db) as replacement:
+                replacement.execute("DELETE FROM blocks")
+                replacement.commit()
+            selected_db.rename(original_path)
+            replacement_db.rename(selected_db)
+            connection = real_open(path, opened_main_fd=opened_main_fd)
+            selected_db.rename(replacement_db)
+            original_path.rename(selected_db)
+            swapped = True
+            return connection
+        return real_open(path, opened_main_fd=opened_main_fd)
+
+    monkeypatch.setattr(affordance_usage, "open_readonly_connection", replace_before_reader_open)
+    report = affordance_usage.build_report(
+        affordance_usage.AffordanceUsageArgs(
+            archive_root=archive_root,
+            out_dir=None,
+            days=36500,
+            family=("serena",),
+            detail_pattern=("codebase-memory",),
+            sample_limit=10,
+            json=True,
+            all_time=False,
+            index_db=selected_db,
+        )
+    )
+
+    assert swapped is True
+    assert {row["family"]: row["actions"] for row in report["family_counts"]}["codebase-memory"] == 2
+    assert report["snapshot_identity"]["stable"] is True
+
+
+def test_affordance_usage_rejects_replaced_wal_sidecar_and_accepts_restoration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sidecar hash must remain tied to the object SQLite opened, including restoration."""
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    writer = sqlite3.connect(selected_db)
+    assert writer.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
+    writer.execute("PRAGMA wal_autocheckpoint = 0")
+    writer.execute("INSERT INTO sessions VALUES ('wal-row', 'codex-session', 'WAL', 1)")
+    writer.commit()
+    wal_path = Path(f"{selected_db}-wal")
+    saved_wal = tmp_path / "saved-index.wal"
+    replacement_wal = tmp_path / "replacement-index.wal"
+    real_open = open_readonly_connection
+    swapped = False
+
+    def replace_wal_after_reader_open(path: Path, *, opened_main_fd: int | None = None) -> sqlite3.Connection:
+        nonlocal swapped
+        connection = real_open(path, opened_main_fd=opened_main_fd)
+        if not swapped:
+            wal_path.rename(saved_wal)
+            replacement_wal.write_bytes(b"replacement sidecar")
+            replacement_wal.rename(wal_path)
+            swapped = True
+        return connection
+
+    monkeypatch.setattr(affordance_usage, "open_readonly_connection", replace_wal_after_reader_open)
+    with pytest.raises(RuntimeError, match="sidecar"):
+        affordance_usage.build_report(
+            affordance_usage.AffordanceUsageArgs(
+                archive_root=archive_root,
+                out_dir=None,
+                days=36500,
+                family=("serena",),
+                detail_pattern=(),
+                sample_limit=10,
+                json=True,
+                all_time=False,
+                index_db=selected_db,
+            )
+        )
+
+    wal_path.unlink()
+    saved_wal.rename(wal_path)
+    monkeypatch.setattr(affordance_usage, "open_readonly_connection", real_open)
+    report = affordance_usage.build_report(
+        affordance_usage.AffordanceUsageArgs(
+            archive_root=archive_root,
+            out_dir=None,
+            days=36500,
+            family=("serena",),
+            detail_pattern=(),
+            sample_limit=10,
+            json=True,
+            all_time=False,
+            index_db=selected_db,
+        )
+    )
+    writer.close()
+    assert report["snapshot_identity"]["stable"] is True
+
+
+def test_affordance_usage_rejects_symlinked_wal_sidecar(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    wal_path = Path(f"{selected_db}-wal")
+    wal_target = tmp_path / "wal-target"
+    wal_target.write_bytes(b"unsafe sidecar")
+    wal_path.symlink_to(wal_target)
+
+    with pytest.raises(RuntimeError, match="sidecar"):
         affordance_usage.build_report(
             affordance_usage.AffordanceUsageArgs(
                 archive_root=archive_root,

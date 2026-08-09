@@ -544,6 +544,7 @@ def open_readonly_connection(
     *,
     timeout: float = READ_DB_TIMEOUT,
     immutable: bool = False,
+    opened_main_fd: int | None = None,
 ) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
@@ -561,9 +562,18 @@ def open_readonly_connection(
     Callers passing ``immutable=True`` own that precondition check; this
     helper does not perform it, since the check is specific to how the caller
     obtained the snapshot.
+
+    When ``opened_main_fd`` is supplied, the reader is bound to that opened
+    inode through ``/proc/self/fd`` while SQLite retains its normal WAL and
+    journal lookup behavior.
     """
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
-    conn = sqlite3.connect(f"file:{path}{suffix}", uri=True, timeout=timeout)
+    if opened_main_fd is not None and immutable:
+        raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
+    database_uri = (
+        f"file:/proc/self/fd/{opened_main_fd}{suffix}" if opened_main_fd is not None else f"file:{path}{suffix}"
+    )
+    conn = sqlite3.connect(database_uri, uri=True, timeout=timeout)
     try:
         for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
             conn.execute(stmt)

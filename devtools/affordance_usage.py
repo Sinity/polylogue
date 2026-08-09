@@ -14,7 +14,7 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
 
-from devtools.index_snapshot import open_index_file_handle, snapshot_index_file_set
+from devtools.index_snapshot import open_index_file_set, snapshot_index_file_set
 from polylogue.config import Config, get_config
 from polylogue.insights.affordance_usage import (
     DEFAULT_FAMILY_PATTERNS,
@@ -191,8 +191,17 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _snapshot_observation(index_db: Path, *, opened_main_fd: int | None = None) -> dict[str, Any]:
-    return snapshot_index_file_set(index_db, opened_main_fd=opened_main_fd)
+def _snapshot_observation(
+    index_db: Path,
+    *,
+    opened_main_fd: int | None = None,
+    opened_sidecar_fds: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    return snapshot_index_file_set(
+        index_db,
+        opened_main_fd=opened_main_fd,
+        opened_sidecar_fds=opened_sidecar_fds,
+    )
 
 
 def _snapshot_identity(
@@ -1252,18 +1261,23 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
     effective_tool_patterns = _clean_patterns(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS))
     effective_detail_patterns = _clean_patterns(args.detail_pattern)
     recent_cutoff_ms = _recent_cutoff_ms(args.days)
-    opened_index_handle = open_index_file_handle(index_db)
-    opened_main_fd = opened_index_handle.__enter__()
+    opened_index_files = open_index_file_set(index_db)
+    opened_file_set = opened_index_files.__enter__()
+    opened_main_fd = opened_file_set.main_fd
     conn: Connection | None = None
     observer: Connection | None = None
     try:
-        conn = open_readonly_connection(index_db)
-        observer = open_readonly_connection(index_db)
+        conn = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
+        observer = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
         assert conn is not None
         observer_data_version_before = _data_version(observer)
         conn.execute("BEGIN")
         index_schema_version = _user_version(conn)
-        snapshot_before = _snapshot_observation(index_db, opened_main_fd=opened_main_fd)
+        snapshot_before = _snapshot_observation(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=dict(opened_file_set.sidecar_fds),
+        )
         origin_counts = _rows(
             conn,
             "SELECT origin, COUNT(*) AS sessions FROM sessions GROUP BY origin ORDER BY sessions DESC",
@@ -1360,14 +1374,18 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         surface_summary = _surface_inventory_summary(surface_inventory)
         report["surface_inventory"] = surface_inventory
         report["surface_inventory_summary"] = surface_summary
-        snapshot_after = _snapshot_observation(index_db, opened_main_fd=opened_main_fd)
+        snapshot_after = _snapshot_observation(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=dict(opened_file_set.sidecar_fds),
+        )
         observer_data_version_after = _data_version(observer)
     finally:
         if observer is not None:
             observer.close()
         if conn is not None:
             conn.close()
-        opened_index_handle.__exit__(None, None, None)
+        opened_index_files.__exit__(None, None, None)
     report["archive_root"] = str(config.archive_root)
     report["evidence_root"] = str(index_db.parent)
     report["index_db"] = str(index_db)

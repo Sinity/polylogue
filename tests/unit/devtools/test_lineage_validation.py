@@ -477,13 +477,22 @@ def test_lineage_validation_rejects_commit_between_reader_snapshot_and_file_hash
     original_snapshot_identity = lineage_validation._snapshot_identity
     snapshot_calls = 0
 
-    def commit_before_first_file_hash(index_db: Path, *, opened_main_fd: int | None = None) -> dict[str, object]:
+    def commit_before_first_file_hash(
+        index_db: Path,
+        *,
+        opened_main_fd: int | None = None,
+        opened_sidecar_fds: dict[str, int] | None = None,
+    ) -> dict[str, object]:
         nonlocal snapshot_calls
         if snapshot_calls == 0:
             writer.execute("UPDATE session_links SET method = 'concurrent' WHERE src_session_id = 'child'")
             writer.commit()
         snapshot_calls += 1
-        return original_snapshot_identity(index_db, opened_main_fd=opened_main_fd)
+        return original_snapshot_identity(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=opened_sidecar_fds,
+        )
 
     monkeypatch.setattr(lineage_validation, "_snapshot_identity", commit_before_first_file_hash)
     try:
@@ -509,12 +518,21 @@ def test_lineage_validation_rejects_unlinked_selected_index_as_incomplete(
     original_snapshot_identity = lineage_validation._snapshot_identity
     unlinked = False
 
-    def unlink_before_observation(index_db: Path, *, opened_main_fd: int | None = None) -> dict[str, object]:
+    def unlink_before_observation(
+        index_db: Path,
+        *,
+        opened_main_fd: int | None = None,
+        opened_sidecar_fds: dict[str, int] | None = None,
+    ) -> dict[str, object]:
         nonlocal unlinked
         if not unlinked:
             index_db.unlink()
             unlinked = True
-        return original_snapshot_identity(index_db, opened_main_fd=opened_main_fd)
+        return original_snapshot_identity(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=opened_sidecar_fds,
+        )
 
     monkeypatch.setattr(lineage_validation, "_snapshot_identity", unlink_before_observation)
     report = lineage_validation.build_report(_args(archive_root))
@@ -540,9 +558,9 @@ def test_lineage_validation_rejects_selected_index_replacement_after_reader_open
     real_open = open_readonly_connection
     opened_readers = 0
 
-    def replace_after_reader_open(path: Path) -> sqlite3.Connection:
+    def replace_after_reader_open(path: Path, *, opened_main_fd: int | None = None) -> sqlite3.Connection:
         nonlocal opened_readers
-        connection = real_open(path)
+        connection = real_open(path, opened_main_fd=opened_main_fd)
         opened_readers += 1
         if opened_readers == 2:
             replacement_db = _make_index_db(replacement_root)
@@ -554,6 +572,45 @@ def test_lineage_validation_rejects_selected_index_replacement_after_reader_open
 
     with pytest.raises(RuntimeError, match="selected index path was replaced"):
         lineage_validation.build_report(_args(archive_root))
+
+
+def test_lineage_validation_reader_stays_on_opened_inode_across_path_replacement_and_restoration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production reader must use the inode opened before the pathname mutation."""
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    replacement_root = tmp_path / "replacement"
+    original_path = tmp_path / "original-index.db"
+    real_open = open_readonly_connection
+    swapped = False
+
+    def replace_before_reader_open(path: Path, *, opened_main_fd: int | None = None) -> sqlite3.Connection:
+        nonlocal swapped
+        if not swapped:
+            replacement_db = _make_index_db(replacement_root)
+            with sqlite3.connect(replacement_db) as replacement:
+                replacement.execute("DELETE FROM sessions")
+                replacement.execute("DELETE FROM messages")
+                replacement.execute("DELETE FROM blocks")
+                replacement.execute("DELETE FROM session_links")
+                replacement.execute("DELETE FROM session_profiles")
+                replacement.commit()
+            selected_db.rename(original_path)
+            replacement_db.rename(selected_db)
+            connection = real_open(path, opened_main_fd=opened_main_fd)
+            selected_db.rename(replacement_db)
+            original_path.rename(selected_db)
+            swapped = True
+            return connection
+        return real_open(path, opened_main_fd=opened_main_fd)
+
+    monkeypatch.setattr(lineage_validation, "open_readonly_connection", replace_before_reader_open)
+    report = lineage_validation.build_report(_args(archive_root))
+
+    assert swapped is True
+    assert report["counts"]["physical_sessions"] == 3
+    assert report["snapshot_identity"]["stable"] is True
 
 
 def test_lineage_validation_rejects_budget_exhaustion_as_cycle_proof(tmp_path: Path) -> None:
