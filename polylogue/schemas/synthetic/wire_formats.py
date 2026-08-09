@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import re
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast
@@ -1076,6 +1077,90 @@ def _parser_artifact_evidence(
     return tuple(evidence)
 
 
+def _parser_artifact_message_keys(
+    sessions: Sequence[ParsedSession],
+) -> tuple[str, ...]:
+    """Return the complete conversational identity/content set from parsed output."""
+    keys: list[str] = []
+    for session in sessions:
+        for message in session.messages:
+            if message.provider_message_id:
+                keys.append(f"id:{message.provider_message_id}")
+            elif isinstance(message.text, str) and message.text.strip():
+                keys.append(f"text:{_normalise_evidence_text(message.text)}")
+    return tuple(keys)
+
+
+def _parser_artifact_expected_message_keys(
+    provider: str,
+    payload: JSONValue,
+) -> tuple[str, ...]:
+    """Derive the full conversational identity/content set from one artifact."""
+    native_payload = payload.get("raw_provider_payload") if isinstance(payload, dict) else None
+    if provider == "claude-ai" and isinstance(native_payload, (dict, list)):
+        nodes = _parser_evidence_nodes(provider, native_payload)
+    elif isinstance(payload, dict):
+        session = payload.get("session")
+        turns = session.get("turns") if isinstance(session, dict) else None
+        if isinstance(turns, list):
+            nodes = tuple(
+                turn
+                for turn in turns
+                if isinstance(turn, dict)
+                and isinstance(turn.get("provider_turn_id"), str)
+                and isinstance(turn.get("role"), str)
+                and isinstance(turn.get("text"), str)
+            )
+        else:
+            nodes = ()
+    else:
+        nodes = ()
+    if (
+        provider != "claude-ai"
+        and isinstance(payload, dict)
+        and isinstance(payload.get("raw_provider_payload"), (dict, list))
+    ):
+        payload = {key: value for key, value in payload.items() if key != "raw_provider_payload"}
+    if not nodes:
+        nodes = _parser_evidence_nodes(provider, payload)
+    keys: list[str] = []
+    for node in nodes:
+        identity: object = None
+        if provider == "chatgpt":
+            message = node.get("message")
+            if isinstance(message, Mapping):
+                identity = message.get("id")
+        if not isinstance(identity, str) or not identity:
+            identity = node.get("provider_turn_id")
+        if not isinstance(identity, str) or not identity:
+            identity = node.get("uuid")
+        if not isinstance(identity, str) or not identity:
+            identity = node.get("id")
+        if not isinstance(identity, str) or not identity:
+            message = node.get("message")
+            if isinstance(message, Mapping):
+                identity = message.get("id")
+        if isinstance(identity, str) and identity:
+            keys.append(f"id:{identity}")
+            continue
+
+        text = node.get("text")
+        if isinstance(text, str) and text.strip():
+            keys.append(f"text:{_normalise_evidence_text(text)}")
+    return tuple(keys)
+
+
+def _parser_artifact_has_complete_message_coverage(
+    sessions: Sequence[ParsedSession],
+    provider: str,
+    payload: JSONValue,
+) -> bool:
+    """Require every parser-relevant generated node to survive parsing."""
+    expected = _parser_artifact_expected_message_keys(provider, payload)
+    observed = _parser_artifact_message_keys(sessions)
+    return bool(expected) and Counter(expected) == Counter(observed)
+
+
 def build_wire_support_receipt(
     *,
     registry: object | None = None,
@@ -1286,6 +1371,8 @@ def build_wire_support_receipt(
                         payload,
                         f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
                     )
+                    if not _parser_artifact_has_complete_message_coverage(artifact_sessions, provider, parser_payload):
+                        artifact_evidence = ()
                     parsed_sessions.extend(artifact_sessions)
                     artifact_kind: Literal["baseline", "coverage"] = "baseline" if index == 0 else "coverage"
                     parser_witnesses.append(

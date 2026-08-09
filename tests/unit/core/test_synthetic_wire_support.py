@@ -179,6 +179,42 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
     assert not receipt.complete
 
 
+def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+
+    def return_only_first_message(
+        provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        sessions = original_parse_payload(
+            provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if provider == "chatgpt" and fallback_id.endswith(":0"):
+            return [session.model_copy(update={"messages": session.messages[:1]}) for session in sessions]
+        return sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", return_only_first_message)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+
+    entry = next(item for item in receipt.entries if item.package_version == "v1")
+    baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
+    assert baseline.parsed_message_count == 1
+    assert baseline.artifact_evidence == ()
+    assert not baseline.healthy
+    assert not entry.healthy
+    assert not receipt.complete
+
+
 @pytest.mark.parametrize("returned_session", ["empty", "unrelated", "metadata", "id_only"])
 def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
     monkeypatch: pytest.MonkeyPatch,
