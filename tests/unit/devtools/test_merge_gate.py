@@ -104,12 +104,27 @@ def test_record_persists_receipt_keyed_to_current_head_sha(monkeypatch: pytest.M
     assert receipt["skips_tests"] is False
 
 
-def test_check_blocks_receipt_without_release_baseline_permission(
+def test_check_accepts_affected_receipt_without_release_baseline_permission(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
     _record(monkeypatch, pr_view, command="devtools verify")
+    receipt_path = merge_gate._receipt_path(42)
+    receipt = json.loads(receipt_path.read_text())
+    receipt["release_baseline_allowed"] = False
+    receipt_path.write_text(json.dumps(receipt))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 0
+
+
+def test_check_blocks_full_receipt_without_release_baseline_permission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view, command="devtools verify --all")
     receipt_path = merge_gate._receipt_path(42)
     receipt = json.loads(receipt_path.read_text())
     receipt["release_baseline_allowed"] = False
@@ -129,7 +144,11 @@ def test_record_consumes_structured_verify_release_permission(monkeypatch: pytes
             return base(cmd, **kwargs)
         if cmd[:3] == ["gh", "pr", "view"]:
             return base(cmd, **kwargs)
-        return MagicMock(returncode=0, stdout=json.dumps({"release_baseline_allowed": False}), stderr="")
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps({"verification_scope": "affected", "release_baseline_allowed": False}),
+            stderr="",
+        )
 
     monkeypatch.setattr(subprocess, "run", _run)
     assert merge_gate.cmd_record(42, "devtools verify") == 0

@@ -132,7 +132,14 @@ def _append_merge_entry(pr: int, head_sha: str, title: str) -> None:
 
 
 def _pending_prs_since_last_full_verify(ledger: dict[str, Any]) -> list[dict[str, Any]]:
-    last_verify_at = (ledger.get("last_full_verify") or {}).get("at", 0.0)
+    last_verify = ledger.get("last_full_verify") or {}
+    last_verify_at = (
+        last_verify.get("at", 0.0)
+        if last_verify.get("accepted") is True
+        and last_verify.get("exit_code") == 0
+        and last_verify.get("release_baseline_allowed") is True
+        else 0.0
+    )
     return [entry for entry in ledger.get("merges", []) if entry.get("merged_at", 0.0) > last_verify_at]
 
 
@@ -278,6 +285,11 @@ def cmd_record_full_verify(command: str) -> int:
         print(f"REFUSING: could not run {command!r}: {exc}", file=sys.stderr)
         return 2
     duration_s = round(time.time() - started, 2)
+    release_allowed = merge_gate._release_baseline_permission(result.stdout)
+    verification_scope = merge_gate._verification_scope(result.stdout) or merge_gate._command_verification_scope(
+        command
+    )
+    accepted = result.returncode == 0 and verification_scope == "release-baseline" and release_allowed is True
 
     ledger = _read_ledger()
     ledger["last_full_verify"] = {
@@ -285,10 +297,21 @@ def cmd_record_full_verify(command: str) -> int:
         "exit_code": result.returncode,
         "duration_s": duration_s,
         "at": time.time(),
+        "verification_scope": verification_scope,
+        "release_baseline_allowed": release_allowed,
+        "accepted": accepted,
     }
     _write_ledger(ledger)
 
-    print(f"recorded merge-train terminal verify: {command!r} exit={result.returncode} ({duration_s}s)")
+    print(
+        f"recorded merge-train terminal verify: {command!r} exit={result.returncode} "
+        f"release_baseline_allowed={release_allowed!r} accepted={accepted} ({duration_s}s)"
+    )
+    if not accepted and result.returncode == 0:
+        print(
+            "POST-MERGE BROAD VERIFY DID NOT GRANT release-baseline permission; train-status remains incomplete.",
+            file=sys.stderr,
+        )
     if result.returncode != 0:
         print(result.stdout[-4000:])
         print(result.stderr[-4000:], file=sys.stderr)

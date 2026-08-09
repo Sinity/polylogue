@@ -79,6 +79,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import pr_scope
+from devtools.testmon_state import VerificationScope
 
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
@@ -230,15 +231,32 @@ def _release_baseline_permission(stdout: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def _requires_release_baseline(command: str) -> bool:
-    """Identify verification commands whose success can claim a release baseline."""
+def _verification_scope(stdout: str) -> str | None:
+    """Read the typed verification scope from a structured verify receipt."""
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("verification_scope")
+    return value if value in {scope.value for scope in VerificationScope} else None
+
+
+def _command_verification_scope(command: str) -> str | None:
+    """Classify legacy commands by argv shape, never by emitted log text."""
     try:
         argv = shlex.split(command)
     except ValueError:
-        return False
+        return None
     if argv[:2] != ["devtools", "verify"]:
-        return False
-    return len(argv) == 2 or any(option in argv[2:] for option in ("--all", "--full", "--lab", "--seed-testmon"))
+        return None
+    options = set(argv[2:])
+    if options & {"--all", "--full", "--seed-testmon"}:
+        return VerificationScope.RELEASE_BASELINE.value
+    if options & {"--quick", "--commit"}:
+        return VerificationScope.NON_TEST.value
+    return VerificationScope.AFFECTED.value
 
 
 def cmd_record(pr: int, command: str) -> int:
@@ -295,6 +313,7 @@ def cmd_record(pr: int, command: str) -> int:
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
+        "verification_scope": _verification_scope(result.stdout) or _command_verification_scope(command),
         "release_baseline_allowed": _release_baseline_permission(result.stdout),
         "exit_code": result.returncode,
         "duration_s": duration_s,
@@ -502,14 +521,16 @@ def cmd_check(
             if receipt.get("exit_code", 1) != 0:
                 verdict.ok = False
                 verdict.reasons.append(f"receipt exit_code is {receipt.get('exit_code')}, not 0")
+            verification_scope = receipt.get("verification_scope")
+            if verification_scope is None:
+                verification_scope = _command_verification_scope(str(receipt.get("command", "")))
             if (
-                _requires_release_baseline(str(receipt.get("command", "")))
+                verification_scope == VerificationScope.RELEASE_BASELINE.value
                 and receipt.get("release_baseline_allowed") is not True
             ):
                 verdict.ok = False
                 verdict.reasons.append(
-                    "verification receipt does not grant release_baseline_allowed=true; a selection-only "
-                    "testmon attempt cannot satisfy the release merge gate"
+                    "release-baseline verification receipt does not grant release_baseline_allowed=true"
                 )
             if receipt.get("skips_tests"):
                 verdict.reasons.append(

@@ -314,7 +314,18 @@ def test_merge_propagates_gh_pr_merge_failure(monkeypatch: pytest.MonkeyPatch, t
 def test_merge_with_verify_records_terminal_full_verify(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
-    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+    base = _fake_run(pr_view)
+
+    def run(cmd: list[str], **kwargs: Any) -> MagicMock:
+        if cmd[:3] == ["devtools", "verify", "--all"]:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps({"verification_scope": "release-baseline", "release_baseline_allowed": True}),
+                stderr="",
+            )
+        return base(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
 
     exit_code = merge_boundary.cmd_merge(
         42,
@@ -367,7 +378,11 @@ def test_record_full_verify_clears_pending_prs(monkeypatch: pytest.MonkeyPatch, 
     merge_boundary._append_merge_entry(1, "sha1", "some title")
 
     def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
-        return MagicMock(returncode=0, stdout="all good\n", stderr="")
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps({"verification_scope": "release-baseline", "release_baseline_allowed": True}),
+            stderr="",
+        )
 
     monkeypatch.setattr(subprocess, "run", _run)
 
@@ -379,6 +394,7 @@ def test_record_full_verify_clears_pending_prs(monkeypatch: pytest.MonkeyPatch, 
 
 def test_record_full_verify_propagates_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
 
     def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
         return MagicMock(returncode=1, stdout="", stderr="broke")
@@ -390,3 +406,23 @@ def test_record_full_verify_propagates_failure(monkeypatch: pytest.MonkeyPatch, 
     assert exit_code == 1
     ledger = merge_boundary._read_ledger()
     assert ledger["last_full_verify"]["exit_code"] == 1
+    assert ledger["last_full_verify"]["accepted"] is False
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+
+def test_record_full_verify_rejects_success_without_structured_release_permission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda _cmd, **_kwargs: MagicMock(returncode=0, stdout="all good\n", stderr=""),
+    )
+
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all") == 0
+    ledger = merge_boundary._read_ledger()
+    assert ledger["last_full_verify"]["accepted"] is False
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
