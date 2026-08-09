@@ -467,6 +467,18 @@ def test_symlinked_user_tier_uses_resolved_attestation_authority(
         conn.close()
 
 
+def _restore_source_pre_v30_raw_artifact_indexes(conn: sqlite3.Connection) -> None:
+    """Restore the raw-artifact index shape that existed before migration 030."""
+    conn.executescript(
+        """
+        DROP INDEX IF EXISTS idx_raw_artifacts_failure_identity;
+        DROP INDEX IF EXISTS idx_raw_artifacts_source_identity;
+        CREATE UNIQUE INDEX idx_raw_artifacts_source_identity
+        ON raw_artifacts(origin, source_path, source_index);
+        """
+    )
+
+
 def _create_source_v29_raw_failure_fixture(path: Path, *, archive_root: Path) -> tuple[str, str, str]:
     """Build the exact pre-v30 source shape used by migration 030."""
     current_indexes = """
@@ -1040,6 +1052,7 @@ def _create_source_v20_with_stale_origin_check(path: Path, *, archive_root: Path
     conn = sqlite3.connect(path)
     try:
         conn.executescript(_source_v20_ddl_with_stale_origin_check())
+        _restore_source_pre_v30_raw_artifact_indexes(conn)
         # v29 is not present in a v20 archive.  The broad origin-check rewrite
         # above intentionally affects every current table, so remove this
         # later table explicitly instead of handing migration 029 a malformed
@@ -1321,6 +1334,7 @@ def test_source_tier_v24_repairs_raw_hook_event_origin_check(
     )
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SOURCE_DDL)
+        _restore_source_pre_v30_raw_artifact_indexes(conn)
         for table_name in (
             "raw_quarantine_group_dedup_receipts",
             "raw_unknown_export_reclassification_receipts",
@@ -1664,6 +1678,7 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(SOURCE_DDL)
+        _restore_source_pre_v30_raw_artifact_indexes(conn)
         conn.execute("DROP TABLE raw_sessions")
         conn.executescript(
             """
@@ -1775,6 +1790,7 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(SOURCE_DDL)
+        _restore_source_pre_v30_raw_artifact_indexes(conn)
         conn.execute("DROP TABLE raw_sessions")
         conn.executescript(
             """
