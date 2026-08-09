@@ -2490,13 +2490,27 @@ def test_migrate_tier_cli_refuses_to_initialize_a_tier_in_an_established_archive
     assert (root / sibling_name).exists()
 
 
-@pytest.mark.parametrize("derived_name", ["index.db", "embeddings.db", "ops.db"])
-def test_migrate_tier_cli_missing_initialization_refuses_retained_derived_tier(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner, derived_name: str
+@pytest.mark.parametrize("missing_name", ["source.db", "user.db"])
+@pytest.mark.parametrize(
+    "retained_evidence",
+    ["index.db", ".index-generations", ".index-rebuild-transactions", "source-continuity-pending"],
+)
+def test_migrate_tier_cli_missing_initialization_refuses_retained_archive_evidence(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, missing_name: str, retained_evidence: str
 ) -> None:
     _stage_uninitialized_archive(cli_workspace)
-    derived_path = cli_workspace["archive_root"] / derived_name
-    derived_path.touch()
+    root = cli_workspace["archive_root"]
+    missing_path = root / missing_name
+    retained_path = root / retained_evidence
+    if retained_evidence == "index.db":
+        retained_path.touch()
+    elif retained_evidence == "source-continuity-pending":
+        retained_path = root / ".maintenance-state" / retained_evidence
+        retained_path.mkdir(parents=True)
+        (retained_path / "intent.json").write_text("{}", encoding="utf-8")
+    else:
+        retained_path.mkdir(parents=True)
+        (retained_path / "retained.json").write_text("{}", encoding="utf-8")
 
     result = cli_runner.invoke(
         cli,
@@ -2505,7 +2519,7 @@ def test_migrate_tier_cli_missing_initialization_refuses_retained_derived_tier(
             "ops",
             "maintenance",
             "migrate-tier",
-            "audit",
+            missing_path.stem,
             "--initialize-missing",
             "--output-format",
             "json",
@@ -2515,8 +2529,8 @@ def test_migrate_tier_cli_missing_initialization_refuses_retained_derived_tier(
 
     assert result.exit_code == 1
     assert "established archive" in json.loads(result.stdout)["error"]
-    assert derived_path.exists()
-    assert not (cli_workspace["archive_root"] / "audit.db").exists()
+    assert retained_path.exists()
+    assert not missing_path.exists()
 
 
 @pytest.mark.parametrize("blob_state", ["nonempty-directory", "regular-file"])

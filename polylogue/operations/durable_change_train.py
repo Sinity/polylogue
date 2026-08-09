@@ -113,6 +113,24 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
                         adoption_markers.append(marker_path)
                 if train_marker_root not in adoption_markers:
                     adoption_markers.append(train_marker_root)
+    retained_evidence_roots = (
+        (path.parent / ".index-generations", "retained index-generation evidence"),
+        (path.parent / ".index-rebuild-transactions", "retained index-rebuild transaction evidence"),
+        (path.parent / ".maintenance-state" / "source-continuity-pending", "source-continuity recovery evidence"),
+    )
+    for evidence_root, description in retained_evidence_roots:
+        evidence_metadata = adoption_lstat(evidence_root, description)
+        if evidence_metadata is None:
+            continue
+        if stat.S_ISLNK(evidence_metadata.st_mode) or not stat.S_ISDIR(evidence_metadata.st_mode):
+            adoption_markers.append(evidence_root)
+            continue
+        try:
+            has_retained_evidence = next(evidence_root.iterdir(), None) is not None
+        except OSError as exc:
+            raise MigrationError(f"cannot inspect {description}: {evidence_root}") from exc
+        if has_retained_evidence:
+            adoption_markers.append(evidence_root)
     if location.active_pointer is not None and active_pointer_marker not in adoption_markers:
         adoption_markers.append(active_pointer_marker)
     if existing_siblings or adoption_markers:
