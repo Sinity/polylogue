@@ -286,10 +286,16 @@ def cmd_record_full_verify(command: str) -> int:
         return 2
     duration_s = round(time.time() - started, 2)
     release_allowed = merge_gate._release_baseline_permission(result.stdout)
-    verification_scope = merge_gate._verification_scope(result.stdout) or merge_gate._command_verification_scope(
-        command
+    verification_scope = merge_gate._verification_scope(result.stdout)
+    terminal_authorization = merge_gate._terminal_authorization(result.stdout)
+    accepted = (
+        result.returncode == 0
+        and release_allowed is True
+        and (
+            verification_scope == "release-baseline"
+            or (verification_scope == "narrow-terminal" and terminal_authorization == "narrow-terminal")
+        )
     )
-    accepted = result.returncode == 0 and verification_scope == "release-baseline" and release_allowed is True
 
     ledger = _read_ledger()
     ledger["last_full_verify"] = {
@@ -299,6 +305,7 @@ def cmd_record_full_verify(command: str) -> int:
         "at": time.time(),
         "verification_scope": verification_scope,
         "release_baseline_allowed": release_allowed,
+        "terminal_authorization": terminal_authorization,
         "accepted": accepted,
     }
     _write_ledger(ledger)

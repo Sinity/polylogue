@@ -426,3 +426,69 @@ def test_record_full_verify_rejects_success_without_structured_release_permissio
     ledger = merge_boundary._read_ledger()
     assert ledger["last_full_verify"]["accepted"] is False
     assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+
+def test_record_full_verify_rejects_skip_slow_without_typed_authorization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda _cmd, **_kwargs: MagicMock(
+            returncode=0,
+            stdout=json.dumps({"verification_scope": "narrow-terminal", "release_baseline_allowed": False}),
+            stderr="",
+        ),
+    )
+
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow") == 0
+    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+
+def test_record_full_verify_accepts_explicit_typed_narrow_terminal_authorization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda _cmd, **_kwargs: MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "verification_scope": "narrow-terminal",
+                    "terminal_authorization": "narrow-terminal",
+                    "release_baseline_allowed": True,
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow") == 0
+    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is True
+    assert merge_boundary.cmd_train_status(as_json=False) == 0
+
+
+def test_record_full_verify_rejects_untyped_scope_even_when_permission_is_true(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda _cmd, **_kwargs: MagicMock(
+            returncode=0,
+            stdout=json.dumps({"release_baseline_allowed": True}),
+            stderr="",
+        ),
+    )
+
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all") == 0
+    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
+    assert merge_boundary.cmd_train_status(as_json=False) == 1

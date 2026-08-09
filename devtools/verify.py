@@ -61,6 +61,7 @@ from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
 from devtools.testmon_state import (
     BindingMode,
     GraphStatus,
+    TerminalAuthorization,
     TestmonBinding,
     TestmonSeedStamp,
     VerificationScope,
@@ -2021,6 +2022,17 @@ def _git_head() -> str | None:
     return None
 
 
+def _git_committed_tree() -> str | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
 def _stamp_head() -> None:
     head = _git_head()
     if head is None:
@@ -2224,13 +2236,22 @@ def _worktree_fingerprint() -> str:
     return digest.hexdigest()
 
 
-def _testmon_seed_identity(*, git_head: str | None, skip_slow: bool, lab: bool) -> dict[str, Any]:
+def _testmon_seed_identity(
+    *,
+    git_head: str | None,
+    git_tree: str | None = None,
+    skip_slow: bool,
+    lab: bool,
+    terminal_authorization: str | None = None,
+) -> dict[str, Any]:
     return {
         "git_head": git_head,
+        "git_tree": git_tree,
         "worktree_fingerprint": _worktree_fingerprint(),
         "python": sys.version,
         "skip_slow": skip_slow,
         "lab": lab,
+        "terminal_authorization": terminal_authorization,
     }
 
 
@@ -2325,7 +2346,10 @@ def _testmon_seed_expected_nodeids(attempt: Mapping[str, Any]) -> list[str]:
 
 def _testmon_seed_resume_contract(identity: Mapping[str, Any]) -> dict[str, Any]:
     """Return inputs that change which corpus a seed promises to cover."""
-    return {key: identity.get(key) for key in ("worktree_fingerprint", "python", "skip_slow", "lab")}
+    return {
+        key: identity.get(key)
+        for key in ("git_tree", "worktree_fingerprint", "python", "skip_slow", "lab", "terminal_authorization")
+    }
 
 
 def _testmon_seed_can_resume(identity: Mapping[str, Any]) -> bool:
@@ -2333,11 +2357,14 @@ def _testmon_seed_can_resume(identity: Mapping[str, Any]) -> bool:
     if attempt is None or not TESTMON_DATA.exists():
         return False
     prior_identity = attempt.get("identity")
+    contract = _testmon_seed_resume_contract(identity)
     return (
         attempt.get("protocol_version") == TESTMON_SEED_PROTOCOL_VERSION
         and attempt.get("status") in {"running", "incomplete"}
         and isinstance(prior_identity, dict)
-        and _testmon_seed_resume_contract(prior_identity) == _testmon_seed_resume_contract(identity)
+        and isinstance(contract["git_tree"], str)
+        and bool(contract["git_tree"])
+        and _testmon_seed_resume_contract(prior_identity) == contract
         and bool(_testmon_seed_expected_nodeids(attempt))
     )
 
@@ -2369,6 +2396,15 @@ def _prepare_testmon_seed_attempt(
     TESTMON_SEED_STAMP.unlink(missing_ok=True)
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
     return payload
+
+
+def _testmon_seed_terminal_authorized(prepared: Mapping[str, Any]) -> bool:
+    identity = prepared.get("identity")
+    return (
+        isinstance(identity, Mapping)
+        and identity.get("skip_slow") is True
+        and identity.get("terminal_authorization") == TerminalAuthorization.NARROW_TERMINAL.value
+    )
 
 
 def _testmon_database_state(expected_nodeids: Sequence[str]) -> dict[str, Any]:
@@ -2555,9 +2591,16 @@ def _finalize_testmon_seed_attempt(
         and database["orphan_fingerprint_edges"] == 0
         and not unsuccessful_nodeids
     )
+    identity = prepared.get("identity")
+    narrow_terminal = isinstance(identity, Mapping) and identity.get("skip_slow") is True
+    terminal_authorized = _testmon_seed_terminal_authorized(prepared)
+    release_eligible = green_complete and (not narrow_terminal or terminal_authorized)
+    seed_scope = (
+        VerificationScope.NARROW_TERMINAL.value if narrow_terminal else VerificationScope.RELEASE_BASELINE.value
+    )
     attempt_candidate = {
         **dict(prepared),
-        "status": "complete" if green_complete else "reusable",
+        "status": "complete" if release_eligible else "reusable",
         "exit_code": exit_code,
         "expected_nodeids": expected,
         "expected_count": len(expected),
@@ -2585,7 +2628,13 @@ def _finalize_testmon_seed_attempt(
         protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
     )
     reusable = reusable_stamp is not None
-    attempt_status = "complete" if green_complete else "reusable" if reusable else "incomplete"
+    release_permission = bool(
+        reusable
+        and reusable_stamp is not None
+        and reusable_stamp.release_baseline_allowed
+        and (not narrow_terminal or terminal_authorized)
+    )
+    attempt_status = "complete" if green_complete and release_permission else "reusable" if reusable else "incomplete"
     payload = {
         **dict(prepared),
         "status": attempt_status,
@@ -2595,7 +2644,13 @@ def _finalize_testmon_seed_attempt(
         "expected_count": len(expected),
         "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
         "selection": {
-            key: selection.get(key)
+            key: (
+                len(expected)
+                if key == "selected_count" and prepared.get("resume") and selection_valid
+                else 0
+                if key == "selected_nodeids_omitted" and prepared.get("resume") and selection_valid
+                else selection.get(key)
+            )
             for key in (
                 "selected_count",
                 "deselected_count",
@@ -2618,11 +2673,12 @@ def _finalize_testmon_seed_attempt(
         "testmon_data": _file_fingerprint(TESTMON_DATA),
         "pytest_step": dict(pytest_step) if pytest_step is not None else None,
         "binding": TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict(),
-        "verification_scope": VerificationScope.RELEASE_BASELINE.value,
+        "verification_scope": seed_scope,
+        "terminal_authorization": (TerminalAuthorization.NARROW_TERMINAL.value if terminal_authorized else None),
     }
-    payload["release_baseline_allowed"] = bool(reusable_stamp is not None and reusable_stamp.release_baseline_allowed)
+    payload["release_baseline_allowed"] = release_permission
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
-    if reusable_stamp is not None and reusable_stamp.release_baseline_allowed:
+    if release_permission and reusable_stamp is not None:
         _atomic_write_json(TESTMON_SEED_STAMP, reusable_stamp.as_dict())
     else:
         TESTMON_SEED_STAMP.unlink(missing_ok=True)
@@ -2728,6 +2784,11 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-slow", action="store_true", help="Exclude @pytest.mark.slow tests from the pytest step."
     )
     parser.add_argument(
+        "--terminal-authorization",
+        choices=[TerminalAuthorization.NARROW_TERMINAL.value],
+        help="Typed authorization for a narrow terminal verification that skips slow tests.",
+    )
+    parser.add_argument(
         "--lab",
         action="store_true",
         help=(
@@ -2777,6 +2838,8 @@ def main(argv: list[str] | None = None) -> int:
         tier = "testmon"
 
     full_pytest = bool(args.all or args.full)
+    if args.terminal_authorization is not None and not ((full_pytest or args.seed_testmon) and args.skip_slow):
+        parser.error("--terminal-authorization requires --all, --full, or --seed-testmon with --skip-slow")
     preflight_error = _testmon_preflight(
         seed_testmon=bool(args.seed_testmon),
         full_pytest=full_pytest,
@@ -2802,8 +2865,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.seed_testmon:
         seed_identity = _testmon_seed_identity(
             git_head=head,
+            git_tree=_git_committed_tree(),
             skip_slow=bool(args.skip_slow),
             lab=bool(args.lab),
+            terminal_authorization=args.terminal_authorization,
         )
         resume_testmon_seed = _testmon_seed_can_resume(seed_identity)
         prepared_seed_attempt = _prepare_testmon_seed_attempt(
@@ -2940,13 +3005,23 @@ def main(argv: list[str] | None = None) -> int:
         verification_scope = VerificationScope.NON_TEST
         release_baseline_allowed: bool | None = None
     elif full_pytest or args.seed_testmon:
-        verification_scope = VerificationScope.RELEASE_BASELINE
-        release_baseline_allowed = exit_code == 0 if full_pytest else _testmon_release_baseline_permission()
+        narrow_terminal = bool(args.skip_slow)
+        authorized_narrow_terminal = args.terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
+        verification_scope = (
+            VerificationScope.NARROW_TERMINAL if narrow_terminal else VerificationScope.RELEASE_BASELINE
+        )
+        if full_pytest:
+            release_baseline_allowed = exit_code == 0 and (not narrow_terminal or authorized_narrow_terminal)
+        else:
+            release_baseline_allowed = _testmon_release_baseline_permission() and (
+                not narrow_terminal or authorized_narrow_terminal
+            )
     else:
         verification_scope = VerificationScope.AFFECTED
         release_baseline_allowed = _testmon_release_baseline_permission()
     history_entry["verification_scope"] = verification_scope.value
     history_entry["release_baseline_allowed"] = release_baseline_allowed
+    history_entry["terminal_authorization"] = args.terminal_authorization
     if release_baseline_allowed is False and tier in {"testmon", "lab", "seed-testmon"}:
         sys.stderr.write(
             "verify: affected-test selection is usable, but the current testmon state does not grant "

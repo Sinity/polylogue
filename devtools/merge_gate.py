@@ -79,7 +79,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import pr_scope
-from devtools.testmon_state import VerificationScope
+from devtools.testmon_state import TerminalAuthorization, VerificationScope
 
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
@@ -243,6 +243,18 @@ def _verification_scope(stdout: str) -> str | None:
     return value if value in {scope.value for scope in VerificationScope} else None
 
 
+def _terminal_authorization(stdout: str) -> str | None:
+    """Read the typed terminal authorization from a structured receipt."""
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("terminal_authorization")
+    return value if value in {authorization.value for authorization in TerminalAuthorization} else None
+
+
 def _command_verification_scope(command: str) -> str | None:
     """Classify legacy commands by argv shape, never by emitted log text."""
     try:
@@ -315,6 +327,7 @@ def cmd_record(pr: int, command: str) -> int:
         "skips_tests": _command_skips_tests(command),
         "verification_scope": _verification_scope(result.stdout) or _command_verification_scope(command),
         "release_baseline_allowed": _release_baseline_permission(result.stdout),
+        "terminal_authorization": _terminal_authorization(result.stdout),
         "exit_code": result.returncode,
         "duration_s": duration_s,
         "recorded_at": time.time(),

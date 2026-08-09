@@ -48,7 +48,12 @@ class BindingMode(StrEnum):
 class VerificationScope(StrEnum):
     AFFECTED = "affected"
     RELEASE_BASELINE = "release-baseline"
+    NARROW_TERMINAL = "narrow-terminal"
     NON_TEST = "non-test"
+
+
+class TerminalAuthorization(StrEnum):
+    NARROW_TERMINAL = "narrow-terminal"
 
 
 @dataclass(frozen=True, slots=True)
@@ -803,6 +808,7 @@ __all__ = [
     "TestmonBinding",
     "TestmonIdentity",
     "TestmonSeedStamp",
+    "TerminalAuthorization",
     "VerificationScope",
     "attempt_is_checkout_bound",
     "file_fingerprint",

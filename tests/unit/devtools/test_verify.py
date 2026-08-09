@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from devtools import verify_runs
+from devtools import verify, verify_runs
 from devtools.testmon_state import (
     BaselineStatus,
     BindingMode,
@@ -489,10 +489,12 @@ def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pyte
     TESTMON_DATA.write_text("partial")
     identity = {
         "git_head": "head",
+        "git_tree": "tree-hash",
         "worktree_fingerprint": "tree",
         "python": "3.13",
         "skip_slow": True,
         "lab": False,
+        "terminal_authorization": None,
     }
     TESTMON_SEED_ATTEMPT.write_text(
         json.dumps(
@@ -511,7 +513,8 @@ def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pyte
     )
 
     assert _testmon_seed_can_resume(identity) is True
-    assert _testmon_seed_can_resume({**identity, "git_head": "other"}) is True
+    assert _testmon_seed_can_resume({**identity, "git_head": "other", "git_tree": "tree-hash"}) is True
+    assert _testmon_seed_can_resume({**identity, "git_tree": "different-tree"}) is False
     assert _testmon_seed_can_resume({**identity, "worktree_fingerprint": "changed"}) is False
     assert _testmon_seed_can_resume({**identity, "skip_slow": False}) is False
 
@@ -529,10 +532,12 @@ def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, mo
     )
     identity = {
         "git_head": "head",
+        "git_tree": "tree-hash",
         "worktree_fingerprint": "tree",
         "python": "3.13",
         "skip_slow": True,
         "lab": False,
+        "terminal_authorization": None,
     }
     TESTMON_SEED_ATTEMPT.write_text(
         json.dumps(
@@ -546,10 +551,12 @@ def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, mo
         )
     )
 
-    assert _testmon_seed_can_resume({**identity, "git_head": "fixed"}) is True
+    assert _testmon_seed_can_resume({**identity, "git_head": "fixed", "git_tree": "tree-hash"}) is True
 
     run = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="fixed")
-    prepared = _prepare_testmon_seed_attempt(identity={**identity, "git_head": "fixed"}, run=run, resume=True)
+    prepared = _prepare_testmon_seed_attempt(
+        identity={**identity, "git_head": "fixed", "git_tree": "tree-hash"}, run=run, resume=True
+    )
 
     assert prepared["expected_nodeids"] == expected
     assert prepared["expected_count"] == 1
@@ -629,7 +636,7 @@ def test_resumed_seed_does_not_reuse_an_unexecuted_database_row(tmp_path: Path) 
                 "git_head": "head",
                 "worktree_fingerprint": "tree",
                 "python": "python",
-                "skip_slow": True,
+                "skip_slow": False,
                 "lab": False,
             },
             "resume": True,
@@ -802,7 +809,7 @@ def test_seed_receipt_classifies_every_node_terminal_outcome(
                 "git_head": "head",
                 "worktree_fingerprint": "tree",
                 "python": "python",
-                "skip_slow": True,
+                "skip_slow": False,
                 "lab": False,
             },
             "resume": False,
@@ -966,7 +973,7 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
                 "git_head": "head",
                 "worktree_fingerprint": "tree",
                 "python": "python",
-                "skip_slow": True,
+                "skip_slow": False,
                 "lab": False,
             },
             "resume": False,
@@ -995,7 +1002,7 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
                 "git_head": "head",
                 "worktree_fingerprint": "tree",
                 "python": "python",
-                "skip_slow": True,
+                "skip_slow": False,
                 "lab": False,
             },
             "resume": False,
@@ -1056,6 +1063,72 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
         exit_code=0,
     )
     assert orphaned["status"] == "incomplete"
+
+
+def test_resumed_seed_persists_full_selection_before_stamp_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "selection.json").write_text(
+        json.dumps({"selected_count": 1, "selected_nodeids": [expected[0]], "selected_nodeids_omitted": 0})
+    )
+    (artifact_dir / "events.jsonl").write_text(
+        json.dumps({"event": "test_report", "nodeid": expected[0], "when": "call", "outcome": "passed"}) + "\n"
+    )
+    TESTMON_DATA.parent.mkdir(parents=True)
+    with sqlite3.connect(TESTMON_DATA) as connection:
+        connection.execute("create table environment (id integer primary key, environment_name text)")
+        connection.execute("create table file_fp (id integer primary key, filename text, fsha text)")
+        connection.execute("create table test_execution (id integer primary key, test_name text, failed integer)")
+        connection.execute("create table test_execution_file_fp (test_execution_id integer, fingerprint_id integer)")
+        connection.executemany("insert into test_execution values (?, ?, 0)", [(1, expected[0]), (2, expected[1])])
+        connection.executemany("insert into file_fp values (?, ?, ?)", [(1, "a.py", "a"), (2, "b.py", "b")])
+        connection.executemany("insert into test_execution_file_fp values (?, ?)", [(1, 1), (2, 2)])
+    _write_run_receipt(tmp_path, "resumed")
+    prepared = {
+        "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+        "status": "running",
+        "identity": {
+            "git_head": "head",
+            "git_tree": "tree-hash",
+            "worktree_fingerprint": "tree",
+            "python": "python",
+            "skip_slow": False,
+            "lab": False,
+            "terminal_authorization": None,
+        },
+        "resume": True,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
+        "prior_node_outcomes": [{"nodeid": expected[1], "outcome": "passed"}],
+        "run_id": "resumed",
+        "artifact_dir": ".cache/verify/runs/resumed",
+    }
+    original_write = verify._atomic_write_json
+
+    def crash_before_stamp(path: Path, payload: object) -> None:
+        if path == TESTMON_SEED_STAMP:
+            raise RuntimeError("simulated crash before seed publication")
+        original_write(path, payload)
+
+    with patch("devtools.verify._atomic_write_json", side_effect=crash_before_stamp):
+        with pytest.raises(RuntimeError, match="before seed publication"):
+            _finalize_testmon_seed_attempt(
+                prepared=prepared,
+                step_results=[{"name": "pytest seed-testmon (resume)", "artifact_dir": str(artifact_dir)}],
+                exit_code=0,
+            )
+
+    persisted = json.loads(TESTMON_SEED_ATTEMPT.read_text())
+    assert persisted["status"] == "complete"
+    assert persisted["expected_count"] == len(expected)
+    assert persisted["selection"]["selected_count"] == len(expected)
+    assert persisted["selection"]["selected_nodeids_omitted"] == 0
+    assert not TESTMON_SEED_STAMP.exists()
 
 
 def test_classify_late_sigterm_after_pytest_success_summary() -> None:
@@ -1927,6 +2000,36 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
     assert calls[-1].startswith("pytest")
     payload = capsys.readouterr().out
     assert '"exit_code": 1' in payload
+
+
+@pytest.mark.parametrize(
+    ("authorization", "expected_permission"),
+    [(None, False), ("narrow-terminal", True)],
+)
+def test_verify_main_types_skip_slow_terminal_authority(
+    capsys: pytest.CaptureFixture[str], authorization: str | None, expected_permission: bool
+) -> None:
+    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
+        del label, command, kwargs
+        return 0, 0.01, {}
+
+    argv = ["--all", "--skip-slow"]
+    if authorization is not None:
+        argv.extend(["--terminal-authorization", authorization])
+    with (
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest full", ["pytest"])]),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main([*argv, "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verification_scope"] == "narrow-terminal"
+    assert payload["release_baseline_allowed"] is expected_permission
+    assert payload["terminal_authorization"] == authorization
 
 
 def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.CaptureFixture[str]) -> None:
