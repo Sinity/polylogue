@@ -80,6 +80,11 @@ def apply_frontier(
     preview_census_id: str,
     selected_plan_ids: tuple[str, ...],
 ) -> RawAuthorityFrontierApplyReport:
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+    if not daemon_write_lease_active():
+        raise RuntimeError("raw authority frontier apply requires the daemon writer lease")
+
     from polylogue.storage.raw_reconciler import apply_raw_authority_frontier
 
     report = apply_raw_authority_frontier(

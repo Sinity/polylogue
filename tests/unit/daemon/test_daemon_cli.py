@@ -683,6 +683,7 @@ def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
     """The daemon selects executable plans under its real writer lease."""
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.write_coordinator import daemon_write_coordinator, daemon_write_lease_active
+    from polylogue.storage.raw_authority import raw_authority_detail_query_handle
     from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport
 
     config = Config(
@@ -722,7 +723,7 @@ def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
             retryable_plan_count=0,
             post_inventory_digest="digest",
             post_plan_count=2,
-            outcome_refs=("detail",),
+            outcome_refs=(raw_authority_detail_query_handle("apply-census-1", "safe-1"),),
         )
 
     monkeypatch.setattr("polylogue.product.raw_authority.inspect_frontier", lambda _config: census)

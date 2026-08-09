@@ -303,6 +303,14 @@ def validate_raw_authority_frontier_apply_report(
             "raw authority actuator response preview census does not match the request: "
             f"response={report.preview_census_id!r}, request={preview_census_id!r}"
         )
+    expected_outcome_refs = tuple(
+        raw_authority_detail_query_handle(report.census_id, plan_id) for plan_id in selected_plan_ids
+    )
+    if report.outcome_refs != expected_outcome_refs:
+        raise ValueError(
+            "raw authority actuator response outcome references do not match the requested plan ids: "
+            f"response={report.outcome_refs!r}, request={expected_outcome_refs!r}"
+        )
     return report
 
 
