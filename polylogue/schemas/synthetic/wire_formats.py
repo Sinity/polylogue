@@ -1350,8 +1350,9 @@ def build_wire_support_receipt(
                             # Validate and account for the complete envelope, but
                             # keep the optional native subpayload from selecting a
                             # second schema-shaped tree during parser dispatch.
-                            parser_payload = dict(payload)
-                            parser_payload.pop("raw_provider_payload", None)
+                            parser_payload = {
+                                key: value for key, value in payload.items() if key != "raw_provider_payload"
+                            }
                         parsed_sessions_for_artifact = parse_payload(
                             provider,
                             parser_payload,
