@@ -14,7 +14,7 @@ from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.core.json import JSONDocument
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
-    RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
     RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
     RawFailureEvidenceKind,
 )
@@ -83,7 +83,6 @@ class TestRawFailureSampleModel:
             frozenset(
                 {
                     "terminal_corrupt_input",
-                    "terminal_superseded_deferred_cas_frontier",
                     "terminal_unknown_json_decode",
                     "terminal_unknown_export_no_session",
                     "terminal_unsupported_shape",
@@ -507,7 +506,7 @@ class TestRawFailureInfoProducesTypedSamples:
 
     def test_lifecycle_sampling_prioritizes_every_valid_typed_evidence_pair(self, tmp_path: Path) -> None:
         """Every closed typed kind remains inspectable before unexplained rows."""
-        for index, (kind, support_status) in enumerate(RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS):
+        for index, (kind, support_status) in enumerate(RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS):
             _seed_archive_raw_session(
                 tmp_path,
                 raw_id=f"raw-typed-{index}",
@@ -543,11 +542,11 @@ class TestRawFailureInfoProducesTypedSamples:
 
         snapshot = read_raw_failure_lifecycle(
             tmp_path / "source.db",
-            sample_limit=len(RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS),
+            sample_limit=len(RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS),
         )
 
         assert {sample["artifact_kind"] for sample in snapshot.samples} == {
-            kind for kind, _support_status in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS
+            kind for kind, _support_status in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS
         }
         assert all(sample["lifecycle"] in {"deferred", "terminal"} for sample in snapshot.samples)
 

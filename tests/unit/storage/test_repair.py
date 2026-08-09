@@ -15,6 +15,7 @@ from polylogue.config import Config
 from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.daemon.status import raw_failure_info_for_root
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import repair as repair_mod
@@ -707,6 +708,48 @@ def test_raw_materialization_requires_exact_failed_artifact_coordinate(tmp_path:
     assert raw_id not in candidates.raw_ids
 
 
+def test_raw_materialization_validation_failure_cannot_reuse_deferred_authority(tmp_path: Path) -> None:
+    """Repair and its public backlog report share the worker validation gate."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"deferred":true}',
+            source_path="validation-failed.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = ?, validation_status = 'failed' WHERE raw_id = ?",
+            ("decode: malformed input", raw_id),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="validation-failed-deferred",
+                origin="codex-session",
+                source_path="validation-failed.jsonl",
+                source_index=0,
+                artifact_kind="deferred_cas_frontier",
+                classification_reason="deferred_cas_frontier",
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                parse_as_session=True,
+                schema_eligible=True,
+            ),
+        )
+        source_conn.commit()
+
+    config = _config(tmp_path)
+    assert raw_id not in repair_mod._raw_materialization_candidate_ids(config).raw_ids
+    backlog = repair_mod.raw_materialization_replay_backlog(config)
+    assert backlog["candidate_count"] == 0
+
+
 @pytest.mark.parametrize("artifact_kind", ["deferred_hot_jsonl_capture", "deferred_claude_code_partial_jsonl"])
 def test_raw_materialization_does_not_replay_hot_partial_capture(tmp_path: Path, artifact_kind: str) -> None:
     """Hot partial evidence stays deferred until a complete source observation arrives."""
@@ -1120,10 +1163,17 @@ def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failur
     }
 
     lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.terminal == 2
+    # The two CAS replacement receipts are bound, non-failure resolutions.
+    # The later unrelated parser failures therefore remain unexplained rather
+    # than being hidden behind a stale success carrier.
+    assert lifecycle.terminal == 0
     assert lifecycle.deferred == 0
-    assert lifecycle.unexplained == 0
+    assert lifecycle.unexplained == 2
+    status = raw_failure_info_for_root(tmp_path)
+    assert status["terminal_rejections"] == 0
+    assert status["unexplained_failures"] == 2
     assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
+    assert repair_mod.raw_materialization_replay_backlog(_config(tmp_path))["candidate_count"] == 0
 
 
 def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_blob(tmp_path: Path) -> None:
