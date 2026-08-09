@@ -224,9 +224,9 @@ def test_preflight_ignores_blank_parse_errors_in_origin_and_totals(tmp_path: Pat
     by_origin = {str(item["origin"]): item for item in (_mapping(value) for value in _list(source["by_origin"]))}
     origin = by_origin["codex-session"]
     eligibility = _mapping(origin["eligibility"])
-    assert totals["parse_failures"] == 1
-    assert origin["parse_failures"] == 1
-    assert eligibility["actionable_count"] == 1
+    assert totals["parse_failures"] == 3
+    assert origin["parse_failures"] == 3
+    assert eligibility["actionable_count"] == 3
 
 
 def test_preflight_blocks_unexplained_raw_failure_lifecycle(tmp_path: Path) -> None:

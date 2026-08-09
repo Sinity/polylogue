@@ -114,7 +114,7 @@ def _source_distribution(root: Path) -> dict[str, object]:
                            c.status AS census_status,
                            CASE WHEN c.raw_id IS NULL THEN 1 ELSE 0 END AS coverage_unknown,
                            CASE WHEN c.status IN ('failed', 'non_session') THEN 1 ELSE 0 END AS terminal,
-                           CASE WHEN (r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '')
+                           CASE WHEN r.parse_error IS NOT NULL
                                   OR LOWER(COALESCE(r.validation_status, '')) = 'failed'
                                 THEN 1 ELSE 0 END AS failure,
                            CASE WHEN c.status = 'complete' AND c.member_count > 0 THEN 1 ELSE 0 END AS census_eligible
@@ -122,7 +122,7 @@ def _source_distribution(root: Path) -> dict[str, object]:
                     LEFT JOIN raw_membership_census AS c ON c.raw_id = r.raw_id
                 )
                 SELECT origin, COUNT(*), COALESCE(SUM(blob_size), 0),
-                       COALESCE(SUM(parse_error IS NOT NULL AND TRIM(parse_error) != ''), 0),
+                       COALESCE(SUM(parse_error IS NOT NULL), 0),
                        COALESCE(SUM(validation_status = 'failed'), 0),
                        COALESCE(SUM(revision_authority = 'quarantined'), 0),
                        COALESCE(SUM(CASE WHEN revision_authority = 'quarantined' THEN blob_size ELSE 0 END), 0),
@@ -149,7 +149,7 @@ def _source_distribution(root: Path) -> dict[str, object]:
             totals = conn.execute(
                 """
                 SELECT COUNT(*), COALESCE(SUM(blob_size), 0),
-                       COALESCE(SUM(parse_error IS NOT NULL AND TRIM(parse_error) != ''), 0),
+                       COALESCE(SUM(parse_error IS NOT NULL), 0),
                        COALESCE(SUM(LOWER(COALESCE(validation_status, '')) = 'failed'), 0),
                        COALESCE(SUM(revision_authority = 'quarantined'), 0),
                        COALESCE(SUM(CASE WHEN revision_authority = 'quarantined' THEN blob_size ELSE 0 END), 0),
