@@ -35,17 +35,161 @@ from polylogue.maintenance.archive_verification import (
     validate_archive_verification_registry,
     verify_archive,
 )
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.pathology_zoo import build_pathology_zoo, make_pathology_zoo_member_red
+from tests.infra.pathology_zoo import (
+    CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+    CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
+    CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
+    build_pathology_zoo,
+    make_pathology_zoo_member_red,
+)
 from tests.infra.workload_artifacts import SeededArchiveArtifact
 
 
 def _connect(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)
+
+
+def _insert_claude_identity_collision_rows(source_db: Path) -> tuple[str, ...]:
+    """Add decoys that independently collide on origin and logical source key."""
+    collision_rows = (
+        (
+            "same-origin-different-logical-key",
+            CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
+            f"claude-ai:collision:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",
+            "foreign-origin/same-origin-different-key.json",
+            "claude-ai",
+        ),
+        (
+            "different-origin-same-logical-key",
+            "chatgpt-export",
+            CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+            "foreign-origin/different-origin-same-key.json",
+            "chatgpt",
+        ),
+    )
+    with _connect(source_db) as conn:
+        raw = conn.execute(
+            """
+            SELECT r.native_id, r.blob_hash, r.blob_size, r.acquired_at_ms,
+                   m.normalized_content_hash, m.message_count
+            FROM raw_sessions AS r
+            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+            WHERE r.origin = ? AND m.logical_source_key = ?
+            ORDER BY r.source_path
+            LIMIT 1
+            """,
+            (CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN, CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY),
+        ).fetchone()
+        assert raw is not None
+        native_id, blob_hash, blob_size, acquired_at_ms, content_hash, message_count = raw
+        for raw_id, origin, logical_source_key, source_path, capture_mode in collision_rows:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions(
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms, logical_source_key, revision_kind, source_revision,
+                    revision_authority, capture_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'full', ?, 'byte_proven', ?)
+                """,
+                (
+                    raw_id,
+                    origin,
+                    native_id,
+                    source_path,
+                    blob_hash,
+                    blob_size,
+                    acquired_at_ms,
+                    logical_source_key,
+                    f"{raw_id}-revision",
+                    capture_mode,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_session_memberships(
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count, revision_authority,
+                    decision, decided_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, 'byte_proven', 'applied', ?)
+                """,
+                (
+                    raw_id,
+                    logical_source_key,
+                    native_id,
+                    f"{raw_id}-revision",
+                    content_hash,
+                    message_count,
+                    acquired_at_ms,
+                ),
+            )
+        conn.commit()
+    return tuple(row[0] for row in collision_rows)
+
+
+def _insert_claude_vintage_extra_revision(source_db: Path) -> str:
+    """Add a third in-scope revision whose typed decision is otherwise ignored."""
+    extra_raw_id = "claude-vintage-extra-revision"
+    with _connect(source_db) as conn:
+        raw = conn.execute(
+            """
+            SELECT r.native_id, r.blob_hash, r.blob_size, r.acquired_at_ms,
+                   m.normalized_content_hash, m.message_count
+            FROM raw_sessions AS r
+            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+            WHERE r.origin = ? AND m.logical_source_key = ?
+            ORDER BY r.source_path
+            LIMIT 1
+            """,
+            (CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN, CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY),
+        ).fetchone()
+        assert raw is not None
+        native_id, blob_hash, blob_size, acquired_at_ms, content_hash, message_count = raw
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, logical_source_key, revision_kind, source_revision,
+                revision_authority, capture_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'full', ?, 'byte_proven', 'claude-ai')
+            """,
+            (
+                extra_raw_id,
+                CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
+                native_id,
+                "manual/claude-live-proof-extra.json",
+                blob_hash,
+                blob_size,
+                acquired_at_ms,
+                CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+                "claude-vintage-extra-revision",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, revision_authority,
+                decision, decided_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, 'byte_proven', 'superseded_prefix', ?)
+            """,
+            (
+                extra_raw_id,
+                CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+                native_id,
+                "claude-vintage-extra-revision",
+                content_hash,
+                message_count,
+                acquired_at_ms,
+            ),
+        )
+        conn.commit()
+    return extra_raw_id
 
 
 def _seed_coherent_archive(root: Path) -> None:
@@ -1536,9 +1680,30 @@ def test_registry_execution_phase_projections_do_not_keep_handwritten_membership
 
 def test_pathology_zoo_contract_is_production_owned_and_registered() -> None:
     """The archive verifier, rather than tests, owns the zoo's enforcement boundary."""
-    from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST
+    from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, pathology_zoo_manifest
 
-    assert len(PATHOLOGY_ZOO_MANIFEST) == 17
+    registered_manifest = pathology_zoo_manifest()
+    expected_member_ids = (
+        "whale-component",
+        "append-self-describing",
+        "append-opaque",
+        "fork-prefix-tail",
+        "lineage-cycle",
+        "grouped-jsonl",
+        "quarantined-head",
+        "empty-session",
+        "hook-event",
+        "claude-design",
+        "vintage-reorder",
+        "claude-vintage-live-proof",
+        "lifecycle-anchor-drift",
+        "non-stream-safe",
+        "attachment-with-bytes",
+        "attachment-without-bytes",
+        "events-sidecars",
+    )
+    assert registered_manifest is PATHOLOGY_ZOO_MANIFEST
+    assert tuple(member.member_id for member in registered_manifest) == expected_member_ids
     assert "pathology-zoo-invariants" in ARCHIVE_VERIFICATION_CHECK_NAMES
 
 
@@ -1799,6 +1964,130 @@ def test_pathology_zoo_invariants_red_twin(tmp_path: Path) -> None:
         assert member.member_id in check.evidence["failed_member_ids"]
 
 
+def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic_drift(tmp_path: Path) -> None:
+    """The Claude registry check fails for every scoped revision drift."""
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+    green = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
+    green_check = _check(green, "pathology-zoo-invariants")
+    assert green_check.status is OutcomeStatus.OK
+    assert green_check.evidence["active"] is True
+    assert "claude-vintage-live-proof" in green_check.evidence["checked_member_ids"]
+    assert "claude-vintage-live-proof" not in green_check.evidence["failed_member_ids"]
+    collision_logical_keys = {
+        "same-origin-different-logical-key": f"claude-ai:collision:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",
+        "different-origin-same-logical-key": CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+    }
+
+    for drift in ("hash", "applied", "superseded_equivalent", "missing", "overpopulation"):
+        mutated_root = tmp_path / f"claude-vintage-{drift}"
+        copytree(zoo.archive_root, mutated_root)
+        collision_raw_ids = _insert_claude_identity_collision_rows(mutated_root / "source.db")
+        foreign_scoped_green = verify_archive(mutated_root, checks=("pathology-zoo-invariants",))
+        foreign_scoped_check = _check(foreign_scoped_green, "pathology-zoo-invariants")
+        assert foreign_scoped_check.status is OutcomeStatus.OK
+        assert "claude-vintage-live-proof" not in foreign_scoped_check.evidence["failed_member_ids"]
+
+        with sqlite3.connect(mutated_root / "source.db") as conn:
+            rows = conn.execute(
+                """
+                SELECT r.raw_id, m.normalized_content_hash, m.decision
+                FROM raw_sessions AS r
+                JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                WHERE r.origin = ?
+                  AND m.logical_source_key = ?
+                ORDER BY r.source_path
+                """,
+                (
+                    CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
+                    CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
+                ),
+            ).fetchall()
+            assert len(rows) == 2
+
+            if drift == "hash":
+                raw_id, content_hash, _decision = rows[0]
+                original_hash = bytes(content_hash)
+                drifted_hash = bytearray(original_hash)
+                drifted_hash[0] ^= 0xFF
+                if bytes(drifted_hash) == bytes(rows[1][1]):
+                    drifted_hash[1] ^= 0xFF
+                conn.execute(
+                    "UPDATE raw_session_memberships SET normalized_content_hash = ? WHERE raw_id = ?",
+                    (bytes(drifted_hash), raw_id),
+                )
+            elif drift in ("applied", "superseded_equivalent"):
+                raw_id = next(row[0] for row in rows if row[2] == drift)
+                conn.execute(
+                    "UPDATE raw_session_memberships SET decision = 'superseded_prefix' WHERE raw_id = ?",
+                    (raw_id,),
+                )
+            conn.commit()
+
+        if drift == "missing":
+            make_pathology_zoo_member_red(mutated_root, "claude-vintage-live-proof")
+        elif drift == "overpopulation":
+            extra_raw_id = _insert_claude_vintage_extra_revision(mutated_root / "source.db")
+            with sqlite3.connect(mutated_root / "source.db") as conn:
+                aggregate = conn.execute(
+                    """
+                    SELECT COUNT(*), COUNT(DISTINCT m.normalized_content_hash),
+                           SUM(m.decision = 'applied'),
+                           SUM(m.decision = 'superseded_equivalent'),
+                           SUM(m.decision = 'superseded_prefix')
+                    FROM raw_sessions AS r
+                    JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                    WHERE r.origin = ? AND m.logical_source_key = ?
+                    """,
+                    (CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN, CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY),
+                ).fetchone()
+            assert aggregate == (3, 1, 1, 1, 1)
+            assert extra_raw_id == "claude-vintage-extra-revision"
+
+        red = verify_archive(mutated_root, checks=("pathology-zoo-invariants",))
+        check = _check(red, "pathology-zoo-invariants")
+        assert check.status is OutcomeStatus.ERROR
+        assert "claude-vintage-live-proof" in check.evidence["failed_member_ids"]
+
+        with sqlite3.connect(mutated_root / "source.db") as conn:
+            collision_after = conn.execute(
+                "SELECT raw_id, origin, logical_source_key, decision FROM raw_sessions AS r "
+                "JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id "
+                "WHERE r.raw_id IN (?, ?) ORDER BY r.raw_id",
+                collision_raw_ids,
+            ).fetchall()
+        assert collision_after == [
+            (
+                raw_id,
+                CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN if raw_id == "same-origin-different-logical-key" else "chatgpt-export",
+                collision_logical_keys[
+                    "same-origin-different-logical-key"
+                    if raw_id == "same-origin-different-logical-key"
+                    else "different-origin-same-logical-key"
+                ],
+                "applied",
+            )
+            for raw_id in sorted(collision_raw_ids)
+        ]
+
+        candidate = mutated_root / "candidate-index.db"
+        shutil.copy2(mutated_root / "index.db", candidate)
+        candidate_report = verify_archive(
+            mutated_root,
+            checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+            index_path_override=candidate,
+        )
+        candidate_check = _check(candidate_report, "pathology-zoo-invariants")
+        assert candidate_check.status is OutcomeStatus.ERROR
+        assert "claude-vintage-live-proof" in candidate_check.evidence["failed_member_ids"]
+        assert not passes_strict_acceptance(candidate_report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
+
+    reindex_root = tmp_path / "claude-vintage-reindex"
+    copytree(zoo.archive_root, reindex_root)
+    make_pathology_zoo_member_red(reindex_root, "claude-vintage-live-proof")
+    with pytest.raises(RuntimeError, match=r"reindex acceptance gate failed.*pathology-zoo-invariants"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=reindex_root, promote=False))
+
+
 def test_pathology_zoo_candidate_check_uses_candidate_index_and_durable_source(tmp_path: Path) -> None:
     zoo = build_pathology_zoo(tmp_path / "zoo")
     candidate = tmp_path / "candidate-index.db"
@@ -1822,6 +2111,35 @@ def test_pathology_zoo_candidate_check_uses_candidate_index_and_durable_source(t
     check = _check(red, "pathology-zoo-invariants")
     assert check.status is OutcomeStatus.ERROR
     assert "whale-component" in check.evidence["failed_member_ids"]
+
+
+def test_pathology_zoo_claude_candidate_acceptance_uses_selected_index(tmp_path: Path) -> None:
+    """The Claude acceptance report must inspect its selected inactive index."""
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(zoo.archive_root / "index.db", candidate)
+
+    active = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
+    assert _check(active, "pathology-zoo-invariants").status is OutcomeStatus.OK
+
+    with _connect(candidate) as conn:
+        conn.execute(
+            "UPDATE sessions SET origin = 'codex-session' WHERE session_id = ?",
+            ("claude-design-session:zoo-design-session",),
+        )
+
+    active_after_candidate_mutation = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
+    assert _check(active_after_candidate_mutation, "pathology-zoo-invariants").status is OutcomeStatus.OK
+
+    candidate_report = verify_archive(
+        zoo.archive_root,
+        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        index_path_override=candidate,
+    )
+    candidate_check = _check(candidate_report, "pathology-zoo-invariants")
+    assert candidate_check.status is OutcomeStatus.ERROR
+    assert "claude-design" in candidate_check.evidence["failed_member_ids"]
+    assert not passes_strict_acceptance(candidate_report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
 
 
 def test_every_non_complexity_check_has_a_red_twin_test() -> None:
