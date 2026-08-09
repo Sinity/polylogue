@@ -18,7 +18,9 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -105,6 +107,67 @@ def _write_sqlite_db(path: Path, *, rows: tuple[str, ...] = ("a", "b")) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _red_attempt_decision(tmp_path: Path) -> tuple[BootstrapDecision, Path, Path, Path, Path]:
+    main_root = tmp_path / "main"
+    main_data = main_root / "testmondata"
+    _write_sqlite_db(main_data, rows=("tests/test.py::test_passed", "tests/test.py::test_failed"))
+    attempt = main_root / "seed-attempt.json"
+    attempt.write_text(
+        json.dumps(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "status": "reusable",
+                "identity": {
+                    "git_head": "head",
+                    "worktree_fingerprint": "tree",
+                    "python": "python",
+                    "skip_slow": True,
+                    "lab": False,
+                },
+                "selection": {"selected_count": 2, "selected_nodeids_omitted": 0},
+                "expected_nodeids": ["tests/test.py::test_passed", "tests/test.py::test_failed"],
+                "expected_count": 2,
+                "expected_digest": hashlib.sha256(
+                    "\n".join(sorted(["tests/test.py::test_passed", "tests/test.py::test_failed"])).encode()
+                ).hexdigest(),
+                "testmon_data": file_fingerprint(main_data),
+                "node_outcomes": [
+                    {"nodeid": "tests/test.py::test_passed", "outcome": "passed"},
+                    {"nodeid": "tests/test.py::test_failed", "outcome": "failed"},
+                ],
+                "exit_code": 1,
+                "run_id": "red-run",
+                "artifact_dir": ".cache/verify/runs/red-run",
+            }
+        )
+    )
+    artifact = main_root / ".cache" / "verify" / "runs" / "red-run"
+    artifact.mkdir(parents=True, exist_ok=True)
+    (artifact / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "red-run",
+                "checkout_root": str(main_root.resolve()),
+                "artifact_dir": ".cache/verify/runs/red-run",
+            }
+        )
+    )
+    lane = tmp_path / "lane"
+    decision = decide_testmon_bootstrap(
+        is_linked_worktree=True,
+        local_testmon_data=lane / "testmondata",
+        local_seed_stamp=lane / "seed.json",
+        local_seed_attempt=lane / "seed-attempt.json",
+        main_testmon_data=main_data,
+        main_seed_stamp=main_root / "seed.json",
+        main_seed_attempt=attempt,
+        protocol_version=PROTOCOL_VERSION,
+        main_checkout_root=main_root,
+        local_checkout_root=lane,
+    )
+    return decision, lane / "testmondata", lane / "seed.json", lane / "seed-attempt.json", lane
 
 
 def test_not_a_linked_worktree_never_bootstraps(tmp_path: Path) -> None:
@@ -559,6 +622,82 @@ def test_bootstrap_seed_files_keeps_copied_state_when_stamp_turns_invalid(tmp_pa
     assert stamped is False
     assert not local_data.exists()
     assert not local_stamp.exists()
+
+
+def test_bootstrap_graph_mismatch_publishes_no_destination_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main_data = tmp_path / "main" / "testmondata"
+    main_stamp = tmp_path / "main" / "seed.json"
+    _write_sqlite_db(main_data)
+    _write_valid_seed_stamp(main_stamp)
+    local_data = tmp_path / "lane" / "testmondata"
+    local_stamp = tmp_path / "lane" / "seed.json"
+    monkeypatch.setattr(testmon_bootstrap, "refresh_stamp", lambda *_args, **_kwargs: None)
+
+    assert not bootstrap_testmon_seed_files(
+        BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp),
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        checkout_root=tmp_path / "lane",
+        inherited_from=tmp_path / "main",
+    )
+    assert not local_data.exists()
+    assert not local_stamp.exists()
+    assert not (tmp_path / "lane" / ".cache" / "verify" / "current-run.json").exists()
+
+
+def test_bootstrap_receipt_rebind_failure_publishes_no_destination_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main_data = tmp_path / "main" / "testmondata"
+    main_stamp = tmp_path / "main" / "seed.json"
+    _write_sqlite_db(main_data)
+    _write_valid_seed_stamp(main_stamp)
+    local_data = tmp_path / "lane" / "testmondata"
+    local_stamp = tmp_path / "lane" / "seed.json"
+    monkeypatch.setattr(testmon_bootstrap, "_rebind_run_receipt", lambda **_kwargs: False)
+
+    assert not bootstrap_testmon_seed_files(
+        BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp),
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        checkout_root=tmp_path / "lane",
+        inherited_from=tmp_path / "main",
+    )
+    assert not local_data.exists()
+    assert not local_stamp.exists()
+    assert not (tmp_path / "lane" / ".cache" / "verify" / "current-run.json").exists()
+
+
+def test_bootstrap_rebound_attempt_failure_publishes_no_destination_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decision, local_data, local_stamp, local_attempt, lane = _red_attempt_decision(tmp_path)
+    original_stamp_from_attempt = cast(Callable[..., object], testmon_bootstrap.__dict__["stamp_from_attempt"])
+    calls = 0
+
+    def fail_rebound_attempt(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return None
+        return original_stamp_from_attempt(*args, **kwargs)
+
+    monkeypatch.setattr(testmon_bootstrap, "stamp_from_attempt", fail_rebound_attempt)
+
+    assert not bootstrap_testmon_seed_files(
+        decision,
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        local_seed_attempt=local_attempt,
+        checkout_root=lane,
+        inherited_from=tmp_path / "main",
+    )
+    assert not local_data.exists()
+    assert not local_stamp.exists()
+    assert not local_attempt.exists()
+    assert not (lane / ".cache" / "verify" / "current-run.json").exists()
 
 
 def test_maybe_bootstrap_does_not_migrate_an_untyped_legacy_local_stamp(

@@ -57,8 +57,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -238,7 +240,9 @@ def _atomic_write_stamp(seed_stamp: Path, stamp: TestmonSeedStamp) -> None:
     _atomic_write_json(seed_stamp, stamp.as_dict())
 
 
-def _rebind_run_receipt(*, source: Path, destination: Path, checkout_root: Path, run_id: str) -> bool:
+def _rebind_run_receipt(
+    *, source: Path, destination: Path, checkout_root: Path, run_id: str, current_run_path: Path | None = None
+) -> bool:
     """Copy the run receipt while rebinding its checkout-local provenance."""
     try:
         payload = json.loads((source / "run.json").read_text(encoding="utf-8"))
@@ -255,7 +259,10 @@ def _rebind_run_receipt(*, source: Path, destination: Path, checkout_root: Path,
             environment["checkout_root"] = str(checkout_root.resolve())
             environment["verify_state_origin"] = str(checkout_root.resolve())
         _atomic_write_json(destination / "run.json", payload_dict)
-        _atomic_write_json(checkout_root / ".cache" / "verify" / "current-run.json", payload_dict)
+        _atomic_write_json(
+            current_run_path or checkout_root / ".cache" / "verify" / "current-run.json",
+            payload_dict,
+        )
         return True
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
         return False
@@ -286,6 +293,33 @@ def _atomic_copy_sqlite_db(src: Path, dst: Path) -> None:
         tmp.replace(dst)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _publish_staged_bootstrap_files(*, staging_dir: Path, files: list[tuple[Path, Path | None]]) -> None:
+    """Publish a validated bootstrap as one rollback-capable file set."""
+    backup_dir = staging_dir / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backups: list[tuple[Path, Path]] = []
+    published: list[Path] = []
+    try:
+        for index, (destination, staged) in enumerate(files):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            backup = backup_dir / str(index)
+            if destination.exists():
+                os.replace(destination, backup)
+                backups.append((destination, backup))
+            if staged is not None:
+                os.replace(staged, destination)
+                published.append(destination)
+    except (OSError, ValueError):
+        for destination in reversed(published):
+            destination.unlink(missing_ok=True)
+        for destination, backup in reversed(backups):
+            if backup.exists():
+                os.replace(backup, destination)
+        raise
+    finally:
+        shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def bootstrap_testmon_seed_files(
@@ -358,23 +392,33 @@ def bootstrap_testmon_seed_files(
         return False
     if stamp is None:
         return False
+    staging_dir: Path | None = None
     try:
-        if decision.main_seed_attempt is not None and decision.selection_only:
-            local_seed_stamp.unlink(missing_ok=True)
-        _atomic_copy_sqlite_db(decision.main_testmon_data, local_testmon_data)
+        local_testmon_data.parent.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(tempfile.mkdtemp(prefix=".bootstrap-", dir=str(local_testmon_data.parent)))
+        staged_data = staging_dir / "testmondata"
+        staged_stamp = staging_dir / "seed.json"
+        staged_attempt = staging_dir / "seed-attempt.json"
+        staged_artifact = staging_dir / "artifact"
+        staged_current_run = staging_dir / "current-run.json"
+
+        _atomic_copy_sqlite_db(decision.main_testmon_data, staged_data)
         rebound = stamp.rebound(checkout_root=destination_root, inherited_from=source_root)
-        refreshed = refresh_stamp(rebound, local_testmon_data)
+        refreshed = refresh_stamp(rebound, staged_data)
         if refreshed is None or refreshed.graph != rebound.graph:
             return False
         source_artifact = source_root / Path(stamp.artifact_dir)
-        destination_artifact = destination_root / Path(refreshed.artifact_dir)
+        destination_artifact = (destination_root / Path(refreshed.artifact_dir)).resolve()
+        destination_artifact.relative_to(destination_root)
         if not _rebind_run_receipt(
             source=source_artifact,
-            destination=destination_artifact,
+            destination=staged_artifact,
             checkout_root=destination_root,
             run_id=refreshed.run_id,
+            current_run_path=staged_current_run,
         ):
             return False
+        staged_attempt_path: Path | None = None
         if decision.main_seed_attempt is not None and decision.selection_only:
             assert local_seed_attempt is not None
             source_attempt = json.loads(decision.main_seed_attempt.read_text(encoding="utf-8"))
@@ -386,22 +430,52 @@ def bootstrap_testmon_seed_files(
             rebound_attempt["binding"] = refreshed.binding.as_dict()
             rebound_attempt["release_baseline_allowed"] = False
             rebound_attempt["verification_scope"] = "affected"
+            validation_root = staging_dir / "validation"
+            validation_receipt = json.loads(staged_current_run.read_text(encoding="utf-8"))
+            if not isinstance(validation_receipt, dict):
+                return False
+            validation_receipt["checkout_root"] = str(validation_root.resolve())
+            validation_receipt["artifact_dir"] = f".cache/verify/runs/{refreshed.run_id}"
+            _atomic_write_json(
+                validation_root / ".cache" / "verify" / "runs" / refreshed.run_id / "run.json",
+                validation_receipt,
+            )
+            validation_attempt = dict(rebound_attempt)
+            raw_binding = validation_attempt.get("binding")
+            if not isinstance(raw_binding, Mapping):
+                return False
+            validation_binding = dict(raw_binding)
+            validation_binding["checkout_root"] = str(validation_root.resolve())
+            validation_attempt["binding"] = validation_binding
             if (
                 stamp_from_attempt(
-                    rebound_attempt,
-                    local_testmon_data,
-                    checkout_root=destination_root,
+                    validation_attempt,
+                    staged_data,
+                    checkout_root=validation_root,
                     protocol_version=decision.protocol_version,
                 )
                 is None
             ):
                 return False
-            _atomic_write_json(local_seed_attempt, rebound_attempt)
+            _atomic_write_json(staged_attempt, rebound_attempt)
+            staged_attempt_path = staged_attempt
         else:
-            _atomic_write_stamp(local_seed_stamp, refreshed)
+            _atomic_write_stamp(staged_stamp, refreshed)
+        publication_files: list[tuple[Path, Path | None]] = [
+            (local_testmon_data, staged_data),
+            (destination_artifact / "run.json", staged_artifact / "run.json"),
+            (destination_root / ".cache" / "verify" / "current-run.json", staged_current_run),
+            (local_seed_stamp, None if decision.selection_only else staged_stamp),
+        ]
+        if local_seed_attempt is not None:
+            publication_files.append((local_seed_attempt, staged_attempt_path))
+        _publish_staged_bootstrap_files(staging_dir=staging_dir, files=publication_files)
         return True
     except (OSError, sqlite3.Error, TypeError, ValueError):
         return False
+    finally:
+        if staging_dir is not None:
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def _git_worktree_info(repo_root: Path) -> tuple[bool, Path] | None:
