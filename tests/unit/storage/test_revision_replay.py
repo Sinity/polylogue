@@ -27,6 +27,7 @@ from polylogue.archive.session_revision_membership import (
     classify_membership_revisions,
 )
 from polylogue.core.enums import Provider
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
@@ -1474,6 +1475,42 @@ def _apply_membership_head(archive: ArchiveStore, raw_id: str, session: ParsedSe
         {raw_id: session_revision_projection(session)},
         acquired_at_ms=0,
     )
+
+
+def test_batched_membership_success_supersedes_deferred_cas_evidence(tmp_path: Path) -> None:
+    """The positive commit-batch route must expire CAS retry authority too."""
+    initialize_active_archive_root(tmp_path)
+    session = _parsed_session(("m0", "batched success"))
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = _write_quarantined_member(archive, "batched-cas", session)
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path="batched-cas.json",
+            source_index=0,
+            acquired_at_ms=2,
+            kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
+        )
+        archive.apply_raw_membership_classification(
+            "codex:session",
+            MembershipClassification((raw_id,), (), ()),
+            {raw_id: session},
+            {raw_id: session_revision_projection(session)},
+            acquired_at_ms=3,
+            manage_transaction=False,
+        )
+        archive.commit()
+
+        artifact = (
+            archive._ensure_source_conn()
+            .execute(
+                "SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ? AND source_path = ?",
+                (raw_id, "batched-cas.json"),
+            )
+            .fetchone()
+        )
+
+    assert artifact == (RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,)
 
 
 def _head_row(archive: ArchiveStore) -> tuple[object, ...] | None:

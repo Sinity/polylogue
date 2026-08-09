@@ -3163,6 +3163,9 @@ def _flush_pending_raw_parse_states(store: RawRevisionGovernanceHost) -> None:
     source_conn = store._ensure_source_conn()
     with source_conn:
         for raw_id, state in store._pending_raw_parse_states:
+            provider = state.payload_provider
+            if isinstance(provider, Provider) and isinstance(state.parsed_at, str) and state.parse_error is None:
+                _supersede_deferred_cas_evidence(store, raw_id, provider=provider)
             apply_source_raw_state_update(
                 source_conn,
                 raw_id,
