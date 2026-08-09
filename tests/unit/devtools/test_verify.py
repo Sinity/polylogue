@@ -119,8 +119,33 @@ def _write_real_testmon_state(nodeids: tuple[str, ...] = ("tests/test_a.py::test
         ".cache/verify/runs/seed",
     )
     TESTMON_SEED_STAMP.parent.mkdir(parents=True, exist_ok=True)
+    artifact_dir = ROOT / ".cache" / "verify" / "runs" / "seed"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "seed",
+                "checkout_root": str(ROOT.resolve()),
+                "artifact_dir": ".cache/verify/runs/seed",
+            }
+        )
+    )
     TESTMON_SEED_STAMP.write_text(json.dumps(stamp.as_dict()))
     return TESTMON_DATA
+
+
+def _write_run_receipt(root: Path, run_id: str) -> None:
+    artifact_dir = root / ".cache" / "verify" / "runs" / run_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "checkout_root": str(root.resolve()),
+                "artifact_dir": f".cache/verify/runs/{run_id}",
+            }
+        )
+    )
 
 
 def test_quick_verify_omits_pytest() -> None:
@@ -609,6 +634,7 @@ def test_resumed_seed_does_not_reuse_an_unexecuted_database_row(tmp_path: Path) 
             "run_id": "resume",
             "artifact_dir": ".cache/verify/runs/resume",
         }
+        _write_run_receipt(tmp_path, "resume")
 
         receipt = _finalize_testmon_seed_attempt(
             prepared=prepared,
@@ -764,6 +790,7 @@ def test_seed_receipt_classifies_every_node_terminal_outcome(
             [(index, index) for index, _nodeid in enumerate(expected[:-1], start=1)],
         )
 
+    _write_run_receipt(tmp_path, "run-mixed")
     receipt = _finalize_testmon_seed_attempt(
         prepared={
             "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
@@ -866,6 +893,9 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
             [(index, index) for index, _nodeid in enumerate(expected, start=1)],
         )
 
+    _write_run_receipt(tmp_path, "run-1")
+    _write_run_receipt(tmp_path, "run-stale-db")
+    _write_run_receipt(tmp_path, "run-orphaned")
     receipt = _finalize_testmon_seed_attempt(
         prepared={
             "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,

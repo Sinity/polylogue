@@ -59,8 +59,10 @@ import json
 import os
 import sqlite3
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from devtools.testmon_state import (
     TestmonSeedStamp,
@@ -219,6 +221,28 @@ def _atomic_write_stamp(seed_stamp: Path, stamp: TestmonSeedStamp) -> None:
     _atomic_write_json(seed_stamp, stamp.as_dict())
 
 
+def _rebind_run_receipt(*, source: Path, destination: Path, checkout_root: Path, run_id: str) -> bool:
+    """Copy the run receipt while rebinding its checkout-local provenance."""
+    try:
+        payload = json.loads((source / "run.json").read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping) or payload.get("run_id") != run_id:
+            return False
+        source_root = payload.get("checkout_root")
+        if not isinstance(source_root, str) or Path(source_root).resolve() != source.parents[3].resolve():
+            return False
+        payload_dict: dict[str, Any] = dict(payload)
+        payload_dict["checkout_root"] = str(checkout_root.resolve())
+        payload_dict["artifact_dir"] = str(Path(".cache") / "verify" / "runs" / run_id)
+        environment = payload_dict.get("environment_fingerprint")
+        if isinstance(environment, dict):
+            environment["checkout_root"] = str(checkout_root.resolve())
+            environment["verify_state_origin"] = str(checkout_root.resolve())
+        _atomic_write_json(destination / "run.json", payload_dict)
+        return True
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+
+
 def _atomic_copy_sqlite_db(src: Path, dst: Path) -> None:
     """Copy a (possibly concurrently-written) sqlite db via the online backup API.
 
@@ -323,6 +347,15 @@ def bootstrap_testmon_seed_files(
         rebound = stamp.rebound(checkout_root=destination_root, inherited_from=source_root)
         refreshed = refresh_stamp(rebound, local_testmon_data)
         if refreshed is None or refreshed.graph != rebound.graph:
+            return False
+        source_artifact = source_root / Path(stamp.artifact_dir)
+        destination_artifact = destination_root / Path(refreshed.artifact_dir)
+        if not _rebind_run_receipt(
+            source=source_artifact,
+            destination=destination_artifact,
+            checkout_root=destination_root,
+            run_id=refreshed.run_id,
+        ):
             return False
         if decision.main_seed_attempt is not None:
             assert local_seed_attempt is not None

@@ -41,6 +41,17 @@ def _write_graph(path: Path, *, failed: bool = False, with_edges: bool = True) -
 
 
 def _attempt(data: Path, *, outcomes: tuple[str, str] = ("passed", "failed")) -> dict[str, object]:
+    artifact_dir = data.parent / ".cache" / "verify" / "runs" / "run-red"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-red",
+                "checkout_root": str(data.parent.resolve()),
+                "artifact_dir": ".cache/verify/runs/run-red",
+            }
+        )
+    )
     return {
         "protocol_version": PROTOCOL,
         "status": "incomplete",
@@ -152,6 +163,28 @@ def test_attempt_and_green_stamp_artifacts_fail_closed_when_malformed(tmp_path: 
     attempt["status"] = "complete"
     stamp = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)
     assert stamp is not None
+    receipt = tmp_path / ".cache" / "verify" / "runs" / "run-red" / "run.json"
+    receipt.unlink()
+    assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
+    receipt.write_text(
+        json.dumps(
+            {
+                "run_id": "wrong-run",
+                "checkout_root": str(tmp_path.resolve()),
+                "artifact_dir": ".cache/verify/runs/run-red",
+            }
+        )
+    )
+    assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
+    receipt.write_text(
+        json.dumps(
+            {
+                "run_id": "run-red",
+                "checkout_root": str(tmp_path.resolve()),
+                "artifact_dir": ".cache/verify/runs/run-red",
+            }
+        )
+    )
     stamp_path = tmp_path / ".cache" / "testmon" / "seed.json"
     stamp_path.parent.mkdir(parents=True)
     payload = stamp.as_dict()

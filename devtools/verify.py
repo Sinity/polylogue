@@ -2536,7 +2536,7 @@ def _finalize_testmon_seed_attempt(
     reusable_stamp = stamp_from_attempt(
         attempt_candidate,
         TESTMON_DATA,
-        checkout_root=ROOT,
+        checkout_root=Path.cwd(),
         protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
     )
     reusable = reusable_stamp is not None

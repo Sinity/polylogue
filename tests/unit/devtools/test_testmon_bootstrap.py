@@ -72,6 +72,17 @@ def _write_valid_seed_stamp(path: Path, *, protocol_version: int = PROTOCOL_VERS
         "seed",
         ".cache/verify/runs/seed",
     )
+    artifact_dir = path.parent / ".cache" / "verify" / "runs" / "seed"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "seed",
+                "checkout_root": str(path.parent.resolve()),
+                "artifact_dir": ".cache/verify/runs/seed",
+            }
+        )
+    )
     path.write_text(json.dumps(stamp.as_dict()))
 
 
@@ -289,6 +300,17 @@ def test_complete_red_attempt_bootstraps_as_selection_only_state(tmp_path: Path)
             }
         )
     )
+    red_artifact = tmp_path / "main" / ".cache" / "verify" / "runs" / "red-run"
+    red_artifact.mkdir(parents=True, exist_ok=True)
+    (red_artifact / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "red-run",
+                "checkout_root": str((tmp_path / "main").resolve()),
+                "artifact_dir": ".cache/verify/runs/red-run",
+            }
+        )
+    )
     decision = decide_testmon_bootstrap(
         is_linked_worktree=True,
         local_testmon_data=tmp_path / "lane" / "testmondata",
@@ -316,6 +338,11 @@ def test_complete_red_attempt_bootstraps_as_selection_only_state(tmp_path: Path)
     rebound_attempt = json.loads(local_attempt.read_text())
     assert rebound_attempt["artifact_dir"] == ".cache/verify/runs/red-run"
     assert rebound_attempt["testmon_data"] == file_fingerprint(local_data)
+    rebound_receipt = json.loads(
+        (tmp_path / "lane" / ".cache" / "verify" / "runs" / "red-run" / "run.json").read_text()
+    )
+    assert rebound_receipt["run_id"] == "red-run"
+    assert rebound_receipt["checkout_root"] == str((tmp_path / "lane").resolve())
 
 
 def test_local_seed_missing_only_stamp_still_bootstraps(tmp_path: Path) -> None:
@@ -374,7 +401,7 @@ def test_bootstrap_seed_files_copies_db_and_stamp(tmp_path: Path) -> None:
         conn.close()
     assert rows == [("x", "sha-x"), ("y", "sha-y"), ("z", "sha-z")]
     # No temp files left behind.
-    assert sorted(p.name for p in local_data.parent.iterdir()) == ["seed.json", "testmondata"]
+    assert sorted(p.name for p in local_data.parent.iterdir()) == [".cache", "seed.json", "testmondata"]
 
 
 def test_bootstrap_seed_files_marks_destination_and_source_checkout(tmp_path: Path) -> None:

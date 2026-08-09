@@ -63,6 +63,18 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(tmp_path: Pat
         "artifact_dir": ".cache/verify/runs/real-testmon",
         "testmon_data": file_fingerprint(data),
     }
+    artifact_dir = source / ".cache" / "verify" / "runs" / "real-testmon"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "real-testmon",
+                "checkout_root": str(source.resolve()),
+                "artifact_dir": ".cache/verify/runs/real-testmon",
+            }
+        ),
+        encoding="utf-8",
+    )
     stamp = stamp_from_attempt(attempt, data, checkout_root=source, protocol_version=4)
     assert stamp is not None and stamp.baseline_status is BaselineStatus.RED
     source_stamp = source / ".cache" / "testmon" / "seed.json"

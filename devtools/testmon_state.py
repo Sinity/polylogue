@@ -365,10 +365,19 @@ def _is_bound_run_artifact(raw: object, *, checkout_root: Path, run_id: str) -> 
     if path.parts[3:] != (run_id,):
         return False
     try:
-        (checkout_root / path).resolve().relative_to((checkout_root / ".cache" / "verify" / "runs" / run_id).resolve())
-    except ValueError:
+        artifact_dir = (checkout_root / path).resolve()
+        artifact_dir.relative_to((checkout_root / ".cache" / "verify" / "runs" / run_id).resolve())
+        receipt = json.loads((artifact_dir / "run.json").read_text(encoding="utf-8"))
+        if not isinstance(receipt, Mapping):
+            return False
+        return (
+            receipt.get("run_id") == run_id
+            and isinstance(receipt.get("checkout_root"), str)
+            and Path(receipt["checkout_root"]).resolve() == checkout_root.resolve()
+            and receipt.get("artifact_dir") == str(Path(".cache") / "verify" / "runs" / run_id)
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
         return False
-    return True
 
 
 def inspect_testmon_database(path: Path, expected_nodeids: Sequence[str]) -> GraphInspection:
