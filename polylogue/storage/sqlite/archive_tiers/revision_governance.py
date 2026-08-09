@@ -3020,6 +3020,13 @@ def apply_raw_membership_classification(
 
 def finalize_raw_parse_state(store: RawRevisionGovernanceHost, raw_id: str, *, state: RawSessionStateUpdate) -> None:
     """Commit one typed source parse state after its index outcome."""
+    # A generic state update is also used by the retained-raw index route when
+    # it has no typed worker disposition to persist.  Retire any prior
+    # failure authority before recording that new untyped failure; otherwise
+    # an old terminal/deferred carrier can continue to authorize replay after
+    # the current attempt has failed for a different reason.
+    if isinstance(state.parse_error, str) and state.parse_error:
+        _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
     apply_source_raw_state_update(
         store._ensure_source_conn(),
         raw_id,
@@ -3045,6 +3052,7 @@ def mark_raw_parse_failed(
                 (raw_id,),
             ).fetchone()
             if row is not None:
+                _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
                 record_raw_failure_evidence(
                     store,
                     raw_id,

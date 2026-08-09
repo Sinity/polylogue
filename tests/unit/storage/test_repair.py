@@ -904,6 +904,52 @@ def test_non_codex_cas_frontier_failure_persists_provider_neutral_evidence(tmp_p
         ).fetchone() == ("deferred_cas_frontier", "partial_decode", 1)
 
 
+def test_generic_parse_state_failure_retires_prior_failure_authority(tmp_path: Path) -> None:
+    """An untyped retained-raw failure cannot reuse an earlier replay carrier."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.raw.models import RawSessionStateUpdate
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"stale-authority"}}\n',
+            source_path="stale-authority.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CODEX,
+            error=RawCASFrontierError("first frontier"),
+        )
+        archive.finalize_raw_parse_state(
+            raw_id,
+            state=RawSessionStateUpdate(
+                parse_error="ValueError: later parser failure",
+                payload_provider=Provider.CODEX,
+            ),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == (
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+            "unknown",
+            0,
+        )
+
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 0
+    assert lifecycle.deferred == 0
+    assert lifecycle.unexplained == 1
+    assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
+
+
 def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(
     tmp_path: Path,
 ) -> None:
