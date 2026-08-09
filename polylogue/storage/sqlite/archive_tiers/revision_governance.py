@@ -133,6 +133,7 @@ from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RawFailureEvidenceKind,
+    raw_failure_classification_reason,
 )
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
@@ -3077,6 +3078,24 @@ def record_raw_failure_evidence(
     from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 
     artifact_id = "raw-failure:" + sha256(f"{raw_id}:{kind.value}".encode()).hexdigest()
+    raw_row = (
+        store._ensure_source_conn()
+        .execute(
+            "SELECT validation_status FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        )
+        .fetchone()
+    )
+    validation_failed = raw_row is not None and str(raw_row[0] or "") == "failed"
+    outcome_code = (
+        "corrupt_input"
+        if kind
+        in {
+            RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+            RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
+        }
+        else kind.value
+    )
     upsert_raw_artifact(
         store._ensure_source_conn(),
         raw_id,
@@ -3086,7 +3105,22 @@ def record_raw_failure_evidence(
             source_path=source_path,
             source_index=source_index,
             artifact_kind=kind.value,
-            classification_reason=kind.value,
+            classification_reason=raw_failure_classification_reason(
+                diagnostic=None,
+                evidence_ref=None,
+                outcome_code=outcome_code,
+                remediation=None,
+                retryable=False,
+                trusted_validation_failure=(
+                    validation_failed
+                    and kind
+                    in {
+                        RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+                        RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
+                    }
+                    and outcome_code == "corrupt_input"
+                ),
+            ),
             support_status=kind.support_status,
             parse_as_session=kind.lifecycle == "deferred",
             schema_eligible=kind.lifecycle == "deferred",

@@ -3941,6 +3941,10 @@ def _raw_materialization_candidate_ids(
                 s_by_native.native_id IS NULL
                 OR existing_native_raw.raw_id IS NULL
               )
+              -- A failed worker validation is not replay authority.  Keep
+              -- the raw bytes and their diagnostics, but require a fresh
+              -- validation outcome before materialization can select them.
+              AND COALESCE(r.validation_status, '') != 'failed'
               AND (
                 r.parse_error IS NULL
                 OR r.parse_error = 'OperationalError: database is locked'
@@ -4531,6 +4535,11 @@ def _raw_replay_plan_outcome(
             SELECT 1
             FROM raw_sessions
             WHERE raw_id IN ({placeholders})
+              AND validation_status = 'failed'
+            UNION ALL
+            SELECT 1
+            FROM raw_sessions
+            WHERE raw_id IN ({placeholders})
               AND parse_error IS NOT NULL
               AND parse_error != ?
               AND NOT EXISTS (
@@ -4552,6 +4561,7 @@ def _raw_replay_plan_outcome(
             superseded_json,
             *component,
             superseded_json,
+            *component,
             *component,
             _TRANSIENT_LOCK_PARSE_ERROR,
             *sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS),

@@ -7,6 +7,7 @@ source that may progress from a payload that has reached a terminal refusal.
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum
 
 from polylogue.core.enums import ArtifactSupportStatus
@@ -48,7 +49,71 @@ class RawFailureEvidenceKind(StrEnum):
 
     @property
     def lifecycle(self) -> str:
+        if self is RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER:
+            return "resolution"
         return "deferred" if self.value in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS else "terminal"
+
+
+RAW_FAILURE_TRUSTED_PROVENANCE = "worker-disposition-v1"
+RAW_FAILURE_VALIDATION_FAILURE_KINDS = frozenset(
+    {
+        RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value,
+        RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE.value,
+    }
+)
+
+
+def raw_failure_classification_reason(
+    *,
+    diagnostic: str | None,
+    evidence_ref: str | None,
+    outcome_code: str,
+    remediation: str | None,
+    retryable: bool | None,
+    trusted_validation_failure: bool,
+) -> str:
+    """Encode the typed carrier, including proof for a validation failure."""
+    payload: dict[str, object] = {
+        "diagnostic": diagnostic,
+        "evidence_ref": evidence_ref,
+        "outcome_code": outcome_code,
+        "remediation": remediation,
+        "retryable": retryable,
+    }
+    if trusted_validation_failure:
+        payload["provenance"] = RAW_FAILURE_TRUSTED_PROVENANCE
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def has_trusted_raw_failure_provenance(
+    classification_reason: object,
+    *,
+    artifact_kind: RawFailureEvidenceKind,
+    outcome_code: object,
+) -> bool:
+    """Check the structural worker receipt required for corrupt evidence."""
+    if artifact_kind.value not in RAW_FAILURE_VALIDATION_FAILURE_KINDS:
+        return False
+    if str(outcome_code) != "corrupt_input":
+        return False
+    if not isinstance(classification_reason, str):
+        return False
+    try:
+        payload = json.loads(classification_reason)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("provenance") == RAW_FAILURE_TRUSTED_PROVENANCE
+
+
+def raw_failure_outcome_code(classification_reason: object) -> object:
+    """Read the typed outcome code from a structured failure carrier."""
+    if not isinstance(classification_reason, str):
+        return None
+    try:
+        payload = json.loads(classification_reason)
+    except (TypeError, ValueError):
+        return None
+    return payload.get("outcome_code") if isinstance(payload, dict) else None
 
 
 def validated_raw_failure_evidence_kind(
@@ -56,6 +121,8 @@ def validated_raw_failure_evidence_kind(
     support_status: object,
     *,
     validation_failed: bool,
+    classification_reason: object = None,
+    outcome_code: object = None,
 ) -> RawFailureEvidenceKind | None:
     """Return a typed kind only for a complete, self-consistent carrier.
 
@@ -72,10 +139,11 @@ def validated_raw_failure_evidence_kind(
         return None
     if evidence_kind.support_status.value != str(support_status):
         return None
-    if validation_failed and evidence_kind not in {
-        RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
-        RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
-    }:
+    if validation_failed and not has_trusted_raw_failure_provenance(
+        classification_reason,
+        artifact_kind=evidence_kind,
+        outcome_code=outcome_code,
+    ):
         return None
     return evidence_kind
 
@@ -106,10 +174,16 @@ RAW_FAILURE_DEFERRED_SUPPORT_STATUS = ArtifactSupportStatus.PARTIAL_DECODE.value
 RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(
     sorted((kind.value, kind.support_status.value) for kind in RawFailureEvidenceKind)
 )
+RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(
+    sorted(
+        (kind.value, kind.support_status.value)
+        for kind in RawFailureEvidenceKind
+        if kind.lifecycle in {"deferred", "terminal"}
+    )
+)
 RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
     {
         RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value,
-        RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE.value,
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION.value,
         RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
@@ -125,9 +199,15 @@ __all__ = [
     "RAW_FAILURE_DEFERRED_SUPPORT_STATUS",
     "RAW_FAILURE_EVIDENCE_KINDS",
     "RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS",
+    "RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS",
     "RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS",
     "RAW_FAILURE_TERMINAL_EVIDENCE_KINDS",
     "RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS",
+    "RAW_FAILURE_TRUSTED_PROVENANCE",
+    "RAW_FAILURE_VALIDATION_FAILURE_KINDS",
     "RawFailureEvidenceKind",
+    "has_trusted_raw_failure_provenance",
+    "raw_failure_classification_reason",
+    "raw_failure_outcome_code",
     "validated_raw_failure_evidence_kind",
 ]

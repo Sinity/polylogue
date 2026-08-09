@@ -52,7 +52,7 @@ from polylogue.core.metrics import (
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
-    RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
     RawFailureEvidenceKind,
 )
 from polylogue.logging import get_logger
@@ -3365,7 +3365,8 @@ class LiveBatchProcessor:
             return False
         placeholders = ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
         support_pairs = " OR ".join(
-            "(a.artifact_kind = ? AND a.support_status = ?)" for _ in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS
+            "(a.artifact_kind = ? AND a.support_status = ?)"
+            for _ in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS
         )
         try:
             conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
@@ -3390,7 +3391,7 @@ class LiveBatchProcessor:
                             raw_id,
                             str(path),
                             *sorted(RAW_FAILURE_EVIDENCE_KINDS),
-                            *[value for pair in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair],
+                            *[value for pair in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair],
                         ),
                     ).fetchone()
                     is not None

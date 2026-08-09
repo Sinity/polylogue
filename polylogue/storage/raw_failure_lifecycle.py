@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Literal
 
 from polylogue.core.raw_failure_evidence import (
-    RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    raw_failure_outcome_code,
     validated_raw_failure_evidence_kind,
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -83,16 +84,23 @@ def _lifecycle(
     support_status: object,
     *,
     validation_failed: bool,
+    classification_reason: object = None,
 ) -> RawFailureLifecycle:
     """Classify an artifact only when its closed evidence is self-consistent."""
     evidence_kind = validated_raw_failure_evidence_kind(
         artifact_kind,
         support_status,
         validation_failed=validation_failed,
+        classification_reason=classification_reason,
+        outcome_code=raw_failure_outcome_code(classification_reason),
     )
     if evidence_kind is None:
         return "unexplained"
-    return "deferred" if evidence_kind.lifecycle == "deferred" else "terminal"
+    if evidence_kind.lifecycle == "deferred":
+        return "deferred"
+    if evidence_kind.lifecycle == "terminal":
+        return "terminal"
+    return "unexplained"
 
 
 def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> RawFailureLifecycleSnapshot:
@@ -134,7 +142,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                OR r.validation_status = 'failed'
         )
         """
-        typed_failure_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS)
+        typed_failure_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS)
         valid_failure_artifacts_cte = (
             """
         , valid_failure_artifacts AS (
@@ -170,13 +178,16 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                 + valid_failure_artifacts_cte
                 + """
                 SELECT f.origin, f.validation_status, a.artifact_kind, a.support_status,
+                       a.classification_reason,
                        COUNT(*) AS failure_count
                 FROM failed AS f
                 """
                 + latest_artifact_join
                 + """
-                GROUP BY f.origin, f.validation_status, a.artifact_kind, a.support_status
-                ORDER BY f.origin, f.validation_status, a.artifact_kind, a.support_status
+                GROUP BY f.origin, f.validation_status, a.artifact_kind, a.support_status,
+                         a.classification_reason
+                ORDER BY f.origin, f.validation_status, a.artifact_kind, a.support_status,
+                         a.classification_reason
                 """
             )
             sample_sql = (
@@ -185,7 +196,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                 + """
                 , sampled AS (
                     SELECT f.raw_id, f.origin, f.validation_status, f.acquired_at_ms,
-                           a.artifact_kind, a.support_status
+                           a.artifact_kind, a.support_status, a.classification_reason
                     FROM failed AS f
                     """
                 + latest_artifact_join
@@ -197,7 +208,8 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                     f.acquired_at_ms DESC, f.raw_id DESC
                     LIMIT ?
                 )
-                SELECT raw_id, origin, validation_status, artifact_kind, support_status
+                SELECT raw_id, origin, validation_status, artifact_kind, support_status,
+                       classification_reason
                 FROM sampled
                 """
             )
@@ -205,7 +217,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
             summary_sql = (
                 failed_cte
                 + """
-                SELECT f.origin, f.validation_status, NULL, NULL, COUNT(*) AS failure_count
+                SELECT f.origin, f.validation_status, NULL, NULL, NULL, COUNT(*) AS failure_count
                 FROM failed AS f
                 GROUP BY f.origin, f.validation_status
                 ORDER BY f.origin, f.validation_status
@@ -214,13 +226,15 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
             sample_sql = (
                 failed_cte
                 + """
-                SELECT raw_id, origin, validation_status, NULL, NULL
+                SELECT raw_id, origin, validation_status, NULL, NULL, NULL
                 FROM failed
                 ORDER BY acquired_at_ms DESC, raw_id DESC
                 LIMIT ?
                 """
             )
-        typed_failure_params = tuple(value for pair in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair)
+        typed_failure_params = tuple(
+            value for pair in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair
+        )
         summary_rows = conn.execute(summary_sql, typed_failure_params if has_artifacts else ()).fetchall()
         sample_params: tuple[object, ...] = typed_failure_params + (sample_limit,) if has_artifacts else (sample_limit,)
         sample_rows = conn.execute(sample_sql, sample_params).fetchall()
@@ -238,9 +252,15 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
         origin = str(row[0] or "unknown")
         artifact_kind = str(row[2]) if row[2] is not None else None
         support_status = str(row[3]) if row[3] is not None else None
+        classification_reason = row[4]
         validation_failed = str(row[1] or "") == "failed"
-        lifecycle = _lifecycle(artifact_kind, support_status, validation_failed=validation_failed)
-        count = int(row[4])
+        lifecycle = _lifecycle(
+            artifact_kind,
+            support_status,
+            validation_failed=validation_failed,
+            classification_reason=classification_reason,
+        )
+        count = int(row[5])
         counts[lifecycle] += count
         by_origin[origin] += count
         by_artifact_kind[artifact_kind or "<none>"] += count
@@ -248,6 +268,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
         origin = str(row[1] or "unknown")
         artifact_kind = str(row[3]) if row[3] is not None else None
         support_status = str(row[4]) if row[4] is not None else None
+        classification_reason = row[5]
         samples.append(
             {
                 "raw_id": str(row[0]),
@@ -258,7 +279,9 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                     artifact_kind,
                     support_status,
                     validation_failed=str(row[2] or "") == "failed",
+                    classification_reason=classification_reason,
                 ),
+                "classification_reason": str(classification_reason) if classification_reason is not None else None,
             }
         )
     return RawFailureLifecycleSnapshot(

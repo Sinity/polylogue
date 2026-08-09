@@ -20,6 +20,7 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_EVIDENCE_KINDS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
+    raw_failure_classification_reason,
     validated_raw_failure_evidence_kind,
 )
 from polylogue.core.sources import origin_from_provider
@@ -148,17 +149,9 @@ async def save_raw_failure_evidence(
     diagnostic remains available through ``decode_error``.
     """
     status = ArtifactSupportStatus.from_string(str(support_status))
-    evidence_kind = validated_raw_failure_evidence_kind(
-        artifact_kind,
-        status,
-        validation_failed=False,
-    )
-    if evidence_kind is None:
-        raise ValueError(f"invalid closed raw-failure evidence pair: {artifact_kind!r}/{status.value!r}")
-
     raw_cursor = await conn.execute(
         """
-        SELECT origin, source_path, source_index, acquired_at_ms
+        SELECT origin, source_path, source_index, acquired_at_ms, validation_status
         FROM raw_sessions
         WHERE raw_id = ?
         """,
@@ -167,7 +160,15 @@ async def save_raw_failure_evidence(
     raw_row = await raw_cursor.fetchone()
     if raw_row is None:
         raise KeyError(raw_id)
-    origin, source_path, source_index, acquired_at_ms = raw_row
+    origin, source_path, source_index, acquired_at_ms, validation_status = raw_row
+    validation_failed = str(validation_status or "") == "failed"
+    evidence_kind = validated_raw_failure_evidence_kind(
+        artifact_kind,
+        status,
+        validation_failed=False,
+    )
+    if evidence_kind is None:
+        raise ValueError(f"invalid closed raw-failure evidence pair: {artifact_kind!r}/{status.value!r}")
 
     if artifact_id is None:
         failure_kind_placeholders = ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
@@ -190,16 +191,17 @@ async def save_raw_failure_evidence(
             if existing_row is not None
             else "raw-failure:" + hashlib.sha256(f"{raw_id}:{origin}:{source_path}:{source_index}".encode()).hexdigest()
         )
-    classification_reason = json.dumps(
-        {
-            "diagnostic": diagnostic,
-            "evidence_ref": evidence_ref,
-            "outcome_code": outcome_code,
-            "remediation": remediation,
-            "retryable": retryable,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
+    classification_reason = raw_failure_classification_reason(
+        diagnostic=diagnostic,
+        evidence_ref=evidence_ref,
+        outcome_code=outcome_code,
+        remediation=remediation,
+        retryable=retryable,
+        trusted_validation_failure=(
+            validation_failed
+            and evidence_kind.value in {"terminal_corrupt_input", "terminal_unknown_json_decode"}
+            and outcome_code == "corrupt_input"
+        ),
     )
     await conn.execute(
         RAW_ARTIFACT_UPSERT_SQL,

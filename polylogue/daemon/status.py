@@ -21,7 +21,7 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
-from polylogue.core.raw_failure_evidence import validated_raw_failure_evidence_kind
+from polylogue.core.raw_failure_evidence import raw_failure_outcome_code, validated_raw_failure_evidence_kind
 from polylogue.core.stats import percentile
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
@@ -89,6 +89,8 @@ def _authoritative_lifecycle_artifact_kind(sample: Mapping[str, object]) -> str 
         sample.get("artifact_kind"),
         sample.get("support_status"),
         validation_failed=str(sample.get("validation_status") or "") == "failed",
+        classification_reason=sample.get("classification_reason"),
+        outcome_code=raw_failure_outcome_code(sample.get("classification_reason")),
     )
     if evidence_kind is None or sample.get("lifecycle") != evidence_kind.lifecycle:
         return None
@@ -424,7 +426,6 @@ class RawFailureSample(BaseModel):
         "deferred_cas_frontier",
         "deferred_codex_cas_frontier",
         "terminal_corrupt_input",
-        "terminal_superseded_deferred_cas_frontier",
         "terminal_unknown_json_decode",
         "terminal_unknown_export_no_session",
         "terminal_unsupported_shape",
