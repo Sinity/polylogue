@@ -2473,6 +2473,15 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
                 include_exact_raw_materialization_readiness=False,
                 fingerprint=lambda: _daemon_status_fingerprint(_active_status_db_path()),
             )
+            specs.append(
+                StatusComponentSpec(
+                    name="assertion_candidate_queue",
+                    scope="archive",
+                    collector=assertion_candidate_queue_status_summary,
+                    deadline_s=3.0,
+                    cost_class="moderate",
+                )
+            )
             _PERIODIC_STATUS_REGISTRY = StatusComponentRegistry(specs)
         return _PERIODIC_STATUS_REGISTRY
 
@@ -2832,17 +2841,22 @@ def daemon_status_payload(
     # Same bounding discipline as archive_debt above: a queue-health lookup
     # is an archive scan, not a cheap fact, and must not be able to stall
     # this endpoint past its own deadline (polylogue-2o3d/polylogue-20d.17).
-    queue_snapshot = StatusComponentRegistry(
-        [
-            StatusComponentSpec(
-                name="assertion_candidate_queue",
-                scope="archive",
-                collector=lambda: assertion_candidate_queue_status_summary(config=config),
-                deadline_s=3.0,
-                cost_class="moderate",
-            )
-        ]
-    ).collect()["assertion_candidate_queue"]
+    # The periodic status route passes its persistent registry here so a slow
+    # queue scan is observed as refreshing instead of restarted on every tick.
+    if registry is not None:
+        queue_snapshot = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
+    else:
+        queue_snapshot = StatusComponentRegistry(
+            [
+                StatusComponentSpec(
+                    name="assertion_candidate_queue",
+                    scope="archive",
+                    collector=lambda: assertion_candidate_queue_status_summary(config=config),
+                    deadline_s=3.0,
+                    cost_class="moderate",
+                )
+            ]
+        ).collect()["assertion_candidate_queue"]
     assertion_candidate_queue = (
         queue_snapshot.value
         if queue_snapshot.value is not None

@@ -2898,6 +2898,54 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
         reset_periodic_status_component_registry()
 
 
+def test_periodic_status_registry_resumes_slow_queue_health_across_ticks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Periodic queue scans use the persistent registry instead of relaunching."""
+    import threading
+    from time import sleep
+
+    from polylogue.daemon import status as status_module
+    from polylogue.daemon.status import periodic_status_component_registry, reset_periodic_status_component_registry
+
+    reset_periodic_status_component_registry()
+    calls = {"n": 0}
+    release = threading.Event()
+
+    def slow_queue_health() -> dict[str, object]:
+        calls["n"] += 1
+        release.wait(timeout=5.0)
+        return {"state": "healthy-empty", "pending_count": 0}
+
+    monkeypatch.setattr(status_module, "assertion_candidate_queue_status_summary", slow_queue_health)
+
+    try:
+        registry = periodic_status_component_registry()
+        first = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
+        assert first.state == "timed_out"
+        assert calls["n"] == 1
+
+        second = periodic_status_component_registry().collect(names=["assertion_candidate_queue"])[
+            "assertion_candidate_queue"
+        ]
+        assert second.state == "refreshing"
+        assert calls["n"] == 1
+
+        release.set()
+        for _ in range(200):
+            if registry.last_good("assertion_candidate_queue") is not None:
+                break
+            sleep(0.01)
+
+        third = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
+        assert third.state == "fresh"
+        assert third.value == {"state": "healthy-empty", "pending_count": 0}
+        assert calls["n"] == 1
+    finally:
+        release.set()
+        reset_periodic_status_component_registry()
+
+
 def test_periodic_status_component_registry_fingerprint_forces_refresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

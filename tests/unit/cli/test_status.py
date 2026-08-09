@@ -1955,6 +1955,30 @@ class TestNoArchiveStatus:
 
         assert "87.5% indexed" in _combined_calls(env)
 
+    def test_daemon_status_renders_queue_health_from_daemon_payload(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "assertion_candidate_queue": {
+                    "state": "scheduler-stalled",
+                    "pending_count": 2,
+                    "judgment_scheduler_receipt_status": "failed",
+                    "judgment_scheduler_receipt_at_ms": 1_800_000_000_000,
+                    "judgment_scheduler_receipt_age_ms": 90_000,
+                    "judgment_scheduler_receipt_reason": "sweep_failed:RuntimeError",
+                },
+            },
+        )
+
+        output = _combined_calls(env)
+        assert "[red]scheduler-stalled, 2 pending[/red]" in output
+        assert "judgment scheduler receipt: failed" in output
+        assert "age=90.0s" in output
+        assert "reason=sweep_failed:RuntimeError" in output
+
     def test_daemon_status_renders_failed_and_deferred_convergence_debt_separately(self) -> None:
         env = _make_app_env()
 

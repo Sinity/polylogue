@@ -1340,6 +1340,10 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     if isinstance(raw_frontier, dict):
         _render_raw_frontier_integrity(env, raw_frontier)
 
+    assertion_candidate_queue = status.get("assertion_candidate_queue")
+    if isinstance(assertion_candidate_queue, dict):
+        _render_assertion_candidate_queue(env, assertion_candidate_queue)
+
     # Sizes
     db_bytes = status.get("db_size_bytes", 0)
     disk_free = status.get("disk_free_bytes", 0)
