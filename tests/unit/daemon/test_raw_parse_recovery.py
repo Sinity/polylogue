@@ -180,6 +180,19 @@ def test_raw_parse_recovery_missing_source_is_no_backlog(tmp_path: Path) -> None
     assert state.error_count == 0
 
 
+def test_raw_parse_recovery_no_qualifying_rows_is_done(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+    converger = DaemonConverger(stages=(stage,))
+
+    states, _timings = converger.converge_batch([tmp_path / "untracked.json"])
+
+    state = states[tmp_path / "untracked.json"]
+    assert state.stages["raw_parse_recovery"] is StageState.DONE
+    assert state.converged is True
+    assert state.error_count == 0
+
+
 def test_raw_parse_recovery_uses_active_index_pointer(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     path = tmp_path / "pointer.json"
