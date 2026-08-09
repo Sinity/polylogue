@@ -197,12 +197,13 @@ def _iter_jsonl_stream(
         pending = raw
 
     if pending is not None:
-        records, _new_errors = _yield_jsonl_pending(
+        records, new_errors = _yield_jsonl_pending(
             logger_obj,
             pending,
             is_last=True,
             path_name=path_name,
         )
+        error_count += new_errors
         yield from records
 
     if fail_on_decode_error and error_count:

@@ -460,6 +460,29 @@ def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_r
     assert lifecycle.unexplained == 0
 
 
+def test_full_ingest_unknown_malformed_final_jsonl_record_records_terminal_decode(tmp_path: Path) -> None:
+    """A malformed final JSONL record contributes to strict decode evidence."""
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "malformed-final.jsonl"
+    path.write_bytes(b'{"only_broken":}\n')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unknown_json_decode", "decode_failed")
+
+
 def test_full_ingest_unknown_json_decode_records_terminal_decode_evidence(tmp_path: Path) -> None:
     root = tmp_path / "unknown"
     root.mkdir()
