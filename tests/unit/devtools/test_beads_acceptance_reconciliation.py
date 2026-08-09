@@ -63,7 +63,7 @@ def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:
         "confidence": "high",
         "outcome": "The behavior is observable through the production route.",
         "routes": ["Test production route."],
-        "evidence": ["A red-before receipt records the defect."],
+        "evidence": ["A source description with observable scope."],
         "retained_scope": [],
         "verification": ["Run a focused regression.", "Run `devtools verify` for the affected baseline."],
         "anti_vacuity": ["Removing the guard makes the regression fail."],
@@ -85,8 +85,9 @@ def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:
     contract["dependency_digest"] = mod._contracts.dependency_digest(issue)
     contract["evidence_spans"] = [
         {
-            "snapshot": contract["evidence"][0],
-            "snapshot_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
+            "source_field": "description",
+            "snapshot": issue["description"],
+            "snapshot_digest": hashlib.sha256(issue["description"].encode("utf-8")).hexdigest(),
             "range": {"start": 0, "end": len(contract["evidence"][0])},
             "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
         }

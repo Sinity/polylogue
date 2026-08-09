@@ -12,27 +12,32 @@ from devtools import beads_acceptance_contracts as contracts
 from devtools.acceptance_route_registry import registry_digest
 from polylogue.core.json import dumps as json_dumps
 
-_ROUTE_CLASS_BY_TYPE = {
-    "implementation": "ImplementationRoute",
-    "live_operation": "LiveOperationRoute",
-    "audit": "AuditRoute",
-    "decision": "DecisionRoute",
-    "epic": "EpicRoute",
-    "test_harness": "TestHarnessRoute",
-    "process": "ProcessRoute",
-    "documentation": "DocumentationRoute",
-}
+_EVIDENCE_SOURCE_FIELDS = ("title", "description", "design", "notes")
 
 
-def _span(evidence: str) -> dict[str, Any]:
-    encoded = evidence.encode("utf-8")
-    digest = hashlib.sha256(encoded).hexdigest()
+def _span(source_field: str, snapshot: str, evidence: str) -> dict[str, Any]:
+    start_character = snapshot.find(evidence)
+    if start_character < 0:
+        raise ValueError(f"evidence is not a substring of Bead {source_field} source field")
+    start = len(snapshot[:start_character].encode("utf-8"))
+    encoded = snapshot.encode("utf-8")
+    evidence_bytes = evidence.encode("utf-8")
+    snapshot_digest = hashlib.sha256(encoded).hexdigest()
     return {
-        "snapshot": evidence,
-        "snapshot_digest": digest,
-        "range": {"start": 0, "end": len(encoded)},
-        "text_digest": digest,
+        "source_field": source_field,
+        "snapshot": snapshot,
+        "snapshot_digest": snapshot_digest,
+        "range": {"start": start, "end": start + len(evidence_bytes)},
+        "text_digest": hashlib.sha256(evidence_bytes).hexdigest(),
     }
+
+
+def _evidence_span(issue: dict[str, Any], evidence: str) -> dict[str, Any]:
+    for source_field in _EVIDENCE_SOURCE_FIELDS:
+        snapshot = issue.get(source_field)
+        if isinstance(snapshot, str) and evidence in snapshot:
+            return _span(source_field, snapshot, evidence)
+    raise ValueError(f"{issue.get('id')}: evidence is not present in a title, description, design, or notes field")
 
 
 def _route_entry(issue: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
@@ -43,7 +48,7 @@ def _route_entry(issue: dict[str, Any], contract: dict[str, Any]) -> dict[str, A
         "identifier": identifier,
         "bead_id": issue["id"],
         "contract_type": contract_type,
-        "class": _ROUTE_CLASS_BY_TYPE[contract_type],
+        "class": contracts._ROUTE_CLASS_BY_TYPE[contract_type],
         "dispatch": dispatch,
         "targets": list(contract["routes"]),
     }
@@ -76,7 +81,7 @@ def regenerate(
                 "focused": "devtools test",
                 "default": "devtools verify",
             }
-        contract["evidence_spans"] = [_span(value) for value in contract.get("evidence", [])]
+        contract["evidence_spans"] = [_evidence_span(issue, value) for value in contract.get("evidence", [])]
         if contract.get("contract_type") == "live_operation":
             contract["receipt"] = {
                 "kind": "live-operation",

@@ -57,7 +57,7 @@ def _issue() -> dict[str, Any]:
         "confidence": "high",
         "outcome": "The behavior is observable through the production route.",
         "routes": ["Test production route."],
-        "evidence": ["A red-before receipt records the defect."],
+        "evidence": ["A source description with observable scope."],
         "retained_scope": [],
         "verification": ["Run a focused regression."],
         "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
@@ -76,13 +76,16 @@ def _issue() -> dict[str, Any]:
         },
     }
     evidence = contract["evidence"][0]
-    digest = hashlib.sha256(evidence.encode()).hexdigest()
+    snapshot = issue["description"]
+    digest = hashlib.sha256(snapshot.encode()).hexdigest()
+    text_digest = hashlib.sha256(evidence.encode()).hexdigest()
     contract["evidence_spans"] = [
         {
-            "snapshot": evidence,
+            "source_field": "description",
+            "snapshot": snapshot,
             "snapshot_digest": digest,
             "range": {"start": 0, "end": len(evidence.encode())},
-            "text_digest": digest,
+            "text_digest": text_digest,
         }
     ]
     contract["source_digest"] = reconciliation.source_digest(issue)

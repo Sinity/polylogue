@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+from devtools import regenerate_acceptance_contracts
+
 MODULE_PATH = Path(__file__).parents[3] / "devtools" / "beads_acceptance_contracts.py"
 spec = importlib.util.spec_from_file_location("beads_acceptance_contracts", MODULE_PATH)
 assert spec and spec.loader
@@ -68,7 +70,7 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         "confidence": "high",
         "outcome": "The named behavior is observable through the production route.",
         "routes": ["Test production route."],
-        "evidence": ["A red-before receipt records the defect."],
+        "evidence": ["A test contract source."],
         "retained_scope": [],
         "verification": [
             "Run a focused production-route regression.",
@@ -112,9 +114,10 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         }
     contract["evidence_spans"] = [
         {
-            "snapshot": contract["evidence"][0],
-            "snapshot_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
-            "range": {"start": 0, "end": len(contract["evidence"][0])},
+            "source_field": "description",
+            "snapshot": "A test contract source.",
+            "snapshot_digest": hashlib.sha256(b"A test contract source.").hexdigest(),
+            "range": {"start": 0, "end": len(b"A test contract source.")},
             "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
         }
     ]
@@ -323,9 +326,42 @@ def test_structured_incomplete_evidence_span_is_rejected() -> None:
     contract = issue["metadata"]["acceptance_contract_v1"]
     contract["evidence_spans"] = [{"complete": False}]
 
-    assert "evidence_spans[0] fields must be exactly snapshot, snapshot_digest, range, and text_digest" in mod.validate(
-        issue
+    assert (
+        "evidence_spans[0] fields must be exactly source_field, snapshot, snapshot_digest, range, and text_digest"
+        in mod.validate(issue)
     )
+
+
+def test_evidence_span_must_bind_to_the_declared_bead_source_field() -> None:
+    issue = _issue()
+    span = issue["metadata"]["acceptance_contract_v1"]["evidence_spans"][0]
+    span["snapshot"] = "fabricated evidence"
+    span["snapshot_digest"] = hashlib.sha256(span["snapshot"].encode("utf-8")).hexdigest()
+    span["range"] = {"start": 0, "end": len(span["snapshot"].encode("utf-8"))}
+    span["text_digest"] = span["snapshot_digest"]
+
+    assert "evidence_spans[0].snapshot does not match the Bead source field" in mod.validate(issue)
+
+
+def test_regenerator_rejects_evidence_absent_from_bead_source_fields() -> None:
+    issue = _issue()
+    issue["metadata"]["acceptance_contract_v1"]["evidence"] = ["fabricated evidence"]
+
+    with pytest.raises(ValueError, match="evidence is not present"):
+        regenerate_acceptance_contracts.regenerate([issue], ["polylogue-test"])
+
+
+def test_regenerator_uses_utf8_byte_offsets_for_source_spans() -> None:
+    issue = _issue()
+    issue["description"] = "prefix π evidence suffix"
+    evidence = "π evidence"
+
+    span = regenerate_acceptance_contracts._span("description", issue["description"], evidence)
+
+    assert span["source_field"] == "description"
+    assert span["range"] == {"start": len(b"prefix "), "end": len("prefix π evidence".encode())}
+    assert span["snapshot_digest"] == hashlib.sha256(issue["description"].encode()).hexdigest()
+    assert span["text_digest"] == hashlib.sha256(evidence.encode()).hexdigest()
 
 
 def test_truncated_snapshot_range_is_rejected() -> None:

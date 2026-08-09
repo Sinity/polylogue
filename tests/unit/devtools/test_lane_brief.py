@@ -61,7 +61,7 @@ def _valid_contract_record(confidence: str = "high") -> dict[str, object]:
         "confidence": confidence,
         "outcome": "The behavior is observable through the production route.",
         "routes": ["Test production route."],
-        "evidence": ["A red-before receipt records the defect."],
+        "evidence": ["A source description with observable scope."],
         "retained_scope": [],
         "verification": ["Run the focused regression."],
         "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
@@ -81,8 +81,9 @@ def _valid_contract_record(confidence: str = "high") -> dict[str, object]:
     }
     contract["evidence_spans"] = [
         {
-            "snapshot": contract["evidence"][0],
-            "snapshot_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
+            "source_field": "description",
+            "snapshot": record["description"],
+            "snapshot_digest": hashlib.sha256(record["description"].encode("utf-8")).hexdigest(),
             "range": {"start": 0, "end": len(contract["evidence"][0])},
             "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
         }

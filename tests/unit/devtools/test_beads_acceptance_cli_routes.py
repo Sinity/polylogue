@@ -79,6 +79,35 @@ def test_validator_cli_route_fails_closed_for_malformed_structured_route_value(
     assert any("route_spec.mode" in error for error in payload["failures"][bead_id])
 
 
+def test_validator_cli_route_fails_closed_for_registry_errors_without_bead_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    issue = _canonical_record()
+    bead_id = str(issue["id"])
+    issues = tmp_path / "issues.jsonl"
+    _write(issues, [issue])
+    monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: (bead_id,))
+    monkeypatch.setattr(beads_acceptance_contracts, "validate_route_registry", lambda ids: ["unbound route entry"])
+
+    rc = click_dispatch.main(
+        [
+            "lab",
+            "policy",
+            "acceptance-contracts",
+            str(issues),
+            "--manifest",
+            str(tmp_path / "manifest.txt"),
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert payload["failures"] == {}
+    assert payload["route_registry_errors"] == ["unbound route entry"]
+    assert payload["dispatch_blocked"] is True
+
+
 def test_reconciliation_and_applier_published_routes_forward_exact_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

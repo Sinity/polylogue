@@ -53,7 +53,7 @@ _ROUTE_CLASS_BY_TYPE = {
     "process": "ProcessRoute",
     "documentation": "DocumentationRoute",
 }
-_EVIDENCE_SPAN_FIELDS = frozenset({"snapshot", "snapshot_digest", "range", "text_digest"})
+_EVIDENCE_SPAN_FIELDS = frozenset({"source_field", "snapshot", "snapshot_digest", "range", "text_digest"})
 _EVIDENCE_RANGE_FIELDS = frozenset({"start", "end"})
 _ALLOWED_VERIFICATION_MANAGERS = {"devtools"}
 _ALLOWED_VERIFICATION_FOCUSED = {"devtools test"}
@@ -297,8 +297,8 @@ def _validate_receipt(errors: list[str], contract: dict[str, Any]) -> bool:
     return valid
 
 
-def _validate_evidence_spans(errors: list[str], contract: dict[str, Any]) -> None:
-    """Validate evidence as byte ranges over digest-bound UTF-8 snapshots."""
+def _validate_evidence_spans(errors: list[str], issue: dict[str, Any], contract: dict[str, Any]) -> None:
+    """Validate evidence as byte ranges over the Bead's source fields."""
     evidence = contract.get("evidence")
     spans = contract.get("evidence_spans")
     if not isinstance(evidence, list) or not isinstance(spans, list):
@@ -313,14 +313,23 @@ def _validate_evidence_spans(errors: list[str], contract: dict[str, Any]) -> Non
             continue
         if set(span) != _EVIDENCE_SPAN_FIELDS:
             errors.append(
-                f"evidence_spans[{index}] fields must be exactly snapshot, snapshot_digest, range, and text_digest"
+                f"evidence_spans[{index}] fields must be exactly source_field, snapshot, snapshot_digest, range, and "
+                "text_digest"
             )
+        source_field = span.get("source_field")
+        if not isinstance(source_field, str) or source_field not in {"title", "description", "design", "notes"}:
+            errors.append(f"evidence_spans[{index}].source_field must name title, description, design, or notes")
+        source_snapshot = issue.get(source_field) if isinstance(source_field, str) else None
+        if not isinstance(source_snapshot, str) or not source_snapshot:
+            errors.append(f"evidence_spans[{index}].source_field must reference a non-empty Bead source field")
         snapshot = span.get("snapshot")
         snapshot_bytes: bytes | None = None
         if not isinstance(snapshot, str):
             errors.append(f"evidence_spans[{index}].snapshot must be a UTF-8 snapshot string")
         else:
             snapshot_bytes = snapshot.encode("utf-8")
+            if isinstance(source_snapshot, str) and snapshot != source_snapshot:
+                errors.append(f"evidence_spans[{index}].snapshot does not match the Bead source field")
         snapshot_digest = span.get("snapshot_digest")
         if not isinstance(snapshot_digest, str) or not _SHA256.fullmatch(snapshot_digest):
             errors.append(f"evidence_spans[{index}].snapshot_digest must be a lowercase SHA-256 digest")
@@ -518,10 +527,13 @@ def validate(issue: dict[str, Any]) -> list[str]:
     for value in contract.get("routes", []) if isinstance(contract.get("routes"), list) else []:
         if isinstance(value, str) and _ROUTE_PLACEHOLDER.search(value):
             errors.append("routes contains a generic placeholder; use named route fields")
-    for value in _strings(contract):
-        if _PLACEHOLDER.search(value):
-            errors.append(f"placeholder in contract: {value[:80]}")
-    _validate_evidence_spans(errors, contract)
+    for key, value in contract.items():
+        if key in {"evidence", "evidence_spans"}:
+            continue
+        for text in _strings(value):
+            if _PLACEHOLDER.search(text):
+                errors.append(f"placeholder in contract: {text[:80]}")
+    _validate_evidence_spans(errors, issue, contract)
     if not errors:
         expected = render(contract)
         if issue.get("acceptance_criteria") != expected:
@@ -636,7 +648,7 @@ def main(argv: list[str] | None = None) -> int:
             for error in errors:
                 print(f"{bid}: {error}")
         print(f"validated={len(seen)} failures={len(failures)} regeneration_required={len(regeneration_required)}")
-    return 1 if failures else 0
+    return 1 if failures or registry_errors else 0
 
 
 if __name__ == "__main__":
