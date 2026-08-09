@@ -365,12 +365,12 @@ def _replay_preflight(root: Path, *, limit: int) -> dict[str, object]:
         )
     candidate_count = _count(payload.get("candidate_count"))
     blocked_count = _count(payload.get("blocked_candidate_count"))
-    # ``blocked_candidate_count`` includes authority/resource debt that is
-    # intentionally excluded from ``candidate_count``.  Comparing the two
-    # numbers can therefore hide one executable row behind one unrelated
-    # blocked row.  Any executable candidate is a hard preflight failure;
-    # blocked-only work remains a visible warning.
-    state = "fail" if candidate_count else "warn" if blocked_count else "pass"
+    executable_component_count = _count(payload.get("executable_authority_component_count"))
+    # ``candidate_count`` counts raw rows, while ``blocked_candidate_count``
+    # includes authority/resource debt.  The backlog already computes the
+    # executable authority-component population, so use that typed relation
+    # to distinguish executable work from blocked-only work.
+    state = "fail" if executable_component_count else "warn" if blocked_count else "pass"
     return _status(
         state=state,
         reason=(
@@ -383,6 +383,7 @@ def _replay_preflight(root: Path, *, limit: int) -> dict[str, object]:
         available=True,
         candidate_count=candidate_count,
         blocked_candidate_count=blocked_count,
+        executable_authority_component_count=executable_component_count,
         authority_quarantined_count=_count(payload.get("authority_quarantined_count")),
         evidence=payload,
     )

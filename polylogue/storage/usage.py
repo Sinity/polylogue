@@ -1196,11 +1196,10 @@ def _source_raw_stats(
             SELECT r.origin AS origin,
                    COUNT(*) AS raw_session_count,
                    COALESCE(SUM(CASE
-                       WHEN r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '' THEN 1 ELSE 0
+                       WHEN r.parse_error IS NOT NULL THEN 1 ELSE 0
                    END), 0) AS raw_parse_error_count,
                    COALESCE(SUM(CASE
-                       WHEN (r.parse_error IS NULL OR TRIM(r.parse_error) = '')
-                        AND s.session_id IS NULL THEN 1 ELSE 0
+                       WHEN r.parse_error IS NULL AND s.session_id IS NULL THEN 1 ELSE 0
                    END), 0) AS acquired_not_materialized_count
             FROM {alias_sql}.raw_sessions AS r
             LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
@@ -1248,7 +1247,7 @@ def _acquired_not_materialized_raw_rows(
         LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
         LEFT JOIN {alias_sql}.raw_membership_census AS c ON c.raw_id = r.raw_id
         {_where_origin(origin, table_alias="r")}
-          {"AND" if origin is not None else "WHERE"} (r.parse_error IS NULL OR TRIM(r.parse_error) = '')
+          {"AND" if origin is not None else "WHERE"} r.parse_error IS NULL
           AND s.session_id IS NULL
         ORDER BY r.origin, r.raw_id
         """,

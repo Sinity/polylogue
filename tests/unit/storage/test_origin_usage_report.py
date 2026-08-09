@@ -453,6 +453,7 @@ def test_origin_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: Pat
     _insert_raw_session(source_conn, raw_id="raw-materialized", native_id="provider-usage-report")
     _insert_raw_session(source_conn, raw_id="raw-missing", native_id="missing")
     _insert_raw_session(source_conn, raw_id="raw-error", native_id="bad", parse_error="bad json")
+    _insert_raw_session(source_conn, raw_id="raw-empty-error", native_id="empty", parse_error="")
     source_conn.commit()
     source_conn.close()
 
@@ -503,8 +504,8 @@ def test_origin_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: Pat
 
     row = report.origins[0]
     assert row.coverage_state == "acquired_not_materialized"
-    assert row.raw_session_count == 3
-    assert row.raw_parse_error_count == 1
+    assert row.raw_session_count == 4
+    assert row.raw_parse_error_count == 2
     assert row.acquired_not_materialized_count == 1
     assert row.sample_acquired_not_materialized_raw_ids == ("raw-missing",)
     assert row.stale_rollup_session_count == 1

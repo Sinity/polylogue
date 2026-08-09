@@ -25,12 +25,21 @@ def _list(value: object) -> list[object]:
     return cast(list[object], value)
 
 
-def _replay_backlog(candidate_count: int, blocked_candidate_count: int) -> Callable[..., dict[str, object]]:
+def _replay_backlog(
+    candidate_count: int,
+    blocked_candidate_count: int,
+    executable_authority_component_count: int | None = None,
+) -> Callable[..., dict[str, object]]:
     def backlog(*_args: object, **_kwargs: object) -> dict[str, object]:
         return {
             "available": True,
             "candidate_count": candidate_count,
             "blocked_candidate_count": blocked_candidate_count,
+            "executable_authority_component_count": (
+                candidate_count
+                if executable_authority_component_count is None
+                else executable_authority_component_count
+            ),
         }
 
     return backlog
@@ -215,6 +224,21 @@ def test_preflight_fails_when_executable_replay_candidates_outnumber_blocked(
     assert replay["state"] == "fail"
     assert replay["candidate_count"] == 5
     assert replay["blocked_candidate_count"] == 2
+
+
+def test_preflight_warns_when_replay_candidates_are_all_resource_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _initialize_all_tiers(tmp_path)
+    monkeypatch.setattr(preflight_ledger, "raw_materialization_replay_backlog", _replay_backlog(5, 5, 0))
+
+    report = build_preflight_ledger(tmp_path, limit=10)
+    replay = _mapping(_mapping(report["checks"])["replay_backlog"])
+
+    assert replay["state"] == "warn"
+    assert replay["candidate_count"] == 5
+    assert replay["blocked_candidate_count"] == 5
+    assert replay["executable_authority_component_count"] == 0
 
 
 def test_preflight_reports_every_non_null_raw_parse_error(tmp_path: Path) -> None:
