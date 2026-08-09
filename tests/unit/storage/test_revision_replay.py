@@ -1513,6 +1513,43 @@ def test_batched_membership_success_supersedes_deferred_cas_evidence(tmp_path: P
     assert artifact == (RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,)
 
 
+def test_retained_index_cas_failure_persists_evidence_with_first_failure_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retained-raw CAS failure cannot commit an untyped state first."""
+    initialize_active_archive_root(tmp_path)
+    session = _parsed_session(("m0", "retained CAS failure"))
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = _write_quarantined_member(archive, "retained-cas-failure", session)
+
+        def raise_conflict(*_args: object, **_kwargs: object) -> None:
+            raise archive_revision_governance.MembershipReplayConflictError("retained membership conflict")
+
+        monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", raise_conflict)
+        with pytest.raises(archive_revision_governance.MembershipReplayConflictError):
+            archive._index_parsed_for_retained_raw(
+                session,
+                raw_id=raw_id,
+                source_index=0,
+                stage_timings_s=None,
+                stage_timing_prefix="test",
+                manage_transaction=False,
+                preacquired_attachment_blobs={},
+                finalize_raw_parse=False,
+                revision_authoritative=True,
+            )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            "MembershipReplayConflictError: retained membership conflict",
+        )
+        assert source_conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts "
+            "WHERE raw_id = ? ORDER BY artifact_id DESC LIMIT 1",
+            (raw_id,),
+        ).fetchone() == ("deferred_cas_frontier", "partial_decode", 1)
+
+
 def _head_row(archive: ArchiveStore) -> tuple[object, ...] | None:
     row = archive._conn.execute(
         """SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier

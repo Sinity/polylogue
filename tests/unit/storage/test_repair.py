@@ -872,6 +872,47 @@ def test_raw_materialization_preserves_bounded_historical_cas_retry_authority(tm
     assert set(candidates.raw_ids) == {raw_ids["prefix"], raw_ids["frontier"], raw_ids["byte"]}
 
 
+def test_raw_materialization_terminal_carrier_overrides_legacy_cas_marker(tmp_path: Path) -> None:
+    """A reviewed terminal carrier blocks legacy-marker replay authority."""
+    from polylogue.core.enums import Origin, Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"name":"reviewed-terminal"}',
+            source_path="reviewed-terminal.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = ?",
+            ("MembershipReplayConflictError: historical marker", raw_id),
+        )
+        upsert_raw_artifact(
+            source_conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="reviewed-terminal-carrier",
+                origin=Origin.CODEX_SESSION,
+                source_path="reviewed-terminal.jsonl",
+                source_index=0,
+                artifact_kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+                classification_reason="reviewed terminal disposition",
+                support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                parse_as_session=False,
+                schema_eligible=False,
+                first_observed_at_ms=2,
+                last_observed_at_ms=2,
+            ),
+        )
+        source_conn.commit()
+
+    assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
+
+
 def test_raw_cas_frontier_error_is_typed_transient() -> None:
     error = RawCASFrontierError("frontier changed")
 

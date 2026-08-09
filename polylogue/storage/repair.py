@@ -31,6 +31,7 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
+    RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS,
 )
 from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
@@ -3856,6 +3857,7 @@ def _raw_materialization_candidate_ids(
             normalized_root = str(source_root).rstrip("/")
             source_root_filter = " AND (r.source_path = ? OR r.source_path LIKE ?)"
             params.extend((normalized_root, f"{normalized_root}/%"))
+        terminal_pair_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS)
         rows = conn.execute(
             f"""
             SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size,
@@ -3965,6 +3967,15 @@ def _raw_materialization_candidate_ids(
                   '{_LEGACY_UNCONVERTIBLE_BYTE_HEAD_ERROR}'
                 )
               )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM raw_artifacts AS terminal_evidence
+                WHERE 1 = 1
+                  {_raw_artifact_coordinate_predicate(artifact_alias="terminal_evidence", raw_alias="r")}
+                  AND (terminal_evidence.artifact_kind, terminal_evidence.support_status) IN (
+                    {terminal_pair_placeholders}
+                  )
+              )
               AND NOT (
                 COALESCE(r.validation_status, '') = 'skipped'
                 AND r.parsed_at_ms IS NOT NULL
@@ -3982,6 +3993,7 @@ def _raw_materialization_candidate_ids(
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
                 RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+                *[value for pair in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair],
                 *params,
             ],
         ).fetchall()

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import cast
 
 from polylogue.config import Config
-from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind, raw_failure_classification_reason
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -166,7 +166,20 @@ def _apply_candidate(
         (
             candidate.disposition_kind.value,
             candidate.disposition_kind.support_status.value,
-            candidate.disposition_kind.value,
+            raw_failure_classification_reason(
+                diagnostic=candidate.detail,
+                evidence_ref=f"raw-failure-disposition:{manifest_sha256}",
+                outcome_code=(
+                    "corrupt_input"
+                    if candidate.disposition_kind is RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
+                    else "unsupported_shape"
+                ),
+                remediation="retain the reviewed terminal disposition until a forced reparse is authorized",
+                retryable=False,
+                trusted_validation_failure=(
+                    candidate.disposition_kind is RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
+                ),
+            ),
             disposed_at_ms,
             row["artifact_id"],
         ),

@@ -3335,7 +3335,14 @@ def _index_parsed_for_retained_raw(
         )
     except Exception as exc:
         if not _is_frozen_candidate(store):
-            finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, exc))
+            if isinstance(exc, RawCASFrontierError):
+                # A retained-raw CAS refusal is retryable authority evidence.
+                # Persist that carrier with the first source-tier failure
+                # mutation so a crash cannot leave only the generic parse
+                # diagnostic behind.
+                mark_raw_parse_failed(store, raw_id, provider=provider, error=exc)
+            else:
+                finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, exc))
         raise
     if finalize_raw_parse and not _is_frozen_candidate(store):
         success_state = _raw_parse_success_state(provider)
