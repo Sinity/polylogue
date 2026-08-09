@@ -1204,10 +1204,11 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
         conn.execute(
             """
             UPDATE sessions
-            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
+            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?,
+                created_at_ms = ?, updated_at_ms = NULL
             WHERE session_id = ?
             """,
-            (50, 1234, 7, 3, session_id),
+            (50, 1234, 7, 3, 1_700_000_000_000, session_id),
         )
         conn.commit()
 
@@ -1225,6 +1226,12 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
             (session_id,),
         ).fetchone()
         assert profile is not None
+        latency = conn.execute(
+            "SELECT source_updated_at, source_sort_key, input_high_water_mark FROM session_latency_profiles "
+            "WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert latency is not None
         work_events_row = conn.execute(
             "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
             (session_id,),
@@ -1247,6 +1254,12 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
     assert profile["message_count"] == 50
     assert profile["word_count"] == 1234
     assert profile["tool_use_count"] == 7
+    assert profile["source_updated_at"] is None
+    assert profile["source_sort_key"] == pytest.approx(1_700_000_000.0)
+    assert profile["input_high_water_mark"] is None
+    assert latency["source_updated_at"] is None
+    assert latency["source_sort_key"] == pytest.approx(1_700_000_000.0)
+    assert latency["input_high_water_mark"] is None
     assert "large_session_bounded" in profile["inference_payload_json"]
     assert "large_session_bounded" in profile["enrichment_payload_json"]
     assert work_events == 0

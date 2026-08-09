@@ -1239,7 +1239,14 @@ def _large_session_profile_record_from_row(
             FallbackReason.NO_USER_TURNS,
         ),
     )
-    source_sort_key = float(row["sort_key"]) if row["sort_key"] is not None else None
+    source_sort_timestamp = updated_at or created_at
+    source_sort_key = (
+        float(row["sort_key"])
+        if row["sort_key"] is not None
+        else float(source_sort_timestamp.timestamp())
+        if source_sort_timestamp is not None
+        else None
+    )
     source_updated_at = updated_at.isoformat() if updated_at else None
     search_text = " \n".join(part for part in (origin, title, row["git_branch"], row["git_repository_url"]) if part)
     return SessionProfileRecord(

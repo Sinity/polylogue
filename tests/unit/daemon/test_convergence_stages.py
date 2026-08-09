@@ -1723,7 +1723,7 @@ def test_archive_insights_created_without_updated_stays_ready_after_materializat
             (session_id,),
         ).fetchone()
         assert latency is not None
-        assert latency["source_updated_at"] is not None
+        assert latency["source_updated_at"] is None
         assert latency["source_sort_key"] == pytest.approx(created_at_ms / 1000.0)
         materialization = conn.execute(
             """
@@ -1734,7 +1734,7 @@ def test_archive_insights_created_without_updated_stays_ready_after_materializat
             (session_id,),
         ).fetchone()
         assert materialization is not None
-        assert materialization["source_updated_at_ms"] == created_at_ms
+        assert materialization["source_updated_at_ms"] is None
         assert materialization["source_sort_key_ms"] == created_at_ms
         assert stages._archive_stale_session_profile_ids(conn, [session_id]) == []
         assert session_insight_status_ready(session_insight_status_sync(conn))
