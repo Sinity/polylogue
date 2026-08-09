@@ -1144,6 +1144,17 @@ def _fmt_age_s(value: float) -> str:
     return f"{value:.0f}s"
 
 
+def _fmt_receipt_age_ms(value: object) -> str | None:
+    """Format the queue receipt age without hiding malformed telemetry."""
+
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    seconds = max(0.0, float(value) / 1000.0)
+    if seconds >= 86400:
+        return f"{seconds / 86400:.1f}d"
+    return f"{seconds:.1f}s"
+
+
 def _live_cursor_summary_info() -> LiveCursorSummary:
     """Return live cursor backlog/failure state without source-tree scans."""
     dbf = _active_status_db_path()
@@ -3052,6 +3063,22 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             f"scheduler: {queue.get('scheduler_state', 'unknown')}; "
             f"debt: {queue.get('producer_debt_count', 0)}"
         )
+        receipt_status = queue.get("judgment_scheduler_receipt_status")
+        if receipt_status is not None:
+            receipt_parts = [f"judgment scheduler receipt: {receipt_status}"]
+            receipt_at_ms = queue.get("judgment_scheduler_receipt_at_ms")
+            if isinstance(receipt_at_ms, int) and not isinstance(receipt_at_ms, bool):
+                try:
+                    receipt_parts.append(f"at={_epoch_ms_to_iso(receipt_at_ms)}")
+                except (OverflowError, OSError, ValueError):
+                    receipt_parts.append("at=invalid")
+            receipt_age = _fmt_receipt_age_ms(queue.get("judgment_scheduler_receipt_age_ms"))
+            if receipt_age is not None:
+                receipt_parts.append(f"age={receipt_age}")
+            receipt_reason = queue.get("judgment_scheduler_receipt_reason")
+            if receipt_reason is not None:
+                receipt_parts.append(f"reason={receipt_reason}")
+            lines.append("  " + "; ".join(receipt_parts))
     live = payload.get("live")
     if isinstance(live, dict):
         lines.append(f"Live sources: {live.get('existing_source_count', 0)}/{live.get('source_count', 0)} available")

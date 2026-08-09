@@ -144,6 +144,29 @@ def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
     assert "Failing files: 1 shown, 2 omitted" in lines
 
 
+def test_daemon_status_plain_output_reports_judgment_scheduler_receipt() -> None:
+    lines = format_daemon_status_lines(
+        {
+            "assertion_candidate_queue": {
+                "state": "scheduler-stalled",
+                "pending_count": 2,
+                "producer_status": "completed",
+                "scheduler_state": "fresh",
+                "producer_debt_count": 0,
+                "judgment_scheduler_receipt_status": "failed",
+                "judgment_scheduler_receipt_at_ms": 1_800_000_000_000,
+                "judgment_scheduler_receipt_age_ms": 90_000,
+                "judgment_scheduler_receipt_reason": "configuration_reload_failed",
+            }
+        }
+    )
+
+    receipt_lines = [line for line in lines if "judgment scheduler receipt:" in line]
+    assert receipt_lines == [
+        "  judgment scheduler receipt: failed; at=2027-01-15T08:00:00+00:00; age=90.0s; reason=configuration_reload_failed"
+    ]
+
+
 @pytest.mark.parametrize(("payload_ok", "expected_exit"), [(False, 1), (True, 0)])
 def test_daemon_status_command_exit_matches_json_health_claim(payload_ok: bool, expected_exit: int) -> None:
     """``polylogued status`` exposes JSON and shell status consistently."""
