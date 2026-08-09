@@ -1344,8 +1344,8 @@ def build_wire_support_receipt(
                     artifact_coverage = construct_coverage(selection.schema, payload_items)
                     parse_error: str | None = None
                     artifact_sessions = []
+                    parser_payload: JSONValue = payload
                     try:
-                        parser_payload = payload
                         if provider == "chatgpt" and isinstance(payload, dict):
                             # Validate and account for the complete envelope, but
                             # keep the optional native subpayload from selecting a
