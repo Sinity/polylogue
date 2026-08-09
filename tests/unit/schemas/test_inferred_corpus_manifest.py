@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.maintenance.schema_inference_gate import (
     run_schema_inference_gate,
     schema_inference_gate_receipt_digest,
@@ -21,6 +21,7 @@ from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.wire_formats import (
     PROVIDER_WIRE_FORMATS,
     WireSupportEntry,
+    WireSupportReceipt,
     build_wire_support_receipt,
 )
 from polylogue.sources.parsers.base_models import ParsedSession
@@ -71,9 +72,10 @@ class _RegistryProxy:
         self.base = base
         self.catalog_overrides: dict[str, object] = {}
         self.schema_overrides: dict[tuple[str, str, str], object] = {}
+        self.provider_order: list[str] | None = None
 
     def list_providers(self) -> list[str]:
-        return self.base.list_providers()
+        return self.provider_order if self.provider_order is not None else self.base.list_providers()
 
     def load_package_catalog(self, provider: str) -> object:
         return self.catalog_overrides.get(provider, self.base.load_package_catalog(provider))
@@ -127,6 +129,62 @@ def test_manifest_can_bind_every_selection_to_the_exact_wire_support_receipt() -
     assert {(entry.key.provider, entry.key.package_version, entry.key.element_kind) for entry in manifest.entries} == {
         (entry.provider, entry.package_version, entry.element_kind) for entry in support.entries
     }
+
+
+def test_wire_support_receipt_is_canonical_across_catalog_reordering() -> None:
+    registry = _registry()
+    reordered = _RegistryProxy(registry)
+    reordered.provider_order = list(reversed(registry.list_providers()))
+    for provider in registry.list_providers():
+        catalog = registry.load_package_catalog(provider)
+        assert catalog is not None
+        reordered.catalog_overrides[provider] = replace(
+            catalog,
+            packages=[
+                replace(package, elements=list(reversed(package.elements))) for package in reversed(catalog.packages)
+            ],
+        )
+
+    assert (
+        build_wire_support_receipt(registry=registry).to_dict()
+        == build_wire_support_receipt(registry=reordered).to_dict()
+    )
+
+
+def test_wire_support_receipt_rejects_conflicting_duplicate_identity_at_all_boundaries() -> None:
+    registry = _registry()
+    receipt = build_wire_support_receipt(registry=registry, providers=("codex",))
+    original = receipt.entries[0]
+    conflicting = replace(original, reason="conflicting duplicate")
+
+    with pytest.raises(ValueError, match="duplicate wire support entry key"):
+        WireSupportReceipt(
+            catalog_providers=receipt.catalog_providers,
+            entries=(original, conflicting),
+            missing_routes=receipt.missing_routes,
+            witness_seed=receipt.witness_seed,
+        )
+
+    malformed = object.__new__(WireSupportReceipt)
+    object.__setattr__(malformed, "catalog_providers", receipt.catalog_providers)
+    object.__setattr__(malformed, "entries", (original, conflicting))
+    object.__setattr__(malformed, "missing_routes", receipt.missing_routes)
+    object.__setattr__(malformed, "witness_seed", receipt.witness_seed)
+    with pytest.raises(ValueError, match="duplicate wire support entry key"):
+        compile_inferred_corpus_manifest(registry=registry, wire_support_receipt=malformed)
+
+    manifest = compile_inferred_corpus_manifest(registry=registry, wire_support_receipt=receipt)
+    assert manifest.wire_support_receipt is not None
+    persisted_receipt = cast(dict[str, object], dict(manifest.wire_support_receipt))
+    persisted_entries = list(cast(list[dict[str, object]], persisted_receipt["entries"]))
+    persisted_entries.append(dict(persisted_entries[0], reason="conflicting duplicate"))
+    persisted_receipt["entries"] = persisted_entries
+    persisted_manifest = replace(manifest, wire_support_receipt=cast(JSONDocument, persisted_receipt))
+
+    with pytest.raises(ValueError, match="duplicate wire support entry key"):
+        inferred_corpus_module._wire_support_entry_index(persisted_manifest)
+    with pytest.raises(ValueError, match="duplicate wire support entry key"):
+        InferredCorpusManifest.from_payload(persisted_manifest.to_payload())
 
 
 def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(tmp_path: Path) -> None:

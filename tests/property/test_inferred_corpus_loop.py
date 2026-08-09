@@ -429,7 +429,7 @@ def test_inferred_selection_retained_raw_reindex_matches_canonical_snapshot(
     assert archive_snapshot(archive_root, session_ids=session_ids) == before
 
 
-@pytest.mark.uses_real_clock
+@pytest.mark.uses_real_clock("fresh-process debt recovery crosses a subprocess wall-clock retry boundary")
 def test_inferred_selection_debt_recovers_in_a_fresh_process(tmp_path: Path) -> None:
     spec, selection = _inferred_selection()
     source_root = tmp_path / "recovery-source"

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.core.enums import Provider, Role
+from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.core.json import JSONValue
 from polylogue.schemas import validator as validator_module
 from polylogue.schemas.packages import SchemaResolution
@@ -24,7 +24,7 @@ from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRouteError
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.sources import dispatch as dispatch_module
-from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 
 
@@ -179,7 +179,7 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
     assert not receipt.complete
 
 
-@pytest.mark.parametrize("returned_session", ["empty", "unrelated", "metadata"])
+@pytest.mark.parametrize("returned_session", ["empty", "unrelated", "metadata", "id_only"])
 def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
     monkeypatch: pytest.MonkeyPatch,
     returned_session: str,
@@ -211,6 +211,27 @@ def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
                                 provider_message_id=metadata_id,
                                 role=Role.ASSISTANT,
                                 text=metadata_text,
+                            )
+                        ],
+                    )
+                ]
+            if returned_session == "id_only":
+                payload_record = payload if isinstance(payload, Mapping) else {}
+                metadata_id = str(payload_record.get("id", "metadata-session"))
+                return [
+                    ParsedSession(
+                        source_name=Provider.CHATGPT,
+                        provider_session_id=metadata_id,
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id=metadata_id,
+                                role=Role.ASSISTANT,
+                                blocks=[
+                                    ParsedContentBlock(
+                                        type=BlockType.TEXT,
+                                        text="invented content absent from this artifact",
+                                    )
+                                ],
                             )
                         ],
                     )

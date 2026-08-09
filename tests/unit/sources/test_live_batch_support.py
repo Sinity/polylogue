@@ -2411,7 +2411,18 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone() is None
 
 
-def test_codex_append_identity_rejects_wrong_origin_at_same_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("index_origin", "source_origin"),
+    [
+        ("codex-session", "claude-code-session"),
+        ("claude-code-session", "codex-session"),
+    ],
+)
+def test_codex_append_identity_rejects_mixed_origins_at_same_path(
+    tmp_path: Path,
+    index_origin: str,
+    source_origin: str,
+) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -2428,7 +2439,7 @@ def test_codex_append_identity_rejects_wrong_origin_at_same_path(tmp_path: Path)
     with sqlite3.connect(source_db) as conn:
         raw_id = write_source_raw_session(
             conn,
-            origin="claude-code-session",
+            origin=source_origin,
             source_path=str(path),
             source_index=0,
             payload=payload,
@@ -2437,7 +2448,7 @@ def test_codex_append_identity_rejects_wrong_origin_at_same_path(tmp_path: Path)
     with sqlite3.connect(index_db) as conn:
         conn.execute(
             "INSERT INTO sessions (native_id, origin, raw_id, title, content_hash) VALUES (?, ?, ?, ?, ?)",
-            ("claude-id", "claude-code-session", raw_id, "wrong origin", bytes(32)),
+            ("codex-id", index_origin, raw_id, "mixed origin", bytes(32)),
         )
         conn.commit()
 
