@@ -12,7 +12,7 @@
     "receipts": [
       "artifact:d4-behavioral-archaeology-predeclaration"
     ],
-    "scope": "the committed 11-session seed fixture and recorded commands",
+    "scope": "the committed 19-session seed fixture and the fresh recorded commands",
     "statement": "The recorded six-query run exercises the documented query primitives against the deterministic demo archive.",
     "status": "supported"
   },
@@ -33,10 +33,12 @@
     ],
     "negative": [
       {
-        "expected": "Sparse embedding coverage must return no semantic hit instead of fabricating one.",
+        "expected": "Sparse embedding coverage must remain an explicit bounded result rather than a completeness claim.",
         "id": "sparse-semantic-control",
         "observed": {
-          "semantic_hits": 0
+          "semantic_hits": 1,
+          "embedded_messages": 2,
+          "total_messages": 71
         },
         "passed": true,
         "purpose": "Prevent an adjacent easier signal from being counted as the primary construct.",
@@ -48,7 +50,7 @@
   },
   "falsifier": {
     "condition": "Any recorded query output cannot be reproduced from the deterministic archive or resolves to different cited rows.",
-    "evaluation_method": "Apply the stated condition to the committed evidence and run log.",
+    "evaluation_method": "Apply the stated condition to the structured current-run receipt, committed evidence, and run log.",
     "receipts": [
       "artifact:d4-behavioral-archaeology-evidence"
     ],
@@ -64,7 +66,9 @@
   "oracle": {
     "description": "The command log and cited deterministic rows are independent of the report prose.",
     "expected": {
-      "commands_exit_zero": true
+      "commands_exit_zero": true,
+      "query_count": 6,
+      "explain_count": 1
     },
     "independent": true,
     "method": "Re-run the exact commands and compare selected refs and grouped counts with evidence.ndjson.",
@@ -85,10 +89,75 @@
   },
   "provenance": {
     "archive_cursor": "polylogue-demo-seed-fixture-world",
-    "commit_sha": "fdd5ea848",
+    "commit_sha": "d23f5dd27a0bda0a9c0a4306ef98c898d4d920ce",
     "measure_version": "demo-packet-v2",
-    "run_date": "2026-07-10",
-    "sample_frame_predicate": "all 11 sessions in the deterministic demo archive"
+    "run_date": "2026-08-09",
+    "sample_frame_predicate": "all 19 sessions in the private synthetic deterministic demo archive",
+    "current_run": {
+      "run_id": "run:d4-behavioral-archaeology:20260809T061905Z",
+      "run_timestamp": "2026-08-09T06:19:05Z",
+      "code_sha": "d23f5dd27a0bda0a9c0a4306ef98c898d4d920ce",
+      "route": "polylogue",
+      "archive_kind": "private synthetic seeded demo archive",
+      "private_data": false,
+      "run_log": "run.log",
+      "commands": [
+        {
+          "id": "q1",
+          "section": "Q1: SEQ thrash-loop hunt (repeated shell calls)",
+          "command": "polylogue find \"sessions where seq(action:shell -> action:shell)\" then select --format json",
+          "exit_code": 0,
+          "output_sha256": "56a4b8a11a6be71ece8096b79be1bbc389d4235375a67fb841b30e5ee1df7ad4"
+        },
+        {
+          "id": "q2",
+          "section": "Q2: tool call volume by tool",
+          "command": "polylogue \"actions where exit_code:>=0 | group by tool | count\"",
+          "exit_code": 0,
+          "output_sha256": "ec80035d0e7c46e434bb26f1efe857478a758dc6e37c3196c26064a1ed3f0c2f"
+        },
+        {
+          "id": "q3",
+          "section": "Q3: which tools break (failure count by tool)",
+          "command": "polylogue \"actions where is_error:true | group by tool | count\"",
+          "exit_code": 0,
+          "output_sha256": "d74af1611854d6cd7f24f925b4de02b9d3388811b0c97390d8e6ab9fddd55e30"
+        },
+        {
+          "id": "q4",
+          "section": "Q4: near: semantic probe across providers",
+          "command": "polylogue find 'near:\"flaky async test\"'",
+          "exit_code": 0,
+          "output_sha256": "86fbc77cdb0c9124a085a5db7339c63ed584d417c9b92d6e69c4d59dbf45b764"
+        },
+        {
+          "id": "q5",
+          "section": "Q5: time-scoped session population (last 2 years)",
+          "command": "polylogue find \"since:2y\"",
+          "exit_code": 0,
+          "output_sha256": "c12d4efd26b669dee3ac46a41b9c2265a41dee4164b70c76449590d7eb85fc0a"
+        },
+        {
+          "id": "q6",
+          "section": "Q6: query piped into read",
+          "command": "polylogue find \"origin:codex-session\" then read --first --view messages",
+          "exit_code": 0,
+          "output_sha256": "c6a11526af70310fbde28756bde722d635e4da2d7b61140c16ba8a0ac524f6d8"
+        }
+      ],
+      "explain": {
+        "section": "--explain demonstration (Q1)",
+        "command": "polylogue --explain find \"sessions where seq(action:shell -> action:shell)\"",
+        "exit_code": 0,
+        "output_sha256": "9f2a3e107ff5c3dd34731d8606ced970379915b6adbd89d8f93da02486e98dc0"
+      }
+    },
+    "historical_receipt": {
+      "commit_sha": "fdd5ea848",
+      "run_date": "2026-07-09",
+      "status": "historical-only",
+      "description": "Original D4 receipt retained only as historical context; it is not the current reproduction."
+    }
   },
   "receipts": [
     {
@@ -97,7 +166,7 @@
       "kind": "artifact",
       "ref": "artifact:d4-behavioral-archaeology-evidence",
       "resolved": true,
-      "sha256": "5437f3c0dd75ba2e7f190b6397f3b467bbd2f9879fc8efa694c0745a8d211e49"
+      "sha256": "799d7ea9914e7c59cca908a65612b0479322e737fb26766b2296eee08790b3a3"
     },
     {
       "artifact_path": "PROMPT.md",
@@ -105,15 +174,31 @@
       "kind": "artifact",
       "ref": "artifact:d4-behavioral-archaeology-predeclaration",
       "resolved": true,
-      "sha256": "25ca56325470a4a7ab8b3cc8a99d9c7a4758842cdf17d8de6a52ab4dfedf6fd3"
+      "sha256": "478e73d60135183895f680e0adbbd961527510d9f56b1a3795989776e5ca65d2"
+    },
+    {
+      "artifact_path": "run.log",
+      "description": "Fresh private seeded six-query and explain receipt at the current code SHA.",
+      "kind": "artifact",
+      "ref": "artifact:d4-behavioral-archaeology-current-run",
+      "resolved": true,
+      "sha256": "4234c64ea92e637f803bee6a455e08b048ca7a9e01078768585115c0a8bd42d4"
     }
   ],
   "reproduction": {
     "commands": [
-      "python -m devtools.verify_demo_packet_registry"
+      "polylogue demo seed --root /private/synthetic/demo-archive --force",
+      "polylogue demo verify --root /private/synthetic/demo-archive --format json",
+      "polylogue find \"sessions where seq(action:shell -> action:shell)\" then select --format json",
+      "polylogue \"actions where exit_code:>=0 | group by tool | count\"",
+      "polylogue \"actions where is_error:true | group by tool | count\"",
+      "polylogue find 'near:\"flaky async test\"'",
+      "polylogue find \"since:2y\"",
+      "polylogue find \"origin:codex-session\" then read --first --view messages",
+      "polylogue --explain find \"sessions where seq(action:shell -> action:shell)\""
     ],
     "deterministic": true,
-    "fixture": "polylogue demo seed 1843",
+    "fixture": "polylogue demo seed private synthetic fixture",
     "private_data": false
   },
   "results": {
@@ -121,14 +206,78 @@
       {
         "name": "recorded_query_commands",
         "receipts": [
-          "artifact:d4-behavioral-archaeology-evidence"
+          "artifact:d4-behavioral-archaeology-current-run"
         ],
         "unit": "commands",
         "value": 6
+      },
+      {
+        "name": "seeded_sessions",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-current-run"
+        ],
+        "unit": "sessions",
+        "value": 19
+      },
+      {
+        "name": "seeded_messages",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-current-run"
+        ],
+        "unit": "messages",
+        "value": 71
+      },
+      {
+        "name": "q1_sequence_matches",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-current-run"
+        ],
+        "unit": "sessions",
+        "value": 3
+      },
+      {
+        "name": "q2_successful_actions",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-current-run"
+        ],
+        "unit": "actions",
+        "value": 26
+      },
+      {
+        "name": "q3_failed_actions",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-current-run"
+        ],
+        "unit": "actions",
+        "value": 7
+      },
+      {
+        "name": "q4_semantic_hits",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-current-run"
+        ],
+        "unit": "sessions",
+        "value": 1
+      },
+      {
+        "name": "q5_time_scoped_sessions",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-current-run"
+        ],
+        "unit": "sessions",
+        "value": 13
+      },
+      {
+        "name": "synthetic_embedding_messages",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-evidence"
+        ],
+        "unit": "messages",
+        "value": 2
       }
     ],
     "status": "pass",
-    "summary": "The recorded commands exercise the intended query surfaces; documented defects and sparse coverage remain explicit."
+    "summary": "A fresh private seeded run at the exact current SHA exercised all six query surfaces and one explain route; observed counts and the bare-find defect remain explicit."
   },
   "schema_version": "2.0.0",
   "title": "Behavioral archaeology DSL packet"

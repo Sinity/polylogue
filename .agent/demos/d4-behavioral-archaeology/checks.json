@@ -1,5 +1,5 @@
 {
   "pass": true,
   "unsupported_claims": [],
-  "coverage_notes": "All 6 queries executed and produced verifiable output against the seeded demo corpus (11 sessions, 43 messages). Query 4's zero-result outcome is attributed honestly to sparse embedding coverage in the fixture (2/43 messages), not claimed as a semantic-search failure. Query 5 is scoped explicitly as a time-filter demonstration, not a claim of abandonment-classification parity with find_abandoned_sessions. A real defect (bare find ignoring an explicit 'sessions where' predicate) was discovered during authoring and filed as polylogue-70qb rather than hidden or silently worked around."
+  "coverage_notes": "All 6 queries and the required explain route executed through polylogue at d23f5dd27a0bda0a9c0a4306ef98c898d4d920ce against a private synthetic seeded demo corpus with 19 sessions and 71 messages. Query 4 returned one hit with only 2 of 71 messages embedded, so the packet does not claim semantic completeness. Query 5 is scoped as a time-filter demonstration, not abandonment classification. The bare-find predicate defect remains explicit and is retained as a historical finding."
 }

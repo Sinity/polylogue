@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import cast
@@ -72,6 +73,102 @@ def test_validate_packet_accepts_a_conforming_packet(tmp_path: Path) -> None:
     assert result.schema_errors == ()
     assert result.receipt_errors == ()
     assert result.errors == ()
+
+
+def _add_current_run_receipt(packet_dir: Path, payload: dict[str, object]) -> None:
+    provenance = cast(dict[str, object], payload["provenance"])
+    provenance["commit_sha"] = "a" * 40
+    commands = [
+        ("q1", "Q1: current", "polylogue find q1", "q1 output\n"),
+        ("q2", "Q2: current", "polylogue q2", "q2 output\n"),
+        ("q3", "Q3: current", "polylogue q3", "q3 output\n"),
+        ("q4", "Q4: current", "polylogue find q4", "q4 output\n"),
+        ("q5", "Q5: current", "polylogue find q5", "q5 output\n"),
+        ("q6", "Q6: current", "polylogue find q6 then read", "q6 output\n"),
+    ]
+    explain = ("--explain current", "polylogue --explain find q1", "explain output\n")
+    log_lines = [
+        "RUN_COMMANDS_STARTED_UTC=2026-08-09T00:00:00Z",
+        "HEAD_SHA=" + str(provenance["commit_sha"]),
+    ]
+    command_receipts: list[dict[str, object]] = []
+    for ident, section, command, output in commands:
+        log_lines.extend([f"=== {section} ===", f"$ {command}", output.rstrip("\n"), f"{ident.upper()}_EXIT_CODE=0"])
+        command_receipts.append(
+            {
+                "id": ident,
+                "section": section,
+                "command": command,
+                "exit_code": 0,
+                "output_sha256": hashlib.sha256(output.encode()).hexdigest(),
+            }
+        )
+    log_lines.extend([f"=== {explain[0]} ===", f"$ {explain[1]}", explain[2].rstrip("\n"), "EXPLAIN_EXIT_CODE=0"])
+    (packet_dir / "run.log").write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+    provenance["current_run"] = {
+        "run_id": "run:fixture:20260809T000000Z",
+        "run_timestamp": "2026-08-09T00:00:00Z",
+        "code_sha": provenance["commit_sha"],
+        "route": "polylogue",
+        "archive_kind": "private synthetic seeded demo archive",
+        "private_data": False,
+        "run_log": "run.log",
+        "commands": command_receipts,
+        "explain": {
+            "section": explain[0],
+            "command": explain[1],
+            "exit_code": 0,
+            "output_sha256": hashlib.sha256(explain[2].encode()).hexdigest(),
+        },
+    }
+    provenance["historical_receipt"] = {
+        "commit_sha": "fdd5ea848",
+        "run_date": "2026-07-09",
+        "status": "historical-only",
+        "description": "Original packet receipt retained as historical context.",
+    }
+    (packet_dir / "packet.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    stanza = "\n".join(
+        [
+            *(f"{field}: value-{field}" for field in PROVENANCE_STANZA_FIELDS),
+            "commit_sha: " + str(provenance["commit_sha"]),
+            "run_date: " + str(provenance["run_date"]),
+            "current_run_id: run:fixture:20260809T000000Z",
+            "current_run_timestamp: 2026-08-09T00:00:00Z",
+            "current_route: polylogue",
+            "historical_commit_sha: fdd5ea848",
+            "historical_run_date: 2026-07-09",
+            "historical_receipt_status: historical-only",
+        ]
+    )
+    (packet_dir / "finding.yaml").write_text(stanza + "\n", encoding="utf-8")
+
+
+def test_validate_packet_binds_current_run_to_structured_log(tmp_path: Path) -> None:
+    packet_dir = tmp_path / "packet"
+    payload = _valid_packet_payload()
+    _write_conforming_packet(packet_dir, payload=payload)
+    _add_current_run_receipt(packet_dir, payload)
+
+    result = validate_packet(packet_dir)
+
+    assert result.ok is True
+
+
+def test_validate_packet_rejects_current_run_log_tampering(tmp_path: Path) -> None:
+    packet_dir = tmp_path / "packet"
+    payload = _valid_packet_payload()
+    _write_conforming_packet(packet_dir, payload=payload)
+    _add_current_run_receipt(packet_dir, payload)
+    (packet_dir / "run.log").write_text(
+        (packet_dir / "run.log").read_text(encoding="utf-8").replace("q3 output", "tampered output"),
+        encoding="utf-8",
+    )
+
+    result = validate_packet(packet_dir)
+
+    assert result.ok is False
+    assert any("output digest" in error for error in result.errors)
 
 
 @pytest.mark.parametrize(

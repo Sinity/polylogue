@@ -2,88 +2,39 @@
 
 ## Claim
 
-Six DSL queries answer engineering-lead questions about AI coding sessions
-that no chat UI transcript view can answer — using only existing product
-primitives (`polylogue` CLI query DSL), no bespoke scripts.
+Six DSL queries answer engineering-lead questions about AI coding sessions that no chat UI transcript view answers from a saved transcript alone, using only existing product primitives (`polylogue` CLI query DSL), with no bespoke scripts.
 
 ## Corpus
 
-`polylogue demo seed` fixture world: 11 sessions, 43 messages, deterministic
-and private-data-free.
+The fresh private-data-free run used the deterministic `polylogue demo seed` fixture at `run:d4-behavioral-archaeology:20260809T061905Z`. It contained 19 sessions, 71 messages, and 2 synthetic message embeddings. The command receipt was captured at commit `d23f5dd27a0bda0a9c0a4306ef98c898d4d920ce` on 2026-08-09.
 
 ## Method
 
-Each query run once via the `polylogue` CLI against the seeded archive; raw
-output captured in `run.log`. Query 1 additionally demonstrated with
-`--explain` to show the parsed AST.
+The seed and verification steps ran against a throwaway private synthetic archive. Each of the six PROMPT.md commands then ran once through the `polylogue` CLI, followed by the required `polylogue --explain` route for Q1. `run.log` records each exact command, output, exit code, and output digest. The packet validator cross-checks those structured fields. The older 2026-07-09 receipt at `fdd5ea848` is retained only as historical context.
 
 ## Findings
 
-1. **SEQ thrash-loop hunt** — `seq(action:shell -> action:shell)` finds
-   sessions with back-to-back shell-tool calls (a real repeated-attempt
-   signal): 2 of 11 sessions match (`claude-code-session:63705dcc-...`,
-   `codex-session:demo-00`), confirmed via `then select --json`.
-2. **Tool call volume** — grouping actions by tool: Bash 9, Read 8, Task 1,
-   Write 1, exec_command 1. Bash dominates this fixture's tool usage.
-3. **Which tools break** — grouping failed actions (`is_error:true`) by
-   tool: Bash 4, exec_command 1. Read/Write/Task never fail in this corpus.
-4. **Semantic probe across providers** — `near:"flaky async test"` returns
-   0 results despite a session literally titled "Debugging flaky async
-   pipeline tests" existing in the corpus. This is itself an honest finding,
-   not a failure to hide: the seeded fixture has only 2 of 43 messages with
-   embeddings materialized (`SELECT COUNT(*) FROM message_embeddings_meta`
-   on `embeddings.db`), so semantic search correctly returns nothing rather
-   than a coincidental keyword-adjacent false match. A live archive with
-   full embedding coverage would find this session; the demo corpus's
-   sparse coverage is exactly the failure mode `near:` is designed to
-   report honestly (no result) rather than fabricate.
-5. **Time-scoped session population** — `since:2y` selects 9 of the 11
-   sessions (2 predate the 2-year window), demonstrating the same kind of
-   filter an "abandoned in this repo this quarter" query would use as its
-   time bound. (Actual abandonment classification — `find_abandoned_sessions`
-   — is a dedicated MCP/insight tool with its own severity scoring, not a
-   raw DSL predicate; this query demonstrates the time-filtering mechanism
-   that tool composes with, not abandonment scoring itself.)
-6. **Query piped into `read`** — `find 'origin:codex-session' then read
-   --first --view messages` resolves the query to a session and renders its
-   messages directly, including a real captured tool error (`exit_code: 4`,
-   "file or directory not found: tests/missing_test.py") and the agent's own
-   next-step response — exactly the kind of "click through to the turn"
-   affordance a chat UI can't give you from a saved transcript.
+1. **SEQ thrash-loop hunt**: `seq(action:shell -> action:shell)` finds 3 sessions with consecutive shell-tool calls: `codex-session:demo-receipts`, `claude-code-session:63705dcc-...`, and `codex-session:demo-00`. The current command uses `then select --format json`. The older `then select --json` spelling appears only in clearly labeled historical-receipt fields.
+2. **Tool call volume**: the current run reports 26 successful actions: Bash 9, Read 8, exec_command 3, and one each for Edit, Task, Write, apply_patch, read_file, and run_check.
+3. **Which tools break**: the current run reports 7 failed actions: Bash 4, exec_command 2, and Edit 1.
+4. **Semantic probe across providers**: `near:"flaky async test"` returns one result, a Claude Code session with the synthetic fixture message "I will inspect the generated fixture and adjust the next command." Only 2 of 71 messages have synthetic embeddings, so this result does not establish complete semantic coverage.
+5. **Time-scoped session population**: `since:2y` lists 13 of 19 sessions. This demonstrates time filtering only. It does not reproduce the severity or resumability scoring of `find_abandoned_sessions`.
+6. **Query piped into `read`**: `find 'origin:codex-session' then read --first --view messages` renders `codex-session:demo-receipts`, including a failed clock test command with exit code 1, a conflicting success claim, an `apply_patch`, and a later successful test result.
 
 ## Specimens
 
-See `evidence.ndjson` for the cited session/query refs.
+See `evidence.ndjson` for the cited session, action, embedding, and current-run references. The current command and output mapping is in `packet.json.provenance.current_run` and is independently bound to `run.log` by output digests.
 
 ## Counterexamples
 
-**A real defect surfaced while authoring query 1.** The bare command
-`polylogue find "sessions where seq(action:shell -> action:shell)"` (no
-`then` verb) returns `mode: list, total: 11` — the FULL unfiltered session
-set — while the identical predicate via `then select --json` correctly
-returns only the 2 matching sessions. This is not SEQ-specific: bare `find
-"sessions where origin:codex-session"` also returns the unfiltered total
-(11), while the equivalent compact form `find "origin:codex-session"`
-(no `sessions where` prefix) correctly filters to 5. The explicit boolean-
-query entry form appears to be silently ignored specifically in bare-`find`
-(no trailing `then <verb>`) mode. Filed as polylogue-70qb rather than
-worked around or hidden — this IS the demo's thesis in action: a DSL query
-surfaced a real product defect a chat transcript view never could.
+The original D4 work also recorded a real defect: the bare command `polylogue find "sessions where seq(action:shell -> action:shell)"` ignored the explicit predicate and returned the full session set. That historical comparison remains documented as `polylogue-70qb`. It is not presented as a newly executed command in this receipt, and the retired `then select --json` alias is retained only as historical receipt text.
 
 ## Limits
 
-- This is the seeded, deterministic demo corpus (11 sessions), not the live
-  archive. Absolute counts are small and illustrative, not representative
-  of production session volume or failure rates.
-- Query 4's zero-result outcome is a property of this fixture's sparse
-  embedding coverage (2/43 messages), not a claim that semantic search is
-  broken.
-- Query 5 demonstrates time-filtering only; it does not replicate
-  `find_abandoned_sessions`'s severity/resumability scoring.
-- The polylogue-70qb defect (bare-find ignoring `sessions where` predicates)
-  means any operator running these exact commands without `then select`/
-  `then read` should expect an unfiltered list, not the intended filtered
-  result, until that bug is fixed.
+- This is a deterministic seeded demo corpus, not the live archive. The 19-session and 71-message counts are illustrative and do not estimate production prevalence, archive scale, or provider-wide behavior.
+- The semantic result is bounded by 2 synthetic embeddings out of 71 messages. It does not prove semantic search completeness.
+- The time query demonstrates filtering only. It does not replicate `find_abandoned_sessions` severity or resumability scoring.
+- The packet records a current run and a historical receipt. The historical receipt is not evidence for the current code SHA.
 
 ## Non-claims
 
@@ -94,8 +45,8 @@ surfaced a real product defect a chat transcript view never could.
 ## Reproduce
 
 ```bash
-polylogue demo seed --root /path/to/demo-archive --force
-export POLYLOGUE_ARCHIVE_ROOT=/path/to/demo-archive
+polylogue demo seed --root /path/to/private-synthetic-demo-archive --force
+export POLYLOGUE_ARCHIVE_ROOT=/path/to/private-synthetic-demo-archive
 export POLYLOGUE_FORCE_PLAIN=1
 
 polylogue find 'sessions where seq(action:shell -> action:shell)' then select --format json
@@ -109,4 +60,4 @@ polylogue find 'origin:codex-session' then read --first --view messages
 polylogue --explain find 'sessions where seq(action:shell -> action:shell)'
 ```
 
-See `run.log` for the exact recorded output of every command above.
+See `run.log` for the exact current output of every command above. The packet's current-run receipt identifies the exact code SHA, UTC timestamp, production route, private synthetic archive class, command mapping, and output hashes.
