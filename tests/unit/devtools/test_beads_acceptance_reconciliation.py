@@ -26,13 +26,13 @@ def _test_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
         "resolve_route",
         lambda identifier: (
             {
-                "bead_id": None,
-                "class": "*",
-                "contract_type": "*",
-                "dispatch": "*",
+                "bead_id": identifier.removeprefix("test/"),
+                "class": "ImplementationRoute",
+                "contract_type": "implementation",
+                "dispatch": "production",
                 "targets": ["Test production route."],
             }
-            if identifier == "test/production"
+            if isinstance(identifier, str) and identifier.startswith("test/")
             else None
         ),
     )
@@ -69,7 +69,7 @@ def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:
         "safety": [],
         "route_spec": {
             "mode": "named",
-            "identifier": "test/production",
+            "identifier": f"test/{bead_id}",
             "class": "ImplementationRoute",
             "dispatch": "production",
         },
@@ -410,6 +410,45 @@ def test_post_import_rejects_a_modified_wave_contract(tmp_path: Path) -> None:
     _write_export(after_path, wave)
 
     with pytest.raises(mod.ReconciliationError, match="targeted wave digest"):
+        mod.verify_post_import(
+            repository=repository_path,
+            before=before_path,
+            after=after_path,
+            wave=wave_path,
+            report=report_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda report: report["ids"]["live_only"].append("polylogue-unexpected"),
+        lambda report: report["counts"].update(live_only=1),
+        lambda report: report["contract_refused_reasons"].update({"polylogue-test": ["tampered refusal"]}),
+        lambda report: report["contract_deferred_reasons"].update({"polylogue-test": "tampered deferral"}),
+        lambda report: report["already_guarded_ids"].append("polylogue-test"),
+    ],
+    ids=["category", "count", "refusal-reasons", "deferred-reasons", "already-guarded"],
+)
+def test_post_import_rejects_tampered_complete_report(tmp_path: Path, mutation: object) -> None:
+    master = _issue()
+    before = copy.deepcopy(master)
+    before["acceptance_criteria"] = None
+    before["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    before_path = tmp_path / "before.jsonl"
+    wave_path = tmp_path / "wave.jsonl"
+    report_path = tmp_path / "report.json"
+    after_path = tmp_path / "after.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(before_path, [before])
+    report, wave = mod.reconcile(repository_path, before_path)
+    _write_export(wave_path, wave)
+    _write_export(after_path, wave)
+    mutation(report)
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(mod.ReconciliationError, match="canonical recomputation"):
         mod.verify_post_import(
             repository=repository_path,
             before=before_path,

@@ -201,6 +201,15 @@ def _load_report(path: Path) -> dict[str, Any]:
     return value
 
 
+def _require_complete_report(actual: Mapping[str, Any], expected: Mapping[str, Any]) -> None:
+    """Require every report field to equal a fresh recomputation from bound inputs."""
+    if set(actual) != set(expected):
+        raise ReconciliationError("reconciliation report fields do not match the canonical report shape")
+    for field in sorted(expected):
+        if actual[field] != expected[field]:
+            raise ReconciliationError(f"reconciliation report field {field!r} does not match canonical recomputation")
+
+
 def _validate_report_and_wave(
     *,
     repository: Path,
@@ -258,6 +267,11 @@ def _validate_report_and_wave(
         expected = _guarded_row(master=canonical, live=before_rows[bead_id], contract=contract)
         if wave_rows[bead_id] != expected:
             raise ReconciliationError(f"targeted wave row is not the canonical guarded row for {bead_id}")
+    expected_report, expected_wave = reconcile(repository, before)
+    expected_wave_rows = {row["id"]: row for row in expected_wave}
+    if wave_rows != expected_wave_rows:
+        raise ReconciliationError("targeted wave does not match the canonical reconciliation recomputation")
+    _require_complete_report(report, expected_report)
     return master, before_rows, wave_rows, report
 
 

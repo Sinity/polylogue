@@ -22,13 +22,13 @@ def _test_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
         "resolve_route",
         lambda identifier: (
             {
-                "bead_id": None,
-                "class": "*",
-                "contract_type": "*",
-                "dispatch": "*",
+                "bead_id": "polylogue-test",
+                "class": "ImplementationRoute",
+                "contract_type": "implementation",
+                "dispatch": "production",
                 "targets": ["Test production route."],
             }
-            if identifier == "test/production"
+            if isinstance(identifier, str) and identifier == "test/production"
             else None
         ),
     )
@@ -142,6 +142,43 @@ def test_guarded_applier_refuses_modified_wave(tmp_path: Path) -> None:
     report_path.write_text(json.dumps(report), encoding="utf-8")
 
     with pytest.raises(reconciliation.ReconciliationError, match="targeted wave digest"):
+        applier.apply_guarded_wave(
+            repository=repository, before=before, wave=wave_path, report=report_path, output=output
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["ids", "counts", "contract_refused_reasons", "contract_deferred_reasons", "already_guarded_ids"],
+)
+def test_guarded_applier_refuses_tampered_complete_report(tmp_path: Path, field: str) -> None:
+    repository = tmp_path / "repository.jsonl"
+    before = tmp_path / "before.jsonl"
+    wave_path = tmp_path / "wave.jsonl"
+    report_path = tmp_path / "report.json"
+    output = tmp_path / "output.jsonl"
+    master = _issue()
+    live = copy.deepcopy(master)
+    live["metadata"] = {}
+    live["acceptance_criteria"] = None
+    _write(repository, [master])
+    _write(before, [live])
+    report, wave = reconciliation.reconcile(repository, before)
+    _write(wave_path, wave)
+    report[field] = {**report[field]} if isinstance(report[field], dict) else list(report[field])
+    if field == "ids":
+        report[field]["live_only"] = ["polylogue-unexpected"]
+    elif field == "counts":
+        report[field]["live_only"] = 1
+    elif field == "contract_refused_reasons":
+        report[field]["polylogue-test"] = ["tampered refusal"]
+    elif field == "contract_deferred_reasons":
+        report[field]["polylogue-test"] = "tampered deferral"
+    else:
+        report[field].append("polylogue-test")
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(reconciliation.ReconciliationError, match="canonical recomputation"):
         applier.apply_guarded_wave(
             repository=repository, before=before, wave=wave_path, report=report_path, output=output
         )
