@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -46,13 +47,20 @@ def _valid_contract_record(confidence: str = "high") -> dict[str, object]:
         "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
         "anti_vacuity": ["Removing the guard makes the regression fail."],
         "safety": [],
-        "route_spec": {"mode": "named", "dispatch": "production"},
+        "route_spec": {"mode": "named", "identifier": "production-route", "dispatch": "production"},
         "closure": {
             "rule": "Close only with final-head evidence.",
             "disposition": "whole-or-explicit-partial",
             "successor_required_for_partial": True,
         },
     }
+    contract["evidence_spans"] = [
+        {
+            "snapshot_digest": "b" * 64,
+            "range": {"start": 0, "end": len(contract["evidence"][0])},
+            "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
+        }
+    ]
     record["metadata"] = {"acceptance_contract_v1": contract}
     contract["dependency_digest"] = beads_acceptance_contracts.dependency_digest(record)
     contract["source_digest"] = beads_acceptance_contracts.source_digest(record)
@@ -183,6 +191,21 @@ def test_fetch_bead_reports_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     record = lane_brief._fetch_bead("polylogue-missing")
     assert not record.found
     assert "bd: no such bead" in record.error
+
+
+def test_fetch_bead_rejects_a_wrong_id_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production dependency: lane-brief -> bd show adapter; catches accepting the first unintended record."""
+    wrong = _bd_show_record(id="polylogue-unintended")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: MagicMock(returncode=0, stdout=json.dumps([wrong]), stderr=""),
+    )
+
+    fetched = lane_brief._fetch_bead("polylogue-requested")
+
+    assert not fetched.found
+    assert "does not match requested id 'polylogue-requested'" in fetched.error
 
 
 def test_dep_labels_prefers_depends_on_id() -> None:

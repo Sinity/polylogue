@@ -156,12 +156,30 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
         return BeadRecord(id=bead_id, found=False, error=result.stderr.strip()[:200] or "bd show failed")
     try:
         payload = strict_json_loads(result.stdout)
-        record = payload[0] if isinstance(payload, list) else payload
-    except (JSONDecodeError, IndexError, TypeError) as exc:
+    except (JSONDecodeError, TypeError) as exc:
         return BeadRecord(id=bead_id, found=False, error=f"unparseable bd show output: {exc}")
+    if isinstance(payload, list):
+        if len(payload) != 1:
+            return BeadRecord(
+                id=bead_id,
+                found=False,
+                error=f"bd show returned {len(payload)} records; expected exactly one for {bead_id}",
+            )
+        record = payload[0]
+    else:
+        record = payload
     if not isinstance(record, dict):
         return BeadRecord(
             id=bead_id, found=False, error=f"unparseable bd show output: expected object, got {type(record).__name__}"
+        )
+    record_id = record.get("id")
+    if not isinstance(record_id, str) or not record_id:
+        return BeadRecord(id=bead_id, found=False, error="bd show response is missing a non-empty id")
+    if record_id != bead_id:
+        return BeadRecord(
+            id=bead_id,
+            found=False,
+            error=f"bd show response id {record_id!r} does not match requested id {bead_id!r}",
         )
 
     notes_value = record.get("notes")
@@ -181,7 +199,6 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
     )
     contract_source_digest = contract.get("source_digest") if isinstance(contract, dict) else None
     contract_dependency_digest = contract.get("dependency_digest") if isinstance(contract, dict) else None
-    record_id = record.get("id")
     priority = record.get("priority")
     issue_type = record.get("issue_type")
     title = record.get("title")
@@ -189,7 +206,7 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
     design = record.get("design")
     acceptance_criteria = record.get("acceptance_criteria")
     return BeadRecord(
-        id=record_id if isinstance(record_id, str) else bead_id,
+        id=bead_id,
         found=True,
         priority=priority if isinstance(priority, int) and not isinstance(priority, bool) else None,
         issue_type=issue_type if isinstance(issue_type, str) else None,
