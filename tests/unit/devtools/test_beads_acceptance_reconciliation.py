@@ -38,7 +38,7 @@ def _issue(*, bead_id: str = "polylogue-test", updated_at: str = "2026-08-07T00:
         "metadata": {"operator": "preserve-me"},
         "acceptance_criteria": None,
     }
-    contract = {
+    contract: dict[str, Any] = {
         "schema_version": 1,
         "bead_id": bead_id,
         "contract_type": "implementation",

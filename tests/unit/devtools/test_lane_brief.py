@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -33,7 +34,7 @@ def _valid_contract_record(confidence: str = "high") -> dict[str, object]:
         design="The design is recorded.",
         dependencies=[{"depends_on_id": "polylogue-parent", "type": "blocks"}],
     )
-    contract: dict[str, object] = {
+    contract: dict[str, Any] = {
         "schema_version": 1,
         "bead_id": "polylogue-a",
         "contract_type": "implementation",

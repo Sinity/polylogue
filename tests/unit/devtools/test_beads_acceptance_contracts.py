@@ -20,7 +20,7 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         "decision": "decision",
         "documentation": "documentation",
     }.get(kind, "production")
-    contract = {
+    contract: dict[str, Any] = {
         "schema_version": 1,
         "bead_id": "polylogue-test",
         "contract_type": kind,

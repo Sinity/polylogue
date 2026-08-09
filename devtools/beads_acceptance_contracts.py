@@ -160,12 +160,17 @@ def _validate_route_spec(errors: list[str], contract: dict[str, Any]) -> bool:
     if route_spec.get("dispatch") not in _ALLOWED_ROUTE_DISPATCH:
         errors.append("route_spec.dispatch is invalid")
         valid = False
-    elif route_spec.get("dispatch") not in _ROUTE_DISPATCH_BY_TYPE.get(contract.get("contract_type"), frozenset()):
-        errors.append(
-            f"route_spec.dispatch {route_spec['dispatch']!r} is incompatible with "
-            f"contract_type {contract.get('contract_type')!r}"
+    else:
+        contract_type = contract.get("contract_type")
+        allowed_dispatch = _ROUTE_DISPATCH_BY_TYPE.get(
+            contract_type if isinstance(contract_type, str) else "", frozenset()
         )
-        valid = False
+        if route_spec.get("dispatch") not in allowed_dispatch:
+            errors.append(
+                f"route_spec.dispatch {route_spec['dispatch']!r} is incompatible with "
+                f"contract_type {contract.get('contract_type')!r}"
+            )
+            valid = False
     return valid
 
 
