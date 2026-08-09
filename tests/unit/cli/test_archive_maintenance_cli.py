@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import time
 from collections.abc import Iterator
@@ -2278,7 +2279,12 @@ def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_repl
         dst_dir_fd: int | None = None,
         follow_symlinks: bool = True,
     ) -> None:
-        Path(destination).write_bytes(raced_bytes)
+        assert dst_dir_fd is not None
+        target_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dst_dir_fd)
+        try:
+            os.write(target_fd, raced_bytes)
+        finally:
+            os.close(target_fd)
         real_link(
             source,
             destination,
@@ -2308,6 +2314,52 @@ def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_repl
     assert "appeared during initialization; refusing to replace it" in json.loads(result.stdout)["error"]
     assert audit_db.read_bytes() == raced_bytes
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
+
+
+def test_migrate_tier_cli_rejects_archive_directory_swap_before_publication(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    moved_root = root.with_name("archive-moved")
+    real_open = os.open
+    swapped = False
+
+    def swap_before_directory_anchor(
+        file: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if not swapped and dir_fd is None and Path(file) == root and flags & getattr(os, "O_DIRECTORY", 0):
+            root.rename(moved_root)
+            root.mkdir()
+            swapped = True
+        return real_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.open", swap_before_directory_anchor)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "changed during validation" in json.loads(result.stdout)["error"]
+    assert not (root / "audit.db").exists()
+    assert not (moved_root / "audit.db").exists()
 
 
 def test_migrate_tier_cli_wraps_non_collision_publication_error(
@@ -2357,17 +2409,39 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
 
     real_fsync = os.fsync
     fsync_calls = 0
+    directory_fsyncs = 0
 
     def fail_fsync(descriptor: int) -> None:
-        nonlocal fsync_calls
+        nonlocal directory_fsyncs, fsync_calls
         fsync_calls += 1
-        if (failure_stage == "image_fsync" and fsync_calls == 2) or (
-            failure_stage == "directory_fsync" and fsync_calls == 3
-        ):
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        if is_directory:
+            directory_fsyncs += 1
+        if failure_stage == "image_fsync" and not is_directory and fsync_calls == 2:
+            raise OSError(f"{failure_stage} failed")
+        if failure_stage == "directory_fsync" and is_directory:
             raise OSError(f"{failure_stage} failed")
         real_fsync(descriptor)
 
     monkeypatch.setattr(f"{module_name}.os.fsync", fail_fsync)
+
+    real_stat = os.stat
+    published_target_stat_calls = 0
+
+    def fail_published_target_stat(
+        file: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal published_target_stat_calls
+        if failure_stage == "published_lstat" and file == "audit.db" and dir_fd is not None:
+            published_target_stat_calls += 1
+            if published_target_stat_calls == 2:
+                raise OSError("published lstat failed")
+        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(f"{module_name}.os.stat", fail_published_target_stat)
 
     real_lstat = Path.lstat
     lstat_failure_pending = True
@@ -2424,6 +2498,8 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
     assert result.exit_code == 1
     assert f"cannot publish audit tier at {audit_db}" in json.loads(result.stdout)["error"]
     assert not audit_db.exists()
+    if failure_stage == "published_lstat":
+        assert directory_fsyncs == 1
 
 
 def test_migrate_tier_cli_refuses_named_staging_when_anonymous_publication_is_unsupported(
@@ -2604,19 +2680,17 @@ def test_migrate_tier_cli_missing_initialization_refuses_blob_inspection_failure
     root = cli_workspace["archive_root"]
     blob_root = root / "blob"
     blob_root.mkdir()
-    real_iterdir = Path.iterdir
+    blob_identity = blob_root.stat()
+    real_listdir = os.listdir
 
-    def fail_blob_inspection(candidate: Path) -> Iterator[Path]:
-        if candidate == blob_root:
-
-            def fail_on_next() -> Iterator[Path]:
+    def fail_blob_inspection(candidate: int | os.PathLike[str] | str) -> list[str] | Iterator[Path]:
+        if isinstance(candidate, int):
+            candidate_metadata = os.fstat(candidate)
+            if (candidate_metadata.st_dev, candidate_metadata.st_ino) == (blob_identity.st_dev, blob_identity.st_ino):
                 raise OSError("blob inspection failed")
-                yield candidate
+        return real_listdir(candidate)
 
-            return fail_on_next()
-        return real_iterdir(candidate)
-
-    monkeypatch.setattr(Path, "iterdir", fail_blob_inspection)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.listdir", fail_blob_inspection)
 
     result = cli_runner.invoke(
         cli,
@@ -2645,14 +2719,19 @@ def test_migrate_tier_cli_missing_initialization_refuses_marker_inspection_failu
     root = cli_workspace["archive_root"]
     marker_root = root / ".maintenance-state" / "durable-change-trains"
     marker_root.mkdir(parents=True)
-    real_lstat = Path.lstat
+    real_stat = os.stat
 
-    def fail_marker_inspection(candidate: Path) -> os.stat_result:
-        if candidate == marker_root:
+    def fail_marker_inspection(
+        candidate: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        if candidate == ".maintenance-state/durable-change-trains" and dir_fd is not None:
             raise OSError("marker inspection failed")
-        return real_lstat(candidate)
+        return real_stat(candidate, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
 
-    monkeypatch.setattr(Path, "lstat", fail_marker_inspection)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", fail_marker_inspection)
 
     result = cli_runner.invoke(
         cli,

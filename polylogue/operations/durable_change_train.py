@@ -37,125 +37,170 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
-    def adoption_lstat(candidate: Path, description: str) -> os.stat_result | None:
-        try:
-            return candidate.lstat()
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            raise MigrationError(f"cannot inspect {description}: {candidate}") from exc
+    archive_root = path.parent
 
-    parent_metadata = adoption_lstat(path.parent, "durable tier parent directory")
+    try:
+        parent_metadata = archive_root.lstat()
+    except FileNotFoundError as exc:
+        raise MigrationError(f"durable tier parent directory is missing: {archive_root}") from exc
+    except OSError as exc:
+        raise MigrationError(f"cannot inspect durable tier parent directory: {archive_root}") from exc
     if parent_metadata is None:
-        raise MigrationError(f"durable tier parent directory is missing: {path.parent}")
+        raise MigrationError(f"durable tier parent directory is missing: {archive_root}")
     if (
         stat.S_ISLNK(parent_metadata.st_mode)
         or not stat.S_ISDIR(parent_metadata.st_mode)
         or parent_metadata.st_uid != os.geteuid()
         or stat.S_IMODE(parent_metadata.st_mode) & 0o022
     ):
-        raise MigrationError(f"durable tier parent is not a private owned directory: {path.parent}")
+        raise MigrationError(f"durable tier parent is not a private owned directory: {archive_root}")
 
-    if adoption_lstat(path, "durable tier target") is not None:
-        raise MigrationError(f"{tier.value} tier already exists; refusing missing-tier initialization: {path}")
+    directory_descriptor: int | None = None
+    try:
+        directory_descriptor = os.open(
+            archive_root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError as exc:
+        raise MigrationError(
+            f"cannot publish {tier.value} tier at {path}: cannot anchor durable tier parent directory"
+        ) from exc
 
     try:
-        location = ArchiveLocation.resolve(path.parent)
-    except Exception as exc:
-        raise MigrationError(f"cannot inspect archive adoption markers: {path.parent}") from exc
-    durable_siblings = tuple(path.parent / f"{sibling.value}.db" for sibling in ArchiveTier if sibling is not tier)
-    existing_siblings: list[Path] = []
-    for sibling in durable_siblings:
-        if adoption_lstat(sibling, "archive tier") is not None:
-            existing_siblings.append(sibling)
-    adoption_markers: list[Path] = []
-    active_pointer_marker = path.parent / ".index-active-pointer"
-    if adoption_lstat(active_pointer_marker, "active index pointer") is not None:
-        # Presence is enough. ArchiveLocation intentionally ignores a dangling
-        # symlink via Path.exists(), but missing-tier initialization must treat
-        # malformed or dangling adoption evidence as established and fail
-        # closed rather than publishing an empty durable database.
-        adoption_markers.append(active_pointer_marker)
-    blob_path = path.parent / "blob"
-    blob_metadata = adoption_lstat(blob_path, "retained blob path")
-    if blob_metadata is not None:
-        if stat.S_ISLNK(blob_metadata.st_mode) or not stat.S_ISDIR(blob_metadata.st_mode):
-            adoption_markers.append(blob_path)
-        else:
+        assert directory_descriptor is not None
+        anchored_metadata = os.fstat(directory_descriptor)
+        if (anchored_metadata.st_dev, anchored_metadata.st_ino) != (parent_metadata.st_dev, parent_metadata.st_ino):
+            raise MigrationError(f"durable tier parent directory changed during validation: {archive_root}")
+
+        def adoption_lstat(relative: str, description: str) -> os.stat_result | None:
             try:
-                blob_has_entries = next(blob_path.iterdir(), None) is not None
+                return os.stat(relative, dir_fd=directory_descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
             except OSError as exc:
-                raise MigrationError(f"cannot inspect retained blob path: {blob_path}") from exc
-            if blob_has_entries:
-                adoption_markers.append(blob_path)
-    maintenance_state_root = path.parent / ".maintenance-state"
-    maintenance_state_metadata = adoption_lstat(maintenance_state_root, "maintenance state parent")
-    if maintenance_state_metadata is not None and (
-        stat.S_ISLNK(maintenance_state_metadata.st_mode) or not stat.S_ISDIR(maintenance_state_metadata.st_mode)
-    ):
-        adoption_markers.append(maintenance_state_root)
-    train_marker_root = path.parent / ".maintenance-state" / "durable-change-trains"
-    train_marker_metadata = adoption_lstat(train_marker_root, "durable change-train adoption marker")
-    if train_marker_metadata is not None:
-        if stat.S_ISLNK(train_marker_metadata.st_mode) or not stat.S_ISDIR(train_marker_metadata.st_mode):
-            adoption_markers.append(train_marker_root)
-        else:
+                raise MigrationError(f"cannot inspect {description}: {archive_root / relative}") from exc
+
+        def directory_entries(relative: str, metadata: os.stat_result, description: str) -> list[str]:
             try:
-                marker_entries = tuple(train_marker_root.iterdir())
+                child_descriptor = os.open(
+                    relative,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=directory_descriptor,
+                )
             except OSError as exc:
-                raise MigrationError(
-                    f"cannot inspect durable change-train adoption marker: {train_marker_root}"
-                ) from exc
-            if marker_entries:
-                for marker_name in (".bootstrap", ".bootstrap.pending"):
-                    marker_path = train_marker_root / marker_name
-                    if adoption_lstat(marker_path, "durable bootstrap marker") is not None:
-                        adoption_markers.append(marker_path)
-                if train_marker_root not in adoption_markers:
-                    adoption_markers.append(train_marker_root)
-    retained_evidence_roots = (
-        (path.parent / ".index-generations", "retained index-generation evidence"),
-        (path.parent / ".index-rebuild-transactions", "retained index-rebuild transaction evidence"),
-        (path.parent / ".maintenance-state" / "source-continuity-pending", "source-continuity recovery evidence"),
-    )
-    for evidence_root, description in retained_evidence_roots:
-        evidence_metadata = adoption_lstat(evidence_root, description)
-        if evidence_metadata is None:
-            continue
-        if stat.S_ISLNK(evidence_metadata.st_mode) or not stat.S_ISDIR(evidence_metadata.st_mode):
-            adoption_markers.append(evidence_root)
-            continue
-        try:
-            has_retained_evidence = next(evidence_root.iterdir(), None) is not None
-        except OSError as exc:
-            raise MigrationError(f"cannot inspect {description}: {evidence_root}") from exc
-        if has_retained_evidence:
-            adoption_markers.append(evidence_root)
-    if location.active_pointer is not None and active_pointer_marker not in adoption_markers:
-        adoption_markers.append(active_pointer_marker)
-    if existing_siblings or adoption_markers:
-        details = ", ".join(str(item) for item in (*existing_siblings, *adoption_markers))
-        raise MigrationError(
-            f"cannot initialize missing {tier.value} tier in an established archive; adoption marker(s): {details}"
+                raise MigrationError(f"cannot inspect {description}: {archive_root / relative}") from exc
+            try:
+                child_metadata = os.fstat(child_descriptor)
+                if (child_metadata.st_dev, child_metadata.st_ino) != (metadata.st_dev, metadata.st_ino):
+                    raise MigrationError(
+                        f"archive directory entry changed during validation: {archive_root / relative}"
+                    )
+                return os.listdir(child_descriptor)
+            except OSError as exc:
+                raise MigrationError(f"cannot inspect {description}: {archive_root / relative}") from exc
+            finally:
+                os.close(child_descriptor)
+
+        target_name = path.name
+        if adoption_lstat(target_name, "durable tier target") is not None:
+            raise MigrationError(f"{tier.value} tier already exists; refusing missing-tier initialization: {path}")
+
+        durable_siblings = tuple(f"{sibling.value}.db" for sibling in ArchiveTier if sibling is not tier)
+        existing_siblings = [
+            archive_root / sibling
+            for sibling in durable_siblings
+            if adoption_lstat(sibling, "archive tier") is not None
+        ]
+        adoption_markers: list[Path] = []
+        active_pointer_marker = ".index-active-pointer"
+        if adoption_lstat(active_pointer_marker, "active index pointer") is not None:
+            # Presence is enough. ArchiveLocation intentionally ignores a dangling
+            # symlink via Path.exists(), but missing-tier initialization must treat
+            # malformed or dangling adoption evidence as established and fail
+            # closed rather than publishing an empty durable database.
+            adoption_markers.append(archive_root / active_pointer_marker)
+        blob_relative = "blob"
+        blob_metadata = adoption_lstat(blob_relative, "retained blob path")
+        if blob_metadata is not None:
+            if stat.S_ISLNK(blob_metadata.st_mode) or not stat.S_ISDIR(blob_metadata.st_mode):
+                adoption_markers.append(archive_root / blob_relative)
+            else:
+                blob_has_entries = bool(directory_entries(blob_relative, blob_metadata, "retained blob path"))
+                if blob_has_entries:
+                    adoption_markers.append(archive_root / blob_relative)
+        maintenance_state_relative = ".maintenance-state"
+        maintenance_state_metadata = adoption_lstat(maintenance_state_relative, "maintenance state parent")
+        if maintenance_state_metadata is not None and (
+            stat.S_ISLNK(maintenance_state_metadata.st_mode) or not stat.S_ISDIR(maintenance_state_metadata.st_mode)
+        ):
+            adoption_markers.append(archive_root / maintenance_state_relative)
+        train_marker_relative = ".maintenance-state/durable-change-trains"
+        train_marker_metadata = adoption_lstat(train_marker_relative, "durable change-train adoption marker")
+        if train_marker_metadata is not None:
+            if stat.S_ISLNK(train_marker_metadata.st_mode) or not stat.S_ISDIR(train_marker_metadata.st_mode):
+                adoption_markers.append(archive_root / train_marker_relative)
+            else:
+                marker_entries = tuple(
+                    directory_entries(
+                        train_marker_relative, train_marker_metadata, "durable change-train adoption marker"
+                    )
+                )
+                if marker_entries:
+                    for marker_name in (".bootstrap", ".bootstrap.pending"):
+                        marker_relative = f"{train_marker_relative}/{marker_name}"
+                        if adoption_lstat(marker_relative, "durable bootstrap marker") is not None:
+                            adoption_markers.append(archive_root / marker_relative)
+                    train_marker_path = archive_root / train_marker_relative
+                    if train_marker_path not in adoption_markers:
+                        adoption_markers.append(train_marker_path)
+        retained_evidence_roots = (
+            (".index-generations", "retained index-generation evidence"),
+            (".index-rebuild-transactions", "retained index-rebuild transaction evidence"),
+            (".maintenance-state/source-continuity-pending", "source-continuity recovery evidence"),
         )
+        for evidence_relative, description in retained_evidence_roots:
+            evidence_metadata = adoption_lstat(evidence_relative, description)
+            if evidence_metadata is None:
+                continue
+            if stat.S_ISLNK(evidence_metadata.st_mode) or not stat.S_ISDIR(evidence_metadata.st_mode):
+                adoption_markers.append(archive_root / evidence_relative)
+                continue
+            has_retained_evidence = bool(directory_entries(evidence_relative, evidence_metadata, description))
+            if has_retained_evidence:
+                adoption_markers.append(archive_root / evidence_relative)
+        if existing_siblings or adoption_markers:
+            details = ", ".join(str(item) for item in (*existing_siblings, *adoption_markers))
+            raise MigrationError(
+                f"cannot initialize missing {tier.value} tier in an established archive; adoption marker(s): {details}"
+            )
+    except BaseException:
+        os.close(directory_descriptor)
+        raise
 
     # Build the canonical database in memory before choosing the publication
     # substrate. Both publication paths link one exact serialized image and
     # never replace a target that appears concurrently.
-    memory_database = sqlite3.connect(":memory:")
     try:
-        initialize_archive_tier(memory_database, tier)
-        initialized_image = memory_database.serialize()
-    finally:
-        memory_database.close()
-    if not initialized_image:
-        raise MigrationError(f"canonical {tier.value} tier initialization produced an empty database image")
+        memory_database = sqlite3.connect(":memory:")
+        try:
+            initialize_archive_tier(memory_database, tier)
+            initialized_image = memory_database.serialize()
+        finally:
+            memory_database.close()
+        if not initialized_image:
+            raise MigrationError(f"canonical {tier.value} tier initialization produced an empty database image")
 
-    anonymous_flag = getattr(os, "O_TMPFILE", 0)
-    if not anonymous_flag:
-        raise MigrationError(
-            f"cannot initialize missing {tier.value} tier: durable publication requires anonymous O_TMPFILE support"
-        )
+        anonymous_flag = getattr(os, "O_TMPFILE", 0)
+        if not anonymous_flag:
+            raise MigrationError(
+                f"cannot initialize missing {tier.value} tier: durable publication requires anonymous O_TMPFILE support"
+            )
+    except BaseException:
+        os.close(directory_descriptor)
+        raise
     publication_descriptor: int | None = None
     publication_identity: tuple[int, int] | None = None
     published_target = False
@@ -165,7 +210,9 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
         if not published_target or publication_identity is None:
             return
         try:
-            published_metadata = path.lstat()
+            published_metadata = adoption_lstat(target_name, "published durable tier")
+            if published_metadata is None:
+                return
         except FileNotFoundError:
             return
         except OSError as exc:
@@ -175,7 +222,11 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             primary.add_note(f"published durable tier changed before recovery; preserving foreign target: {path}")
             return
         try:
-            path.unlink()
+            os.unlink(target_name, dir_fd=directory_descriptor)
+            try:
+                os.fsync(directory_descriptor)
+            except OSError as exc:
+                primary.add_note(f"could not fsync durable tier cleanup directory: {archive_root}: {exc}")
         except FileNotFoundError:
             return
         except OSError as exc:
@@ -184,9 +235,10 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
     try:
         try:
             publication_descriptor = os.open(
-                path.parent,
+                ".",
                 os.O_RDWR | anonymous_flag | getattr(os, "O_CLOEXEC", 0),
                 0o600,
+                dir_fd=directory_descriptor,
             )
         except OSError as exc:
             raise MigrationError(
@@ -218,25 +270,32 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
             # Link the still-open anonymous inode directly. A named fallback
             # would let another same-UID process replace or modify the staged
             # bytes before publication, so unsupported filesystems fail closed.
-            os.link(f"/proc/self/fd/{descriptor}", path, follow_symlinks=True)
+            os.link(
+                f"/proc/self/fd/{descriptor}",
+                target_name,
+                dst_dir_fd=directory_descriptor,
+                follow_symlinks=True,
+            )
         except FileExistsError as exc:
             raise MigrationError(
                 f"{tier.value} tier appeared during initialization; refusing to replace it: {path}"
             ) from exc
         published_target = True
-        published_metadata = path.lstat()
+        published_metadata = adoption_lstat(target_name, "published durable tier")
+        if published_metadata is None:
+            raise MigrationError(f"published durable tier disappeared before identity validation: {path}")
         if (
             not stat.S_ISREG(published_metadata.st_mode)
             or (published_metadata.st_dev, published_metadata.st_ino) != publication_identity
         ):
             raise MigrationError(f"published durable tier identity does not match the staged database: {path}")
-        directory_descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        os.fsync(directory_descriptor)
     except MigrationError as exc:
         cleanup_published_target(exc)
+        if published_target:
+            raise MigrationError(
+                f"cannot publish {tier.value} tier at {path} via anonymous durable publication"
+            ) from exc
         raise
     except OSError as exc:
         cleanup_published_target(exc)
@@ -250,6 +309,10 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier) -> int:
                 raise MigrationError(
                     f"cannot close {tier.value} tier publication at {path} after anonymous durable publication"
                 ) from exc
+        try:
+            os.close(directory_descriptor)
+        except OSError as exc:
+            raise MigrationError(f"cannot close durable tier parent directory: {archive_root}") from exc
 
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 
