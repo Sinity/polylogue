@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from polylogue.archive.session_revision_membership import _relation
 from polylogue.core.enums import Provider
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.pipeline.ids import session_revision_projection
@@ -650,6 +651,117 @@ def test_claude_timestamped_idless_edit_keeps_axis_and_persists_content(tmp_path
     assert second.content_changed is True
     assert second.counts["skipped_sessions"] == 0
     assert stored_text == "after"
+
+
+def test_claude_attachment_owner_stays_stable_across_idless_body_edit(tmp_path: Path) -> None:
+    def payload(first_text: str) -> dict[str, Any]:
+        return {
+            "uuid": "claude-idless-attachment-edit",
+            "chat_messages": [
+                {
+                    "sender": "assistant",
+                    "text": first_text,
+                    "created_at": "2026-07-01T10:00:00Z",
+                    "position": 0,
+                    "files": [{"id": "owner-file-first", "file_name": "first.txt", "file_type": "text/plain"}],
+                },
+                {
+                    "sender": "assistant",
+                    "text": "second",
+                    "created_at": "2026-07-01T10:00:00Z",
+                    "position": 1,
+                    "files": [{"id": "owner-file-second", "file_name": "second.txt", "file_type": "text/plain"}],
+                },
+            ],
+        }
+
+    older_payload = payload("before")
+    edited_payload = payload("after")
+    older = _parse_real_route(older_payload)
+    edited = _parse_real_route(edited_payload)
+    older_projection = session_revision_projection(older)
+    edited_projection = session_revision_projection(edited)
+
+    assert older_projection.attachment_identities == edited_projection.attachment_identities
+    assert _relation(older_projection, edited_projection) == "equal"
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            older,
+            payload=json.dumps(older_payload).encode(),
+            source_path="/tmp/claude-idless-attachment-edit-before.json",
+            acquired_at_ms=1_775_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            edited,
+            payload=json.dumps(edited_payload).encode(),
+            source_path="/tmp/claude-idless-attachment-edit-after.json",
+            acquired_at_ms=1_775_000_000_001,
+        )
+
+    assert first.content_changed is True
+    assert second.content_changed is True
+    assert second.counts["skipped_sessions"] == 0
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachment_refs WHERE session_id = ?",
+                ("claude-ai-export:claude-idless-attachment-edit",),
+            ).fetchone()[0]
+            == 2
+        )
+    finally:
+        conn.close()
+
+
+def test_claude_duplicate_stable_owner_evidence_uses_full_coordinate(
+    workspace_env: dict[str, Path],
+) -> None:
+    payload = {
+        "uuid": "claude-duplicate-stable-owner-evidence",
+        "chat_messages": [
+            {
+                "sender": "assistant",
+                "text": "first body",
+                "created_at": "2026-07-01T10:00:00Z",
+                "position": 4,
+                "files": [{"id": "shared-owner-file", "file_name": "first.txt", "file_type": "text/plain"}],
+            },
+            {
+                "sender": "assistant",
+                "text": "second body",
+                "created_at": "2026-07-01T10:00:00Z",
+                "position": 4,
+                "files": [{"id": "shared-owner-file", "file_name": "second.txt", "file_type": "text/plain"}],
+            },
+        ],
+    }
+    parsed = _parse_real_route(payload)
+    assert [message.provider_message_id for message in parsed.messages] == ["", ""]
+    assert [(message.position, message.variant_index) for message in parsed.messages] == [(4, 0), (4, 1)]
+    assert len(parsed.attachments) == 1
+    assert parsed.attachments[0].owner_coordinate is not None
+    assert parsed.attachments[0].owner_coordinate.physical_key == (4, 0)
+
+    raw_bytes = json.dumps(payload).encode()
+    db_path = db_setup(workspace_env)
+    with open_connection(db_path) as conn:
+        hydrated = write_and_hydrate(
+            parse_payload_roundtrip("claude-ai", raw_bytes, unique_id="claude-duplicate-stable-owner-evidence"), conn
+        )
+        row = conn.execute(
+            """
+            SELECT m.position, m.variant_index
+            FROM attachment_refs AS r
+            JOIN messages AS m ON m.message_id = r.message_id
+            WHERE r.session_id = ?
+            """,
+            (str(hydrated.id),),
+        ).fetchone()
+
+    assert tuple(row) == (4, 0)
 
 
 def _duplicate_native_variant_payload(*, swapped: bool = False) -> dict[str, Any]:

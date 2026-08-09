@@ -297,6 +297,7 @@ class MessageOwnerResolution:
     by_physical_coordinate: Mapping[tuple[int, int], str]
     ambiguous_physical_coordinates: frozenset[tuple[int, int]]
     by_stable_key: Mapping[str, str]
+    ambiguous_stable_keys: frozenset[str]
     ambiguous_keys: frozenset[str]
     unique_provider_keys: Mapping[str, str]
     ambiguous_provider_ids: frozenset[str]
@@ -333,11 +334,14 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
     )
     content_counts = Counter(content_ids)
     coordinates = tuple(_message_owner_coordinate(message, index) for index, message in enumerate(messages))
+    stable_counts = Counter(coordinate.stable_key for coordinate in coordinates if coordinate.stable_key is not None)
 
     keys: list[str] = []
     for revision_id, content_id, coordinate in zip(revision_ids, content_ids, coordinates, strict=True):
         if revision_counts[revision_id] == 1:
             key = revision_id
+        elif coordinate.stable_key is not None and stable_counts[coordinate.stable_key] == 1:
+            key = coordinate.stable_key
         elif content_counts[content_id] == 1:
             key = content_id
         elif coordinate.stable_key is not None:
@@ -359,7 +363,11 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
     by_stable_key = {
         coordinate.stable_key: key
         for coordinate, key in zip(coordinates, keys, strict=True)
-        if coordinate.stable_key is not None and key not in ambiguous_keys
+        if (
+            coordinate.stable_key is not None
+            and stable_counts[coordinate.stable_key] == 1
+            and key not in ambiguous_keys
+        )
     }
     provider_keys: dict[str, str] = {}
     provider_counts = Counter(
@@ -376,6 +384,7 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
             coordinate for coordinate, count in physical_counts.items() if count > 1
         ),
         by_stable_key=by_stable_key,
+        ambiguous_stable_keys=frozenset(stable_key for stable_key, count in stable_counts.items() if count > 1),
         ambiguous_keys=ambiguous_keys,
         unique_provider_keys=provider_keys,
         ambiguous_provider_ids=frozenset(provider_id for provider_id, count in provider_counts.items() if count > 1),
@@ -399,11 +408,13 @@ def _attachment_owner_coordinate(attachment: ParsedAttachment) -> MessageOwnerCo
 def attachment_message_owner_key(attachment: ParsedAttachment, resolution: MessageOwnerResolution) -> str | None:
     """Resolve one attachment to the same private owner key used by writes."""
     coordinate = _attachment_owner_coordinate(attachment)
-    if coordinate.stable_key is not None:
-        if coordinate.stable_key in resolution.ambiguous_keys:
-            raise MessageOwnerAmbiguityError(f"attachment owner evidence is duplicated: {coordinate.stable_key!r}")
-        if coordinate.stable_key in resolution.by_stable_key:
-            return resolution.by_stable_key[coordinate.stable_key]
+    if (
+        coordinate.stable_key is not None
+        and coordinate.stable_key not in resolution.ambiguous_stable_keys
+        and coordinate.stable_key not in resolution.ambiguous_keys
+        and coordinate.stable_key in resolution.by_stable_key
+    ):
+        return resolution.by_stable_key[coordinate.stable_key]
     if coordinate.physical_key is not None:
         if coordinate.physical_key in resolution.ambiguous_physical_coordinates:
             raise MessageOwnerAmbiguityError(f"attachment owner coordinate is duplicated: {coordinate.physical_key!r}")
@@ -415,6 +426,8 @@ def attachment_message_owner_key(attachment: ParsedAttachment, resolution: Messa
                     f"{coordinate.physical_key!r}"
                 )
             return key
+    if coordinate.stable_key in resolution.ambiguous_stable_keys:
+        raise MessageOwnerAmbiguityError(f"attachment owner evidence is duplicated: {coordinate.stable_key!r}")
     if attachment.message_provider_id:
         provider_id = attachment.message_provider_id.strip()
         if provider_id in resolution.ambiguous_provider_ids:

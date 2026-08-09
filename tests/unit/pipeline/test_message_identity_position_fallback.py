@@ -19,7 +19,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session_revision_membership import MembershipRevision, _relation, classify_membership_revisions
 from polylogue.core.enums import Provider
-from polylogue.core.message_owner import MessageOwnerAmbiguityError
+from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 
@@ -141,6 +141,46 @@ def test_duplicate_physical_owner_coordinate_fails_closed_before_hashing_attachm
         session_revision_projection(_session(messages, [attachment]))
 
 
+def test_unique_stable_owner_evidence_precedes_mutable_content() -> None:
+    def session(first_text: str) -> ParsedSession:
+        messages = [
+            _id_less("assistant", first_text, "2024-01-01T00:01:00Z").model_copy(
+                update={
+                    "position": 0,
+                    "owner_coordinate": MessageOwnerCoordinate("owner-first", 0, 0),
+                }
+            ),
+            _id_less("assistant", "second", "2024-01-01T00:01:00Z").model_copy(
+                update={
+                    "position": 1,
+                    "owner_coordinate": MessageOwnerCoordinate("owner-second", 1, 0),
+                }
+            ),
+        ]
+        return _session(
+            messages,
+            [
+                ParsedAttachment(
+                    provider_attachment_id="owner-first-attachment",
+                    message_provider_id="",
+                    message_position=0,
+                    message_variant_index=0,
+                    owner_coordinate=MessageOwnerCoordinate("owner-first", 0, 0),
+                    name="first.txt",
+                    mime_type="text/plain",
+                )
+            ],
+        )
+
+    older = session("before")
+    edited = session("after")
+    older_projection = session_revision_projection(older)
+    edited_projection = session_revision_projection(edited)
+
+    assert older_projection.attachment_identities == edited_projection.attachment_identities
+    assert _relation(older_projection, edited_projection) == "equal"
+
+
 def test_duplicate_native_id_at_duplicate_physical_coordinate_fails_closed() -> None:
     messages = [
         ParsedMessage(
@@ -212,3 +252,30 @@ def test_indistinguishable_duplicate_idless_attachment_owner_fails_closed() -> N
     )
     with pytest.raises(MessageOwnerAmbiguityError):
         session_revision_projection(_session(repeated, [attachment]))
+
+
+def test_duplicate_stable_owner_evidence_without_physical_coordinate_fails_closed() -> None:
+    messages = [
+        _id_less("assistant", "first", "2024-01-01T00:01:00Z").model_copy(
+            update={
+                "position": 4,
+                "owner_coordinate": MessageOwnerCoordinate("same-owner-evidence", 4, 0),
+            }
+        ),
+        _id_less("assistant", "second", "2024-01-01T00:01:00Z").model_copy(
+            update={
+                "position": 4,
+                "owner_coordinate": MessageOwnerCoordinate("same-owner-evidence", 4, 1),
+            }
+        ),
+    ]
+    attachment = ParsedAttachment(
+        provider_attachment_id="shared-owner-attachment",
+        message_provider_id="",
+        owner_coordinate=MessageOwnerCoordinate("same-owner-evidence"),
+        name="note.txt",
+        mime_type="text/plain",
+    )
+
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(_session(messages, [attachment]))
