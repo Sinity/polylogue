@@ -22,10 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from devtools import beads_acceptance_contracts
 from devtools.beads_acceptance_contracts import validate as validate_acceptance_contract
 
 _CONTRACT_MANIFEST = Path(__file__).parents[1] / "docs" / "plans" / "beads-acceptance-contracts-2026-08-07.txt"
-REQUIRED_CONTRACT_IDS = frozenset(_CONTRACT_MANIFEST.read_text(encoding="utf-8").split())
+REQUIRED_CONTRACT_IDS = frozenset(beads_acceptance_contracts.load_manifest(_CONTRACT_MANIFEST))
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,6 +417,10 @@ def build_report(
         "report_version": 1,
         "cycles": {"ok": cycles_ok, "output": cycles_output},
         "issues_scanned": len(issues),
+        "contract_manifest": {
+            "expected_count": beads_acceptance_contracts._EXPECTED_MANIFEST_COUNT,
+            "digest": beads_acceptance_contracts._EXPECTED_MANIFEST_DIGEST,
+        },
         "findings": [{"kind": f.kind, "id": f.bead_id, "detail": f.detail} for f in findings],
         "counts": dict(sorted(by_kind.items())),
         "missing_ac_census": missing_ac_census(issues, required_contract_ids=required_contract_ids),
@@ -472,6 +477,14 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
         else:
             print(f"bead-graph: failed to load live Beads state: {exc}", file=sys.stderr)
+        return 1
+    try:
+        beads_acceptance_contracts.load_manifest(_CONTRACT_MANIFEST)
+    except SystemExit as exc:
+        if args.json:
+            print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
+        else:
+            print(f"bead-graph: {exc}", file=sys.stderr)
         return 1
     report = build_report(
         issues,

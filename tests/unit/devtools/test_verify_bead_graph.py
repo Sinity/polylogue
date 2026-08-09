@@ -41,7 +41,7 @@ def _issue(
     acceptance_criteria: str = "some AC",
     dependencies: list[dict[str, str]] | None = None,
     priority: int = 2,
-    metadata: dict[str, object] | None = None,
+    metadata: dict[str, object] | str | None = None,
 ) -> dict[str, object]:
     return {
         "id": id,
@@ -206,11 +206,36 @@ def test_invalid_structured_contract_is_reported() -> None:
     assert any(f.kind == "invalid-acceptance-contract" and f.bead_id == "polylogue-a" for f in findings)
 
 
+@pytest.mark.parametrize(
+    ("metadata", "expected"),
+    [
+        (
+            json.dumps({"acceptance_contract_v1": {"schema_version": 1}}),
+            {"acceptance_contract_v1": {"schema_version": 1}},
+        ),
+        ("{malformed", {}),
+        (json.dumps(["not an object"]), {}),
+    ],
+)
+def test_metadata_parses_serialized_objects_and_rejects_non_objects(metadata: str, expected: dict[str, object]) -> None:
+    assert verify_bead_graph._metadata(_issue("polylogue-a", metadata=metadata)) == expected
+
+
 def test_required_contract_removal_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     findings = verify_bead_graph.collect_findings(
         [_issue("polylogue-a")], required_contract_ids=frozenset({"polylogue-a"})
     )
     assert [f.kind for f in findings] == ["missing-required-acceptance-contract"]
+
+
+def test_absent_required_contract_bead_is_reported() -> None:
+    findings = verify_bead_graph.collect_findings([], required_contract_ids=frozenset({"polylogue-missing"}))
+
+    assert findings == [
+        verify_bead_graph.Finding(
+            "missing-required-acceptance-contract", "polylogue-missing", "manifest Bead is absent"
+        )
+    ]
 
 
 def test_parent_child_validation_allows_zero_or_one_canonical_parent() -> None:

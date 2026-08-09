@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +24,24 @@ _ALLOWED_TYPES = {
 _ALLOWED_RISKS = {"ordinary", "read-only", "durable-mutation", "semantic-integrity", "resource-concurrency"}
 _ALLOWED_CONFIDENCE = {"high", "medium", "planner-review"}
 _ALLOWED_CLOSURE_DISPOSITIONS = {"whole-or-explicit-partial"}
+_ALLOWED_ROUTE_MODES = {"named"}
+_ALLOWED_ROUTE_DISPATCH = {"production", "read-only", "decision", "documentation"}
+_ALLOWED_VERIFICATION_MANAGERS = {"devtools"}
+_ALLOWED_VERIFICATION_FOCUSED = {"devtools test"}
+_ALLOWED_VERIFICATION_DEFAULT = {"devtools verify"}
+_ALLOWED_RECEIPT_KINDS = {"live-operation"}
+_ALLOWED_RECEIPT_REQUIREMENTS = {"required"}
+_REQUIRED_RECEIPT_BINDINGS = frozenset(
+    {"archive_identity", "operation", "target", "before_state", "after_state", "result_status"}
+)
 _PLACEHOLDER = re.compile(
-    r"(?:<[^>]+>|\.{3}|\b(?:TBD|TODO|FIXME|as appropriate|where applicable|figure out|choose an approach|add suitable tests)\b)",
+    r"(?:<[^>]+>|\.{3}|\b(?:TBD|TODO|FIXME|as appropriate|figure out|choose an approach|add suitable tests)\b)",
     re.I,
+)
+_ROUTE_PLACEHOLDER = re.compile(r"\b(?:where applicable|as appropriate)\b", re.I)
+_EVIDENCE_PREFIXES = (
+    "The regression or audit preserves the motivating observation",
+    "Measured evidence remains reconciled with this recorded population",
 )
 _SOURCE_FIELDS = ("id", "title", "description", "design", "notes", "priority", "issue_type")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -37,11 +51,15 @@ _EXPECTED_MANIFEST_COUNT = 218
 _EXPECTED_MANIFEST_DIGEST = "703df11c81dae8af6d7106bc4737502ca8baddc9013916bbb68922696d8206b5"
 
 
-def source_digest(issue: dict[str, Any]) -> str:
-    """Return the digest used to bind a contract to its source Bead snapshot."""
-    payload = {key: issue.get(key) for key in _SOURCE_FIELDS}
+def _dependency_projection(issue: Mapping[str, Any]) -> list[dict[str, str | None]]:
+    """Return a stable, scope-bearing projection of Bead dependencies."""
+    raw_dependencies = issue.get("dependencies")
+    if raw_dependencies is None:
+        return []
+    if not isinstance(raw_dependencies, list):
+        return [{"invalid_type": type(raw_dependencies).__name__}]
     dependencies: list[dict[str, str | None]] = []
-    for dependency in issue.get("dependencies") or []:
+    for dependency in raw_dependencies:
         if isinstance(dependency, dict):
             dependencies.append(
                 {
@@ -51,10 +69,27 @@ def source_digest(issue: dict[str, Any]) -> str:
             )
         elif isinstance(dependency, str):
             dependencies.append({"depends_on_id": dependency, "type": None})
-    payload["dependencies"] = sorted(
+        else:
+            dependencies.append({"invalid_type": type(dependency).__name__})
+    return sorted(
         dependencies,
-        key=lambda dependency: (dependency["depends_on_id"] or "", dependency["type"] or ""),
+        key=lambda dependency: (
+            dependency.get("depends_on_id") or "",
+            dependency.get("type") or "",
+            dependency.get("invalid_type") or "",
+        ),
     )
+
+
+def dependency_digest(issue: Mapping[str, Any]) -> str:
+    """Return the digest for the canonical dependency projection."""
+    return hashlib.sha256(json_dumps(_dependency_projection(issue), sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def source_digest(issue: dict[str, Any]) -> str:
+    """Return the digest bound to scope fields and the stable dependency projection."""
+    payload = {key: issue.get(key) for key in _SOURCE_FIELDS}
+    payload["dependencies"] = _dependency_projection(issue)
     return hashlib.sha256(json_dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -75,17 +110,128 @@ def _require_string(errors: list[str], value: object, key: str) -> None:
         errors.append(f"{key} must be a non-empty string")
 
 
-def _require_string_list(errors: list[str], contract: dict[str, Any], key: str, *, optional: bool = False) -> None:
+def _require_string_list(errors: list[str], contract: dict[str, Any], key: str, *, optional: bool = False) -> bool:
     value = contract.get(key)
-    if value is None and optional:
-        return
     if value == [] and optional:
-        return
+        return True
     if not isinstance(value, list) or not value:
-        errors.append(f"{key} must be a non-empty list of strings")
-        return
+        if optional:
+            errors.append(f"{key} must be a list of strings; use [] when empty")
+        else:
+            errors.append(f"{key} must be a non-empty list of strings")
+        return False
     if any(not isinstance(item, str) or not item.strip() for item in value):
         errors.append(f"{key} must contain only non-empty strings")
+        return False
+    return True
+
+
+def _require_mapping(errors: list[str], value: object, key: str) -> Mapping[str, Any] | None:
+    if not isinstance(value, Mapping):
+        errors.append(f"{key} must be an object")
+        return None
+    return value
+
+
+def _validate_route_spec(errors: list[str], contract: dict[str, Any]) -> bool:
+    route_spec = _require_mapping(errors, contract.get("route_spec"), "route_spec")
+    if route_spec is None:
+        return False
+    valid = True
+    if route_spec.get("mode") not in _ALLOWED_ROUTE_MODES:
+        errors.append("route_spec.mode must be named")
+        valid = False
+    if route_spec.get("dispatch") not in _ALLOWED_ROUTE_DISPATCH:
+        errors.append("route_spec.dispatch is invalid")
+        valid = False
+    return valid
+
+
+def _validate_verification_route(errors: list[str], contract: dict[str, Any]) -> bool:
+    route = _require_mapping(errors, contract.get("verification_route"), "verification_route")
+    if route is None:
+        return False
+    valid = True
+    if route.get("manager") not in _ALLOWED_VERIFICATION_MANAGERS:
+        errors.append("verification_route.manager must be devtools")
+        valid = False
+    if route.get("focused") not in _ALLOWED_VERIFICATION_FOCUSED:
+        errors.append("verification_route.focused must be devtools test")
+        valid = False
+    if route.get("default") not in _ALLOWED_VERIFICATION_DEFAULT:
+        errors.append("verification_route.default must be devtools verify")
+        valid = False
+    return valid
+
+
+def _validate_receipt(errors: list[str], contract: dict[str, Any]) -> bool:
+    receipt = _require_mapping(errors, contract.get("receipt"), "receipt")
+    if receipt is None:
+        return False
+    valid = True
+    if receipt.get("kind") not in _ALLOWED_RECEIPT_KINDS:
+        errors.append("receipt.kind must be live-operation")
+        valid = False
+    if receipt.get("requirement") not in _ALLOWED_RECEIPT_REQUIREMENTS:
+        errors.append("receipt.requirement must be required")
+        valid = False
+    bindings = receipt.get("bindings")
+    if not isinstance(bindings, list) or any(not isinstance(item, str) for item in bindings):
+        errors.append("receipt.bindings must be a list of strings")
+        return False
+    if set(bindings) != _REQUIRED_RECEIPT_BINDINGS or len(bindings) != len(_REQUIRED_RECEIPT_BINDINGS):
+        errors.append("receipt.bindings must include each required live-operation dimension exactly once")
+        valid = False
+    return valid
+
+
+def _evidence_truncation_errors(contract: dict[str, Any]) -> list[str]:
+    evidence = contract.get("evidence")
+    if not isinstance(evidence, list):
+        return []
+    errors: list[str] = []
+    for index, value in enumerate(evidence):
+        if not isinstance(value, str):
+            continue
+        for prefix in _EVIDENCE_PREFIXES:
+            marker = prefix + ": "
+            if not value.startswith(marker):
+                continue
+            source_span = value[len(marker) :]
+            # The generator's fixed evidence label is a structural boundary.
+            # A one- or two-letter lowercase continuation immediately after it
+            # is a mid-token source split, not a semantic evidence sentence.
+            if re.match(r"^[a-z]{1,2}\s", source_span):
+                errors.append(f"evidence[{index}] contains a truncated source span")
+            if re.search(r"\b[A-Za-z]{2,}-[A-Za-z]{2,}$", source_span):
+                errors.append(f"evidence[{index}] ends with a truncated source token")
+            break
+    spans = contract.get("evidence_spans")
+    if spans is not None:
+        if not isinstance(spans, list) or any(not isinstance(span, Mapping) for span in spans):
+            errors.append("evidence_spans must be a list of objects")
+        else:
+            for index, span in enumerate(spans):
+                if span.get("complete") is not True:
+                    errors.append(f"evidence_spans[{index}] must be complete")
+    return errors
+
+
+def load_manifest(path: Path) -> tuple[str, ...]:
+    """Load and ratchet the committed required-contract inventory."""
+    if not path.is_file():
+        raise SystemExit(f"{path}: acceptance-contract manifest is missing")
+    required_values = path.read_text(encoding="utf-8").split()
+    if (
+        len(required_values) != _EXPECTED_MANIFEST_COUNT
+        or len(set(required_values)) != _EXPECTED_MANIFEST_COUNT
+        or any(not _MANIFEST_ID.fullmatch(value) for value in required_values)
+    ):
+        raise SystemExit(f"{path}: acceptance-contract manifest inventory is invalid")
+    manifest_digest = hashlib.sha256(("\n".join(sorted(required_values)) + "\n").encode("utf-8")).hexdigest()
+    if manifest_digest != _EXPECTED_MANIFEST_DIGEST:
+        raise SystemExit(f"{path}: acceptance-contract manifest inventory changed")
+    return tuple(sorted(required_values))
 
 
 def _strings(value: Any) -> Iterable[str]:
@@ -111,6 +257,8 @@ def render(contract: dict[str, Any]) -> str:
     add("Outcome", contract["outcome"])
     if contract.get("confidence") == "planner-review":
         add("Dispatch gate", "Planner review is required before implementation dispatch.")
+    route_spec = contract["route_spec"]
+    add("Route authority", f"{route_spec['mode']} {route_spec['dispatch']} route coverage is required.")
     for value in contract.get("retained_scope", []):
         add("Existing scope retained", value)
     for value in contract.get("routes", []):
@@ -123,14 +271,30 @@ def render(contract: dict[str, Any]) -> str:
         add("Anti-vacuity", value)
     for value in contract.get("safety", []):
         add("Safety", value)
+    if contract.get("contract_type") in {"implementation", "test_harness"}:
+        verification_route = contract["verification_route"]
+        add(
+            "Managed verification route",
+            f"focused={verification_route['focused']}; default={verification_route['default']}",
+        )
+    if contract.get("contract_type") == "live_operation":
+        receipt = contract["receipt"]
+        add(
+            "Receipt requirement",
+            f"{receipt['kind']} result={receipt['requirement']} bindings={','.join(receipt['bindings'])}",
+        )
     add("Closure disposition", contract["closure"]["disposition"])
+    add(
+        "Partial closure successor",
+        "required when the closure disposition is whole-or-explicit-partial.",
+    )
     add("Closure", contract["closure"]["rule"])
     return "\n".join(rows)
 
 
 def validate(issue: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    metadata = _decode_document(issue.get("metadata") or {})
+    metadata = _decode_document(issue.get("metadata"))
     if metadata is None:
         return ["metadata is not a JSON object"]
     contract = metadata.get("acceptance_contract_v1")
@@ -151,8 +315,11 @@ def validate(issue: dict[str, Any]) -> list[str]:
         _require_string_list(errors, contract, key)
     _require_string_list(errors, contract, "retained_scope", optional=True)
     _require_string_list(errors, contract, "safety", optional=True)
+    _validate_route_spec(errors, contract)
+    if contract.get("contract_type") in {"implementation", "test_harness"}:
+        _validate_verification_route(errors, contract)
     closure = contract.get("closure")
-    if not isinstance(closure, dict):
+    if not isinstance(closure, Mapping):
         errors.append("closure must be an object")
     else:
         _require_string(errors, closure.get("rule"), "closure.rule")
@@ -160,36 +327,36 @@ def validate(issue: dict[str, Any]) -> list[str]:
             errors.append("closure.disposition must be whole-or-explicit-partial")
         if not isinstance(closure.get("successor_required_for_partial"), bool):
             errors.append("closure.successor_required_for_partial must be boolean")
+        elif closure.get("disposition") == "whole-or-explicit-partial" and not closure.get(
+            "successor_required_for_partial"
+        ):
+            errors.append("whole-or-explicit-partial requires successor_required_for_partial=true")
     digest = contract.get("source_digest")
     if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
         errors.append("source_digest must be a lowercase SHA-256 digest")
     elif digest != source_digest(issue):
         errors.append("source_digest does not match the Bead source snapshot")
+    dependency_digest_value = contract.get("dependency_digest")
+    if not isinstance(dependency_digest_value, str) or not _SHA256.fullmatch(dependency_digest_value):
+        errors.append("dependency_digest must be a lowercase SHA-256 digest")
+    elif dependency_digest_value != dependency_digest(issue):
+        errors.append("dependency_digest does not match the Bead dependency projection")
+    if issue.get("dependencies") is not None and not isinstance(issue.get("dependencies"), list):
+        errors.append("dependencies must be a list")
     if contract.get("contract_type") == "live_operation" and not contract.get("safety"):
         errors.append("live_operation requires safety clauses")
-    verification = contract.get("verification")
-    if contract.get("contract_type") in {"implementation", "test_harness"} and not (
-        isinstance(verification, list) and any("`devtools verify`" in value for value in verification)
-    ):
-        errors.append(f"{contract['contract_type']} requires the affected-test `devtools verify` baseline")
-    if contract.get("contract_type") == "live_operation" and not (
-        isinstance(verification, list)
-        and any(
-            "receipt" in value.casefold()
-            and not re.search(r"\b(?:no|not|without|never)\b[^.\n]{0,40}\breceipt\b", value.casefold())
-            for value in verification
-        )
-    ):
-        errors.append("live_operation requires typed receipt verification")
+    if contract.get("contract_type") == "live_operation":
+        _validate_receipt(errors, contract)
     if contract.get("risk") == "durable-mutation" and not contract.get("safety"):
         errors.append("durable-mutation requires safety clauses")
+    for value in contract.get("routes", []) if isinstance(contract.get("routes"), list) else []:
+        if isinstance(value, str) and _ROUTE_PLACEHOLDER.search(value):
+            errors.append("routes contains a generic placeholder; use named route fields")
     for value in _strings(contract):
         if _PLACEHOLDER.search(value):
             errors.append(f"placeholder in contract: {value[:80]}")
-    if isinstance(contract.get("evidence"), list) and any(
-        isinstance(value, str) and value[:1].islower() for value in contract["evidence"]
-    ):
-        errors.append("evidence contains a lowercase fragment")
+    if contract.get("confidence") in {"high", "medium"}:
+        errors.extend(_evidence_truncation_errors(contract))
     if not errors:
         expected = render(contract)
         if issue.get("acceptance_criteria") != expected:
@@ -225,20 +392,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    if not args.manifest.is_file():
-        raise SystemExit(f"{args.manifest}: acceptance-contract manifest is missing")
-    required_values = args.manifest.read_text(encoding="utf-8").split()
-    if (
-        len(required_values) != _EXPECTED_MANIFEST_COUNT
-        or len(set(required_values)) != _EXPECTED_MANIFEST_COUNT
-        or any(not _MANIFEST_ID.fullmatch(value) for value in required_values)
-    ):
-        raise SystemExit(f"{args.manifest}: acceptance-contract manifest inventory is invalid")
-    manifest_digest = hashlib.sha256(("\n".join(sorted(required_values)) + "\n").encode("utf-8")).hexdigest()
-    if manifest_digest != _EXPECTED_MANIFEST_DIGEST:
-        raise SystemExit(f"{args.manifest}: acceptance-contract manifest inventory changed")
+    required_values = load_manifest(args.manifest)
     required = set(required_values)
-    failures = {}
+    failures: dict[str, list[str]] = {}
     seen = set()
     for issue in load(args.issues):
         bid = issue.get("id")
@@ -248,16 +404,27 @@ def main(argv: list[str] | None = None) -> int:
         errors = validate(issue)
         if errors:
             failures[bid] = errors
-    if required is not None:
-        for missing in sorted(required - seen):
-            failures[missing] = ["manifest id missing from issues or contract"]
+    for missing in sorted(required - seen):
+        failures[missing] = ["manifest id missing from issues or contract"]
+    regeneration_required = [{"id": bead_id, "reasons": failures[bead_id]} for bead_id in sorted(failures)]
+    report = {
+        "ok": not failures,
+        "dispatch_blocked": bool(failures),
+        "manifest": {
+            "expected_count": _EXPECTED_MANIFEST_COUNT,
+            "digest": _EXPECTED_MANIFEST_DIGEST,
+        },
+        "validated": len(seen),
+        "failures": failures,
+        "regeneration_required": regeneration_required,
+    }
     if args.json:
-        print(json.dumps({"ok": not failures, "failures": failures}, indent=2, sort_keys=True))
+        print(json_dumps(report, indent=2, sort_keys=True))
     else:
         for bid, errors in sorted(failures.items()):
             for error in errors:
                 print(f"{bid}: {error}")
-        print(f"validated={len(seen)} failures={len(failures)}")
+        print(f"validated={len(seen)} failures={len(failures)} regeneration_required={len(regeneration_required)}")
     return 1 if failures else 0
 
 
