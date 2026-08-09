@@ -39,6 +39,8 @@ from polylogue.schemas.synthetic.wire_formats import (
     WireSupportEntry,
     WireSupportReceipt,
     build_wire_support_receipt,
+    validate_wire_support_entry_keys,
+    wire_support_entry_key,
 )
 
 INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION = 3
@@ -242,6 +244,7 @@ class InferredCorpusManifest:
                 "inferred corpus manifest payload integrity mismatch: "
                 f"expected={expected_payload_sha256!r}, actual={payload.get('payload_sha256')!r}"
             )
+        _wire_support_entry_index(manifest)
         return manifest
 
 
@@ -590,14 +593,13 @@ def _wire_support_entry_index(
     raw_entries = receipt.get("entries")
     if not isinstance(raw_entries, list):
         raise ValueError("wire_support_receipt entries must be a list")
-    index: dict[tuple[str, str | None, str | None], WireSupportEntry] = {}
+    entries: list[WireSupportEntry] = []
     for raw_entry in raw_entries:
         if not isinstance(raw_entry, Mapping):
             raise ValueError("wire_support_receipt entries must be objects")
-        entry = _wire_support_entry_from_payload(raw_entry)
-        key = (entry.provider, entry.package_version, entry.element_kind)
-        index.setdefault(key, entry)
-    return index
+        entries.append(_wire_support_entry_from_payload(raw_entry))
+    validate_wire_support_entry_keys(entries, boundary="persisted wire support receipt")
+    return {wire_support_entry_key(entry): entry for entry in entries}
 
 
 def _wire_support_entry_from_payload(payload: Mapping[str, object]) -> WireSupportEntry:
@@ -871,11 +873,10 @@ def compile_inferred_corpus_manifest(
     """Compile every persisted package/version/element into a typed manifest."""
 
     formats = PROVIDER_WIRE_FORMATS if wire_formats is None else wire_formats
-    support_entries = (
-        {(entry.provider, entry.package_version, entry.element_kind): entry for entry in wire_support_receipt.entries}
-        if wire_support_receipt is not None
-        else {}
-    )
+    support_entries: dict[tuple[str, str | None, str | None], WireSupportEntry] = {}
+    if wire_support_receipt is not None:
+        validate_wire_support_entry_keys(wire_support_receipt.entries, boundary="manifest wire support receipt")
+        support_entries = {wire_support_entry_key(entry): entry for entry in wire_support_receipt.entries}
     if campaign_mode and package_receipt is None:
         raise ValueError("campaign mode requires a persisted schema-inference handoff")
     entries = tuple(

@@ -3710,20 +3710,24 @@ class LiveBatchProcessor:
     def _archive_has_native_session(self, origin: str, native_id: str) -> bool:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         index_db = ArchiveLocation.resolve(archive_root).active_index_path
-        if not index_db.exists():
+        source_db = archive_root / "source.db"
+        if not index_db.exists() or not source_db.exists():
             return False
         try:
             conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
             try:
+                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
                 row = conn.execute(
                     """
                     SELECT 1
-                    FROM sessions
-                    WHERE origin = ? AND native_id = ?
+                    FROM sessions AS s
+                    JOIN source_tier.raw_sessions AS r ON r.raw_id = s.raw_id
+                    WHERE s.origin = ? AND r.origin = ? AND s.native_id = ?
                     LIMIT 1
                     """,
-                    (origin, native_id),
+                    (origin, origin, native_id),
                 ).fetchone()
+                conn.execute("DETACH DATABASE source_tier")
             finally:
                 conn.close()
         except sqlite3.Error:
@@ -3745,11 +3749,11 @@ class LiveBatchProcessor:
                     SELECT s.native_id
                     FROM sessions AS s
                     JOIN source_tier.raw_sessions AS r ON r.raw_id = s.raw_id
-                    WHERE s.origin = ? AND r.source_path = ?
+                    WHERE s.origin = ? AND r.origin = ? AND r.source_path = ?
                     ORDER BY s.sort_key_ms DESC, s.created_at_ms DESC, s.session_id DESC
                     LIMIT 1
                     """,
-                    (expected_origin, str(path)),
+                    (expected_origin, expected_origin, str(path)),
                 ).fetchone()
                 conn.execute("DETACH DATABASE source_tier")
             finally:

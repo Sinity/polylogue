@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 WireEncoding: TypeAlias = Literal["json", "jsonl"]
 WireCapabilityStatus: TypeAlias = Literal["supported", "unsupported"]
+WireSupportEntryKey: TypeAlias = tuple[str, str | None, str | None]
 
 
 class UnsupportedSyntheticWireRouteError(ValueError):
@@ -142,6 +143,23 @@ class WireSupportEntry:
         )
 
 
+def wire_support_entry_key(entry: WireSupportEntry) -> WireSupportEntryKey:
+    return (entry.provider, entry.package_version, entry.element_kind)
+
+
+def validate_wire_support_entry_keys(
+    entries: Sequence[WireSupportEntry],
+    *,
+    boundary: str,
+) -> None:
+    seen: set[WireSupportEntryKey] = set()
+    for entry in entries:
+        key = wire_support_entry_key(entry)
+        if key in seen:
+            raise ValueError(f"{boundary} contains duplicate wire support entry key: {key!r}")
+        seen.add(key)
+
+
 @dataclass(frozen=True)
 class WireSupportReceipt:
     """Registry-derived, deterministic support and coverage receipt."""
@@ -150,6 +168,9 @@ class WireSupportReceipt:
     entries: tuple[WireSupportEntry, ...]
     missing_routes: tuple[str, ...]
     witness_seed: int = 20260805
+
+    def __post_init__(self) -> None:
+        validate_wire_support_entry_keys(self.entries, boundary="wire support receipt")
 
     @property
     def supported_count(self) -> int:
@@ -1039,10 +1060,7 @@ def _parser_artifact_evidence(
                     node_texts = tuple(_normalise_evidence_text(text) for text in _payload_string_values(node))
                     identity_bound = not message_identity or message_identity in node_texts
                     content_bound = normalized in node_texts
-                    structured_content_bound = (
-                        bool(message.blocks) and bool(message_identity) and identity_bound and bool(node_texts)
-                    )
-                    if not identity_bound or not (content_bound or structured_content_bound):
+                    if not identity_bound or not content_bound:
                         continue
                     node_bytes = json.dumps(node, sort_keys=True, separators=(",", ":")).encode("utf-8")
                     digest = hashlib.sha256(node_bytes).hexdigest()
@@ -1096,6 +1114,15 @@ def build_wire_support_receipt(
             (package, element)
             for package in (catalog.packages if catalog is not None else ())
             for element in package.elements
+        )
+        selections = tuple(
+            sorted(
+                selections,
+                key=lambda item: (
+                    item[0].version if item[0] is not None else "",
+                    item[1].element_kind if item[1] is not None else "",
+                ),
+            )
         )
         if not selections:
             package = registry.get_package(provider, version="default")  # type: ignore[attr-defined]
@@ -1346,9 +1373,12 @@ __all__ = [
     "WireParserWitness",
     "WireRoute",
     "WireSupportEntry",
+    "WireSupportEntryKey",
     "WireSupportReceipt",
     "UnsupportedSyntheticWireRouteError",
     "build_wire_support_receipt",
+    "validate_wire_support_entry_keys",
+    "wire_support_entry_key",
     "construct_coverage",
     "generate_coverage_witnesses",
 ]
