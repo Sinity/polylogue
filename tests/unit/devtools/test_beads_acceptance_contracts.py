@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,7 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         "safety": ["Dry-run and backup are required."]
         if risk == "durable-mutation" or kind == "live_operation"
         else [],
-        "route_spec": {"mode": "named", "dispatch": route_dispatch},
+        "route_spec": {"mode": "named", "identifier": "production-route", "dispatch": route_dispatch},
         "verification_route": {"manager": "devtools", "focused": "devtools test", "default": "devtools verify"},
         "closure": {
             "rule": "Close only with final-head evidence.",
@@ -59,6 +60,13 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
                 "result_status",
             ],
         }
+    contract["evidence_spans"] = [
+        {
+            "snapshot_digest": "b" * 64,
+            "range": {"start": 0, "end": len(contract["evidence"][0])},
+            "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
+        }
+    ]
     issue = {
         "id": "polylogue-test",
         "title": "Test contract",
@@ -228,6 +236,7 @@ def test_placeholder_is_rejected() -> None:
 
 
 def test_lowercase_evidence_fragment_is_rejected() -> None:
+    """Production dependency: acceptance policy -> validate; catches prose-only truncation authority."""
     issue = _issue()
     contract = issue["metadata"]["acceptance_contract_v1"]
     contract["evidence"] = [
@@ -235,15 +244,36 @@ def test_lowercase_evidence_fragment_is_rejected() -> None:
     ]
     contract["source_digest"] = mod.source_digest(issue)
 
-    assert "evidence[0] contains a truncated source span" in mod.validate(issue)
+    assert "evidence_spans[0].text_digest does not match the evidence item" in mod.validate(issue)
 
 
 def test_structured_incomplete_evidence_span_is_rejected() -> None:
+    """Production dependency: acceptance policy -> validate; catches trusting a false complete flag."""
     issue = _issue()
     contract = issue["metadata"]["acceptance_contract_v1"]
     contract["evidence_spans"] = [{"complete": False}]
 
-    assert "evidence_spans[0] must be complete" in mod.validate(issue)
+    assert "evidence_spans[0] fields must be exactly snapshot_digest, range, and text_digest" in mod.validate(issue)
+
+
+def test_route_dispatch_must_match_contract_type() -> None:
+    """Production dependency: acceptance policy -> validate; catches live work routed as a decision."""
+    issue = _issue(kind="live_operation")
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["route_spec"]["dispatch"] = "decision"
+    issue["acceptance_criteria"] = mod.render(contract)
+
+    assert "route_spec.dispatch 'decision' is incompatible with contract_type 'live_operation'" in mod.validate(issue)
+
+
+def test_route_authority_requires_a_structured_identifier() -> None:
+    """Production dependency: acceptance policy -> validate; catches prose standing in for route identity."""
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    contract["route_spec"].pop("identifier")
+    issue["acceptance_criteria"] = "untrusted prose"
+
+    assert "route_spec.identifier must be a non-empty named identifier" in mod.validate(issue)
 
 
 def test_render_drift_is_rejected() -> None:

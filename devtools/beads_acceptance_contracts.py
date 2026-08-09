@@ -26,6 +26,19 @@ _ALLOWED_CONFIDENCE = {"high", "medium", "planner-review"}
 _ALLOWED_CLOSURE_DISPOSITIONS = {"whole-or-explicit-partial"}
 _ALLOWED_ROUTE_MODES = {"named"}
 _ALLOWED_ROUTE_DISPATCH = {"production", "read-only", "decision", "documentation"}
+_ROUTE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$")
+_ROUTE_DISPATCH_BY_TYPE = {
+    "implementation": frozenset({"production"}),
+    "live_operation": frozenset({"production"}),
+    "audit": frozenset({"read-only"}),
+    "decision": frozenset({"decision"}),
+    "epic": frozenset({"production"}),
+    "test_harness": frozenset({"production"}),
+    "process": frozenset({"production"}),
+    "documentation": frozenset({"documentation"}),
+}
+_EVIDENCE_SPAN_FIELDS = frozenset({"snapshot_digest", "range", "text_digest"})
+_EVIDENCE_RANGE_FIELDS = frozenset({"start", "end"})
 _ALLOWED_VERIFICATION_MANAGERS = {"devtools"}
 _ALLOWED_VERIFICATION_FOCUSED = {"devtools test"}
 _ALLOWED_VERIFICATION_DEFAULT = {"devtools verify"}
@@ -39,10 +52,6 @@ _PLACEHOLDER = re.compile(
     re.I,
 )
 _ROUTE_PLACEHOLDER = re.compile(r"\b(?:where applicable|as appropriate)\b", re.I)
-_EVIDENCE_PREFIXES = (
-    "The regression or audit preserves the motivating observation",
-    "Measured evidence remains reconciled with this recorded population",
-)
 _SOURCE_FIELDS = ("id", "title", "description", "design", "notes", "priority", "issue_type")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MANIFEST_ID = re.compile(r"^polylogue-[a-z0-9]+(?:\.[a-z0-9]+)*$")
@@ -141,8 +150,21 @@ def _validate_route_spec(errors: list[str], contract: dict[str, Any]) -> bool:
     if route_spec.get("mode") not in _ALLOWED_ROUTE_MODES:
         errors.append("route_spec.mode must be named")
         valid = False
+    identifier = route_spec.get("identifier")
+    if not isinstance(identifier, str) or not identifier.strip():
+        errors.append("route_spec.identifier must be a non-empty named identifier")
+        valid = False
+    elif not _ROUTE_IDENTIFIER.fullmatch(identifier):
+        errors.append("route_spec.identifier must be a structured named identifier")
+        valid = False
     if route_spec.get("dispatch") not in _ALLOWED_ROUTE_DISPATCH:
         errors.append("route_spec.dispatch is invalid")
+        valid = False
+    elif route_spec.get("dispatch") not in _ROUTE_DISPATCH_BY_TYPE.get(contract.get("contract_type"), frozenset()):
+        errors.append(
+            f"route_spec.dispatch {route_spec['dispatch']!r} is incompatible with "
+            f"contract_type {contract.get('contract_type')!r}"
+        )
         valid = False
     return valid
 
@@ -185,36 +207,47 @@ def _validate_receipt(errors: list[str], contract: dict[str, Any]) -> bool:
     return valid
 
 
-def _evidence_truncation_errors(contract: dict[str, Any]) -> list[str]:
+def _validate_evidence_spans(errors: list[str], contract: dict[str, Any]) -> None:
+    """Validate evidence as snapshot-bound typed ranges, never prose heuristics."""
     evidence = contract.get("evidence")
-    if not isinstance(evidence, list):
-        return []
-    errors: list[str] = []
-    for index, value in enumerate(evidence):
-        if not isinstance(value, str):
-            continue
-        for prefix in _EVIDENCE_PREFIXES:
-            marker = prefix + ": "
-            if not value.startswith(marker):
-                continue
-            source_span = value[len(marker) :]
-            # The generator's fixed evidence label is a structural boundary.
-            # A one- or two-letter lowercase continuation immediately after it
-            # is a mid-token source split, not a semantic evidence sentence.
-            if re.match(r"^[a-z]{1,2}\s", source_span):
-                errors.append(f"evidence[{index}] contains a truncated source span")
-            if re.search(r"\b[A-Za-z]{2,}-[A-Za-z]{2,}$", source_span):
-                errors.append(f"evidence[{index}] ends with a truncated source token")
-            break
     spans = contract.get("evidence_spans")
-    if spans is not None:
-        if not isinstance(spans, list) or any(not isinstance(span, Mapping) for span in spans):
-            errors.append("evidence_spans must be a list of objects")
+    if not isinstance(evidence, list) or not isinstance(spans, list):
+        errors.append("evidence_spans must provide one typed span for every evidence item")
+        return
+    if len(spans) != len(evidence):
+        errors.append("evidence_spans must contain exactly one span for every evidence item")
+        return
+    for index, (value, span) in enumerate(zip(evidence, spans, strict=True)):
+        if not isinstance(span, Mapping):
+            errors.append(f"evidence_spans[{index}] must be an object")
+            continue
+        if set(span) != _EVIDENCE_SPAN_FIELDS:
+            errors.append(f"evidence_spans[{index}] fields must be exactly snapshot_digest, range, and text_digest")
+        snapshot_digest = span.get("snapshot_digest")
+        if not isinstance(snapshot_digest, str) or not _SHA256.fullmatch(snapshot_digest):
+            errors.append(f"evidence_spans[{index}].snapshot_digest must be a lowercase SHA-256 digest")
+        evidence_range = span.get("range")
+        if not isinstance(evidence_range, Mapping) or set(evidence_range) != _EVIDENCE_RANGE_FIELDS:
+            errors.append(f"evidence_spans[{index}].range must contain exactly start and end")
         else:
-            for index, span in enumerate(spans):
-                if span.get("complete") is not True:
-                    errors.append(f"evidence_spans[{index}] must be complete")
-    return errors
+            start = evidence_range.get("start")
+            end = evidence_range.get("end")
+            if (
+                not isinstance(start, int)
+                or isinstance(start, bool)
+                or not isinstance(end, int)
+                or isinstance(end, bool)
+                or start < 0
+                or end <= start
+            ):
+                errors.append(f"evidence_spans[{index}].range must be a non-empty half-open integer range")
+        text_digest = span.get("text_digest")
+        if not isinstance(text_digest, str) or not _SHA256.fullmatch(text_digest):
+            errors.append(f"evidence_spans[{index}].text_digest must be a lowercase SHA-256 digest")
+        elif isinstance(value, str):
+            expected_text_digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+            if text_digest != expected_text_digest:
+                errors.append(f"evidence_spans[{index}].text_digest does not match the evidence item")
 
 
 def load_manifest(path: Path) -> tuple[str, ...]:
@@ -258,7 +291,10 @@ def render(contract: dict[str, Any]) -> str:
     if contract.get("confidence") == "planner-review":
         add("Dispatch gate", "Planner review is required before implementation dispatch.")
     route_spec = contract["route_spec"]
-    add("Route authority", f"{route_spec['mode']} {route_spec['dispatch']} route coverage is required.")
+    add(
+        "Route authority",
+        f"{route_spec['mode']} {route_spec['identifier']} {route_spec['dispatch']} route coverage is required.",
+    )
     for value in contract.get("retained_scope", []):
         add("Existing scope retained", value)
     for value in contract.get("routes", []):
@@ -355,8 +391,7 @@ def validate(issue: dict[str, Any]) -> list[str]:
     for value in _strings(contract):
         if _PLACEHOLDER.search(value):
             errors.append(f"placeholder in contract: {value[:80]}")
-    if contract.get("confidence") in {"high", "medium"}:
-        errors.extend(_evidence_truncation_errors(contract))
+    _validate_evidence_spans(errors, contract)
     if not errors:
         expected = render(contract)
         if issue.get("acceptance_criteria") != expected:
