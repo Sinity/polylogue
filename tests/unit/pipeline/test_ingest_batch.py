@@ -3903,6 +3903,78 @@ async def test_persist_batch_success_supersedes_deferred_cas_evidence_in_source_
 
 
 @pytest.mark.asyncio
+async def test_persist_batch_untyped_failure_retires_stale_terminal_evidence(tmp_path: Path) -> None:
+    """A later untyped parser failure cannot inherit an older terminal cause."""
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="untyped-successor.jsonl",
+            source_index=0,
+            payload=b"untyped-successor",
+            acquired_at_ms=1,
+        )
+
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = SimpleNamespace(repository=repository)
+    terminal_outcome = _RawIngestOutcome(
+        raw_id=raw_id,
+        payload_provider="codex",
+        validation_status="passed",
+        validation_error=None,
+        parse_error="unsupported shape",
+        error="unsupported shape",
+        had_sessions=False,
+        outcome_code="unsupported_shape",
+        evidence_ref="shape",
+        remediation="support it",
+        diagnostic="unsupported shape",
+    )
+    untyped_outcome = _RawIngestOutcome(
+        raw_id=raw_id,
+        payload_provider="codex",
+        validation_status="passed",
+        validation_error=None,
+        parse_error="parser defect",
+        error="parser defect",
+        had_sessions=False,
+        outcome_code="parser_defect",
+        diagnostic="parser defect",
+    )
+    try:
+        await _persist_batch_raw_state_updates(
+            service,
+            repository.backend,
+            outcomes={raw_id: terminal_outcome},
+            succeeded_raw_ids=set(),
+            skipped_raw_ids=set(),
+            failed_raw_ids={raw_id: terminal_outcome.error or "failure"},
+            validation_mode="strict",
+        )
+        await _persist_batch_raw_state_updates(
+            service,
+            repository.backend,
+            outcomes={raw_id: untyped_outcome},
+            succeeded_raw_ids=set(),
+            skipped_raw_ids=set(),
+            failed_raw_ids={raw_id: untyped_outcome.error or "failure"},
+            validation_mode="strict",
+        )
+    finally:
+        await repository.close()
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+        )
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 0
+    assert lifecycle.unexplained == 1
+    assert lifecycle.blocking is True
+
+
+@pytest.mark.asyncio
 async def test_process_ingest_batch_public_route_retires_deferred_cas_resolution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

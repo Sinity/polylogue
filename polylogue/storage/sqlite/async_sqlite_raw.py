@@ -146,6 +146,15 @@ class SQLiteRawMixin:
                 transaction_depth=self._transaction_depth,
             )
 
+    async def retire_raw_failure_evidence(self, raw_id: str) -> None:
+        """Retire stale failure evidence for an untyped current attempt."""
+        async with self._get_connection() as conn:
+            await artifacts_q.retire_raw_failure_evidence(
+                conn,
+                raw_id,
+                transaction_depth=self._transaction_depth,
+            )
+
     async def get_raw_session(self, raw_id: str) -> RawSessionRecord | None:
         """Retrieve a raw session by ID."""
         async with self._get_connection() as conn:

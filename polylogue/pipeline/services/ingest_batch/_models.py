@@ -42,6 +42,8 @@ class _SourceTierBackendLike(_BulkConnectionBackendLike, Protocol):
 
     async def supersede_deferred_cas_evidence(self, raw_id: str) -> None: ...
 
+    async def retire_raw_failure_evidence(self, raw_id: str) -> None: ...
+
     async def save_raw_failure_evidence(
         self,
         raw_id: str,

@@ -2398,17 +2398,20 @@ async def _persist_batch_raw_state_updates(
             )
             outcome = outcomes.get(rid)
             evidence_kind = _raw_failure_evidence_kind(outcome)
-            if source_backend is not None and outcome is not None and evidence_kind is not None:
-                await source_backend.save_raw_failure_evidence(
-                    rid,
-                    artifact_kind=evidence_kind.value,
-                    support_status=evidence_kind.support_status.value,
-                    outcome_code=outcome.outcome_code,
-                    retryable=outcome.retryable,
-                    evidence_ref=outcome.evidence_ref,
-                    remediation=outcome.remediation,
-                    diagnostic=outcome.diagnostic,
-                )
+            if source_backend is not None:
+                if outcome is not None and evidence_kind is not None:
+                    await source_backend.save_raw_failure_evidence(
+                        rid,
+                        artifact_kind=evidence_kind.value,
+                        support_status=evidence_kind.support_status.value,
+                        outcome_code=outcome.outcome_code,
+                        retryable=outcome.retryable,
+                        evidence_ref=outcome.evidence_ref,
+                        remediation=outcome.remediation,
+                        diagnostic=outcome.diagnostic,
+                    )
+                elif outcome is not None:
+                    await source_backend.retire_raw_failure_evidence(rid)
     return time.perf_counter() - raw_state_update_started
 
 

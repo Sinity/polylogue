@@ -3052,6 +3052,7 @@ def mark_raw_parse_failed(
                 )
         else:
             _supersede_deferred_cas_evidence(store, raw_id, provider=provider, manage_transaction=False)
+            _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
         apply_source_raw_state_update(
             conn,
             raw_id,
@@ -3191,6 +3192,61 @@ def _supersede_deferred_cas_evidence(
         kind=RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
         manage_transaction=manage_transaction,
     )
+
+
+def _retire_raw_failure_evidence(
+    store: RawRevisionGovernanceHost,
+    raw_id: str,
+    *,
+    manage_transaction: bool = True,
+) -> None:
+    """Retire stale failure evidence before an untyped current failure."""
+    conn = store._ensure_source_conn()
+    row = conn.execute(
+        "SELECT origin, source_path, source_index FROM raw_sessions WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    if row is None:
+        return
+    retired_kinds = {
+        kind.value
+        for kind in RawFailureEvidenceKind
+        if kind is not RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER
+    }
+    placeholders = ", ".join("?" for _ in retired_kinds)
+    with conn if manage_transaction else nullcontext():
+        conn.execute(
+            f"""
+            UPDATE raw_artifacts
+            SET artifact_kind = ?,
+                support_status = ?,
+                classification_reason = ?,
+                parse_as_session = 0,
+                schema_eligible = 0
+            WHERE raw_id = ?
+              AND origin IS ?
+              AND source_path IS ?
+              AND source_index IS ?
+              AND artifact_kind IN ({placeholders})
+            """,
+            (
+                RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+                RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.support_status.value,
+                raw_failure_classification_reason(
+                    diagnostic=None,
+                    evidence_ref=None,
+                    outcome_code="failure_attempt_replaced",
+                    remediation="inspect the current parser failure before retrying",
+                    retryable=False,
+                    trusted_validation_failure=False,
+                ),
+                raw_id,
+                row[0],
+                row[1],
+                row[2],
+                *sorted(retired_kinds),
+            ),
+        )
 
 
 def mark_raw_parse_succeeded(store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider) -> None:
