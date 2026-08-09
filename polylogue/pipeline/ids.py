@@ -338,10 +338,10 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
 
     keys: list[str] = []
     for revision_id, content_id, coordinate in zip(revision_ids, content_ids, coordinates, strict=True):
-        if revision_counts[revision_id] == 1:
-            key = revision_id
-        elif coordinate.stable_key is not None and stable_counts[coordinate.stable_key] == 1:
+        if coordinate.stable_key is not None and stable_counts[coordinate.stable_key] == 1:
             key = coordinate.stable_key
+        elif revision_counts[revision_id] == 1:
+            key = revision_id
         elif content_counts[content_id] == 1:
             key = content_id
         elif coordinate.stable_key is not None:

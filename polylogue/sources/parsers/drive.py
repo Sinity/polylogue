@@ -9,7 +9,6 @@ from polylogue.archive.message.artifacts import classify_block_message_type, cla
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import Provider, TitleSource
-from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.logging import get_logger
@@ -380,22 +379,16 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         ):
             session_events.append(usage_event)
         chunk_attachments = _collect_chunk_attachments(chunk_obj, msg_id)
-        owner_evidence = sorted(
-            (
-                attachment.provider_attachment_id,
-                attachment.provider_file_id,
-                attachment.provider_drive_id,
-            )
-            for attachment in chunk_attachments
-            if attachment.provider_attachment_id or attachment.provider_file_id or attachment.provider_drive_id
-        )
-        owner_stable_key = (
-            "drive-owner-evidence:" + hash_payload({"attachments": [list(values) for values in owner_evidence]})
-            if owner_evidence
-            else None
-        )
+        # Attachment identifiers describe the attachment, not the message
+        # that owns it.  Using them as the message's stable owner key makes a
+        # metadata-only move between same-timestamp idless chunks look like
+        # no change at all: the same attachment recreates the same key under
+        # its new chunk.  Keep ownership on the chunk's own provider id or
+        # physical coordinate instead; ``message_owner_resolution`` then
+        # supplies the content discriminator for duplicate idless turns and
+        # fails closed when those turns are genuinely indistinguishable.
         owner_coordinate = MessageOwnerCoordinate(
-            stable_key=owner_stable_key,
+            stable_key=None,
             position=message_position,
             variant_index=0,
         )

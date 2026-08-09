@@ -1192,3 +1192,31 @@ def test_browser_snapshot_accepts_later_attachment_enrichment_without_provider_u
 
     assert result.accepted_raw_ids == ("raw-old", "raw-new")
     assert result.ambiguous_raw_ids == ()
+
+
+def test_observation_order_preserves_newer_mutable_idless_revision_without_provider_timestamp() -> None:
+    def revision(raw_id: str, text: str, observed_at_ms: int) -> MembershipRevision:
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="mutable-session",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="",
+                    role=Role.ASSISTANT,
+                    text=text,
+                    timestamp="2026-01-01T00:00:00Z",
+                )
+            ],
+        )
+        return MembershipRevision(raw_id, session_revision_projection(session), observed_at_ms=observed_at_ms)
+
+    result = classify_membership_revisions(
+        [
+            revision("raw-z-old", "before", 1),
+            revision("raw-a-new", "after", 2),
+        ]
+    )
+
+    assert result.accepted_raw_ids == ("raw-a-new",)
+    assert result.equivalent_raw_ids == ("raw-z-old",)
+    assert result.ambiguous_raw_ids == ()

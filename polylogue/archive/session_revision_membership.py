@@ -296,6 +296,16 @@ def _equal_content_representative(
             if candidate_time.timestamp() > incumbent_time.timestamp()
             else (incumbent, candidate)
         )
+    if (
+        incumbent.observed_at_ms is not None
+        and candidate.observed_at_ms is not None
+        and candidate.observed_at_ms != incumbent.observed_at_ms
+    ):
+        # Timestamped id-less messages intentionally share a mutable revision
+        # axis.  When their content changes but provider_updated_at is absent
+        # or unchanged, observation order is the remaining source-backed
+        # authority; raw_id is only a deterministic last resort.
+        return (candidate, incumbent) if candidate.observed_at_ms > incumbent.observed_at_ms else (incumbent, candidate)
     # No distinguishing provenance or provider timestamp -- these two are
     # already proven identical content, so which raw_id represents them does
     # not matter for correctness; pick deterministically rather than
