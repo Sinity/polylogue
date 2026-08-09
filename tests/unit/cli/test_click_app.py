@@ -698,6 +698,8 @@ def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
 
 
 def test_read_does_not_restore_post_verb_json_alias(cli_runner: CliRunner) -> None:
+    """polylogue-zok3: the public read route keeps JSON explicit via --format."""
+
     result = cli_runner.invoke(
         click_cli,
         ["--plain", "read", "--view", "transcript", "--json"],

@@ -518,6 +518,8 @@ def test_read_spec_moves_standalone_neighbor_options_to_projection_policy() -> N
 
 
 def test_read_spec_records_context_image_selector_fields() -> None:
+    """polylogue-zok3: query predicates survive the public format/to route."""
+
     runner = CliRunner()
     result = runner.invoke(
         cli,
@@ -530,6 +532,8 @@ def test_read_spec_records_context_image_selector_fields() -> None:
             "context-image",
             "--format",
             "json",
+            "--to",
+            "stdout",
             "--max-sessions",
             "3",
             "--spec",

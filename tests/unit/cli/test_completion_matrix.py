@@ -669,7 +669,7 @@ def test_query_action_read_view_scopes_view_option_completion_per_shell(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Selected read views complete only their own view-specific options."""
+    """polylogue-zok3: selected read views complete only own options."""
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

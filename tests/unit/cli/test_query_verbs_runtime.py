@@ -805,7 +805,7 @@ def test_read_verb_context_composes_preamble_not_passthrough() -> None:
 
 
 def test_read_verb_context_image_invokes_pack_view() -> None:
-    """read --view context-image compiles a ContextImage via context_image_payload."""
+    """polylogue-zok3: context-image predicates reach context_image_payload."""
     from polylogue.context.compiler import ContextImage
 
     _, child = _context_pair(query_terms=("repo:polylogue",))
@@ -1561,6 +1561,8 @@ def test_explicit_read_view_options_reports_command_line_values_only() -> None:
 
 
 def test_read_parser_rejects_inapplicable_view_option_before_dispatch() -> None:
+    """polylogue-zok3: the public parser rejects a flag owned by another view."""
+
     runner = CliRunner()
     result = runner.invoke(
         click_cli,
@@ -1572,6 +1574,8 @@ def test_read_parser_rejects_inapplicable_view_option_before_dispatch() -> None:
 
 
 def test_read_help_exposes_only_selected_view_options() -> None:
+    """polylogue-zok3: selected-view help exposes only applicable options."""
+
     runner = CliRunner()
     result = runner.invoke(query_verbs.read_verb, ["--view", "neighbors", "--help"])
 
