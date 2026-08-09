@@ -104,12 +104,13 @@ def test_record_persists_receipt_keyed_to_current_head_sha(monkeypatch: pytest.M
     assert receipt["skips_tests"] is False
 
 
+@pytest.mark.parametrize("command", ["devtools verify", "devtools verify --lab", "devtools verify --json --skip-slow"])
 def test_check_accepts_affected_receipt_without_release_baseline_permission(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
 ) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
-    _record(monkeypatch, pr_view, command="devtools verify")
+    _record(monkeypatch, pr_view, command=command)
     receipt_path = merge_gate._receipt_path(42)
     receipt = json.loads(receipt_path.read_text())
     receipt["release_baseline_allowed"] = False
@@ -119,12 +120,15 @@ def test_check_accepts_affected_receipt_without_release_baseline_permission(
     assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 0
 
 
+@pytest.mark.parametrize(
+    "command", ["devtools verify --all", "devtools verify --full", "devtools verify --seed-testmon"]
+)
 def test_check_blocks_full_receipt_without_release_baseline_permission(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
 ) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
-    _record(monkeypatch, pr_view, command="devtools verify --all")
+    _record(monkeypatch, pr_view, command=command)
     receipt_path = merge_gate._receipt_path(42)
     receipt = json.loads(receipt_path.read_text())
     receipt["release_baseline_allowed"] = False
