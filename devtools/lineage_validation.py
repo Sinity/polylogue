@@ -13,10 +13,14 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
 
-from devtools.index_snapshot import open_index_file_set, snapshot_index_file_set
+from devtools.index_snapshot import data_version, open_index_file_set, snapshot_identity, snapshot_index_file_set
 from polylogue.config import Config, get_config
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+_data_version = data_version
+_snapshot_identity = snapshot_index_file_set
+_snapshot_report_identity = snapshot_identity
 
 SUPPORTED_PREFIX_ORIGINS = frozenset({"codex-session", "claude-code-session"})
 REQUIRED_SESSION_LINK_COLUMNS = frozenset({"branch_point_message_id", "inheritance"})
@@ -46,20 +50,6 @@ class LineageValidationArgs:
     json: bool
     sample_unresolved: int = 20
     index_db: Path | None = None
-
-
-def _snapshot_identity(
-    index_db: Path,
-    *,
-    opened_main_fd: int | None = None,
-    opened_sidecar_fds: dict[str, int] | None = None,
-) -> dict[str, Any]:
-    """Describe the selected index using the shared SQLite file-set contract."""
-    return snapshot_index_file_set(
-        index_db,
-        opened_main_fd=opened_main_fd,
-        opened_sidecar_fds=opened_sidecar_fds,
-    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -116,12 +106,6 @@ def _config_with_archive_root(config: Config, archive_root: Path | None) -> Conf
 
 def _user_version(conn: Connection) -> int:
     row = conn.execute("PRAGMA user_version").fetchone()
-    return int(row[0]) if row else 0
-
-
-def _data_version(conn: Connection) -> int:
-    """Return this observer connection's external-commit generation."""
-    row = conn.execute("PRAGMA data_version").fetchone()
     return int(row[0]) if row else 0
 
 
@@ -924,23 +908,19 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
         )
         file_set_stable = snapshot_before["sha256"] == snapshot_after["sha256"]
         no_concurrent_commits = observer_data_version_before == observer_data_version_after
-        snapshot_stable = observations_complete and file_set_stable and no_concurrent_commits
         if not observations_complete:
             reasons.append("index file-set observation was incomplete")
         if not file_set_stable:
             reasons.append("index file set changed during the read-only census")
         if not no_concurrent_commits:
             reasons.append("index received a concurrent commit during the read-only census")
-        snapshot_identity = {
-            "before": snapshot_before,
-            "after": snapshot_after,
-            "observation_complete": observations_complete,
-            "file_set_stable": file_set_stable,
-            "observer_data_version_before": observer_data_version_before,
-            "observer_data_version_after": observer_data_version_after,
-            "no_concurrent_commits": no_concurrent_commits,
-            "stable": snapshot_stable,
-        }
+        snapshot_identity = _snapshot_report_identity(
+            index_db,
+            snapshot_before,
+            snapshot_after,
+            observer_data_version_before=observer_data_version_before,
+            observer_data_version_after=observer_data_version_after,
+        )
         report: dict[str, Any] = {
             "report_version": 2,
             "captured_at": datetime.now(UTC).isoformat(),

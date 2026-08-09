@@ -10,6 +10,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from sqlite3 import Connection
 from typing import Any
 
 _SNAPSHOT_HASH_CHUNK_BYTES = 1024 * 1024
@@ -118,6 +119,39 @@ def _file_sha256_descriptor(descriptor: int) -> str:
             return digest.hexdigest()
         digest.update(chunk)
         offset += len(chunk)
+
+
+def data_version(conn: Connection) -> int:
+    """Read SQLite's connection-local change marker for snapshot stability."""
+    row = conn.execute("PRAGMA data_version").fetchone()
+    return int(row[0]) if row else 0
+
+
+def snapshot_identity(
+    index_db: Path,
+    before: dict[str, object],
+    after: dict[str, object],
+    *,
+    observer_data_version_before: int,
+    observer_data_version_after: int,
+) -> dict[str, object]:
+    """Build the canonical report identity from two file-set observations."""
+    observation_complete = bool(before.get("observation_complete") and after.get("observation_complete"))
+    file_set_stable = before.get("sha256") == after.get("sha256")
+    no_concurrent_commits = observer_data_version_before == observer_data_version_after
+    return {
+        "index_db": str(index_db),
+        "sha256": before.get("sha256"),
+        "size": before.get("size"),
+        "before": before,
+        "after": after,
+        "observation_complete": observation_complete,
+        "file_set_stable": file_set_stable,
+        "observer_data_version_before": observer_data_version_before,
+        "observer_data_version_after": observer_data_version_after,
+        "no_concurrent_commits": no_concurrent_commits,
+        "stable": bool(observation_complete and file_set_stable and no_concurrent_commits),
+    }
 
 
 def snapshot_index_file_set(

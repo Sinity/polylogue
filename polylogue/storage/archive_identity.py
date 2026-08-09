@@ -111,8 +111,21 @@ class ArchiveLocation:
         configured_index = next(tier for tier in configured if tier.name == "index")
         pointer_file = configured_root / ".index-active-pointer"
         pointer: Path | None = None
-        if pointer_file.exists():
-            raw = pointer_file.read_text(encoding="utf-8").strip()
+        try:
+            pointer_metadata = pointer_file.lstat()
+        except FileNotFoundError:
+            pointer_metadata = None
+        except OSError as exc:
+            raise ArchiveLocationError(f"cannot inspect active index pointer: {pointer_file}") from exc
+        if pointer_metadata is not None:
+            try:
+                raw = (
+                    os.readlink(pointer_file)
+                    if stat.S_ISLNK(pointer_metadata.st_mode)
+                    else pointer_file.read_text(encoding="utf-8")
+                ).strip()
+            except OSError as exc:
+                raise ArchiveLocationError(f"cannot read active index pointer: {pointer_file}") from exc
             candidate = Path(raw)
             if not candidate.is_absolute() or candidate.name != "index.db":
                 raise ArchiveLocationError(f"invalid active index pointer: {candidate}")

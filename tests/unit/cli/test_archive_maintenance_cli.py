@@ -2386,7 +2386,7 @@ def test_migrate_tier_cli_wraps_non_collision_publication_error(
 
     assert result.exit_code == 1
     error = json.loads(result.stdout)["error"]
-    assert f"cannot publish audit tier at {audit_db}" in error
+    assert f"cannot initialize missing audit tier: anonymous durable publication failed: {audit_db}" in error
     assert not audit_db.exists()
 
 
@@ -2817,7 +2817,7 @@ def test_migrate_tier_cli_serializes_cleanup_inspection_uncertainty(
     assert audit_db.exists()
 
 
-def test_migrate_tier_cli_uses_named_staging_when_anonymous_publication_is_unavailable(
+def test_migrate_tier_cli_fails_closed_when_anonymous_publication_is_unavailable(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _stage_uninitialized_archive(cli_workspace)
@@ -2839,9 +2839,9 @@ def test_migrate_tier_cli_uses_named_staging_when_anonymous_publication_is_unava
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)["initialized"] is True
-    assert audit_db.is_file()
+    assert result.exit_code == 1
+    assert "filesystem does not support O_TMPFILE" in json.loads(result.stdout)["error"]
+    assert not audit_db.exists()
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 

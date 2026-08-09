@@ -14,7 +14,7 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
 
-from devtools.index_snapshot import open_index_file_set, snapshot_index_file_set
+from devtools.index_snapshot import data_version, open_index_file_set, snapshot_identity, snapshot_index_file_set
 from polylogue.config import Config, get_config
 from polylogue.insights.affordance_usage import (
     DEFAULT_FAMILY_PATTERNS,
@@ -37,6 +37,10 @@ from polylogue.insights.affordance_usage import (
     normalized_tool_name_for_row as _normalized_tool_name,
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+_data_version = data_version
+_snapshot_identity = snapshot_identity
+_snapshot_observation = snapshot_index_file_set
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,54 +193,6 @@ def _write_csv(path: Path, rows: Iterable[dict[str, object]]) -> None:
 
 def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _snapshot_observation(
-    index_db: Path,
-    *,
-    opened_main_fd: int | None = None,
-    opened_sidecar_fds: dict[str, int] | None = None,
-) -> dict[str, Any]:
-    return snapshot_index_file_set(
-        index_db,
-        opened_main_fd=opened_main_fd,
-        opened_sidecar_fds=opened_sidecar_fds,
-    )
-
-
-def _snapshot_identity(
-    index_db: Path,
-    before: dict[str, object],
-    after: dict[str, object],
-    *,
-    observer_data_version_before: int,
-    observer_data_version_after: int,
-) -> dict[str, object]:
-    """Bind report evidence to the selected database, including instability."""
-    file_set_stable = before["sha256"] == after["sha256"]
-    no_concurrent_commits = observer_data_version_before == observer_data_version_after
-    return {
-        "index_db": str(index_db),
-        "sha256": before.get("sha256"),
-        "size": before.get("size"),
-        "before": before,
-        "after": after,
-        "file_set_stable": file_set_stable,
-        "observer_data_version_before": observer_data_version_before,
-        "observer_data_version_after": observer_data_version_after,
-        "no_concurrent_commits": no_concurrent_commits,
-        "stable": bool(
-            before.get("observation_complete")
-            and after.get("observation_complete")
-            and file_set_stable
-            and no_concurrent_commits
-        ),
-    }
-
-
-def _data_version(conn: Connection) -> int:
-    row = conn.execute("PRAGMA data_version").fetchone()
-    return int(row[0]) if row else 0
 
 
 def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
