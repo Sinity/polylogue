@@ -40,6 +40,19 @@ class _BulkConnectionBackendLike(Protocol):
 class _SourceTierBackendLike(_BulkConnectionBackendLike, Protocol):
     def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
 
+    async def save_raw_failure_evidence(
+        self,
+        raw_id: str,
+        *,
+        artifact_kind: str,
+        support_status: str,
+        outcome_code: str,
+        retryable: bool | None,
+        evidence_ref: str | None,
+        remediation: str | None,
+        diagnostic: str | None,
+    ) -> None: ...
+
 
 class _ConnectionBackendLike(Protocol):
     def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...

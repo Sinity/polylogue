@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.core.enums import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
@@ -103,6 +103,33 @@ class SQLiteRawMixin:
         """Persist or refresh one durable artifact observation."""
         async with self._get_connection() as conn:
             return await artifacts_q.save_artifact_observation(conn, record, self._transaction_depth)
+
+    async def save_raw_failure_evidence(
+        self,
+        raw_id: str,
+        *,
+        artifact_kind: str,
+        support_status: ArtifactSupportStatus | str,
+        outcome_code: str,
+        retryable: bool | None,
+        evidence_ref: str | None,
+        remediation: str | None,
+        diagnostic: str | None,
+    ) -> None:
+        """Persist typed worker failure evidence in the active source transaction."""
+        async with self._get_connection() as conn:
+            await artifacts_q.save_raw_failure_evidence(
+                conn,
+                raw_id,
+                artifact_kind=artifact_kind,
+                support_status=support_status,
+                outcome_code=outcome_code,
+                retryable=retryable,
+                evidence_ref=evidence_ref,
+                remediation=remediation,
+                diagnostic=diagnostic,
+                transaction_depth=self._transaction_depth,
+            )
 
     async def get_raw_session(self, raw_id: str) -> RawSessionRecord | None:
         """Retrieve a raw session by ID."""

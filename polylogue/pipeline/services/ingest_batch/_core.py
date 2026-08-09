@@ -28,13 +28,14 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, IngestOutcome, Provider
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_current_rss_mb,
     read_peak_rss_children_mb,
     read_peak_rss_self_mb,
 )
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
@@ -2282,6 +2283,20 @@ def _failed_raw_state_update(
     )
 
 
+def _raw_failure_evidence_kind(outcome: _RawIngestOutcome | None) -> RawFailureEvidenceKind | None:
+    """Map terminal worker input outcomes to closed source-tier carriers."""
+    if outcome is None:
+        return None
+    try:
+        outcome_code = IngestOutcome.from_string(outcome.outcome_code)
+    except ValueError:
+        return None
+    return {
+        IngestOutcome.CORRUPT_INPUT: RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        IngestOutcome.UNSUPPORTED_SHAPE: RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE,
+    }.get(outcome_code)
+
+
 async def _persist_batch_raw_state_updates(
     service: _ParsingServiceRawStateLike,
     backend: _BulkConnectionBackendLike,
@@ -2377,6 +2392,19 @@ async def _persist_batch_raw_state_updates(
                     validation_mode=validation_mode,
                 ),
             )
+            outcome = outcomes.get(rid)
+            evidence_kind = _raw_failure_evidence_kind(outcome)
+            if source_backend is not None and outcome is not None and evidence_kind is not None:
+                await source_backend.save_raw_failure_evidence(
+                    rid,
+                    artifact_kind=evidence_kind.value,
+                    support_status=evidence_kind.support_status.value,
+                    outcome_code=outcome.outcome_code,
+                    retryable=outcome.retryable,
+                    evidence_ref=outcome.evidence_ref,
+                    remediation=outcome.remediation,
+                    diagnostic=outcome.diagnostic,
+                )
     return time.perf_counter() - raw_state_update_started
 
 

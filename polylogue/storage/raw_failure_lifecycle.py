@@ -134,15 +134,27 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                OR r.validation_status = 'failed'
         )
         """
+        typed_failure_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS)
+        valid_failure_artifacts_cte = (
+            """
+        , valid_failure_artifacts AS (
+            SELECT a.*
+            FROM raw_artifacts AS a
+            WHERE (a.artifact_kind, a.support_status) IN ("""
+            + typed_failure_placeholders
+            + """)
+        )
+        """
+        )
         latest_artifact_join = """
-        LEFT JOIN raw_artifacts AS a
+        LEFT JOIN valid_failure_artifacts AS a
           ON a.raw_id IS f.raw_id
          AND a.origin IS f.origin
          AND a.source_path IS f.source_path
          AND a.source_index IS f.source_index
          AND NOT EXISTS (
              SELECT 1
-             FROM raw_artifacts AS newer
+             FROM valid_failure_artifacts AS newer
               WHERE newer.raw_id IS a.raw_id
                AND newer.origin IS a.origin
                AND newer.source_path IS a.source_path
@@ -153,9 +165,9 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
          )
         """
         if has_artifacts:
-            typed_priority_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS)
             summary_sql = (
                 failed_cte
+                + valid_failure_artifacts_cte
                 + """
                 SELECT f.origin, f.validation_status, a.artifact_kind, a.support_status,
                        COUNT(*) AS failure_count
@@ -169,6 +181,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
             )
             sample_sql = (
                 failed_cte
+                + valid_failure_artifacts_cte
                 + """
                 , sampled AS (
                     SELECT f.raw_id, f.origin, f.validation_status, f.acquired_at_ms,
@@ -178,10 +191,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                 + latest_artifact_join
                 + """
                     ORDER BY CASE
-                        WHEN f.validation_status = 'failed' THEN 0
-                        WHEN (a.artifact_kind, a.support_status) IN ("""
-                + typed_priority_placeholders
-                + """) THEN 1
+                        WHEN a.artifact_kind IS NOT NULL THEN 0
                         ELSE 2
                     END,
                     f.acquired_at_ms DESC, f.raw_id DESC
@@ -210,12 +220,9 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
                 LIMIT ?
                 """
             )
-        summary_rows = conn.execute(summary_sql).fetchall()
-        sample_params: tuple[object, ...] = (
-            tuple(value for pair in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair) + (sample_limit,)
-            if has_artifacts
-            else (sample_limit,)
-        )
+        typed_failure_params = tuple(value for pair in RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair)
+        summary_rows = conn.execute(summary_sql, typed_failure_params if has_artifacts else ()).fetchall()
+        sample_params: tuple[object, ...] = typed_failure_params + (sample_limit,) if has_artifacts else (sample_limit,)
         sample_rows = conn.execute(sample_sql, sample_params).fetchall()
     except sqlite3.Error as exc:
         logger.warning("could not read raw failure lifecycle", exc_info=exc)

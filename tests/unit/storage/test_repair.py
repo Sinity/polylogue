@@ -933,6 +933,68 @@ def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(
     assert set(candidates.raw_ids) == {old_raw_id, new_raw_id}
 
 
+def test_failed_raw_lifecycle_ignores_newer_ordinary_artifact_at_same_coordinate(
+    tmp_path: Path,
+) -> None:
+    """A newer ordinary observation cannot hide a valid closed failure carrier."""
+    from polylogue.core.enums import Origin
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="coexisting.jsonl",
+            source_index=4,
+            payload=b"unsupported",
+            acquired_at_ms=1,
+            parse_error="worker rejected shape",
+        )
+        upsert_raw_artifact(
+            conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="failure-carrier",
+                origin=Origin.CODEX_SESSION,
+                source_path="coexisting.jsonl",
+                source_index=4,
+                artifact_kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+                classification_reason=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+                support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                first_observed_at_ms=10,
+                last_observed_at_ms=10,
+            ),
+        )
+        upsert_raw_artifact(
+            conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="ordinary-carrier",
+                origin=Origin.CODEX_SESSION,
+                source_path="coexisting.jsonl",
+                source_index=4,
+                artifact_kind="session_export",
+                classification_reason="ordinary re-observation",
+                support_status=ArtifactSupportStatus.SUPPORTED_PARSEABLE,
+                first_observed_at_ms=20,
+                last_observed_at_ms=20,
+            ),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (2,)
+
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 1
+    assert lifecycle.unexplained == 0
+    assert lifecycle.blocking is False
+    assert lifecycle.state == "degraded"
+    assert lifecycle.samples[0]["artifact_kind"] == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
+
+
 def test_cas_failure_evidence_rolls_back_with_parse_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
