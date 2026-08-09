@@ -83,6 +83,7 @@ class TestRawFailureSampleModel:
             frozenset(
                 {
                     "terminal_corrupt_input",
+                    "terminal_superseded_deferred_cas_frontier",
                     "terminal_unknown_json_decode",
                     "terminal_unknown_export_no_session",
                     "terminal_unsupported_shape",

@@ -14,6 +14,7 @@ import pytest
 from polylogue.config import Config
 from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.core.errors import RawCASFrontierError
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import repair as repair_mod
@@ -816,6 +817,100 @@ def test_non_codex_cas_frontier_failure_persists_provider_neutral_evidence(tmp_p
             "SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts WHERE raw_id = ?",
             (raw_id,),
         ).fetchone() == ("deferred_cas_frontier", "partial_decode", 1)
+
+
+def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failure(tmp_path: Path) -> None:
+    """Resolved deferred evidence cannot authorize a later replay attempt."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_success = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"name":"success"}',
+            source_path="success.jsonl",
+            acquired_at_ms=1,
+        )
+        raw_failure = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"name":"failure"}',
+            source_path="failure.jsonl",
+            acquired_at_ms=2,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        for raw_id, source_path, neighbor_path in (
+            (raw_success, "success.jsonl", "success-neighbor.jsonl"),
+            (raw_failure, "failure.jsonl", "failure-neighbor.jsonl"),
+        ):
+            for artifact_id, path in ((f"deferred-{raw_id}", source_path), (f"neighbor-{raw_id}", neighbor_path)):
+                upsert_raw_artifact(
+                    source_conn,
+                    raw_id,
+                    ArchiveSourceArtifact(
+                        artifact_id=artifact_id,
+                        origin="codex-session",
+                        source_path=path,
+                        source_index=0,
+                        artifact_kind="deferred_cas_frontier",
+                        classification_reason="deferred_cas_frontier",
+                        support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                        parse_as_session=True,
+                        schema_eligible=True,
+                    ),
+                )
+        source_conn.commit()
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.mark_raw_parse_succeeded(raw_success, provider=Provider.CODEX)
+        archive.mark_raw_parse_failed(
+            raw_failure,
+            provider=Provider.CODEX,
+            error=ValueError("unrelated parser failure"),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parsed_at_ms = 3, parse_error = ? WHERE raw_id = ?",
+            ("later unrelated parser failure", raw_success),
+        )
+        source_conn.commit()
+        observations = source_conn.execute(
+            """
+            SELECT raw_id, source_path, artifact_kind, support_status
+            FROM raw_artifacts
+            WHERE raw_id IN (?, ?)
+            ORDER BY raw_id, source_path
+            """,
+            (raw_success, raw_failure),
+        ).fetchall()
+
+    assert {tuple(row) for row in observations if row[1].endswith("neighbor.jsonl")} == {
+        (raw_failure, "failure-neighbor.jsonl", "deferred_cas_frontier", "partial_decode"),
+        (raw_success, "success-neighbor.jsonl", "deferred_cas_frontier", "partial_decode"),
+    }
+    assert {(row[0], row[1], row[2], row[3]) for row in observations if not row[1].endswith("neighbor.jsonl")} == {
+        (
+            raw_failure,
+            "failure.jsonl",
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+            "unknown",
+        ),
+        (
+            raw_success,
+            "success.jsonl",
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+            "unknown",
+        ),
+    }
+
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 2
+    assert lifecycle.deferred == 0
+    assert lifecycle.unexplained == 0
+    assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
 
 
 def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_blob(tmp_path: Path) -> None:

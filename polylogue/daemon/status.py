@@ -424,6 +424,7 @@ class RawFailureSample(BaseModel):
         "deferred_cas_frontier",
         "deferred_codex_cas_frontier",
         "terminal_corrupt_input",
+        "terminal_superseded_deferred_cas_frontier",
         "terminal_unknown_json_decode",
         "terminal_unknown_export_no_session",
         "terminal_unsupported_shape",

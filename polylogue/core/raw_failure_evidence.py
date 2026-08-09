@@ -23,12 +23,15 @@ class RawFailureEvidenceKind(StrEnum):
     # receipt has converted every retained row.
     DEFERRED_CODEX_CAS_FRONTIER = "deferred_codex_cas_frontier"
     TERMINAL_CORRUPT_INPUT = "terminal_corrupt_input"
+    TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER = "terminal_superseded_deferred_cas_frontier"
     TERMINAL_UNKNOWN_JSON_DECODE = "terminal_unknown_json_decode"
     TERMINAL_UNKNOWN_EXPORT_NO_SESSION = "terminal_unknown_export_no_session"
     TERMINAL_UNSUPPORTED_SHAPE = "terminal_unsupported_shape"
 
     @property
     def support_status(self) -> ArtifactSupportStatus:
+        if self is RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER:
+            return ArtifactSupportStatus.UNKNOWN
         if self in {
             RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
             RawFailureEvidenceKind.DEFERRED_CLAUDE_CODE_PARTIAL_JSONL,
@@ -85,6 +88,7 @@ RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(
 RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
     {
         RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value,
+        RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE.value,
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION.value,
         RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,

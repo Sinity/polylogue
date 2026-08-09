@@ -130,7 +130,10 @@ from polylogue.archive.revision_replay import (
 from polylogue.archive.session_revision_membership import MembershipClassification, MembershipDecision
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import RawCASFrontierError
-from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+    RawFailureEvidenceKind,
+)
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -3047,6 +3050,8 @@ def mark_raw_parse_failed(
                 acquired_at_ms=int(row[2] or int(time.time() * 1000)),
                 kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
             )
+    else:
+        _supersede_deferred_cas_evidence(store, raw_id, provider=provider)
     finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, error))
 
 
@@ -3086,8 +3091,69 @@ def record_raw_failure_evidence(
     )
 
 
+def _supersede_deferred_cas_evidence(
+    store: RawRevisionGovernanceHost,
+    raw_id: str,
+    *,
+    provider: Provider,
+) -> None:
+    """Terminalize deferred CAS evidence once its attempt has resolved.
+
+    ``raw_artifacts`` stores the latest observation for a source coordinate,
+    not an attempt history. Replace only an exact-coordinate deferred CAS
+    observation, so a neighboring artifact cannot be consumed or cleared by
+    this raw's outcome.
+    """
+    conn = store._ensure_source_conn()
+    row = conn.execute(
+        """
+        SELECT origin, source_path, source_index
+        FROM raw_sessions
+        WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    if row is None:
+        return
+    origin, source_path, source_index = row
+    deferred = conn.execute(
+        """
+        SELECT 1
+        FROM raw_artifacts
+        WHERE raw_id = ?
+          AND origin IS ?
+          AND source_path IS ?
+          AND source_index IS ?
+          AND artifact_kind IN (?, ?)
+          AND support_status = ?
+        LIMIT 1
+        """,
+        (
+            raw_id,
+            origin,
+            source_path,
+            source_index,
+            RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
+            RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER.value,
+            RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+        ),
+    ).fetchone()
+    if deferred is None:
+        return
+    record_raw_failure_evidence(
+        store,
+        raw_id,
+        provider=provider,
+        source_path=str(source_path or raw_id),
+        source_index=int(source_index or 0),
+        acquired_at_ms=int(time.time() * 1000),
+        kind=RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
+    )
+
+
 def mark_raw_parse_succeeded(store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider) -> None:
     """Finalize one retained raw payload after every derived session commits."""
+    _supersede_deferred_cas_evidence(store, raw_id, provider=provider)
     finalize_raw_parse_state(store, raw_id, state=_raw_parse_success_state(provider))
 
 
