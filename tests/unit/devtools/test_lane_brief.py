@@ -35,10 +35,10 @@ def _synthetic_route(monkeypatch: pytest.MonkeyPatch) -> None:
         "resolve_route",
         lambda identifier: (
             {
-                "bead_id": None,
-                "class": "*",
-                "contract_type": "*",
-                "dispatch": "*",
+                "bead_id": "polylogue-a",
+                "class": "ImplementationRoute",
+                "contract_type": "implementation",
+                "dispatch": "production",
                 "targets": ["Test production route."],
             }
             if identifier == "test/production"
@@ -192,6 +192,25 @@ def test_main_blocks_invalid_non_planner_contracts(
 
     assert lane_brief.main(["polylogue-a", "--out", str(tmp_path / "brief.md"), "--tmpdir", str(tmp_path)]) == 2
     assert "DISPATCH BLOCKED" in (tmp_path / "brief.md").read_text()
+
+
+def test_main_allows_non_manifest_bead_without_contract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(lane_brief, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(beads_acceptance_contracts, "load_manifest", lambda path: ("polylogue-manifest",))
+    monkeypatch.setattr(
+        lane_brief,
+        "_fetch_bead",
+        lambda bead_id: lane_brief.BeadRecord(id=bead_id, found=True, title="Uncontracted non-manifest bead"),
+    )
+    monkeypatch.setattr(lane_brief, "_load_bd_export", lambda repo_root, tmpdir: [])
+    monkeypatch.setattr(lane_brief, "_verify_footprint", lambda repo_root, paths: [])
+    monkeypatch.setattr(lane_brief, "_find_prior_art", lambda records, paths, exclude_ids: [])
+    monkeypatch.setattr(lane_brief, "_recent_master_commits", lambda repo_root, paths, days: [])
+
+    assert lane_brief.main(["polylogue-non-manifest", "--out", str(tmp_path / "brief.md"), "--tmpdir", str(tmp_path)]) == 0
+    assert "DISPATCH BLOCKED" not in (tmp_path / "brief.md").read_text()
 
 
 def test_main_blocks_when_required_manifest_is_invalid(

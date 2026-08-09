@@ -67,6 +67,7 @@ _ANTI_VACUITY_CONTRACT = (
     "a FAILED lane even if green. State the implementation mutation that would make "
     "your test fail."
 )
+_MISSING_CONTRACT_ERROR = "missing metadata.acceptance_contract_v1"
 
 _HAZARDS = (
     "commit every logical chunk (worktree auto-clean destroys uncommitted work)",
@@ -192,11 +193,7 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
             metadata = {}
     contract = metadata.get("acceptance_contract_v1") if isinstance(metadata, dict) else None
     confidence = contract.get("confidence") if isinstance(contract, dict) else None
-    contract_errors = (
-        acceptance_contracts.validate(record)
-        if isinstance(contract, dict)
-        else ["missing metadata.acceptance_contract_v1"]
-    )
+    contract_errors = acceptance_contracts.validate(record) if isinstance(contract, dict) else [_MISSING_CONTRACT_ERROR]
     contract_source_digest = contract.get("source_digest") if isinstance(contract, dict) else None
     contract_dependency_digest = contract.get("dependency_digest") if isinstance(contract, dict) else None
     priority = record.get("priority")
@@ -553,7 +550,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as exc:
         print(f"DISPATCH BLOCKED: {exc}", file=sys.stderr)
         return 2
+    required_ids = set(acceptance_contracts.load_manifest(acceptance_contracts._DEFAULT_MANIFEST))
     records = [_fetch_bead(bead_id) for bead_id in args.bead_ids]
+    for record in records:
+        if record.id not in required_ids:
+            record.contract_errors = [error for error in record.contract_errors if error != _MISSING_CONTRACT_ERROR]
 
     combined_text = _combined_text(records)
     paths = _extract_paths(combined_text)
