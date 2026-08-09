@@ -845,6 +845,13 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         "    ,blob_hash       BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)\n",
         "",
     )
+    # The v7 fixture also predates the v22 source-hash index.  Removing the
+    # column without removing its index makes SQLite reject the fixture before
+    # migration code gets a chance to exercise the copy-forward.
+    old_ddl = old_ddl.replace(
+        "CREATE INDEX IF NOT EXISTS idx_raw_hook_events_source_hash\nON raw_hook_events(source_path, blob_hash);\n",
+        "",
+    )
     # Migration 010 adds `excised_content` (polylogue-27m) -- a v7 snapshot
     # predates it, same as it predates the beads-origin/capture_mode diffs
     # stripped above. Without this, the fixture (built from the CURRENT
@@ -902,6 +909,7 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
             "raw_quarantine_group_dedup_receipts",
             "raw_unknown_export_reclassification_receipts",
             "raw_non_session_duplicate_exclusion_receipts",
+            "raw_failure_disposition_receipts",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.execute("PRAGMA user_version = 7")
@@ -1032,6 +1040,11 @@ def _create_source_v20_with_stale_origin_check(path: Path, *, archive_root: Path
     conn = sqlite3.connect(path)
     try:
         conn.executescript(_source_v20_ddl_with_stale_origin_check())
+        # v29 is not present in a v20 archive.  The broad origin-check rewrite
+        # above intentionally affects every current table, so remove this
+        # later table explicitly instead of handing migration 029 a malformed
+        # pre-existing copy that CREATE IF NOT EXISTS would preserve.
+        conn.execute("DROP TABLE raw_failure_disposition_receipts")
         conn.execute("PRAGMA user_version = 20")
         conn.execute(
             """
@@ -1312,6 +1325,7 @@ def test_source_tier_v24_repairs_raw_hook_event_origin_check(
             "raw_quarantine_group_dedup_receipts",
             "raw_unknown_export_reclassification_receipts",
             "raw_non_session_duplicate_exclusion_receipts",
+            "raw_failure_disposition_receipts",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.executescript(
@@ -1697,6 +1711,7 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
             "raw_quarantine_group_dedup_receipts",
             "raw_unknown_export_reclassification_receipts",
             "raw_non_session_duplicate_exclusion_receipts",
+            "raw_failure_disposition_receipts",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
@@ -1808,6 +1823,7 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
             "raw_quarantine_group_dedup_receipts",
             "raw_unknown_export_reclassification_receipts",
             "raw_non_session_duplicate_exclusion_receipts",
+            "raw_failure_disposition_receipts",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
