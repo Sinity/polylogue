@@ -79,11 +79,12 @@ def _valid_contract_record(confidence: str = "high") -> dict[str, object]:
             "successor_required_for_partial": True,
         },
     }
+    source_snapshot = "A source description with observable scope."
     contract["evidence_spans"] = [
         {
             "source_field": "description",
-            "snapshot": record["description"],
-            "snapshot_digest": hashlib.sha256(record["description"].encode("utf-8")).hexdigest(),
+            "snapshot": source_snapshot,
+            "snapshot_digest": hashlib.sha256(source_snapshot.encode("utf-8")).hexdigest(),
             "range": {"start": 0, "end": len(contract["evidence"][0])},
             "text_digest": hashlib.sha256(contract["evidence"][0].encode("utf-8")).hexdigest(),
         }
