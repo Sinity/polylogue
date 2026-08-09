@@ -1,7 +1,9 @@
 # Polylogue Architecture
 
-For the target shape, guardrails, and architectural decision log, see
-[Architecture Spine](architecture-spine.md). Current sequencing and active
+For a change-oriented map from tasks to owning packages and verification, see
+[Code Navigation](code-navigation.md). For the target shape, guardrails, and
+architectural decision log, see [Architecture Spine](architecture-spine.md).
+Current sequencing and active
 workstreams live in the Beads backlog (`bd ready`, `bd list --status open`) —
 the durable directive substrate; the former `docs/execution-plan.md` was
 superseded (its GitHub-issue map was re-encoded as Beads issues) and retired
@@ -421,7 +423,7 @@ cross-repo blocker on live Sinex settlement.
 
 ## Placement Rules
 
-**Package topology legibility (polylogue-c9y).** `polylogue/` has ~32
+**Package topology legibility (polylogue-c9y).** `polylogue/` has 34
 top-level subpackages plus a handful of loose top-level modules
 (`__init__.py`, `__main__.py`, `config.py`, `version.py`, `assets.py`,
 `logging.py`, `services.py`). The boundaries between several packages used to

@@ -1,8 +1,9 @@
 # Internals Reference
 
 Working map of the live codebase: invariants, hot files, extension points, and
-debugging landmarks. For the conceptual system shape, see
-[architecture.md](architecture.md).
+debugging landmarks. For a task-to-owner map, start with
+[Code Navigation](code-navigation.md); for the conceptual system shape, see
+[Architecture](architecture.md).
 
 ## Key Invariants
 

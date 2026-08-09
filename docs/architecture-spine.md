@@ -2,7 +2,9 @@
 
 Target shape, guardrails, and major decisions for the Polylogue codebase.
 This is the canonical architectural anchor — `docs/architecture.md` evolves
-with the implementation; this document records the *why* and the *rules*.
+with the implementation; this document records the *why* and the *rules*. Use
+[Code Navigation](code-navigation.md) when the immediate question is where a
+change belongs or which production route must be exercised.
 
 ## Four Rings
 

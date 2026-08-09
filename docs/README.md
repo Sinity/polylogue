@@ -54,6 +54,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | Document | Description |
 |----------|-------------|
 | [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
+| [Code Navigation](code-navigation.md) | Change-oriented map from common tasks to owning packages, entrypoints, and verification. |
 | [Architecture Spine](architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Architecture Hotspots](architecture-hotspots.md) | Execution control center hotspot map and decomposition sequence (polylogue-1r9c). |
 | [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |

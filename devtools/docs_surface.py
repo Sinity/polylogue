@@ -159,6 +159,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     # Architecture and internals
     _entry("Architecture", "architecture.md", "System rings, ownership boundaries, and data flow.", "internals"),
     _entry(
+        "Code Navigation",
+        "code-navigation.md",
+        "Change-oriented map from common tasks to owning packages, entrypoints, and verification.",
+        "internals",
+    ),
+    _entry(
         "Architecture Spine",
         "architecture-spine.md",
         "Target shape, guardrails, and major decisions with rejected alternatives.",
@@ -521,6 +527,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Demos and Proofs",
     "Proof Artifacts",
     "Architecture",
+    "Code Navigation",
     "Search & Query",
     "CLI Reference",
     "MCP Integration",
