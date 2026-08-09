@@ -309,7 +309,7 @@ async def test_message_target_marks_survive_reimport(workspace_env: dict[str, Pa
 
 @pytest.mark.asyncio
 async def test_legacy_message_owner_reads_batch_index_lookup(workspace_env: dict[str, Path]) -> None:
-    """Legacy message marks resolve through one indexed-message batch."""
+    """Legacy message marks and annotations resolve through one batch each."""
     db_path = db_setup(workspace_env)
     builder = SessionBuilder(db_path, "batch-owner")
     builder.provider("claude-code")
@@ -329,9 +329,19 @@ async def test_legacy_message_owner_reads_batch_index_lookup(workspace_env: dict
                 )
                 is True
             )
+            assert (
+                await poly.save_annotation(
+                    f"annotation-{index}",
+                    session_id,
+                    f"note {index}",
+                    target_type="message",
+                    message_id=f"{session_id}:n:msg-{index}",
+                )
+                is True
+            )
 
     with sqlite3.connect(_user_db_path(workspace_env)) as conn:
-        conn.execute("UPDATE assertions SET scope_ref = NULL WHERE kind = 'mark'")
+        conn.execute("UPDATE assertions SET scope_ref = NULL WHERE target_ref LIKE 'message:%'")
         conn.commit()
 
     with ArchiveStore.open_existing(workspace_env["archive_root"]) as archive:
@@ -339,14 +349,16 @@ async def test_legacy_message_owner_reads_batch_index_lookup(workspace_env: dict
         archive._conn.set_trace_callback(statements.append)
         try:
             rows = archive.list_marks(mark_type="pin")
+            annotations = archive.list_annotations()
         finally:
             archive._conn.set_trace_callback(None)
 
     message_lookup_statements = [
         statement for statement in statements if "FROM messages WHERE message_id IN" in statement
     ]
-    assert len(message_lookup_statements) == 1
+    assert len(message_lookup_statements) == 2
     assert {row["session_id"] for row in rows} == {session_id}
+    assert {row["session_id"] for row in annotations} == {session_id}
 
 
 @pytest.mark.asyncio

@@ -9407,38 +9407,6 @@ def _active_assertion_by_kind_key(
     return None
 
 
-def _user_mark_session_id(
-    target_type: str,
-    target_id: str,
-    *,
-    durable_scope_ref: str | None = None,
-    index_conn: sqlite3.Connection | None = None,
-) -> str:
-    if target_type == "session":
-        return target_id
-    if target_type == "message":
-        if durable_scope_ref is not None and durable_scope_ref.startswith("session:"):
-            durable_owner = durable_scope_ref[len("session:") :]
-            if durable_owner:
-                return durable_owner
-        # Canonical message IDs are generated from the indexed message row,
-        # whose session_id column is the authoritative owner. Provider-native
-        # session IDs are opaque and may contain the ``:n:`` or ``:p:`` tokens,
-        # so those tokens cannot safely delimit the owning session.
-        if index_conn is not None:
-            row = index_conn.execute(
-                "SELECT session_id FROM messages WHERE message_id = ?",
-                (target_id,),
-            ).fetchone()
-            if row is not None:
-                return str(row["session_id"])
-        # Legacy message assertions may have neither durable scope metadata
-        # nor an indexed row. Their opaque ID cannot be decoded exactly, so
-        # expose no owner rather than manufacturing authority from a token.
-        return ""
-    return ""
-
-
 def _learning_correction_from_archive_row(row: sqlite3.Row | tuple[object, ...]) -> LearningCorrection:
     session_id = str(row[0])
     kind = parse_correction_kind(str(row[1]))

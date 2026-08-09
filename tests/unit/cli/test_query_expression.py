@@ -2276,7 +2276,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.text) for row in rows] == [
             (
                 "chatgpt-export:ext-hit",
-                _mid("chatgpt-export:ext-hit", "m-selected"),
+                _mid("chatgpt-export:ext-hit", "m-selected", position=1),
                 "selected terminal row",
             )
         ]
@@ -2321,7 +2321,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.text) for row in rows] == [
             (
                 "chatgpt-export:ext-hit",
-                _mid("chatgpt-export:ext-hit", "m-selected"),
+                _mid("chatgpt-export:ext-hit", "m-selected", position=1),
                 "selected terminal row",
             )
         ]
@@ -2415,7 +2415,7 @@ class TestBooleanQueryExpression:
         assert [(row.session_id, row.message_id, row.text) for row in rows] == [
             (
                 "claude-code-session:ext-hit",
-                _mid("claude-code-session:ext-hit", "m-selected"),
+                _mid("claude-code-session:ext-hit", "m-selected", position=2),
                 "selected terminal row",
             )
         ]
@@ -3548,7 +3548,7 @@ class TestBooleanQueryExpression:
             rows = archive.query_actions(source.predicate, limit=100)
 
         assert [(row.message_id, row.tool_path) for row in rows] == [
-            (_mid("claude-code-session:ext-hit", "m-new"), "polylogue/archive/new.py")
+            (_mid("claude-code-session:ext-hit", "m-new", position=2), "polylogue/archive/new.py")
         ]
         assert rows[0].occurred_at_ms is not None
 
@@ -3845,7 +3845,9 @@ class TestBooleanQueryExpression:
         assert row.is_error == 1
         assert row.exit_code == 1
         assert row.followup_class == "silent_proceed"
-        assert row.followup_message_ref == "message:" + _mid("codex-session:ext-followups", "m-silent-followup")
+        assert row.followup_message_ref == "message:" + _mid(
+            "codex-session:ext-followups", "m-silent-followup", position=3
+        )
 
         aggregate_query = "actions where is_error:true | group by followup_class | count"
         aggregate_source = parse_unit_source_expression(aggregate_query)
