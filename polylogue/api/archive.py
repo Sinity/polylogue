@@ -1508,6 +1508,10 @@ def _archive_assertion_candidate_queue_health(
 ) -> AssertionCandidateQueueHealthPayload:
     """Project queue depth, retention, producer telemetry, and scheduler health."""
 
+    from polylogue.daemon.judgment_automation import (
+        is_valid_judgment_automation_receipt_payload,
+        judgment_automation_receipt_freshness_window_ms,
+    )
     from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ASSERTION_CANDIDATE_JUDGMENT_KINDS,
@@ -1516,6 +1520,14 @@ def _archive_assertion_candidate_queue_health(
     from polylogue.surfaces.payloads import AssertionCandidateQueueHealthPayload
 
     observed_at_ms = int(datetime.now(UTC).timestamp() * 1000) if now_ms is None else now_ms
+    interval_s = getattr(config, "judgment_automation_interval_s", None)
+    if isinstance(interval_s, bool) or not isinstance(interval_s, int):
+        return AssertionCandidateQueueHealthPayload(
+            state="unavailable",
+            observed_at_ms=observed_at_ms,
+            pending_count=0,
+            caveats=("judgment scheduler interval authority is unavailable; freshness is unverified",),
+        )
     archive_root = _active_archive_root(config)
     user_db = archive_root / "user.db"
     if not user_db.exists():
@@ -1607,6 +1619,9 @@ def _archive_assertion_candidate_queue_health(
     producer_debt_count = 0
     scheduler_state: Literal["fresh", "stale", "stopped", "unknown"] = "unknown"
     scheduler_heartbeat_at_ms: int | None = None
+    judgment_scheduler_receipt_status: Literal["completed", "parked", "failed", "unknown"] = "unknown"
+    judgment_scheduler_receipt_at_ms: int | None = None
+    judgment_scheduler_receipt_reason: str | None = None
     caveats: list[str] = []
     ops_db = archive_root / "ops.db"
     if not ops_db.exists():
@@ -1661,6 +1676,38 @@ def _archive_assertion_candidate_queue_health(
                             scheduler_state = "fresh"
                         else:
                             scheduler_state = "stale"
+                if ops_conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daemon_events'"
+                ).fetchone():
+                    receipt_row = ops_conn.execute(
+                        """
+                        SELECT ts_ms, payload_json
+                        FROM daemon_events
+                        WHERE kind = 'judgment-automation'
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    if receipt_row is not None:
+                        try:
+                            receipt_payload = json.loads(str(receipt_row[1]))
+                        except (TypeError, ValueError):
+                            receipt_payload = None
+                        receipt_is_valid = is_valid_judgment_automation_receipt_payload(receipt_payload)
+                        raw_status = (
+                            str(receipt_payload.get("status", "unknown"))
+                            if receipt_is_valid and isinstance(receipt_payload, dict)
+                            else "unknown"
+                        )
+                        if not receipt_is_valid:
+                            caveats.append("latest judgment scheduler receipt is malformed")
+                        if raw_status in {"completed", "parked", "failed"}:
+                            judgment_scheduler_receipt_status = cast(
+                                Literal["completed", "parked", "failed"], raw_status
+                            )
+                        judgment_scheduler_receipt_at_ms = int(receipt_row[0])
+                        if receipt_is_valid and isinstance(receipt_payload, dict):
+                            judgment_scheduler_receipt_reason = str(receipt_payload["reason"])
             finally:
                 ops_conn.close()
         except sqlite3.Error as exc:
@@ -1675,12 +1722,43 @@ def _archive_assertion_candidate_queue_health(
         and producer_age_ms is not None
         and producer_age_ms <= 24 * 60 * 60 * 1000
     )
+    judgment_receipt_age_ms = (
+        None if judgment_scheduler_receipt_at_ms is None else max(0, observed_at_ms - judgment_scheduler_receipt_at_ms)
+    )
+    receipt_freshness_window_ms = judgment_automation_receipt_freshness_window_ms(interval_s)
+    parked_receipt_freshness_window_ms = judgment_automation_receipt_freshness_window_ms(interval_s, parked=True)
+    judgment_receipt_fresh = (
+        judgment_scheduler_receipt_status == "completed"
+        and judgment_receipt_age_ms is not None
+        and judgment_receipt_age_ms <= receipt_freshness_window_ms
+    )
+    judgment_parked_receipt_fresh = (
+        judgment_scheduler_receipt_status == "parked"
+        and judgment_receipt_age_ms is not None
+        and judgment_receipt_age_ms <= parked_receipt_freshness_window_ms
+    )
 
     state: AssertionCandidateQueueState
     if producer_debt_count or producer_status in failed_producer_statuses or scheduler_state in {"stale", "stopped"}:
         state = "producer-stalled"
     elif stale_pending_count:
         state = "stale-pending"
+    elif pending_count and judgment_scheduler_receipt_status == "parked" and not judgment_parked_receipt_fresh:
+        state = "scheduler-stalled"
+        caveats.append(
+            "judgment scheduler has no fresh parked receipt; the bounded retry route is the next daemon tick"
+        )
+    elif pending_count and judgment_scheduler_receipt_status in {"parked", "unknown"}:
+        state = "parked-pending"
+        if judgment_scheduler_receipt_status == "parked":
+            caveats.append("judgment scheduler is parked; the bounded retry route is the next enabled daemon tick")
+        else:
+            caveats.append("no judgment scheduler receipt is observable; pending candidates are not converged")
+    elif pending_count and (judgment_scheduler_receipt_status == "failed" or not judgment_receipt_fresh):
+        state = "scheduler-stalled"
+        caveats.append(
+            "judgment scheduler has no fresh successful receipt; the bounded retry route is the next daemon tick"
+        )
     elif pending_count:
         state = "pending"
     elif producer_fresh and scheduler_state == "fresh":
@@ -1710,6 +1788,10 @@ def _archive_assertion_candidate_queue_health(
         scheduler_state=scheduler_state,
         scheduler_heartbeat_at_ms=scheduler_heartbeat_at_ms,
         scheduler_heartbeat_age_ms=heartbeat_age_ms,
+        judgment_scheduler_receipt_status=judgment_scheduler_receipt_status,
+        judgment_scheduler_receipt_at_ms=judgment_scheduler_receipt_at_ms,
+        judgment_scheduler_receipt_age_ms=judgment_receipt_age_ms,
+        judgment_scheduler_receipt_reason=judgment_scheduler_receipt_reason,
         producer_debt_count=producer_debt_count,
         caveats=tuple(dict.fromkeys(caveats)),
     )

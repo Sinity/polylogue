@@ -34,9 +34,9 @@ def _events_db_path() -> Path:
     return archive_root() / "ops.db"
 
 
-def _ensure_events_db() -> sqlite3.Connection:
+def _ensure_events_db(path: Path | None = None) -> sqlite3.Connection:
     """Open and initialize the daemon events database for an emitter."""
-    path = _events_db_path()
+    path = _events_db_path() if path is None else path
     path.parent.mkdir(parents=True, exist_ok=True)
     initialize_archive_database(path, ArchiveTier.OPS)
     conn = open_daemon_connection(path)
@@ -44,7 +44,7 @@ def _ensure_events_db() -> sqlite3.Connection:
     return conn
 
 
-def _open_events_reader() -> sqlite3.Connection | None:
+def _open_events_reader(path: Path | None = None) -> sqlite3.Connection | None:
     """Open the existing event ledger read-only, or return ``None``.
 
     Status, polling, and SSE reads must not turn observation into an ops-tier
@@ -52,7 +52,7 @@ def _open_events_reader() -> sqlite3.Connection | None:
     same documented empty-ledger result without directory creation, tier
     initialization, DDL, or write-profile pragmas.
     """
-    path = _events_db_path()
+    path = _events_db_path() if path is None else path
     if not path.is_file():
         return None
     try:
@@ -115,20 +115,73 @@ def emit_daemon_event(
     *,
     operation_id: str | None = None,
     payload: dict[str, object] | None = None,
+    archive_root_path: Path | None = None,
+    observed_at_ms: int | None = None,
 ) -> None:
     """Emit a daemon event to the event ledger."""
-    conn = _ensure_events_db()
+    conn = _ensure_events_db() if archive_root_path is None else _ensure_events_db(archive_root_path / "ops.db")
     try:
         conn.execute(
             "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
             (
-                current_epoch_ms(),
+                current_epoch_ms() if observed_at_ms is None else observed_at_ms,
                 kind,
                 operation_id,
                 json.dumps(payload or {}),
             ),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_latest_daemon_event(
+    kind: str,
+    *,
+    operation_id: str | None = None,
+    archive_root_path: Path | None = None,
+) -> dict[str, object] | None:
+    """Return the latest structured event for a kind and optional operation."""
+
+    conn = _open_events_reader() if archive_root_path is None else _open_events_reader(archive_root_path / "ops.db")
+    if conn is None:
+        return None
+    try:
+        if operation_id is None:
+            row = conn.execute(
+                """
+                SELECT id, ts_ms, kind, operation_id, payload_json
+                FROM daemon_events
+                WHERE kind = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (kind,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT id, ts_ms, kind, operation_id, payload_json
+                FROM daemon_events
+                WHERE kind = ? AND operation_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (kind, operation_id),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row[4])
+        except (TypeError, ValueError):
+            payload = {}
+        return {
+            "id": row[0],
+            "ts_ms": row[1],
+            "kind": row[2],
+            "operation_id": row[3],
+            "payload": payload if isinstance(payload, dict) else {},
+        }
     finally:
         conn.close()
 
@@ -505,6 +558,7 @@ __all__ = [
     "emit_session_appended",
     "emit_session_updated",
     "emit_daemon_event",
+    "get_latest_daemon_event",
     "emit_message_appended",
     "get_daemon_event_counts",
     "get_last_ingestion_batch",

@@ -16,6 +16,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
+from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
@@ -1141,6 +1142,17 @@ def _fmt_age_s(value: float) -> str:
     if value >= 60:
         return f"{value / 60:.0f}m"
     return f"{value:.0f}s"
+
+
+def _fmt_receipt_age_ms(value: object) -> str | None:
+    """Format the queue receipt age without hiding malformed telemetry."""
+
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    seconds = max(0.0, float(value) / 1000.0)
+    if seconds >= 86400:
+        return f"{seconds / 86400:.1f}d"
+    return f"{seconds:.1f}s"
 
 
 def _live_cursor_summary_info() -> LiveCursorSummary:
@@ -2472,6 +2484,15 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
                 include_exact_raw_materialization_readiness=False,
                 fingerprint=lambda: _daemon_status_fingerprint(_active_status_db_path()),
             )
+            specs.append(
+                StatusComponentSpec(
+                    name="assertion_candidate_queue",
+                    scope="archive",
+                    collector=assertion_candidate_queue_status_summary,
+                    deadline_s=3.0,
+                    cost_class="moderate",
+                )
+            )
             _PERIODIC_STATUS_REGISTRY = StatusComponentRegistry(specs)
         return _PERIODIC_STATUS_REGISTRY
 
@@ -2758,6 +2779,7 @@ def build_daemon_status(
 
 def daemon_status_payload(
     *,
+    config: Config | None = None,
     sources: tuple[WatchSource, ...] | None = None,
     browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
@@ -2773,6 +2795,8 @@ def daemon_status_payload(
     (see its docstring for what this buys: resumable collection across many
     calls instead of a fresh, ephemeral registry per call).
     """
+    config_was_explicit = config is not None
+
     watch_sources = sources if sources is not None else default_sources()
 
     last_ingestion = None
@@ -2825,17 +2849,27 @@ def daemon_status_payload(
     # Same bounding discipline as archive_debt above: a queue-health lookup
     # is an archive scan, not a cheap fact, and must not be able to stall
     # this endpoint past its own deadline (polylogue-2o3d/polylogue-20d.17).
-    queue_snapshot = StatusComponentRegistry(
-        [
-            StatusComponentSpec(
-                name="assertion_candidate_queue",
-                scope="archive",
-                collector=assertion_candidate_queue_status_summary,
-                deadline_s=3.0,
-                cost_class="moderate",
-            )
-        ]
-    ).collect()["assertion_candidate_queue"]
+    # The periodic status route passes its persistent registry here so a slow
+    # queue scan is observed as refreshing instead of restarted on every tick.
+    # A caller-supplied Config is an explicit authority boundary. The
+    # process-wide periodic registry is intentionally ambient, so using its
+    # queue collector here could answer for a different archive or interval.
+    # Keep the persistent cache for ambient daemon refreshes and use a bounded
+    # one-shot collector for explicit configurations.
+    if registry is not None and not config_was_explicit:
+        queue_snapshot = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
+    else:
+        queue_snapshot = StatusComponentRegistry(
+            [
+                StatusComponentSpec(
+                    name="assertion_candidate_queue",
+                    scope="archive",
+                    collector=lambda: assertion_candidate_queue_status_summary(config=config),
+                    deadline_s=3.0,
+                    cost_class="moderate",
+                )
+            ]
+        ).collect()["assertion_candidate_queue"]
     assertion_candidate_queue = (
         queue_snapshot.value
         if queue_snapshot.value is not None
@@ -2926,17 +2960,18 @@ def daemon_status_payload(
     )
 
 
-def assertion_candidate_queue_status_summary() -> dict[str, object]:
+def assertion_candidate_queue_status_summary(*, config: Config | None = None) -> dict[str, object]:
     """Return the shared judgment-queue health product for status surfaces."""
 
     try:
         from polylogue.api.archive import _archive_assertion_candidate_queue_health
-        from polylogue.config import Config
-        from polylogue.paths import render_root
 
-        payload = _archive_assertion_candidate_queue_health(
-            Config(archive_root=archive_root(), render_root=render_root(), sources=[])
-        )
+        if config is None:
+            from polylogue.config import resolve_runtime_config
+
+            config = resolve_runtime_config().as_config()
+
+        payload = _archive_assertion_candidate_queue_health(config)
         return cast(dict[str, object], payload.model_dump(mode="json"))
     except Exception as exc:
         logger.warning("assertion candidate queue health collection failed: %s", exc, exc_info=True)
@@ -3030,6 +3065,22 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             f"scheduler: {queue.get('scheduler_state', 'unknown')}; "
             f"debt: {queue.get('producer_debt_count', 0)}"
         )
+        receipt_status = queue.get("judgment_scheduler_receipt_status")
+        if receipt_status is not None:
+            receipt_parts = [f"judgment scheduler receipt: {receipt_status}"]
+            receipt_at_ms = queue.get("judgment_scheduler_receipt_at_ms")
+            if isinstance(receipt_at_ms, int) and not isinstance(receipt_at_ms, bool):
+                try:
+                    receipt_parts.append(f"at={_epoch_ms_to_iso(receipt_at_ms)}")
+                except (OverflowError, OSError, ValueError):
+                    receipt_parts.append("at=invalid")
+            receipt_age = _fmt_receipt_age_ms(queue.get("judgment_scheduler_receipt_age_ms"))
+            if receipt_age is not None:
+                receipt_parts.append(f"age={receipt_age}")
+            receipt_reason = queue.get("judgment_scheduler_receipt_reason")
+            if receipt_reason is not None:
+                receipt_parts.append(f"reason={receipt_reason}")
+            lines.append("  " + "; ".join(receipt_parts))
     live = payload.get("live")
     if isinstance(live, dict):
         lines.append(f"Live sources: {live.get('existing_source_count', 0)}/{live.get('source_count', 0)} available")

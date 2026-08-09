@@ -43,6 +43,9 @@ ASSERTION_DEFAULT_AUTHOR_KIND: Final = "user"
 ASSERTION_DEFAULT_AUTHOR_REF: Final = "user:local"
 ASSERTION_DEFAULT_CONTEXT_POLICY: Final[dict[str, JSONValue]] = AssertionContextPolicy.default().as_json_document()
 
+JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE: Final = "run:judgment-automation-receipt-outbox"
+JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_TARGET: Final = "run:judgment-automation"
+
 #: Candidate-lifecycle terminal outcomes (set only by ``judge_assertion_candidate``
 #: via ``mark_assertion_status``, never by ``upsert_assertion`` itself). A
 #: non-user-authored write that lands on an assertion_id already in one of
@@ -1745,6 +1748,89 @@ def mark_assertion_status(
     return int(cursor.rowcount) > 0
 
 
+def judgment_automation_receipt_outbox_assertion_id(operation_id: str) -> str:
+    """Return the durable marker id for one scheduler operation."""
+
+    return _deterministic_id("assertion-judgment-automation-receipt-outbox", operation_id)
+
+
+def upsert_judgment_automation_receipt_outbox(
+    conn: sqlite3.Connection,
+    *,
+    operation_id: str,
+    receipt_payload: Mapping[str, object],
+    now_ms: int | None = None,
+) -> ArchiveAssertionEnvelope:
+    """Record a scheduler receipt intent in the durable user tier.
+
+    This is an outbox marker, not an ops receipt.  The caller writes it before
+    committing the user-tier judgment transaction, so a process crash cannot
+    leave a committed judgment without a recoverable operation identity.
+    """
+
+    if not operation_id:
+        raise ValueError("judgment automation receipt outbox requires an operation id")
+    return upsert_assertion(
+        conn,
+        assertion_id=judgment_automation_receipt_outbox_assertion_id(operation_id),
+        scope_ref=JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE,
+        target_ref=JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_TARGET,
+        key=operation_id,
+        kind=AssertionKind.RUN_STATE,
+        value={"operation_id": operation_id, "receipt": dict(receipt_payload)},
+        body_text=str(receipt_payload.get("reason") or "judgment automation receipt pending"),
+        author_ref="actor:judgment-automation",
+        author_kind="system",
+        status=AssertionStatus.ACTIVE,
+        visibility=AssertionVisibility.PRIVATE,
+        context_policy={"inject": False},
+        now_ms=now_ms,
+        require_promotion=False,
+    )
+
+
+def list_judgment_automation_receipt_outbox(
+    conn: sqlite3.Connection,
+    *,
+    limit: int | None = None,
+) -> list[ArchiveAssertionEnvelope]:
+    """List active scheduler receipt markers oldest first for ordered recovery."""
+
+    if limit is not None and limit <= 0:
+        raise ValueError("judgment automation receipt outbox limit must be a positive integer")
+    if not _table_exists(conn, "assertions"):
+        return []
+    limit_clause = " LIMIT ?" if limit is not None else ""
+    params: tuple[object, ...] = (
+        AssertionKind.RUN_STATE.value,
+        JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE,
+        AssertionStatus.ACTIVE.value,
+        *(() if limit is None else (limit,)),
+    )
+    rows = conn.execute(
+        f"""
+        SELECT {_ASSERTION_COLUMNS}
+        FROM assertions
+        WHERE kind = ? AND scope_ref = ? AND status = ? AND key IS NOT NULL
+        ORDER BY updated_at_ms ASC, assertion_id
+        {limit_clause}
+        """,
+        params,
+    ).fetchall()
+    return [_assertion_row_to_envelope(row) for row in rows]
+
+
+def ack_judgment_automation_receipt_outbox(
+    conn: sqlite3.Connection,
+    marker: ArchiveAssertionEnvelope,
+    *,
+    now_ms: int | None = None,
+) -> bool:
+    """Tombstone one outbox marker after its ops receipt is durable."""
+
+    return mark_assertion_status(conn, marker.assertion_id, AssertionStatus.DELETED, now_ms=now_ms)
+
+
 def list_assertion_candidates(
     conn: sqlite3.Connection,
     *,
@@ -2548,6 +2634,8 @@ __all__ = [
     "ASSERTION_DEFAULT_CONTEXT_POLICY",
     "ASSERTION_DEFAULT_STATUS",
     "ASSERTION_DEFAULT_VISIBILITY",
+    "JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE",
+    "JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_TARGET",
     "ArchiveAnnotationEnvelope",
     "ArchiveAssertionEnvelope",
     "ArchiveAssertionBulkJudgmentEnvelope",
@@ -2582,9 +2670,11 @@ __all__ = [
     "assertion_id_for_suppression",
     "assertion_id_for_pathology_finding",
     "assertion_id_for_transform_candidate",
+    "ack_judgment_automation_receipt_outbox",
     "assertion_id_for_workspace",
     "correction_id_for",
     "count_assertion_claims",
+    "judgment_automation_receipt_outbox_assertion_id",
     "judge_assertion_candidate",
     "judge_assertion_candidates",
     "list_archive_blackboard_note_envelopes",
@@ -2594,6 +2684,7 @@ __all__ = [
     "list_assertions_for_export",
     "list_assertions_by_kind",
     "list_assertions_for_target",
+    "list_judgment_automation_receipt_outbox",
     "mark_assertion_status",
     "read_archive_annotation_envelope",
     "read_archive_blackboard_note_envelope",
@@ -2607,6 +2698,7 @@ __all__ = [
     "read_latest_candidate_judgment",
     "upsert_annotation",
     "upsert_assertion",
+    "upsert_judgment_automation_receipt_outbox",
     "upsert_blackboard_note",
     "upsert_correction",
     "upsert_findings_as_assertions",

@@ -144,6 +144,29 @@ def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
     assert "Failing files: 1 shown, 2 omitted" in lines
 
 
+def test_daemon_status_plain_output_reports_judgment_scheduler_receipt() -> None:
+    lines = format_daemon_status_lines(
+        {
+            "assertion_candidate_queue": {
+                "state": "scheduler-stalled",
+                "pending_count": 2,
+                "producer_status": "completed",
+                "scheduler_state": "fresh",
+                "producer_debt_count": 0,
+                "judgment_scheduler_receipt_status": "failed",
+                "judgment_scheduler_receipt_at_ms": 1_800_000_000_000,
+                "judgment_scheduler_receipt_age_ms": 90_000,
+                "judgment_scheduler_receipt_reason": "configuration_reload_failed",
+            }
+        }
+    )
+
+    receipt_lines = [line for line in lines if "judgment scheduler receipt:" in line]
+    assert receipt_lines == [
+        "  judgment scheduler receipt: failed; at=2027-01-15T08:00:00+00:00; age=90.0s; reason=configuration_reload_failed"
+    ]
+
+
 @pytest.mark.parametrize(("payload_ok", "expected_exit"), [(False, 1), (True, 0)])
 def test_daemon_status_command_exit_matches_json_health_claim(payload_ok: bool, expected_exit: int) -> None:
     """``polylogued status`` exposes JSON and shell status consistently."""
@@ -1942,6 +1965,26 @@ def test_daemon_status_payload_marks_unproven_raw_frontier_non_green(
     assert payload["ok"] is False
 
 
+def test_daemon_status_contains_malformed_scheduler_config_inside_bounded_queue_health() -> None:
+    """A bad ambient interval cannot abort the daemon status route."""
+
+    status = status_module.DaemonStatus(
+        daemon_liveness=True,
+        raw_frontier_integrity=status_module.RawFrontierIntegrity(overall_status="healthy"),
+    )
+    with (
+        patch("polylogue.daemon.status.build_daemon_status", return_value=status),
+        patch("polylogue.daemon.status._archive_debt_status_summary", return_value={}),
+        patch("polylogue.daemon.events.get_last_ingestion_batch", return_value=None),
+        patch("polylogue.config.resolve_runtime_config", side_effect=ValueError("malformed interval")),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    queue = cast(dict[str, object], payload["assertion_candidate_queue"])
+    assert queue["state"] == "unavailable"
+    assert any("malformed interval" in str(caveat) for caveat in cast(list[object], queue["caveats"]))
+
+
 @pytest.mark.parametrize(
     ("available", "lifecycle_state", "expected_ok"),
     [
@@ -2844,13 +2887,13 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
     ``refreshing`` against the still-running first attempt.
     """
     import threading
-    from time import sleep
 
     from polylogue.daemon import status as status_module
     from polylogue.daemon.status import (
         periodic_status_component_registry,
         reset_periodic_status_component_registry,
     )
+    from polylogue.operations import status_protocol
 
     reset_periodic_status_component_registry()
     monkeypatch.setattr(status_module, "_EMBEDDING_READINESS_DEADLINE_S", 0.05)
@@ -2859,10 +2902,29 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
 
     calls = {"n": 0}
     release = threading.Event()
+    started = threading.Event()
+    completed = threading.Event()
+
+    monotonic_calls = {"n": 0}
+
+    def controlled_monotonic() -> float:
+        monotonic_calls["n"] += 1
+        return 0.0 if monotonic_calls["n"] == 1 else 0.05
+
+    monkeypatch.setattr(status_protocol, "monotonic", controlled_monotonic)
+
+    real_run_collector = status_protocol._run_collector
+
+    def run_collector_with_completion(spec: Any, attempt: Any) -> None:
+        real_run_collector(spec, attempt)
+        completed.set()
+
+    monkeypatch.setattr(status_protocol, "_run_collector", run_collector_with_completion)
 
     def slow_embedding_readiness_info(_db: Path) -> dict[str, object]:
         calls["n"] += 1
-        release.wait(timeout=5.0)
+        started.set()
+        release.wait()
         return {"embedding_status": "ready"}
 
     monkeypatch.setattr(status_module, "embedding_readiness_info", slow_embedding_readiness_info)
@@ -2872,6 +2934,7 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
         registry = periodic_status_component_registry()
         first = registry.collect(names=["embedding_readiness"])["embedding_readiness"]
         assert first.state == "timed_out"
+        assert started.wait(timeout=1.0)
         assert calls["n"] == 1
 
         # Tick 2, as a later periodic refresh would trigger: the SAME process
@@ -2884,15 +2947,77 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
         assert calls["n"] == 1  # still just the one attempt -- not duplicated
 
         release.set()
-        for _ in range(200):
-            if registry.last_good("embedding_readiness") is not None:
-                break
-            sleep(0.01)
+        assert completed.wait(timeout=1.0)
 
         third = registry.collect(names=["embedding_readiness"])["embedding_readiness"]
         assert third.state == "fresh"
         assert calls["n"] == 1  # the one attempt that was allowed to finish
         assert third.value == {"embedding_status": "ready"}
+    finally:
+        release.set()
+        reset_periodic_status_component_registry()
+
+
+def test_periodic_status_registry_resumes_slow_queue_health_across_ticks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Periodic queue scans use the persistent registry instead of relaunching."""
+    import threading
+
+    from polylogue.daemon import status as status_module
+    from polylogue.daemon.status import periodic_status_component_registry, reset_periodic_status_component_registry
+    from polylogue.operations import status_protocol
+
+    reset_periodic_status_component_registry()
+    calls = {"n": 0}
+    release = threading.Event()
+    started = threading.Event()
+    completed = threading.Event()
+
+    monotonic_calls = {"n": 0}
+
+    def controlled_monotonic() -> float:
+        monotonic_calls["n"] += 1
+        return 0.0 if monotonic_calls["n"] == 1 else 3.0
+
+    monkeypatch.setattr(status_protocol, "monotonic", controlled_monotonic)
+
+    real_run_collector = status_protocol._run_collector
+
+    def run_collector_with_completion(spec: Any, attempt: Any) -> None:
+        real_run_collector(spec, attempt)
+        completed.set()
+
+    monkeypatch.setattr(status_protocol, "_run_collector", run_collector_with_completion)
+
+    def slow_queue_health() -> dict[str, object]:
+        calls["n"] += 1
+        started.set()
+        release.wait()
+        return {"state": "healthy-empty", "pending_count": 0}
+
+    monkeypatch.setattr(status_module, "assertion_candidate_queue_status_summary", slow_queue_health)
+
+    try:
+        registry = periodic_status_component_registry()
+        first = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
+        assert first.state == "timed_out"
+        assert started.wait(timeout=1.0)
+        assert calls["n"] == 1
+
+        second = periodic_status_component_registry().collect(names=["assertion_candidate_queue"])[
+            "assertion_candidate_queue"
+        ]
+        assert second.state == "refreshing"
+        assert calls["n"] == 1
+
+        release.set()
+        assert completed.wait(timeout=1.0)
+
+        third = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
+        assert third.state == "fresh"
+        assert third.value == {"state": "healthy-empty", "pending_count": 0}
+        assert calls["n"] == 1
     finally:
         release.set()
         reset_periodic_status_component_registry()

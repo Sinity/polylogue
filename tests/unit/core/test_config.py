@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.config import Config, ConfigError, DriveConfig, Source
+from polylogue.config import Config, ConfigError, DriveConfig, PolylogueConfig, Source
 from polylogue.logging import _StderrProxy, configure_logging, get_logger
 
 
@@ -197,6 +197,14 @@ class TestConfigError:
         """ConfigError works with try/except."""
         with pytest.raises(ConfigError, match="bad config"):
             raise ConfigError("bad config")
+
+
+@pytest.mark.parametrize("raw_limit", [-1, 0, "-1", "not-a-number", True])
+def test_judgment_automation_batch_limit_fails_closed(raw_limit: object) -> None:
+    config = PolylogueConfig({"judgment_automation_batch_limit": raw_limit})
+
+    with pytest.raises(ConfigError, match="positive integer"):
+        _ = config.judgment_automation_batch_limit
 
 
 class TestSource:

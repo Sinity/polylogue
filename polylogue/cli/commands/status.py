@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1339,6 +1340,10 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     if isinstance(raw_frontier, dict):
         _render_raw_frontier_integrity(env, raw_frontier)
 
+    assertion_candidate_queue = status.get("assertion_candidate_queue")
+    if isinstance(assertion_candidate_queue, dict):
+        _render_assertion_candidate_queue(env, assertion_candidate_queue)
+
     # Sizes
     db_bytes = status.get("db_size_bytes", 0)
     disk_free = status.get("disk_free_bytes", 0)
@@ -1445,6 +1450,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     archive_debt = _compact_archive_debt_status(status.get("archive_debt"))
     if archive_debt:
         payload["archive_debt"] = archive_debt
+
+    assertion_candidate_queue = status.get("assertion_candidate_queue")
+    if isinstance(assertion_candidate_queue, dict):
+        payload["assertion_candidate_queue"] = assertion_candidate_queue
 
     raw_materialization = _compact_mapping_without(
         status.get("raw_materialization_readiness"),
@@ -1702,6 +1711,28 @@ def _show_direct_json(
     raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
     raw_frontier_integrity = _direct_raw_frontier_integrity(active_root, raw_materialization_readiness)
     raw_failure_status = _direct_raw_failure_status(root)
+    from polylogue.config import Config, resolve_runtime_config
+    from polylogue.daemon.status import assertion_candidate_queue_status_summary
+    from polylogue.paths import render_root
+
+    try:
+        resolved_runtime_config = resolve_runtime_config().as_config()
+    except Exception as exc:
+        assertion_candidate_queue = {
+            "mode": "assertion-candidate-queue-health",
+            "state": "unavailable",
+            "pending_count": 0,
+            "caveats": [f"queue health configuration unavailable: {exc}"],
+        }
+    else:
+        queue_config = Config(
+            archive_root=active_root,
+            render_root=render_root(),
+            sources=[],
+            db_path=active_db if active_db is not None else active_root / "index.db",
+            judgment_automation_interval_s=resolved_runtime_config.judgment_automation_interval_s,
+        )
+        assertion_candidate_queue = assertion_candidate_queue_status_summary(config=queue_config)
     component_readiness = _direct_component_readiness(
         env,
         active_root=active_root,
@@ -1736,6 +1767,7 @@ def _show_direct_json(
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
+        "assertion_candidate_queue": assertion_candidate_queue,
         "raw_materialization_readiness": raw_materialization_readiness,
         "raw_frontier_integrity": raw_frontier_integrity,
         "component_readiness": component_readiness,
@@ -2471,13 +2503,32 @@ def _render_assertion_candidate_queue(env: AppEnv, queue: dict[str, Any]) -> Non
     state = str(queue.get("state") or "unavailable")
     pending = _safe_int(queue.get("pending_count"))
     color = "green" if state == "healthy-empty" else "yellow"
-    if state in {"producer-stalled", "stale-pending", "unavailable"}:
+    if state in {"producer-stalled", "scheduler-stalled", "parked-pending", "stale-pending", "unavailable"}:
         color = "red"
     line = f"  Assertion candidate queue: [{color}]{state}, {pending} pending[/{color}]"
     oldest_age = queue.get("oldest_pending_age_ms")
     if isinstance(oldest_age, int | float):
         line += f", oldest={float(oldest_age) / (24 * 60 * 60 * 1000):.1f}d"
     env.ui.console.print(line)
+    receipt_status = queue.get("judgment_scheduler_receipt_status")
+    if receipt_status is not None:
+        receipt_details = [str(receipt_status)]
+        receipt_at_ms = queue.get("judgment_scheduler_receipt_at_ms")
+        if isinstance(receipt_at_ms, int | float) and not isinstance(receipt_at_ms, bool):
+            with suppress(OverflowError, OSError, ValueError):
+                receipt_timestamp = datetime.fromtimestamp(float(receipt_at_ms) / 1000, tz=UTC).isoformat()
+                receipt_details.append(f"at={receipt_timestamp}")
+        receipt_age_ms = queue.get("judgment_scheduler_receipt_age_ms")
+        if isinstance(receipt_age_ms, int | float) and not isinstance(receipt_age_ms, bool):
+            receipt_age_s = float(receipt_age_ms) / 1000
+            if receipt_age_s >= 24 * 60 * 60:
+                receipt_details.append(f"age={receipt_age_s / (24 * 60 * 60):.1f}d")
+            else:
+                receipt_details.append(f"age={receipt_age_s:.1f}s")
+        receipt_reason = queue.get("judgment_scheduler_receipt_reason")
+        if receipt_reason:
+            receipt_details.append(f"reason={receipt_reason}")
+        env.ui.console.print(f"    judgment scheduler receipt: {', '.join(receipt_details)}")
 
 
 def _render_sqlite_maintenance(env: AppEnv, status: dict[str, Any]) -> None:

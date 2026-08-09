@@ -9,6 +9,7 @@ import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +25,7 @@ from polylogue.cli.commands.status import (
     _direct_claim_guard,
     _direct_status_ok,
     _ops_workload_status,
+    _render_assertion_candidate_queue,
     _render_raw_replay_backlog,
     _show_daemon_status,
     _show_direct_json,
@@ -124,6 +126,50 @@ def _combined_calls(env: AppEnv) -> str:
     """Get combined output from the capturing console."""
     console: Any = env.ui.console
     return " ".join(console.calls)
+
+
+@pytest.mark.parametrize("state", ["scheduler-stalled", "parked-pending"])
+def test_status_renderer_includes_red_queue_state_and_receipt_details(state: str) -> None:
+    """Human status keeps receipt timing evidence visible with its verdict."""
+    env = _make_app_env()
+
+    _render_assertion_candidate_queue(
+        env,
+        {
+            "state": state,
+            "pending_count": 2,
+            "judgment_scheduler_receipt_status": "completed",
+            "judgment_scheduler_receipt_at_ms": 1_800_000_000_000,
+            "judgment_scheduler_receipt_age_ms": 90_000,
+            "judgment_scheduler_receipt_reason": "sweep_completed",
+        },
+    )
+
+    output = _combined_calls(env)
+    assert f"[red]{state}, 2 pending[/red]" in output
+    assert "judgment scheduler receipt: completed" in output
+    assert "at=2027-01-15T08:00:00+00:00" in output
+    assert "age=90.0s" in output
+    assert "reason=sweep_completed" in output
+
+
+def test_status_renderer_scales_multi_day_receipt_age_to_days() -> None:
+    env = _make_app_env()
+
+    _render_assertion_candidate_queue(
+        env,
+        {
+            "state": "scheduler-stalled",
+            "pending_count": 2,
+            "judgment_scheduler_receipt_status": "failed",
+            "judgment_scheduler_receipt_age_ms": 2 * 24 * 60 * 60 * 1000,
+            "judgment_scheduler_receipt_reason": "sweep_failed",
+        },
+    )
+
+    output = _combined_calls(env)
+    assert "age=2.0d" in output
+    assert "age=172800.0s" not in output
 
 
 def test_status_command_reads_a_real_daemon_http_status_route() -> None:
@@ -1868,6 +1914,67 @@ class TestNoArchiveStatus:
         assert result.exit_code == 0
         show_direct_json.assert_called_once_with(env, full=True, include_archive_readiness=False)
 
+    def test_status_command_direct_json_fallback_includes_queue_health(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        for tier in (ArchiveTier.INDEX, ArchiveTier.USER, ArchiveTier.OPS):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="direct-status-candidate",
+                target_ref="session:direct-status",
+                kind=AssertionKind.LESSON,
+                body_text="pending direct status candidate",
+                author_ref="agent:test",
+                author_kind="agent",
+            )
+            conn.commit()
+
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._daemon_live", return_value=False),
+            patch("polylogue.cli.commands.status.urlopen", side_effect=TimeoutError),
+        ):
+            result = CliRunner().invoke(
+                status_command,
+                ["--daemon-url", "http://127.0.0.1:8766", "--json"],
+                obj=env,
+            )
+
+        assert result.exit_code == 1
+        payload = json.loads(_combined_calls(env))
+        assert payload["source"] == "direct"
+        assert payload["assertion_candidate_queue"]["pending_count"] == 1
+        assert payload["assertion_candidate_queue"]["state"] == "parked-pending"
+
+    def test_status_command_direct_json_fallback_uses_configured_scheduler_interval(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        for tier in (ArchiveTier.INDEX, ArchiveTier.USER, ArchiveTier.OPS):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        queue_summary = MagicMock(return_value={"state": "healthy-empty", "pending_count": 0})
+        runtime_config = SimpleNamespace(
+            as_config=lambda: SimpleNamespace(judgment_automation_interval_s=7_200),
+        )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._daemon_live", return_value=False),
+            patch("polylogue.cli.commands.status.urlopen", side_effect=TimeoutError),
+            patch("polylogue.config.resolve_runtime_config", return_value=runtime_config),
+            patch("polylogue.daemon.status.assertion_candidate_queue_status_summary", queue_summary),
+        ):
+            result = CliRunner().invoke(
+                status_command,
+                ["--daemon-url", "http://127.0.0.1:8766", "--json"],
+                obj=env,
+            )
+
+        assert result.exit_code == 1
+        queue_config = queue_summary.call_args.kwargs["config"]
+        assert queue_config.judgment_automation_interval_s == 7_200
+
     def test_status_command_exact_archive_readiness_direct_fallback_opts_in(self) -> None:
         """Exact readiness is a separate explicit diagnostic flag."""
         env = _make_app_env()
@@ -1909,6 +2016,30 @@ class TestNoArchiveStatus:
         )
 
         assert "87.5% indexed" in _combined_calls(env)
+
+    def test_daemon_status_renders_queue_health_from_daemon_payload(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "assertion_candidate_queue": {
+                    "state": "scheduler-stalled",
+                    "pending_count": 2,
+                    "judgment_scheduler_receipt_status": "failed",
+                    "judgment_scheduler_receipt_at_ms": 1_800_000_000_000,
+                    "judgment_scheduler_receipt_age_ms": 90_000,
+                    "judgment_scheduler_receipt_reason": "sweep_failed:RuntimeError",
+                },
+            },
+        )
+
+        output = _combined_calls(env)
+        assert "[red]scheduler-stalled, 2 pending[/red]" in output
+        assert "judgment scheduler receipt: failed" in output
+        assert "age=90.0s" in output
+        assert "reason=sweep_failed:RuntimeError" in output
 
     def test_daemon_status_renders_failed_and_deferred_convergence_debt_separately(self) -> None:
         env = _make_app_env()
@@ -2228,6 +2359,7 @@ class TestNoArchiveStatus:
             "daemon_liveness": True,
             "live_cursor": {"tracked_file_count": 2},
             "archive_debt": {"rows": [{"debt_ref": "debt-1"}]},
+            "assertion_candidate_queue": {"state": "scheduler-stalled", "pending_count": 2},
         }
 
         _show_status_json(env, full_payload, full=True)
@@ -2246,6 +2378,7 @@ class TestNoArchiveStatus:
             "daemon_liveness": True,
             "live_cursor": {"tracked_file_count": 2},
             "archive_debt": {"rows": [{"debt_ref": "debt-1"}]},
+            "assertion_candidate_queue": {"state": "scheduler-stalled", "pending_count": 2},
         }
 
         with patch("polylogue.cli.commands.status.urlopen", return_value=_FakeDaemonResponse(full_payload)):
@@ -2270,6 +2403,7 @@ class TestNoArchiveStatus:
             "daemon_liveness": True,
             "live_cursor": {"tracked_file_count": 2},
             "archive_debt": {"rows": [{"debt_ref": "debt-1"}]},
+            "assertion_candidate_queue": {"state": "scheduler-stalled", "pending_count": 2},
         }
 
         with patch("polylogue.cli.commands.status.urlopen", return_value=_FakeDaemonResponse(full_payload)):
@@ -2284,6 +2418,7 @@ class TestNoArchiveStatus:
         assert payload["source"] == "daemon"
         assert "live_cursor" not in payload
         assert "rows" not in payload["archive_debt"]
+        assert payload["assertion_candidate_queue"] == full_payload["assertion_candidate_queue"]
 
     def test_status_command_uses_discovered_dev_loop_daemon_url(self) -> None:
         env = _make_app_env()
