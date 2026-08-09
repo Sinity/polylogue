@@ -2867,13 +2867,13 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
     ``refreshing`` against the still-running first attempt.
     """
     import threading
-    from time import sleep
 
     from polylogue.daemon import status as status_module
     from polylogue.daemon.status import (
         periodic_status_component_registry,
         reset_periodic_status_component_registry,
     )
+    from polylogue.operations import status_protocol
 
     reset_periodic_status_component_registry()
     monkeypatch.setattr(status_module, "_EMBEDDING_READINESS_DEADLINE_S", 0.05)
@@ -2882,10 +2882,29 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
 
     calls = {"n": 0}
     release = threading.Event()
+    started = threading.Event()
+    completed = threading.Event()
+
+    monotonic_calls = {"n": 0}
+
+    def controlled_monotonic() -> float:
+        monotonic_calls["n"] += 1
+        return 0.0 if monotonic_calls["n"] == 1 else 0.05
+
+    monkeypatch.setattr(status_protocol, "monotonic", controlled_monotonic)
+
+    real_run_collector = status_protocol._run_collector
+
+    def run_collector_with_completion(spec: Any, attempt: Any) -> None:
+        real_run_collector(spec, attempt)
+        completed.set()
+
+    monkeypatch.setattr(status_protocol, "_run_collector", run_collector_with_completion)
 
     def slow_embedding_readiness_info(_db: Path) -> dict[str, object]:
         calls["n"] += 1
-        release.wait(timeout=5.0)
+        started.set()
+        release.wait()
         return {"embedding_status": "ready"}
 
     monkeypatch.setattr(status_module, "embedding_readiness_info", slow_embedding_readiness_info)
@@ -2895,6 +2914,7 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
         registry = periodic_status_component_registry()
         first = registry.collect(names=["embedding_readiness"])["embedding_readiness"]
         assert first.state == "timed_out"
+        assert started.wait(timeout=1.0)
         assert calls["n"] == 1
 
         # Tick 2, as a later periodic refresh would trigger: the SAME process
@@ -2907,10 +2927,7 @@ def test_periodic_status_component_registry_resumes_slow_embedding_readiness_acr
         assert calls["n"] == 1  # still just the one attempt -- not duplicated
 
         release.set()
-        for _ in range(200):
-            if registry.last_good("embedding_readiness") is not None:
-                break
-            sleep(0.01)
+        assert completed.wait(timeout=1.0)
 
         third = registry.collect(names=["embedding_readiness"])["embedding_readiness"]
         assert third.state == "fresh"
@@ -2926,18 +2943,37 @@ def test_periodic_status_registry_resumes_slow_queue_health_across_ticks(
 ) -> None:
     """Periodic queue scans use the persistent registry instead of relaunching."""
     import threading
-    from time import sleep
 
     from polylogue.daemon import status as status_module
     from polylogue.daemon.status import periodic_status_component_registry, reset_periodic_status_component_registry
+    from polylogue.operations import status_protocol
 
     reset_periodic_status_component_registry()
     calls = {"n": 0}
     release = threading.Event()
+    started = threading.Event()
+    completed = threading.Event()
+
+    monotonic_calls = {"n": 0}
+
+    def controlled_monotonic() -> float:
+        monotonic_calls["n"] += 1
+        return 0.0 if monotonic_calls["n"] == 1 else 3.0
+
+    monkeypatch.setattr(status_protocol, "monotonic", controlled_monotonic)
+
+    real_run_collector = status_protocol._run_collector
+
+    def run_collector_with_completion(spec: Any, attempt: Any) -> None:
+        real_run_collector(spec, attempt)
+        completed.set()
+
+    monkeypatch.setattr(status_protocol, "_run_collector", run_collector_with_completion)
 
     def slow_queue_health() -> dict[str, object]:
         calls["n"] += 1
-        release.wait(timeout=5.0)
+        started.set()
+        release.wait()
         return {"state": "healthy-empty", "pending_count": 0}
 
     monkeypatch.setattr(status_module, "assertion_candidate_queue_status_summary", slow_queue_health)
@@ -2946,6 +2982,7 @@ def test_periodic_status_registry_resumes_slow_queue_health_across_ticks(
         registry = periodic_status_component_registry()
         first = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
         assert first.state == "timed_out"
+        assert started.wait(timeout=1.0)
         assert calls["n"] == 1
 
         second = periodic_status_component_registry().collect(names=["assertion_candidate_queue"])[
@@ -2955,10 +2992,7 @@ def test_periodic_status_registry_resumes_slow_queue_health_across_ticks(
         assert calls["n"] == 1
 
         release.set()
-        for _ in range(200):
-            if registry.last_good("assertion_candidate_queue") is not None:
-                break
-            sleep(0.01)
+        assert completed.wait(timeout=1.0)
 
         third = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
         assert third.state == "fresh"

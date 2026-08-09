@@ -1451,6 +1451,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if archive_debt:
         payload["archive_debt"] = archive_debt
 
+    assertion_candidate_queue = status.get("assertion_candidate_queue")
+    if isinstance(assertion_candidate_queue, dict):
+        payload["assertion_candidate_queue"] = assertion_candidate_queue
+
     raw_materialization = _compact_mapping_without(
         status.get("raw_materialization_readiness"),
         {"sampled_rows"},
@@ -1707,6 +1711,17 @@ def _show_direct_json(
     raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
     raw_frontier_integrity = _direct_raw_frontier_integrity(active_root, raw_materialization_readiness)
     raw_failure_status = _direct_raw_failure_status(root)
+    from polylogue.config import Config
+    from polylogue.daemon.status import assertion_candidate_queue_status_summary
+    from polylogue.paths import render_root
+
+    queue_config = Config(
+        archive_root=active_root,
+        render_root=render_root(),
+        sources=[],
+        db_path=active_db if active_db is not None else active_root / "index.db",
+    )
+    assertion_candidate_queue = assertion_candidate_queue_status_summary(config=queue_config)
     component_readiness = _direct_component_readiness(
         env,
         active_root=active_root,
@@ -1741,6 +1756,7 @@ def _show_direct_json(
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
+        "assertion_candidate_queue": assertion_candidate_queue,
         "raw_materialization_readiness": raw_materialization_readiness,
         "raw_frontier_integrity": raw_frontier_integrity,
         "component_readiness": component_readiness,

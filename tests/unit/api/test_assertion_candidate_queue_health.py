@@ -18,8 +18,13 @@ from polylogue import Polylogue
 from polylogue.api.archive import _archive_assertion_candidate_queue_health
 from polylogue.config import Config, resolve_runtime_config
 from polylogue.core.enums import AssertionKind
+from polylogue.daemon import status as status_module
 from polylogue.daemon.events import emit_daemon_event
-from polylogue.daemon.status import daemon_status_payload
+from polylogue.daemon.status import (
+    daemon_status_payload,
+    periodic_status_component_registry,
+    reset_periodic_status_component_registry,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     add_convergence_debt,
@@ -270,7 +275,9 @@ def test_scheduler_receipt_freshness_uses_configured_interval_and_bounded_grace(
     assert just_past_boundary.judgment_scheduler_receipt_age_ms == receipt_age_ms + 1
 
 
-def test_scheduler_receipt_freshness_uses_explicit_runtime_projection(tmp_path: Path) -> None:
+def test_scheduler_receipt_freshness_uses_explicit_runtime_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     interval_s = 48 * 60 * 60
     runtime = resolve_runtime_config(
         cli_overrides={"archive_root": str(tmp_path), "judgment_automation_interval_s": interval_s},
@@ -305,16 +312,34 @@ def test_scheduler_receipt_freshness_uses_explicit_runtime_projection(tmp_path: 
     assert config.judgment_automation_interval_s == interval_s
     assert health.state == "pending"
 
-    status_payload = daemon_status_payload(
-        config=config,
-        sources=(),
-        include_raw_replay_backlog=False,
-        include_exact_raw_materialization_readiness=False,
-        include_archive_debt=False,
-    )
-    queue_health = status_payload["assertion_candidate_queue"]
-    assert isinstance(queue_health, dict)
-    assert queue_health["state"] == "pending"
+    calls: list[Config | None] = []
+
+    def queue_health(*, config: Config | None = None) -> dict[str, object]:
+        calls.append(config)
+        return {
+            "state": "explicit-config" if config is not None else "ambient-config",
+            "archive_root": str(config.archive_root) if config is not None else "ambient",
+        }
+
+    monkeypatch.setattr(status_module, "assertion_candidate_queue_status_summary", queue_health)
+    reset_periodic_status_component_registry()
+    try:
+        registry = periodic_status_component_registry()
+        status_payload = daemon_status_payload(
+            config=config,
+            sources=(),
+            include_raw_replay_backlog=False,
+            include_exact_raw_materialization_readiness=False,
+            include_archive_debt=False,
+            registry=registry,
+        )
+    finally:
+        reset_periodic_status_component_registry()
+    queue_health_payload = status_payload["assertion_candidate_queue"]
+    assert isinstance(queue_health_payload, dict)
+    assert queue_health_payload["state"] == "explicit-config"
+    assert queue_health_payload["archive_root"] == str(tmp_path)
+    assert calls[-1] is config
 
 
 def test_failed_scheduler_receipt_is_not_converged(tmp_path: Path) -> None:

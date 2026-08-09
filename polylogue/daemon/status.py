@@ -2795,6 +2795,7 @@ def daemon_status_payload(
     (see its docstring for what this buys: resumable collection across many
     calls instead of a fresh, ephemeral registry per call).
     """
+    config_was_explicit = config is not None
     if config is None:
         from polylogue.config import resolve_runtime_config
 
@@ -2854,7 +2855,12 @@ def daemon_status_payload(
     # this endpoint past its own deadline (polylogue-2o3d/polylogue-20d.17).
     # The periodic status route passes its persistent registry here so a slow
     # queue scan is observed as refreshing instead of restarted on every tick.
-    if registry is not None:
+    # A caller-supplied Config is an explicit authority boundary. The
+    # process-wide periodic registry is intentionally ambient, so using its
+    # queue collector here could answer for a different archive or interval.
+    # Keep the persistent cache for ambient daemon refreshes and use a bounded
+    # one-shot collector for explicit configurations.
+    if registry is not None and not config_was_explicit:
         queue_snapshot = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
     else:
         queue_snapshot = StatusComponentRegistry(

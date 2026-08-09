@@ -1913,6 +1913,40 @@ class TestNoArchiveStatus:
         assert result.exit_code == 0
         show_direct_json.assert_called_once_with(env, full=True, include_archive_readiness=False)
 
+    def test_status_command_direct_json_fallback_includes_queue_health(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        for tier in (ArchiveTier.INDEX, ArchiveTier.USER, ArchiveTier.OPS):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="direct-status-candidate",
+                target_ref="session:direct-status",
+                kind=AssertionKind.LESSON,
+                body_text="pending direct status candidate",
+                author_ref="agent:test",
+                author_kind="agent",
+            )
+            conn.commit()
+
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._daemon_live", return_value=False),
+            patch("polylogue.cli.commands.status.urlopen", side_effect=TimeoutError),
+        ):
+            result = CliRunner().invoke(
+                status_command,
+                ["--daemon-url", "http://127.0.0.1:8766", "--json"],
+                obj=env,
+            )
+
+        assert result.exit_code == 1
+        payload = json.loads(_combined_calls(env))
+        assert payload["source"] == "direct"
+        assert payload["assertion_candidate_queue"]["pending_count"] == 1
+        assert payload["assertion_candidate_queue"]["state"] == "parked-pending"
+
     def test_status_command_exact_archive_readiness_direct_fallback_opts_in(self) -> None:
         """Exact readiness is a separate explicit diagnostic flag."""
         env = _make_app_env()
@@ -2297,6 +2331,7 @@ class TestNoArchiveStatus:
             "daemon_liveness": True,
             "live_cursor": {"tracked_file_count": 2},
             "archive_debt": {"rows": [{"debt_ref": "debt-1"}]},
+            "assertion_candidate_queue": {"state": "scheduler-stalled", "pending_count": 2},
         }
 
         _show_status_json(env, full_payload, full=True)
@@ -2315,6 +2350,7 @@ class TestNoArchiveStatus:
             "daemon_liveness": True,
             "live_cursor": {"tracked_file_count": 2},
             "archive_debt": {"rows": [{"debt_ref": "debt-1"}]},
+            "assertion_candidate_queue": {"state": "scheduler-stalled", "pending_count": 2},
         }
 
         with patch("polylogue.cli.commands.status.urlopen", return_value=_FakeDaemonResponse(full_payload)):
@@ -2339,6 +2375,7 @@ class TestNoArchiveStatus:
             "daemon_liveness": True,
             "live_cursor": {"tracked_file_count": 2},
             "archive_debt": {"rows": [{"debt_ref": "debt-1"}]},
+            "assertion_candidate_queue": {"state": "scheduler-stalled", "pending_count": 2},
         }
 
         with patch("polylogue.cli.commands.status.urlopen", return_value=_FakeDaemonResponse(full_payload)):
@@ -2353,6 +2390,7 @@ class TestNoArchiveStatus:
         assert payload["source"] == "daemon"
         assert "live_cursor" not in payload
         assert "rows" not in payload["archive_debt"]
+        assert payload["assertion_candidate_queue"] == full_payload["assertion_candidate_queue"]
 
     def test_status_command_uses_discovered_dev_loop_daemon_url(self) -> None:
         env = _make_app_env()
