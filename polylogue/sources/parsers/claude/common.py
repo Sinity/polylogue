@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MessageType, WebConstructType
+from polylogue.core.hashing import hash_payload
+from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import parse_timestamp
 
 from ..base import (
@@ -66,6 +68,7 @@ class _ClaudeMessageEvidence:
     delivery_status: str | None
     end_turn: bool | None
     thinking_configuration: dict[str, object] | None
+    owner_stable_key: str | None
 
     @property
     def has_material(self) -> bool:
@@ -614,6 +617,46 @@ def _message_attachments(item: Mapping[str, object], message_id: str) -> list[Pa
     return attachments
 
 
+def _owner_stable_key(
+    item: Mapping[str, object],
+    *,
+    parent_message_provider_id: str | None,
+    explicit_position: int | None,
+    explicit_branch_index: int | None,
+    explicit_variant_index: int | None,
+    blocks: list[ParsedContentBlock],
+    attachments: list[ParsedAttachment],
+) -> str | None:
+    """Derive reorder-stable private evidence for duplicate owner anchors."""
+    evidence: dict[str, object] = {}
+    for field, value in (
+        ("parent", parent_message_provider_id),
+        ("position", explicit_position),
+        ("branch", explicit_branch_index),
+        ("variant", explicit_variant_index),
+    ):
+        if value is not None:
+            evidence[field] = value
+    for field in ("message_key", "messageKey", "turn_id", "turnId", "sequence_id", "sequenceId"):
+        value = _first_identity_field(item, field)
+        if value is not None:
+            evidence[field] = value
+    block_ids = sorted(block.tool_id for block in blocks if block.tool_id)
+    if block_ids:
+        evidence["tool_ids"] = block_ids
+    if explicit_position is None and explicit_branch_index is None and explicit_variant_index is None:
+        attachment_ids = sorted(
+            (attachment.provider_attachment_id, attachment.provider_file_id, attachment.provider_drive_id)
+            for attachment in attachments
+            if attachment.provider_attachment_id or attachment.provider_file_id or attachment.provider_drive_id
+        )
+        if attachment_ids:
+            evidence["attachment_ids"] = [list(values) for values in attachment_ids]
+    if not evidence:
+        return None
+    return f"claude-owner-evidence:{hash_payload(evidence)}"
+
+
 def _canonical_record(item: Mapping[str, object]) -> str:
     return json.dumps(dict(item), sort_keys=True, separators=(",", ":"), default=str)
 
@@ -763,6 +806,10 @@ def _merge_attachment_rows(attachments: list[ParsedAttachment]) -> list[ParsedAt
                 "message_position": preferred.message_position
                 if preferred.message_position is not None
                 else other.message_position,
+                "message_variant_index": preferred.message_variant_index
+                if preferred.message_variant_index is not None
+                else other.message_variant_index,
+                "owner_coordinate": preferred.owner_coordinate or other.owner_coordinate,
                 "name": preferred.name or other.name,
                 "mime_type": preferred.mime_type or other.mime_type,
                 "size_bytes": preferred.size_bytes if preferred.size_bytes is not None else other.size_bytes,
@@ -950,12 +997,12 @@ def normalize_chat_messages(
         )
         occurrence = evidence_key_counts.get(base_evidence_key, 0)
         evidence_key_counts[base_evidence_key] = occurrence + 1
-        evidence_key = (
-            base_evidence_key
-            if native_message_id or occurrence == 0
-            else f"{base_evidence_key}:occurrence:{occurrence}"
-        )
+        evidence_key = base_evidence_key if occurrence == 0 else f"{base_evidence_key}:occurrence:{occurrence}"
         attachments = _message_attachments(item, native_message_id)
+        parent_message_provider_id = _message_parent_id(item)
+        explicit_position = _first_non_negative_int_field(item, "position")
+        explicit_branch_index = _first_non_negative_int_field(item, "branch_index", "branchIndex")
+        explicit_variant_index = _first_non_negative_int_field(item, "variant_index", "variantIndex")
         raw_evidence.append(
             _ClaudeMessageEvidence(
                 evidence_key=evidence_key,
@@ -970,10 +1017,10 @@ def normalize_chat_messages(
                 ),
                 blocks=content_blocks,
                 attachments=attachments,
-                parent_message_provider_id=_message_parent_id(item),
-                explicit_position=_first_non_negative_int_field(item, "position"),
-                explicit_branch_index=_first_non_negative_int_field(item, "branch_index", "branchIndex"),
-                explicit_variant_index=_first_non_negative_int_field(item, "variant_index", "variantIndex"),
+                parent_message_provider_id=parent_message_provider_id,
+                explicit_position=explicit_position,
+                explicit_branch_index=explicit_branch_index,
+                explicit_variant_index=explicit_variant_index,
                 explicit_is_active_path=_first_bool_field(item, "is_active_path", "isActivePath", "active_path"),
                 explicit_is_active_leaf=_first_bool_field(item, "is_active_leaf", "isActiveLeaf", "active_leaf"),
                 model_name=_message_model_name(item) or session_model,
@@ -982,18 +1029,29 @@ def normalize_chat_messages(
                 delivery_status=_message_delivery_status(item),
                 end_turn=_message_end_turn(item),
                 thinking_configuration=_thinking_configuration(item),
+                owner_stable_key=_owner_stable_key(
+                    item,
+                    parent_message_provider_id=parent_message_provider_id,
+                    explicit_position=explicit_position,
+                    explicit_branch_index=explicit_branch_index,
+                    explicit_variant_index=explicit_variant_index,
+                    blocks=content_blocks,
+                    attachments=attachments,
+                ),
             )
         )
 
     evidence_by_id: dict[str, _ClaudeMessageEvidence] = {}
-    duplicate_ids: set[str] = set()
+    native_id_counts = Counter(
+        evidence.native_provider_message_id for evidence in raw_evidence if evidence.native_provider_message_id
+    )
+    duplicate_ids: set[str] = {native_id for native_id, count in native_id_counts.items() if count > 1}
     for evidence in raw_evidence:
         evidence_id = evidence.evidence_key
         existing = evidence_by_id.get(evidence_id)
         if existing is None:
             evidence_by_id[evidence_id] = evidence
             continue
-        duplicate_ids.add(evidence.native_provider_message_id)
         evidence_by_id[evidence_id] = max((existing, evidence), key=_evidence_richness)
     if duplicate_ids:
         ingest_flags.append(CLAUDE_DUPLICATE_MESSAGE_ID_INGEST_FLAG)
@@ -1094,6 +1152,11 @@ def normalize_chat_messages(
             timestamp=evidence.timestamp,
             blocks=evidence.blocks,
             parent_message_provider_id=evidence.parent_message_provider_id,
+            owner_coordinate=MessageOwnerCoordinate(
+                stable_key=evidence.owner_stable_key,
+                position=position_by_id[evidence.evidence_key],
+                variant_index=variant_index_by_id[evidence.evidence_key],
+            ),
             position=position_by_id[evidence.evidence_key],
             branch_index=branch_index_by_id.get(evidence.evidence_key, 0),
             variant_index=variant_index_by_id[evidence.evidence_key],
@@ -1125,7 +1188,17 @@ def normalize_chat_messages(
 
     attachments = _merge_attachment_rows(
         [
-            attachment.model_copy(update={"message_position": position_by_id[evidence.evidence_key]})
+            attachment.model_copy(
+                update={
+                    "message_position": position_by_id[evidence.evidence_key],
+                    "message_variant_index": variant_index_by_id[evidence.evidence_key],
+                    "owner_coordinate": MessageOwnerCoordinate(
+                        stable_key=evidence.owner_stable_key,
+                        position=position_by_id[evidence.evidence_key],
+                        variant_index=variant_index_by_id[evidence.evidence_key],
+                    ),
+                }
+            )
             for evidence in emitted
             for attachment in evidence.attachments
         ]

@@ -10,6 +10,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SessionKind, TitleSource, WebConstructType
+from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
 
@@ -150,6 +151,9 @@ class ParsedMessage(BaseModel):
     # only the resulting archive message id. It is never provider identity or
     # persisted parser data.
     parent_message_position: int | None = Field(default=None, exclude=True, repr=False)
+    # Private parser-to-writer evidence. This never becomes provider identity
+    # or a public message id.
+    owner_coordinate: MessageOwnerCoordinate | None = Field(default=None, exclude=True, repr=False)
     position: int | None = None
     branch_index: int = 0
     variant_index: int | None = None
@@ -251,6 +255,11 @@ class ParsedAttachment(BaseModel):
     # Transport-only linkage for id-less source messages. This is parser-local
     # bookkeeping, never a provider identity or stored attachment column.
     message_position: int | None = Field(default=None, exclude=True, repr=False)
+    message_variant_index: int | None = Field(default=None, exclude=True, repr=False)
+    # Full private owner evidence. ``message_position`` and
+    # ``message_variant_index`` remain as parser compatibility fields, while
+    # hash/write/repair paths consume this typed coordinate.
+    owner_coordinate: MessageOwnerCoordinate | None = Field(default=None, exclude=True, repr=False)
     name: str | None = None
     mime_type: str | None = None
     size_bytes: int | None = None

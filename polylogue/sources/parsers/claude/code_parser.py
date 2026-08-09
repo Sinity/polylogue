@@ -1403,7 +1403,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         acc.messages.append(
             ParsedMessage(
                 # polylogue-slshy: no positional fallback -- empty id lets
-                # _message_comparison_id's content-anchor fallback run.
+                # _message_revision_match_id's content-anchor fallback run.
                 provider_message_id=str(item.get("uuid") or ""),
                 role=Role.SYSTEM,
                 text=summary_text,
@@ -1622,7 +1622,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     # user role avoids false positives from assistant text that quotes a marker.
     paste_spans = _detect_paste_spans(text) if resolved_role == Role.USER else []
     # polylogue-slshy: no positional fallback -- empty id lets
-    # _message_comparison_id's content-anchor fallback run instead of a
+    # _message_revision_match_id's content-anchor fallback run instead of a
     # position-derived string that would change identity when array
     # order shifts across re-acquisitions.
     provider_message_id = str(record_uuid or "")

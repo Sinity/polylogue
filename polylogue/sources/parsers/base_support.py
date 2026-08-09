@@ -440,7 +440,7 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
 
         if text:
             # polylogue-slshy: no positional fallback -- empty id lets
-            # _message_comparison_id's content-derived anchor fallback run
+            # _message_revision_match_id's content-derived anchor fallback run
             # instead of a position-derived string that would change identity
             # when array order shifts across re-acquisitions.
             msg_id = str(payload.get("id") or payload.get("uuid") or item.get("uuid") or item.get("id") or "")

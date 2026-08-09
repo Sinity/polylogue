@@ -1607,7 +1607,7 @@ def _code_mode_exec_envelopes(records: Iterable[object]) -> dict[int, _CodexExec
             raw_tool_id = payload.get("call_id") or payload.get("id")
             tool_id = str(raw_tool_id) if raw_tool_id else None
             # polylogue-slshy: no positional fallback -- an empty id lets
-            # _message_comparison_id's content-anchor (role + timestamp)
+            # _message_revision_match_id's content-anchor (role + timestamp)
             # fallback run instead of a position-derived string that would
             # change identity when array order shifts across re-acquisitions.
             provider_message_id = str(payload.get("id") or raw_tool_id or "")

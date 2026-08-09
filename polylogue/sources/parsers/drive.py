@@ -9,7 +9,9 @@ from polylogue.archive.message.artifacts import classify_block_message_type, cla
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import Provider, TitleSource
+from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
 
@@ -378,8 +380,34 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         ):
             session_events.append(usage_event)
         chunk_attachments = _collect_chunk_attachments(chunk_obj, msg_id)
+        owner_evidence = sorted(
+            (
+                attachment.provider_attachment_id,
+                attachment.provider_file_id,
+                attachment.provider_drive_id,
+            )
+            for attachment in chunk_attachments
+            if attachment.provider_attachment_id or attachment.provider_file_id or attachment.provider_drive_id
+        )
+        owner_stable_key = (
+            "drive-owner-evidence:" + hash_payload({"attachments": [list(values) for values in owner_evidence]})
+            if owner_evidence
+            else None
+        )
+        owner_coordinate = MessageOwnerCoordinate(
+            stable_key=owner_stable_key,
+            position=message_position,
+            variant_index=0,
+        )
         chunk_attachments = [
-            attachment.model_copy(update={"message_position": message_position}) for attachment in chunk_attachments
+            attachment.model_copy(
+                update={
+                    "message_position": message_position,
+                    "message_variant_index": 0,
+                    "owner_coordinate": owner_coordinate,
+                }
+            )
+            for attachment in chunk_attachments
         ]
         observed_timestamps.append(message_timestamp)
         used_typed_model = False
@@ -428,6 +456,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
                 variant_index=0,
                 is_active_path=True,
                 parent_message_provider_id=(_branch_parent_provider_id(chunk_obj) or branch_child_parents.get(msg_id)),
+                owner_coordinate=owner_coordinate,
                 input_tokens=usage_fields["input_tokens"],
                 output_tokens=usage_fields["output_tokens"],
                 model_name=model_name,
