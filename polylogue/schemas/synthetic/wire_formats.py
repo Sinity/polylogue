@@ -149,6 +149,7 @@ class WireSupportReceipt:
     catalog_providers: tuple[str, ...]
     entries: tuple[WireSupportEntry, ...]
     missing_routes: tuple[str, ...]
+    witness_seed: int = 20260805
 
     @property
     def supported_count(self) -> int:
@@ -173,6 +174,7 @@ class WireSupportReceipt:
             "unsupported_count": self.unsupported_count,
             "validated_supported_count": self.validated_supported_count,
             "missing_routes": list(self.missing_routes),
+            "witness_seed": self.witness_seed,
             "complete": self.complete,
             "entries": [
                 {
@@ -1055,7 +1057,12 @@ def _parser_artifact_evidence(
     return tuple(evidence)
 
 
-def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20260805) -> WireSupportReceipt:
+def build_wire_support_receipt(
+    *,
+    registry: object | None = None,
+    seed: int = 20260805,
+    providers: Sequence[str] | None = None,
+) -> WireSupportReceipt:
     """Validate executable routes through the selected schema and parser.
 
     The provider set comes from the package registry.  The parser call is the
@@ -1074,7 +1081,7 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
     from polylogue.schemas.validator import SchemaValidator, ValidationResult
     from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 
-    catalog_providers = tuple(sorted(registry.list_providers()))  # type: ignore[attr-defined]
+    catalog_providers = tuple(sorted(providers or registry.list_providers()))  # type: ignore[attr-defined]
     entries: list[WireSupportEntry] = []
     missing_routes: list[str] = []
     for provider in catalog_providers:
@@ -1319,6 +1326,7 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
         catalog_providers=catalog_providers,
         entries=tuple(entries),
         missing_routes=tuple(sorted(missing_routes)),
+        witness_seed=seed,
     )
 
 

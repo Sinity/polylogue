@@ -19,6 +19,7 @@ from polylogue.schemas.operator.receipt import (
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS, build_wire_support_receipt
+from polylogue.sources.parsers.base_models import ParsedSession
 from tests.infra.inferred_corpus import (
     CorpusManifestKey,
     InferredCorpusManifest,
@@ -162,6 +163,47 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
     )
     assert restored == manifest
     assert restored.wire_support_receipt == wire_support.to_dict()
+
+
+def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipt = build_schema_inference_receipt(
+        registry,
+        provider="codex",
+        gate_receipt_digest=gate_digest,
+    )
+    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        providers=("codex",),
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    path = tmp_path / "campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    from polylogue.sources import dispatch as dispatch_module
+
+    original_parse_payload = dispatch_module.parse_payload
+
+    def drifted_parse_payload(*args: object, **kwargs: object) -> list[ParsedSession]:
+        if args and args[0] == "codex":
+            raise ValueError("simulated parser drift")
+        return original_parse_payload(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", drifted_parse_payload)
+    with pytest.raises(ValueError, match="wire-support receipt changed"):
+        read_inferred_corpus_manifest(
+            path,
+            campaign_mode=True,
+            registry=registry,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
 
 
 def test_manifest_refuses_a_selection_missing_from_bound_wire_support_receipt() -> None:

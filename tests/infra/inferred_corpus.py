@@ -37,9 +37,10 @@ from polylogue.schemas.synthetic.wire_formats import (
     WireParserWitness,
     WireSupportEntry,
     WireSupportReceipt,
+    build_wire_support_receipt,
 )
 
-INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION = 2
+INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION = 3
 UnsupportedCorpusReason: TypeAlias = Literal[
     "provider_without_wire_format",
     "wire_support_selection_unwitnessed",
@@ -912,6 +913,7 @@ def _validate_inference_handoff(
         gate_receipt_path=gate_receipt_path,
         archive_root=archive_root,
     )
+    _validate_current_wire_support_route(manifest, registry)
     if not manifest.supported_specs:
         raise ValueError("campaign mode has no executable synthetic corpus selection")
     expected_packages = package_hashes_for_registry(cast(SchemaReceiptRegistry, registry), providers)
@@ -1042,6 +1044,32 @@ def _validate_inference_handoff(
         raise ValueError(
             "schema-inference handoff unsupported/nonrepresentable decisions changed: "
             f"expected={sorted(expected_unsupported)!r}, actual={sorted(actual_unsupported)!r}"
+        )
+
+
+def _validate_current_wire_support_route(
+    manifest: InferredCorpusManifest,
+    registry: RuntimeSchemaRegistryLike,
+) -> None:
+    """Re-run the exact persisted wire witnesses through current production code."""
+
+    persisted = manifest.wire_support_receipt
+    if persisted is None:
+        return
+    witness_seed = persisted.get("witness_seed")
+    if isinstance(witness_seed, bool) or not isinstance(witness_seed, int):
+        raise ValueError("wire_support_receipt witness_seed must be an integer")
+    raw_providers = persisted.get("catalog_providers")
+    if not isinstance(raw_providers, list) or not all(isinstance(provider, str) for provider in raw_providers):
+        raise ValueError("wire_support_receipt catalog_providers must be a list of strings")
+    current = build_wire_support_receipt(
+        registry=registry,
+        seed=witness_seed,
+        providers=tuple(cast(str, provider) for provider in raw_providers),
+    )
+    if current.to_dict() != persisted:
+        raise ValueError(
+            "schema-inference wire-support receipt changed under the current parser or wire-normalizer route"
         )
 
 
