@@ -144,7 +144,9 @@ def test_green_skipped_slow_attempt_without_typed_terminal_authority_is_selectio
     attempt = _attempt(data, outcomes=("passed", "passed"))
     attempt["status"] = "complete"
     attempt["exit_code"] = 0
-    identity = dict(attempt["identity"])
+    raw_identity = attempt["identity"]
+    assert isinstance(raw_identity, dict)
+    identity = dict(raw_identity)
     identity["terminal_authorization"] = None
     attempt["identity"] = identity
     attempt["verification_scope"] = "narrow-terminal"

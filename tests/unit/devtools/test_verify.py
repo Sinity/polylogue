@@ -1138,6 +1138,7 @@ def test_resumed_seed_persists_full_selection_before_stamp_publication(
     def crash_before_stamp(path: Path, payload: object) -> None:
         if path == TESTMON_SEED_STAMP:
             raise RuntimeError("simulated crash before seed publication")
+        assert isinstance(payload, dict)
         original_write(path, payload)
 
     with patch("devtools.verify._atomic_write_json", side_effect=crash_before_stamp):
