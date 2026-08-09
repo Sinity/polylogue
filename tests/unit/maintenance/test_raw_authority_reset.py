@@ -260,3 +260,22 @@ def test_named_compatibility_facade_requires_index_backup(tmp_path: Path) -> Non
     _seed_index_seeds(tmp_path)
     with pytest.raises(RawAuthorityRecoveryError, match="backup authority"):
         prune_orphaned_index_revision_seeds(tmp_path, dry_run=False)
+
+
+def test_storage_compatibility_helpers_refuse_direct_mutation(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    _seed_index_seeds(tmp_path)
+
+    from polylogue.storage.raw_authority import (
+        prune_orphaned_index_revision_seeds as storage_prune_orphaned_index_revision_seeds,
+    )
+    from polylogue.storage.raw_authority import (
+        reset_raw_authority_census_ledger as storage_reset_raw_authority_census_ledger,
+    )
+
+    with pytest.raises(RuntimeError, match="direct raw-authority census mutation is disabled"):
+        storage_reset_raw_authority_census_ledger(tmp_path, backup_manifest=None, dry_run=False)
+    with pytest.raises(RuntimeError, match="direct orphaned-index-seed mutation is disabled"):
+        storage_prune_orphaned_index_revision_seeds(tmp_path, dry_run=False)

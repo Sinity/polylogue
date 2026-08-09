@@ -798,6 +798,14 @@ confirm-flag-strength authorization bound to that plan's hash, refusing
 (`preview_stale`) if the blocker was concurrently resolved between preview
 and confirm.
 
+### Raw-authority frontier ownership and recovery
+
+Routine raw-authority frontier application is daemon-owned. The daemon selects
+only executable proof-backed plans under the writer coordinator and validates
+the typed application receipt. `polylogue ops maintenance raw-authority-frontier`
+records an inspection census only; it has no manual plan selector or apply
+option.
+
 ### `polylogue ops maintenance raw-authority-recovery` - break-glass ledger recovery
 
 This command family is the only operator route for the two callerless raw-authority recovery actuators. It is inspect-only by default. The census reset removes only the five poisoned census-planning tables after a verified source-tier backup. The index-seed prune removes only active-index `raw_revision_heads` and `raw_revision_applications` rows whose source raw is absent. Parser census rows, source raws, blob receipts, and present-source revision rows are outside both target sets.

@@ -154,6 +154,9 @@ rows:
       - polylogue.mcp.server_cutover._dispatch_write (operation=delete_annotation, via delete_annotation)
 
   # --- Phase 3: executor-routed (raw-authority blocker resolution) -----------
+  # Routine raw-authority frontier application is intentionally not an
+  # operator mutation row. It is a daemon convergence sub-route under the
+  # writer coordinator; the operator frontier command is inspection-only.
   # Tonight-discovered operator gap (2026-07-21/22): resolve_raw_authority_
   # blocker had a working CLI adapter (raw-authority-blocker-resolve, its own
   # --yes gate) but NO census entry and no authorization path shared with any
