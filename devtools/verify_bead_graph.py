@@ -26,7 +26,6 @@ from devtools import beads_acceptance_contracts
 from devtools.beads_acceptance_contracts import validate as validate_acceptance_contract
 
 _CONTRACT_MANIFEST = Path(__file__).parents[1] / "docs" / "plans" / "beads-acceptance-contracts-2026-08-07.txt"
-REQUIRED_CONTRACT_IDS = frozenset(beads_acceptance_contracts.load_manifest(_CONTRACT_MANIFEST))
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        required_contract_ids = frozenset(beads_acceptance_contracts.load_manifest(_CONTRACT_MANIFEST))
         cycles_ok, cycles_output = _run_bd_dep_cycles()
         if not cycles_ok:
             if args.json:
@@ -472,25 +472,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"bead-graph: dependency cycle check failed: {cycles_output}", file=sys.stderr)
             return 1
         issues = _run_bd_list_all()
-    except (OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
-        if args.json:
-            print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
-        else:
-            print(f"bead-graph: failed to load live Beads state: {exc}", file=sys.stderr)
-        return 1
-    try:
-        beads_acceptance_contracts.load_manifest(_CONTRACT_MANIFEST)
     except SystemExit as exc:
         if args.json:
             print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
         else:
             print(f"bead-graph: {exc}", file=sys.stderr)
         return 1
+    except (OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
+        if args.json:
+            print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
+        else:
+            print(f"bead-graph: failed to load live Beads state: {exc}", file=sys.stderr)
+        return 1
     report = build_report(
         issues,
         cycles_ok=cycles_ok,
         cycles_output=cycles_output,
-        required_contract_ids=REQUIRED_CONTRACT_IDS,
+        required_contract_ids=required_contract_ids,
         enforce_reindex=True,
     )
     if args.json:
