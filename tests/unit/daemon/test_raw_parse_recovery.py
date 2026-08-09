@@ -22,6 +22,7 @@ These tests pin:
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -177,6 +178,32 @@ def test_raw_parse_recovery_missing_source_is_no_backlog(tmp_path: Path) -> None
     assert state.stages["raw_parse_recovery"] is StageState.DONE
     assert state.converged is True
     assert state.error_count == 0
+
+
+def test_raw_parse_recovery_uses_active_index_pointer(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "pointer.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
+
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    active_index.parent.mkdir(parents=True)
+    shutil.copy2(tmp_path / "index.db", active_index)
+    with sqlite3.connect(active_index) as conn:
+        origin = conn.execute("SELECT origin FROM main.sessions LIMIT 1").fetchone()
+        if origin is None:
+            with sqlite3.connect(tmp_path / "source.db") as source_conn:
+                origin = source_conn.execute("SELECT origin FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+        assert origin is not None
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, raw_id, content_hash) VALUES (?, ?, ?, zeroblob(32))",
+            ("conv-stuck", origin[0], raw_id),
+        )
+        conn.commit()
+
+    (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+
+    assert stage.check(path) is False
 
 
 def test_raw_parse_recovery_source_open_failure_is_failed_and_retryable(

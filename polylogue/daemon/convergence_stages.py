@@ -31,6 +31,7 @@ from polylogue.operations.raw_authority_verdict_cache import (
     warm_raw_authority_verdict_cache,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -873,9 +874,9 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path) -> int:
     ``execute`` call rather than silently missing real backlog.
     """
     source_db = db_path.parent / "source.db"
-    index_db = db_path.parent / "index.db"
     if not source_db.exists():
         return 0
+    index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
     normalized_root = str(path).rstrip("/")
     try:
         conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
