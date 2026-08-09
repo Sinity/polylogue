@@ -548,22 +548,23 @@ def test_operation_owned_receipts_are_not_coalesced(tmp_path: Path) -> None:
     """Distinct committed operations each retain an authoritative receipt."""
 
     _init_ops_db(tmp_path / "ops.db")
-    receipt_kwargs = {
-        "root": tmp_path,
-        "status": "parked",
-        "reason": "capability_gate_disabled",
-        "batch_limit": 200,
-        "retryable": True,
-        "suppress_identical_for_ms": 60_000,
-    }
-
     first = _record_judgment_automation_receipt(
-        **receipt_kwargs,
+        tmp_path,
+        status="parked",
+        reason="capability_gate_disabled",
+        batch_limit=200,
+        retryable=True,
+        suppress_identical_for_ms=60_000,
         operation_id="judgment-automation:operation-1",
         now_ms=10_000,
     )
     second = _record_judgment_automation_receipt(
-        **receipt_kwargs,
+        tmp_path,
+        status="parked",
+        reason="capability_gate_disabled",
+        batch_limit=200,
+        retryable=True,
+        suppress_identical_for_ms=60_000,
         operation_id="judgment-automation:operation-2",
         now_ms=10_001,
     )
