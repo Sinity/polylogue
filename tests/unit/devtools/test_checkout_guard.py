@@ -9,6 +9,7 @@ point at a different checkout than the one a tool is actually invoked from
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -183,10 +184,51 @@ def _write_in_progress_seed_attempt(root: Path, *, status: str = "running", **ov
         "artifact_dir": ".cache/verify/runs/seed-testmon-20260805T120000Z",
         "testmon_data_before": "missing",
     }
+    if status == "reusable":
+        nodeid = "tests/test.py::test_one"
+        payload.update(
+            {
+                "expected_nodeids": [nodeid],
+                "expected_count": 1,
+                "expected_digest": hashlib.sha256(nodeid.encode()).hexdigest(),
+                "selection": {"selected_count": 1, "selected_nodeids_omitted": 0},
+                "node_outcomes": [{"nodeid": nodeid, "outcome": "failed"}],
+                "exit_code": 1,
+                "testmon_data": "fingerprint",
+                "release_baseline_allowed": False,
+                "verification_scope": "affected",
+                "binding": {
+                    "mode": "exact",
+                    "checkout_root": str(root.resolve()),
+                    "source_checkout_root": None,
+                },
+            }
+        )
     payload.update(overrides)
     attempt = root / ".cache" / "testmon" / "seed-attempt.json"
     attempt.parent.mkdir(parents=True, exist_ok=True)
     attempt.write_text(json.dumps(payload))
+    if status == "reusable":
+        run_dir = root / ".cache" / "verify" / "runs" / str(payload["run_id"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "run.json").write_text(
+            json.dumps(
+                {
+                    "run_id": payload["run_id"],
+                    "checkout_root": str(root.resolve()),
+                    "artifact_dir": f".cache/verify/runs/{payload['run_id']}",
+                }
+            )
+        )
+        (root / ".cache" / "verify" / "current-run.json").write_text(
+            json.dumps(
+                {
+                    "run_id": payload["run_id"],
+                    "checkout_root": str(root.resolve()),
+                    "artifact_dir": f".cache/verify/runs/{payload['run_id']}",
+                }
+            )
+        )
     return attempt
 
 

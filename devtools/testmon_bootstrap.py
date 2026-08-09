@@ -66,6 +66,7 @@ from typing import Any
 
 from devtools.testmon_state import (
     TestmonSeedStamp,
+    attempt_is_checkout_bound,
     refresh_stamp,
     stamp_from_attempt,
     validate_stamp,
@@ -128,6 +129,7 @@ def decide_testmon_bootstrap(
     main_seed_attempt: Path | None = None,
     main_checkout_root: Path | None = None,
     local_checkout_root: Path | None = None,
+    local_seed_attempt: Path | None = None,
 ) -> BootstrapDecision:
     """Decide whether to copy the main checkout's testmon seed into a worktree.
 
@@ -149,6 +151,17 @@ def decide_testmon_bootstrap(
         )
     ):
         return BootstrapDecision(False, "local .cache/testmon already has a validated testmondata + seed stamp")
+    if local_testmon_data.is_file() and local_seed_attempt is not None and local_seed_attempt.is_file():
+        try:
+            local_attempt = json.loads(local_seed_attempt.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            local_attempt = None
+        if isinstance(local_attempt, Mapping) and attempt_is_checkout_bound(
+            local_attempt,
+            checkout_root=local_root,
+            protocol_version=protocol_version,
+        ):
+            return BootstrapDecision(False, "local .cache/testmon already has a checkout-bound selection attempt")
     if not main_testmon_data.is_file():
         return BootstrapDecision(
             False,
@@ -242,6 +255,7 @@ def _rebind_run_receipt(*, source: Path, destination: Path, checkout_root: Path,
             environment["checkout_root"] = str(checkout_root.resolve())
             environment["verify_state_origin"] = str(checkout_root.resolve())
         _atomic_write_json(destination / "run.json", payload_dict)
+        _atomic_write_json(checkout_root / ".cache" / "verify" / "current-run.json", payload_dict)
         return True
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
         return False
@@ -369,6 +383,9 @@ def bootstrap_testmon_seed_files(
             rebound_attempt = dict(source_attempt)
             rebound_attempt["testmon_data"] = refreshed.testmon_data
             rebound_attempt["artifact_dir"] = f".cache/verify/runs/{refreshed.run_id}"
+            rebound_attempt["binding"] = refreshed.binding.as_dict()
+            rebound_attempt["release_baseline_allowed"] = False
+            rebound_attempt["verification_scope"] = "affected"
             if (
                 stamp_from_attempt(
                     rebound_attempt,
@@ -454,6 +471,7 @@ def maybe_bootstrap_testmon_seed(
         main_seed_attempt=main_seed_attempt,
         main_checkout_root=main_checkout,
         local_checkout_root=repo_root,
+        local_seed_attempt=local_seed_attempt,
     )
     if not decision.should_bootstrap:
         return None

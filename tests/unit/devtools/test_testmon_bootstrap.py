@@ -275,7 +275,7 @@ def test_complete_red_attempt_bootstraps_as_selection_only_state(tmp_path: Path)
         json.dumps(
             {
                 "protocol_version": PROTOCOL_VERSION,
-                "status": "incomplete",
+                "status": "reusable",
                 "identity": {
                     "git_head": "head",
                     "worktree_fingerprint": "tree",
@@ -343,6 +343,24 @@ def test_complete_red_attempt_bootstraps_as_selection_only_state(tmp_path: Path)
     )
     assert rebound_receipt["run_id"] == "red-run"
     assert rebound_receipt["checkout_root"] == str((tmp_path / "lane").resolve())
+    current_run = json.loads((tmp_path / "lane" / ".cache" / "verify" / "current-run.json").read_text())
+    assert current_run["run_id"] == "red-run"
+    assert current_run["checkout_root"] == str((tmp_path / "lane").resolve())
+
+    rebound_decision = decide_testmon_bootstrap(
+        is_linked_worktree=True,
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        local_seed_attempt=local_attempt,
+        main_testmon_data=main_data,
+        main_seed_stamp=tmp_path / "main" / "seed.json",
+        main_seed_attempt=attempt,
+        protocol_version=PROTOCOL_VERSION,
+        main_checkout_root=tmp_path / "main",
+        local_checkout_root=tmp_path / "lane",
+    )
+    assert not rebound_decision.should_bootstrap
+    assert "checkout-bound selection attempt" in rebound_decision.reason
 
 
 def test_local_seed_missing_only_stamp_still_bootstraps(tmp_path: Path) -> None:

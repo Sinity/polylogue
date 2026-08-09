@@ -59,7 +59,11 @@ from devtools.pytest_supervisor import (
 )
 from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
 from devtools.testmon_state import (
+    BindingMode,
+    GraphStatus,
+    TestmonBinding,
     TestmonSeedStamp,
+    VerificationScope,
     inspect_testmon_database,
     refresh_stamp,
     stamp_from_attempt,
@@ -2346,6 +2350,7 @@ def _prepare_testmon_seed_attempt(
 ) -> dict[str, Any]:
     prior = _read_testmon_seed_attempt() if resume else None
     expected = _testmon_seed_expected_nodeids(prior) if prior is not None else []
+    prior_outcomes = prior.get("node_outcomes") if isinstance(prior, Mapping) else None
     payload = {
         "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
         "status": "running",
@@ -2353,10 +2358,13 @@ def _prepare_testmon_seed_attempt(
         "resume": resume,
         "expected_nodeids": expected,
         "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
+        "prior_node_outcomes": prior_outcomes if isinstance(prior_outcomes, list) else [],
         "started_at": datetime.now(timezone.utc).isoformat(),
         "run_id": run.run_id,
         "artifact_dir": str(run.relative_run_dir),
         "testmon_data_before": _file_fingerprint(TESTMON_DATA),
+        "binding": TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict(),
     }
     TESTMON_SEED_STAMP.unlink(missing_ok=True)
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
@@ -2391,6 +2399,7 @@ def _seed_node_outcomes_from_events(
     database: Mapping[str, Any],
     pytest_step: Mapping[str, Any] | None,
     use_database_fallback: bool = True,
+    prior_node_outcomes: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Classify every promised seed node into one explicit terminal state."""
     reports: dict[str, list[dict[str, Any]]] = {}
@@ -2436,6 +2445,8 @@ def _seed_node_outcomes_from_events(
             outcome, reason = "passed", "test call passed"
         elif any(report.get("outcome") == "skipped" for report in call_reports):
             outcome, reason = "skipped", "test call skipped"
+        elif any(report.get("outcome") == "skipped" for report in node_reports):
+            outcome, reason = "skipped", "test setup or teardown skipped"
         elif nodeid in started and nodeid not in finished and "timeout" in diagnosis:
             outcome, reason = "timeout", "supervisor timed out while node was active"
         elif nodeid in started and nodeid not in finished and "worker" in diagnosis:
@@ -2450,6 +2461,13 @@ def _seed_node_outcomes_from_events(
             outcome, reason = "passed", "testmon database recorded success"
         elif use_database_fallback and recorded.get(nodeid) == "failed":
             outcome, reason = "failed", "testmon database recorded failure"
+        elif prior_node_outcomes is not None and nodeid in prior_node_outcomes:
+            prior = prior_node_outcomes[nodeid]
+            prior_outcome = prior.get("outcome")
+            if prior_outcome in {"passed", "failed", "error", "skipped"}:
+                outcome, reason = str(prior_outcome), "terminal outcome carried from the prior seed attempt"
+            else:
+                outcome, reason = "missing", "prior seed attempt has no terminal outcome"
         else:
             outcome, reason = "missing", "no terminal report or testmon execution row"
         results.append(
@@ -2515,6 +2533,11 @@ def _finalize_testmon_seed_attempt(
         database=database,
         pytest_step=pytest_step,
         use_database_fallback=False,
+        prior_node_outcomes={
+            str(item["nodeid"]): item
+            for item in prepared.get("prior_node_outcomes", [])
+            if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
+        },
     )
     unsuccessful_nodeids = [
         str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
@@ -2594,6 +2617,8 @@ def _finalize_testmon_seed_attempt(
         "unsuccessful_nodeids": unsuccessful_nodeids,
         "testmon_data": _file_fingerprint(TESTMON_DATA),
         "pytest_step": dict(pytest_step) if pytest_step is not None else None,
+        "binding": TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict(),
+        "verification_scope": VerificationScope.RELEASE_BASELINE.value,
     }
     payload["release_baseline_allowed"] = bool(reusable_stamp is not None and reusable_stamp.release_baseline_allowed)
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
@@ -2602,6 +2627,83 @@ def _finalize_testmon_seed_attempt(
     else:
         TESTMON_SEED_STAMP.unlink(missing_ok=True)
     return payload
+
+
+def _refresh_testmon_selection_attempt(
+    *,
+    step: Mapping[str, Any],
+    run: VerifyRun,
+    exit_code: int,
+) -> None:
+    """Refresh a reusable red graph after every completed affected run."""
+    attempt = _read_testmon_seed_attempt()
+    if attempt is None or attempt.get("release_baseline_allowed") is True:
+        return
+    expected = _testmon_seed_expected_nodeids(attempt)
+    if not expected:
+        return
+    database = _testmon_database_state(expected)
+    artifact_dir = _safe_testmon_artifact_dir(step.get("artifact_dir"))
+    events_path = artifact_dir / "events.jsonl" if artifact_dir is not None else Path(".missing-testmon-events")
+    prior = {
+        str(item["nodeid"]): item
+        for item in attempt.get("node_outcomes", [])
+        if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
+    }
+    node_outcomes = _seed_node_outcomes_from_events(
+        events_path,
+        expected_nodeids=expected,
+        database=database,
+        pytest_step=step,
+        use_database_fallback=False,
+        prior_node_outcomes=prior,
+    )
+    graph_complete = (
+        database.get("graph_status") == GraphStatus.COMPLETE.value
+        and not database.get("missing_nodeids")
+        and database.get("error") is None
+        and database.get("orphan_execution_edges") == 0
+        and database.get("orphan_fingerprint_edges") == 0
+    )
+    terminal = all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+    prior_selection = attempt.get("selection")
+    payload = {
+        **attempt,
+        "status": "reusable" if graph_complete and terminal else "incomplete",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "exit_code": exit_code,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
+        "selection": {
+            **(dict(prior_selection) if isinstance(prior_selection, Mapping) else {}),
+            "selected_count": len(expected),
+            "selected_nodeids_omitted": 0,
+        },
+        "database": database,
+        "node_outcomes": node_outcomes,
+        "node_outcome_counts": dict(
+            sorted(
+                {
+                    outcome: sum(1 for item in node_outcomes if item.get("outcome") == outcome)
+                    for outcome in {str(item.get("outcome")) for item in node_outcomes}
+                }.items()
+            )
+        ),
+        "unsuccessful_nodeids": [
+            str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
+        ],
+        "testmon_data": _file_fingerprint(TESTMON_DATA),
+        "run_id": run.run_id,
+        "artifact_dir": str(run.relative_run_dir),
+        "pytest_step": dict(step),
+        "release_baseline_allowed": False,
+        "verification_scope": VerificationScope.AFFECTED.value,
+    }
+    raw_binding = attempt.get("binding")
+    if not isinstance(raw_binding, Mapping):
+        payload["binding"] = TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict()
+    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
 
 
 # ── main ────────────────────────────────────────────────────────────
@@ -2780,6 +2882,8 @@ def main(argv: list[str] | None = None) -> int:
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         step_results.append(step_result)
+        if label in {"pytest testmon", "pytest testmon (broad)"} and not args.seed_testmon and not full_pytest:
+            _refresh_testmon_selection_attempt(step=step_result, run=verify_run, exit_code=rc)
         if rc != 0:
             exit_code = rc
             if _stop_after_failed_step(label):
@@ -2833,11 +2937,15 @@ def main(argv: list[str] | None = None) -> int:
         }
 
     if args.quick or args.commit:
+        verification_scope = VerificationScope.NON_TEST
         release_baseline_allowed: bool | None = None
-    elif full_pytest:
-        release_baseline_allowed = exit_code == 0
+    elif full_pytest or args.seed_testmon:
+        verification_scope = VerificationScope.RELEASE_BASELINE
+        release_baseline_allowed = exit_code == 0 if full_pytest else _testmon_release_baseline_permission()
     else:
+        verification_scope = VerificationScope.AFFECTED
         release_baseline_allowed = _testmon_release_baseline_permission()
+    history_entry["verification_scope"] = verification_scope.value
     history_entry["release_baseline_allowed"] = release_baseline_allowed
     if release_baseline_allowed is False and tier in {"testmon", "lab", "seed-testmon"}:
         sys.stderr.write(

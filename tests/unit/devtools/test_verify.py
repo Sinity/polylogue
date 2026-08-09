@@ -553,6 +553,9 @@ def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, mo
 
     assert prepared["expected_nodeids"] == expected
     assert prepared["expected_count"] == 1
+    assert prepared["expected_digest"] == hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest()
+    persisted = json.loads(TESTMON_SEED_ATTEMPT.read_text())
+    assert persisted["expected_digest"] == prepared["expected_digest"]
 
 
 def test_seed_resume_rejects_selection_artifact_outside_checkout(
@@ -849,6 +852,65 @@ def test_seed_node_outcomes_preserve_interrupted_active_node(tmp_path: Path) -> 
     )
 
     assert outcomes[0]["outcome"] == "interrupted"
+
+
+def test_seed_node_outcomes_accept_setup_skip_as_terminal_skip(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": "tests/test_a.py::test_setup_skip",
+                "when": "setup",
+                "outcome": "skipped",
+            }
+        )
+        + "\n"
+    )
+
+    outcomes = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=["tests/test_a.py::test_setup_skip"],
+        database={"node_outcomes": {"tests/test_a.py::test_setup_skip": "missing"}},
+        pytest_step={},
+        use_database_fallback=False,
+    )
+
+    assert outcomes == [
+        {
+            "nodeid": "tests/test_a.py::test_setup_skip",
+            "outcome": "skipped",
+            "reason": "test setup or teardown skipped",
+            "started": False,
+            "finished": False,
+            "phases": [{"when": "setup", "outcome": "skipped", "duration_s": None}],
+        }
+    ]
+
+
+def test_resumed_seed_carries_forward_prior_terminal_outcome(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps(
+            {"event": "test_report", "nodeid": "tests/test_a.py::test_repaired", "when": "call", "outcome": "passed"}
+        )
+        + "\n"
+    )
+    outcomes = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=["tests/test_a.py::test_repaired", "tests/test_b.py::test_prior"],
+        database={"node_outcomes": {"tests/test_b.py::test_prior": "passed"}},
+        pytest_step={},
+        use_database_fallback=False,
+        prior_node_outcomes={
+            "tests/test_b.py::test_prior": {"nodeid": "tests/test_b.py::test_prior", "outcome": "passed"}
+        },
+    )
+
+    assert {item["nodeid"]: item["outcome"] for item in outcomes} == {
+        "tests/test_a.py::test_repaired": "passed",
+        "tests/test_b.py::test_prior": "passed",
+    }
 
 
 def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

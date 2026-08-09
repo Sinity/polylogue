@@ -45,6 +45,12 @@ class BindingMode(StrEnum):
     RELATIVE_FILE_FINGERPRINTS = "relative-file-fingerprints"
 
 
+class VerificationScope(StrEnum):
+    AFFECTED = "affected"
+    RELEASE_BASELINE = "release-baseline"
+    NON_TEST = "non-test"
+
+
 @dataclass(frozen=True, slots=True)
 class TestmonIdentity:
     git_head: str | None
@@ -380,6 +386,117 @@ def _is_bound_run_artifact(raw: object, *, checkout_root: Path, run_id: str) -> 
         return False
 
 
+def seed_marker_is_checkout_bound(
+    marker_path: Path,
+    *,
+    checkout_root: Path,
+    protocol_version: int,
+) -> bool:
+    """Validate only the typed ownership envelope of a seed marker.
+
+    This intentionally does not open or fingerprint SQLite. The checkout guard
+    uses this cheap predicate for every entrypoint; verify preflight performs
+    the exhaustive graph validation before authorizing selection.
+    """
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping):
+            return False
+        stamp = TestmonSeedStamp.from_mapping(payload, protocol_version=protocol_version)
+        return Path(stamp.binding.checkout_root).resolve() == checkout_root.resolve()
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+
+
+def attempt_is_checkout_bound(
+    attempt: Mapping[str, Any],
+    *,
+    checkout_root: Path,
+    protocol_version: int,
+    reusable_only: bool = True,
+) -> bool:
+    """Check a seed-attempt receipt without inspecting its SQLite graph."""
+    allowed_statuses = {"reusable", "complete"} if reusable_only else {"running", "incomplete", "reusable", "complete"}
+    if attempt.get("protocol_version") != protocol_version or attempt.get("status") not in allowed_statuses:
+        return False
+    identity = attempt.get("identity")
+    expected = attempt.get("expected_nodeids")
+    selection = attempt.get("selection")
+    if not isinstance(identity, Mapping) or not isinstance(expected, list) or not isinstance(selection, Mapping):
+        return False
+    if not expected or any(not isinstance(nodeid, str) or not nodeid for nodeid in expected):
+        return False
+    if len(set(expected)) != len(expected):
+        return False
+    if (
+        not isinstance(attempt.get("expected_count"), int)
+        or isinstance(attempt.get("expected_count"), bool)
+        or attempt.get("expected_count") != len(expected)
+    ):
+        return False
+    expected_digest = hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest()
+    if attempt.get("expected_digest") != expected_digest:
+        return False
+    try:
+        TestmonIdentity.from_mapping(identity)
+    except ValueError:
+        return False
+    omitted = selection.get("selected_nodeids_omitted")
+    selected_count = selection.get("selected_count")
+    if (
+        not isinstance(omitted, int)
+        or isinstance(omitted, bool)
+        or omitted != 0
+        or not isinstance(selected_count, int)
+        or isinstance(selected_count, bool)
+        or selected_count != len(expected)
+    ):
+        return False
+    recorded_data = attempt.get("testmon_data")
+    run_id = attempt.get("run_id")
+    artifact_dir = attempt.get("artifact_dir")
+    if (
+        not isinstance(recorded_data, str)
+        or not recorded_data
+        or not isinstance(run_id, str)
+        or not run_id
+        or not isinstance(artifact_dir, str)
+        or not artifact_dir
+        or not _is_bound_run_artifact(artifact_dir, checkout_root=checkout_root, run_id=run_id)
+    ):
+        return False
+    raw_binding = attempt.get("binding")
+    if raw_binding is None:
+        binding = TestmonBinding(BindingMode.EXACT, str(checkout_root.resolve()))
+    elif isinstance(raw_binding, Mapping):
+        try:
+            binding = TestmonBinding.from_mapping(raw_binding)
+        except ValueError:
+            return False
+    else:
+        return False
+    if Path(binding.checkout_root).resolve() != checkout_root.resolve():
+        return False
+    raw_permission = attempt.get("release_baseline_allowed")
+    if raw_permission is not None and not isinstance(raw_permission, bool):
+        return False
+    raw_scope = attempt.get("verification_scope")
+    if raw_scope is not None and raw_scope not in {scope.value for scope in VerificationScope}:
+        return False
+    if reusable_only and raw_permission is not False:
+        return False
+    if reusable_only:
+        outcomes = attempt.get("node_outcomes")
+        if not isinstance(outcomes, list) or len(outcomes) != len(expected):
+            return False
+        nodeids = [item.get("nodeid") for item in outcomes if isinstance(item, Mapping)]
+        if len(nodeids) != len(outcomes) or set(nodeids) != set(expected) or len(set(nodeids)) != len(nodeids):
+            return False
+        if any(item.get("outcome") not in {"passed", "failed", "error", "skipped"} for item in outcomes):
+            return False
+    return True
+
+
 def inspect_testmon_database(path: Path, expected_nodeids: Sequence[str]) -> GraphInspection:
     """Validate the real testmon schema and every expected dependency edge."""
     expected = tuple(expected_nodeids)
@@ -556,11 +673,7 @@ def stamp_from_attempt(
     protocol_version: int,
 ) -> TestmonSeedStamp | None:
     """Promote only a complete attempt, including a red one, into a stamp."""
-    if attempt.get("protocol_version") != protocol_version or attempt.get("status") not in {
-        "incomplete",
-        "reusable",
-        "complete",
-    }:
+    if attempt.get("protocol_version") != protocol_version or attempt.get("status") not in {"reusable", "complete"}:
         return None
     selection = attempt.get("selection")
     expected = attempt.get("expected_nodeids")
@@ -640,9 +753,29 @@ def stamp_from_attempt(
         and not graph.failed_nodeids
         else BaselineStatus.RED
     )
+    raw_permission = attempt.get("release_baseline_allowed")
+    if raw_permission is not None and (
+        not isinstance(raw_permission, bool) or raw_permission != (baseline is BaselineStatus.GREEN)
+    ):
+        return None
+    raw_scope = attempt.get("verification_scope")
+    if raw_scope is not None and raw_scope not in {scope.value for scope in VerificationScope}:
+        return None
     try:
         typed_identity = TestmonIdentity.from_mapping(identity)
     except ValueError:
+        return None
+    raw_binding = attempt.get("binding")
+    if raw_binding is None:
+        typed_binding = TestmonBinding(BindingMode.EXACT, str(checkout_root.resolve()))
+    elif isinstance(raw_binding, Mapping):
+        try:
+            typed_binding = TestmonBinding.from_mapping(raw_binding)
+        except ValueError:
+            return None
+        if Path(typed_binding.checkout_root).resolve() != checkout_root.resolve():
+            return None
+    else:
         return None
     return TestmonSeedStamp(
         protocol_version,
@@ -654,7 +787,7 @@ def stamp_from_attempt(
         exit_code,
         graph,
         typed_identity,
-        TestmonBinding(BindingMode.EXACT, str(checkout_root.resolve())),
+        typed_binding,
         file_fingerprint(data_path),
         run_id,
         artifact_dir,
@@ -670,9 +803,12 @@ __all__ = [
     "TestmonBinding",
     "TestmonIdentity",
     "TestmonSeedStamp",
+    "VerificationScope",
+    "attempt_is_checkout_bound",
     "file_fingerprint",
     "inspect_testmon_database",
     "refresh_stamp",
+    "seed_marker_is_checkout_bound",
     "stamp_from_attempt",
     "validate_stamp",
 ]

@@ -54,7 +54,7 @@ def _attempt(data: Path, *, outcomes: tuple[str, str] = ("passed", "failed")) ->
     )
     return {
         "protocol_version": PROTOCOL,
-        "status": "incomplete",
+        "status": "reusable",
         "identity": {
             "git_head": "head",
             "worktree_fingerprint": "tree",
@@ -114,18 +114,16 @@ def test_omitted_interrupted_and_uncovered_nodes_fail_closed(tmp_path: Path) -> 
     assert stamp_from_attempt(_attempt(data), data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
 
 
-def test_incomplete_all_pass_attempt_is_selection_only(tmp_path: Path) -> None:
+def test_incomplete_attempt_fails_closed(tmp_path: Path) -> None:
     data = tmp_path / "testmondata"
     _write_graph(data)
     attempt = _attempt(data, outcomes=("passed", "passed"))
     attempt["exit_code"] = 0
+    attempt["status"] = "incomplete"
 
     stamp = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)
 
-    assert stamp is not None
-    assert stamp.baseline_status is BaselineStatus.RED
-    assert stamp.affected_selection_allowed
-    assert not stamp.release_baseline_allowed
+    assert stamp is None
 
     attempt["status"] = "complete"
     completed = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)

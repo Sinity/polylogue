@@ -68,7 +68,7 @@ from pathlib import Path
 
 import tomllib
 
-from devtools.testmon_state import validate_stamp
+from devtools.testmon_state import attempt_is_checkout_bound, seed_marker_is_checkout_bound
 
 
 class CheckoutImportMismatchError(RuntimeError):
@@ -265,7 +265,7 @@ def _marker_origin(marker: Path) -> Path | None:
     return Path(raw).resolve()
 
 
-def _is_valid_in_progress_testmon_seed_attempt(attempt: Path) -> bool:
+def _is_valid_in_progress_testmon_seed_attempt(attempt: Path, *, checkout_root: Path) -> bool:
     """Recognize the live seed ledger before its completion marker exists.
 
     ``verify --seed-testmon`` writes this receipt before pytest starts and
@@ -279,6 +279,12 @@ def _is_valid_in_progress_testmon_seed_attempt(attempt: Path) -> bool:
         return False
     if not isinstance(payload, Mapping) or payload.get("status") not in {"running", "incomplete", "reusable"}:
         return False
+    if payload.get("status") == "reusable":
+        return attempt_is_checkout_bound(
+            payload,
+            checkout_root=checkout_root,
+            protocol_version=_TESTMON_SEED_PROTOCOL_VERSION,
+        )
     protocol_version = payload.get("protocol_version")
     if not isinstance(protocol_version, int) or isinstance(protocol_version, bool) or protocol_version <= 0:
         return False
@@ -338,15 +344,10 @@ def _cache_artifact(
     marker_path = repo_root / marker
     origin = _marker_origin(marker_path)
     if origin == repo_root:
-        if (
-            state_dir == _TESTMON_STATE_DIR
-            and validate_stamp(
-                marker_path,
-                state_path / "testmondata",
-                checkout_root=repo_root,
-                protocol_version=_TESTMON_SEED_PROTOCOL_VERSION,
-            )
-            is None
+        if state_dir == _TESTMON_STATE_DIR and not seed_marker_is_checkout_bound(
+            marker_path,
+            checkout_root=repo_root,
+            protocol_version=_TESTMON_SEED_PROTOCOL_VERSION,
         ):
             return (
                 origin,
@@ -365,7 +366,10 @@ def _cache_artifact(
         origin is None
         and not marker_path.exists()
         and state_dir == _TESTMON_STATE_DIR
-        and _is_valid_in_progress_testmon_seed_attempt(repo_root / _TESTMON_SEED_ATTEMPT)
+        and _is_valid_in_progress_testmon_seed_attempt(
+            repo_root / _TESTMON_SEED_ATTEMPT,
+            checkout_root=repo_root,
+        )
     ):
         return None, None
     if origin is None:
