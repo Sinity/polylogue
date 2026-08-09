@@ -217,6 +217,38 @@ def test_claude_code_append_plan_consumes_identity_capability_gate(
     assert seen == [("claude-code", False)]
 
 
+def test_claude_code_append_reuses_identity_for_tail_matching(
+    processor: tuple[LiveBatchProcessor, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hot append route performs one identity lookup and passes it to tail matching."""
+    proc, root, _ = processor
+    path = root / "session-abc.jsonl"
+    _write_jsonl(path, [_claude_code_record(session_id="abc", uuid="message-0")])
+    _seed_initial_ingest(proc, path, session_id="abc")
+    _append_jsonl(path, [_claude_code_record(session_id="abc", uuid="message-1", role="assistant", text="tail")])
+
+    lookup_count = 0
+    matched_identity: list[str | None] = []
+    original_lookup = proc._existing_provider_session_id
+
+    def count_lookup(candidate: Path) -> str | None:
+        nonlocal lookup_count
+        lookup_count += 1
+        return original_lookup(candidate)
+
+    def capture_identity(_path: Path, _payload: bytes, *, existing_id: str | None) -> bool:
+        matched_identity.append(existing_id)
+        return True
+
+    monkeypatch.setattr(proc, "_existing_provider_session_id", count_lookup)
+    monkeypatch.setattr(proc, "_claude_code_tail_matches_existing_identity", capture_identity)
+
+    assert proc._append_plan(path) is not None
+    assert lookup_count == 1
+    assert matched_identity == ["abc"]
+
+
 # ---------------------------------------------------------------------------
 # Scenario 1 — active Claude Code session appended to
 # ---------------------------------------------------------------------------

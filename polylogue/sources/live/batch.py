@@ -3664,7 +3664,9 @@ class LiveBatchProcessor:
                 "line and carried as native_id_hint, not spliced into hashed bytes",
             )
             return payload, identity
-        if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(path, payload):
+        if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(
+            path, payload, existing_id=identity
+        ):
             return None
         return payload, None
 
@@ -3753,8 +3755,9 @@ class LiveBatchProcessor:
         value = row[0]
         return value if isinstance(value, str) and value.strip() else None
 
-    def _claude_code_tail_matches_existing_identity(self, path: Path, payload: bytes) -> bool:
-        existing_id = self._existing_provider_session_id(path)
+    def _claude_code_tail_matches_existing_identity(
+        self, path: Path, payload: bytes, *, existing_id: str | None
+    ) -> bool:
         if existing_id is None:
             return False
         session_ids: set[str] = set()
