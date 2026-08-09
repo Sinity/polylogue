@@ -676,7 +676,7 @@ class TestMessageParsing:
         assert len(message.blocks) == 1
         assert message.blocks[0].type == BlockType.THINKING
         assert message.blocks[0].text == "**Preparing to analyze git changes**"
-        assert message.provider_message_id.startswith("synthetic-")
+        assert message.provider_message_id == ""
 
     def test_reasoning_reordering_keeps_synthetic_revision_identity(self) -> None:
         first = {
@@ -704,7 +704,8 @@ class TestMessageParsing:
 
         result = parse([record, record], "codex-duplicate-reasoning")
 
-        assert result.messages[0].provider_message_id == result.messages[1].provider_message_id
+        assert result.messages[0].provider_message_id == result.messages[1].provider_message_id == ""
+        assert result.active_leaf_message_provider_id is None
         assert sum(message.is_active_leaf is True for message in result.messages) == 1
         assert result.messages[-1].is_active_leaf is True
 

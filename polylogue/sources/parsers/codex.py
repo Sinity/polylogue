@@ -34,7 +34,6 @@ from .base import (
     content_blocks_from_segments,
     fill_linear_parent_chain,
     mark_last_occurrence_as_active_leaf,
-    synthetic_message_id,
 )
 
 logger = get_logger(__name__)
@@ -2030,12 +2029,7 @@ def _codex_reasoning_message(
     combined_text = "\n\n".join(t for t in (summary_text, content_text) if t) or None
     timestamp = _iso_or_none(_record_timestamp(record) or timestamp_fallback)
     return ParsedMessage(
-        provider_message_id=synthetic_message_id(
-            role=Role.ASSISTANT,
-            text=combined_text,
-            timestamp=timestamp,
-            kind="codex-reasoning",
-        ),
+        provider_message_id="",
         role=Role.ASSISTANT,
         text=combined_text,
         timestamp=timestamp,
@@ -2507,12 +2501,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             if summary_text:
                 messages.append(
                     ParsedMessage(
-                        provider_message_id=synthetic_message_id(
-                            role=Role.SYSTEM,
-                            text=summary_text,
-                            timestamp=timestamp,
-                            kind="codex-compaction-summary",
-                        ),
+                        provider_message_id="",
                         role=Role.SYSTEM,
                         text=summary_text,
                         timestamp=timestamp,
@@ -2927,7 +2916,9 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
         commit_val = session_git.get("commit_hash")
         if isinstance(commit_val, str) and commit_val.strip():
             git_commit_hash_typed = commit_val.strip()
-    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
+    active_leaf_message_provider_id = (
+        messages[-1].provider_message_id if messages and messages[-1].provider_message_id else None
+    )
     messages = mark_last_occurrence_as_active_leaf(messages)
     # bd polylogue-ksgg: Codex rollout messages carry no parent-message
     # evidence at all (0% parented, 0 variant_index>0 rows) -- a strictly

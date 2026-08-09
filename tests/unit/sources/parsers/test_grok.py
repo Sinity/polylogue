@@ -96,12 +96,11 @@ def test_parse_conversation_nested_response_shape() -> None:
     assert session.messages[0].text == "Why is my useEffect running twice?"
     assert session.messages[0].timestamp == "2024-04-01T19:33:21+00:00"
     assert session.messages[0].blocks[0].type is BlockType.TEXT
-    assert session.messages[0].provider_message_id.startswith("synthetic-")
-    assert session.messages[1].provider_message_id.startswith("synthetic-")
-    assert session.messages[0].provider_message_id != session.messages[1].provider_message_id
+    assert session.messages[0].provider_message_id == ""
+    assert session.messages[1].provider_message_id == ""
     assert [m.position for m in session.messages] == [0, 1]
     assert [m.is_active_leaf for m in session.messages] == [False, True]
-    assert session.active_leaf_message_provider_id == session.messages[1].provider_message_id
+    assert session.active_leaf_message_provider_id is None
     assert session.updated_at == session.messages[-1].timestamp
 
 
@@ -203,7 +202,8 @@ def test_duplicate_grok_response_ids_keep_one_active_leaf() -> None:
 
     session = grok.parse_conversation(payload, "grok-duplicate")
 
-    assert session.messages[-2].provider_message_id == session.messages[-1].provider_message_id
+    assert session.messages[-2].provider_message_id == session.messages[-1].provider_message_id == ""
+    assert session.active_leaf_message_provider_id is None
     assert sum(message.is_active_leaf is True for message in session.messages) == 1
     assert session.messages[-1].is_active_leaf is True
 

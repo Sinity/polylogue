@@ -50,7 +50,6 @@ from .base import (
     fill_linear_parent_chain,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
-    synthetic_message_id,
 )
 
 _SENDER_ROLE: dict[str, Role] = {
@@ -145,16 +144,9 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
             continue
         grok_role = _role_for_sender(fields.get("sender"))
         timestamp = _timestamp_text(fields.get("create_time"))
-        provider_message_id = synthetic_message_id(
-            namespace=fallback_id,
-            role=grok_role,
-            text=text,
-            timestamp=timestamp,
-            kind="grok-response",
-        )
         messages.append(
             ParsedMessage(
-                provider_message_id=provider_message_id,
+                provider_message_id="",
                 role=grok_role,
                 text=text,
                 timestamp=timestamp,
@@ -174,7 +166,7 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
             )
         )
 
-    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
+    active_leaf_message_provider_id = None
     messages = mark_last_occurrence_as_active_leaf(messages)
     # bd polylogue-ksgg: Grok exports carry no native conversation/message id
     # or parent evidence at all (see module docstring) -- a plain ordered
