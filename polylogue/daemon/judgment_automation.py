@@ -164,6 +164,7 @@ def _record_judgment_automation_receipt(
     receipt_context: _JudgmentAutomationReceiptContext | None = None,
     suppress_identical_for_ms: int | None = None,
     receipt_persistence_degraded: bool = False,
+    user_tier_committed: bool = False,
 ) -> JudgmentAutomationReceiptOutcome:
     """Persist one scheduler outcome in the existing daemon event ledger."""
 
@@ -217,7 +218,7 @@ def _record_judgment_automation_receipt(
             result=result,
             status=status,
             reason=reason,
-            user_tier_committed=result is not None,
+            user_tier_committed=user_tier_committed,
         ) from None
 
 
@@ -387,6 +388,7 @@ def run_judgment_automation_sweep_once(
         retryable: bool,
         result: JudgmentAutomationSweepResult | None = None,
         receipt_persistence_degraded: bool = False,
+        user_tier_committed: bool = False,
     ) -> JudgmentAutomationReceiptOutcome:
         try:
             recorded = _record_judgment_automation_receipt(
@@ -400,6 +402,7 @@ def run_judgment_automation_sweep_once(
                 operation_id=operation_id,
                 receipt_context=_receipt_context,
                 receipt_persistence_degraded=receipt_persistence_degraded,
+                user_tier_committed=user_tier_committed,
             )
         except _JudgmentAutomationReceiptPersistenceError as exc:
             if result is not None:
@@ -408,12 +411,13 @@ def run_judgment_automation_sweep_once(
                     result=result,
                     status=status,
                     reason=reason,
-                    user_tier_committed=True,
+                    user_tier_committed=user_tier_committed,
                 ) from exc
             raise _JudgmentAutomationReceiptPersistenceError(
                 str(exc),
                 status=status,
                 reason=reason,
+                user_tier_committed=user_tier_committed,
             ) from exc
         if _receipt_context is not None and recorded is JudgmentAutomationReceiptOutcome.FAILED:
             raise _JudgmentAutomationReceiptPersistenceError(
@@ -458,6 +462,7 @@ def run_judgment_automation_sweep_once(
                 now_ms=now_ms,
                 result=JudgmentAutomationSweepResult(),
                 retryable=False,
+                user_tier_committed=False,
             )
             return JudgmentAutomationSweepResult()
 
@@ -517,6 +522,7 @@ def run_judgment_automation_sweep_once(
                 now_ms=now_ms,
                 result=result,
                 retryable=bool(result.failed),
+                user_tier_committed=True,
             )
         except _JudgmentAutomationReceiptPersistenceError as exc:
             raise _JudgmentAutomationReceiptPersistenceError(
