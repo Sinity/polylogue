@@ -3029,7 +3029,12 @@ def finalize_raw_parse_state(store: RawRevisionGovernanceHost, raw_id: str, *, s
 
 
 def mark_raw_parse_failed(
-    store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider, error: BaseException
+    store: RawRevisionGovernanceHost,
+    raw_id: str,
+    *,
+    provider: Provider,
+    error: BaseException,
+    preserve_existing_failure_evidence: bool = False,
 ) -> None:
     """Persist a bounded parse/index failure for retained raw evidence."""
     conn = store._ensure_source_conn()
@@ -3051,8 +3056,9 @@ def mark_raw_parse_failed(
                     manage_transaction=False,
                 )
         else:
-            _supersede_deferred_cas_evidence(store, raw_id, provider=provider, manage_transaction=False)
-            _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
+            if not preserve_existing_failure_evidence:
+                _supersede_deferred_cas_evidence(store, raw_id, provider=provider, manage_transaction=False)
+                _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
         apply_source_raw_state_update(
             conn,
             raw_id,

@@ -2469,6 +2469,7 @@ class LiveBatchProcessor:
                                 source_raw_id,
                                 provider=provider,
                                 error=ValueError("captured JSONL payload ends before a complete record boundary"),
+                                preserve_existing_failure_evidence=True,
                             )
                             result.raw_ids[record.raw_id] = source_raw_id
                             _accumulate_stage_timings(result.stage_timings_s, record_timings)
@@ -2485,6 +2486,7 @@ class LiveBatchProcessor:
                             source_raw_id,
                             provider=provider,
                             error=ValueError("captured JSONL payload ends before a complete record boundary"),
+                            preserve_existing_failure_evidence=True,
                         )
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
@@ -2624,6 +2626,7 @@ class LiveBatchProcessor:
                             error=ValueError(
                                 "parsed raw payload produced no sessions with positive conversational evidence"
                             ),
+                            preserve_existing_failure_evidence=True,
                         )
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
@@ -2862,6 +2865,7 @@ class LiveBatchProcessor:
                             )
                         raise
                     if provider is not None and source_raw_id is not None:
+                        preserve_existing_failure_evidence = False
                         if provider is Provider.UNKNOWN and _is_json_stream_decode_error(exc):
                             archive.record_raw_failure_evidence(
                                 source_raw_id,
@@ -2872,7 +2876,13 @@ class LiveBatchProcessor:
                                 kind=RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
                             )
                             result.terminal_raw_ids[record.raw_id] = source_raw_id
-                        archive.mark_raw_parse_failed(source_raw_id, provider=provider, error=exc)
+                            preserve_existing_failure_evidence = True
+                        archive.mark_raw_parse_failed(
+                            source_raw_id,
+                            provider=provider,
+                            error=exc,
+                            preserve_existing_failure_evidence=preserve_existing_failure_evidence,
+                        )
                     logger.warning(
                         "live.watcher: archive full ingest failed for %s: %s: %s",
                         record.source_path,
