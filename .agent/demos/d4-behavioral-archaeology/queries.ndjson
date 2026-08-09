@@ -1,6 +1,6 @@
-{"text": "sessions where seq(action:shell -> action:shell)", "then": "select --format json", "historical_receipt": "then select --json (retired alias)", "lowered_spec": {"unit": "session", "entry": "boolean", "predicate_kind": "sequence"}}
-{"text": "actions where exit_code:>=0 | group by tool | count", "lowered_spec": {"unit": "action", "pipeline_stages": ["group:tool", "count"]}}
-{"text": "actions where is_error:true | group by tool | count", "lowered_spec": {"unit": "action", "pipeline_stages": ["group:tool", "count"]}}
-{"text": "near:\"flaky async test\"", "lowered_spec": {"unit": "session", "entry": "compact", "retrieval_lane": "dialogue"}}
-{"text": "since:2y", "lowered_spec": {"unit": "session", "entry": "compact"}}
-{"text": "origin:codex-session", "then": "read --first --view messages", "lowered_spec": {"unit": "session", "entry": "compact"}}
+{"id": "q1", "text": "sessions where seq(action:shell -> action:shell)", "then": "select --format json", "historical_receipt": "then select --json (retired alias, historical only)", "current_run_id": "run:d4-behavioral-archaeology:20260809T061905Z", "lowered_spec": {"unit": "session", "entry": "boolean", "predicate_kind": "sequence"}}
+{"id": "q2", "text": "actions where exit_code:>=0 | group by tool | count", "current_run_id": "run:d4-behavioral-archaeology:20260809T061905Z", "lowered_spec": {"unit": "action", "pipeline_stages": ["group:tool", "count"]}}
+{"id": "q3", "text": "actions where is_error:true | group by tool | count", "current_run_id": "run:d4-behavioral-archaeology:20260809T061905Z", "lowered_spec": {"unit": "action", "pipeline_stages": ["group:tool", "count"]}}
+{"id": "q4", "text": "near:\"flaky async test\"", "current_run_id": "run:d4-behavioral-archaeology:20260809T061905Z", "lowered_spec": {"unit": "session", "entry": "compact", "retrieval_lane": "dialogue"}}
+{"id": "q5", "text": "since:2y", "current_run_id": "run:d4-behavioral-archaeology:20260809T061905Z", "lowered_spec": {"unit": "session", "entry": "compact"}}
+{"id": "q6", "text": "origin:codex-session", "then": "read --first --view messages", "current_run_id": "run:d4-behavioral-archaeology:20260809T061905Z", "lowered_spec": {"unit": "session", "entry": "compact"}}

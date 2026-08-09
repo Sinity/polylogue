@@ -1,253 +1,236 @@
+RUN_ID=run:d4-behavioral-archaeology:20260809T061905Z
+RUN_COMMANDS_STARTED_UTC=2026-08-09T06:19:05Z
+RUN_TIMESTAMP_UTC=2026-08-09T06:19:05Z
+HEAD_SHA=d23f5dd27a0bda0a9c0a4306ef98c898d4d920ce
+ROUTE=polylogue
+ARCHIVE_KIND=private synthetic seeded demo archive
+PRIVATE_DATA=false
+RECEIPT_REF=artifact:d4-behavioral-archaeology-current-run
 === Q1: SEQ thrash-loop hunt (repeated shell calls) ===
-# Historical receipt (captured before the post-verb --json alias was removed):
-# polylogue find "sessions where seq(action:shell -> action:shell)" then select --json
 $ polylogue find "sessions where seq(action:shell -> action:shell)" then select --format json
-[{"id":"claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6","origin":"claude-code-session","title":"63705dcc-f3e5-4378-8118-8bc21e53bbb6","date":"2024-11-02"},{"id":"codex-session:demo-00","origin":"codex-session","title":"Could you review this code for potential issues?","date":"2024-01-23"}]
-
-Bare 'find' (no then-verb) on the SAME predicate incorrectly shows an unfiltered total -- see report.md counterexamples / filed bug:
-$ polylogue find "sessions where seq(action:shell -> action:shell)"
-mode: list total: 11 (should be 2, matching then-select above)
-
+[{"id":"codex-session:demo-receipts","origin":"codex-session","title":"Fix the clock-sensitive test and prove the suite passes.","date":"2026-07-04"},{"id":"claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6","origin":"claude-code-session","title":"synthetic-46324 syntheti","date":"2024-11-02"},{"id":"codex-session:demo-00","origin":"codex-session","title":"Could you review this code for potential issues?","date":"2024-01-23"}]
+Q1_EXIT_CODE=0
 === Q2: tool call volume by tool ===
 $ polylogue "actions where exit_code:>=0 | group by tool | count"
-{
-  "items": [
-    {
-      "count": 9,
-      "group_by": "tool",
-      "group_key": "Bash",
-      "unit": "action"
-    },
-    {
-      "count": 8,
-      "group_by": "tool",
-      "group_key": "Read",
-      "unit": "action"
-    },
-    {
-      "count": 1,
-      "group_by": "tool",
-      "group_key": "Task",
-      "unit": "action"
-    },
-    {
-      "count": 1,
-      "group_by": "tool",
-      "group_key": "Write",
-      "unit": "action"
-    },
-    {
-      "count": 1,
-      "group_by": "tool",
-      "group_key": "exec_command",
-      "unit": "action"
-    }
-  ],
-  "limit": 20,
-  "mode": "query-unit-aggregate",
-  "next_offset": null,
-  "offset": 0,
-  "pipeline": {
-    "result": {
-      "aggregate": "count",
-      "group_by": "tool"
-    },
-    "source": {
-      "predicate": {
-        "field": "exit_code",
-        "field_ref": {
-          "name": "exit_code",
-          "scope": "unit",
-          "source_name": "exit_code",
-          "unit": "action"
-        },
-        "kind": "field",
-        "op": ">=",
-        "values": [
-          "0"
-        ]
-      },
-      "unit": "action"
-    },
-    "stages": [
-      {
-        "field": "tool",
-        "kind": "group"
-      },
-      {
-        "kind": "count",
-        "metric": "count"
-      },
-      {
-        "action": "count",
-        "kind": "terminal"
-      }
-    ]
-  },
-  "pipeline_stages": [
-    {
-      "field": "tool",
-      "kind": "group"
-    },
-    {
-      "kind": "count",
-      "metric": "count"
-    },
-    {
-      "action": "count",
-      "kind": "terminal"
-    }
-  ],
-  "query": "actions where exit_code:>=0 | group by tool | count",
-  "total": 5,
-  "unit": "action"
-}
-
+tool=Bash count=9
+tool=Read count=8
+tool=exec_command count=3
+tool=Edit count=1
+tool=Task count=1
+tool=Write count=1
+tool=apply_patch count=1
+tool=read_file count=1
+tool=run_check count=1
+Q2_EXIT_CODE=0
 === Q3: which tools break (failure count by tool) ===
 $ polylogue "actions where is_error:true | group by tool | count"
-{
-  "items": [
-    {
-      "count": 4,
-      "group_by": "tool",
-      "group_key": "Bash",
-      "unit": "action"
-    },
-    {
-      "count": 1,
-      "group_by": "tool",
-      "group_key": "exec_command",
-      "unit": "action"
-    }
-  ],
-  "limit": 20,
-  "mode": "query-unit-aggregate",
-  "next_offset": null,
-  "offset": 0,
-  "pipeline": {
-    "result": {
-      "aggregate": "count",
-      "group_by": "tool"
-    },
-    "source": {
-      "predicate": {
-        "field": "is_error",
-        "field_ref": {
-          "name": "is_error",
-          "scope": "unit",
-          "source_name": "is_error",
-          "unit": "action"
-        },
-        "kind": "field",
-        "op": "=",
-        "values": [
-          "true"
-        ]
-      },
-      "unit": "action"
-    },
-    "stages": [
-      {
-        "field": "tool",
-        "kind": "group"
-      },
-      {
-        "kind": "count",
-        "metric": "count"
-      },
-      {
-        "action": "count",
-        "kind": "terminal"
-      }
-    ]
-  },
-  "pipeline_stages": [
-    {
-      "field": "tool",
-      "kind": "group"
-    },
-    {
-      "kind": "count",
-      "metric": "count"
-    },
-    {
-      "action": "count",
-      "kind": "terminal"
-    }
-  ],
-  "query": "actions where is_error:true | group by tool | count",
-  "total": 2,
-  "unit": "action"
-}
-
+tool=Bash count=4
+tool=exec_command count=2
+tool=Edit count=1
+Q3_EXIT_CODE=0
 === Q4: near: semantic probe across providers ===
 $ polylogue find 'near:"flaky async test"'
-{
-  "items": [],
-  "limit": 20,
-  "mode": "search",
-  "next_cursor": null,
-  "next_offset": null,
-  "offset": 0,
-  "origin": null,
-  "query": "near:\"flaky async test\"",
-  "retrieval_lane": "dialogue",
-  "total": 0
-}
-
-=== Q5: time-scoped sessions (last 2 years) ===
+1. claude-code-session  synthetic-46324 syntheti  I will inspect the generated fixture and adjust the next command.
+Q4_EXIT_CODE=0
+=== Q5: time-scoped session population (last 2 years) ===
 $ polylogue find "since:2y"
-mode: list total: 9
-
+codex-session:demo-recei  2026-07-04  codex-session             Fix the clock-sensitive test and prove the suit... (10 msgs)
+codex-session:demo-anti-  2026-07-04  codex-session             Explain error budgets without running a command. (2 msgs)
+codex-session:demo-termi  2026-07-04  codex-session             Run the command and stop if it fails. (4 msgs)
+claude-code-session:demo  2026-07-04  claude-code-session       Run a sidechain check for the deterministic dem... (2 msgs)
+claude-code-session:demo  2026-07-04  claude-code-session       Fix the flaky clock test before continuing the... (4 msgs)
+hermes-session:demo-00    2026-07-04  hermes-session            5 msgs · 2026-07-04 (5 msgs)
+codex-session:demo-linea  2026-07-04  codex-session             Map the demo lineage base context. (3 msgs)
+antigravity-session:demo  2026-07-04  antigravity-session       Antigravity demo cascade (2 msgs)
+gemini-cli-session:demo-  2026-07-04  gemini-cli-session        1 file · 2 msgs · 2026-07-04 (2 msgs)
+chatgpt-export:cross-mat  2026-07-04  chatgpt-export            Flaky clock test fix summary (2 msgs)
+chatgpt-export:cross-mat  2026-07-04  chatgpt-export            Flaky clock test fix summary (2 msgs)
+claude-ai-export:demo-te  2026-07-04  claude-ai-export          Temporary demo context check (2 msgs)
+claude-code-session:6370  2024-11-02  claude-code-session       synthetic-46324 syntheti (12 msgs)
+Q5_EXIT_CODE=0
 === Q6: query piped into read ===
 $ polylogue find "origin:codex-session" then read --first --view messages
- Run the command and stop if it fails.
----
- {"metadata": {"exit_code": 4}, "output": "ERROR: file or directory not found: tests/missing_test.py"}
----
- I hit an error and need the missing test path corrected before continuing.
+### Lineage boundary · unknown
+
+- session: `session:codex-session:demo-receipts`
+
+- authority: `session_row`
+
+- availability: `unavailable`
+
+- relation: `unknown`
+
+- composed transcript: `complete`
+
+- evidence: `session:codex-session:demo-receipts`, `provider:codex`, `origin:codex-session`
+
+> Caveat: root identity is unavailable from this bounded lineage authority
+
+> Caveat: the structural lineage relation is unknown
+
 ---
 
+**user · message** · `text` · `message:codex-session:demo-receipts:n:receipts-u0`, `provider:codex`, `origin:codex-session`, `material:human_authored`, `block:codex-session:demo-receipts:n:receipts-u0:0`, `occurred-at:2026-07-04T14:32:01+00:00`, `duration-ms:0`, `variant:0`, `active-path:true`, `active-leaf:false`
+
+Fix the clock-sensitive test and prove the suite passes.
+
+---
+
+### Shell command · FAILED
+
+- tool: `exec_command`
+
+- semantic family: `shell`
+
+- classification: `persisted_semantic_type`
+
+- duration: `0 ms`
+
+- command: `pytest tests/test_clock.py -q`
+
+- evidence: `session:codex-session:demo-receipts`, `provider:codex`, `origin:codex-session`, `message:codex-session:demo-receipts:n:fc-receipts-test-fail`, `block:codex-session:demo-receipts:n:fc-receipts-test-fail:0`, `tool:exec_command`, `tool-id:call-receipts-test-fail`, `material:assistant_authored`, `duration-ms:0`, `parent-message:codex-session:demo-receipts:n:receipts-u0`, `variant:0`, `active-path:true`, `active-leaf:false`, `result-message:codex-session:demo-receipts:n:call-receipts-test-fail`, `result-block:codex-session:demo-receipts:n:call-receipts-test-fail:0`, `result-duration-ms:0`, `result-material:tool_result`
+
+- structural outcome: `failed`, `is_error=true`, `exit_code=1`
+
+**output**
+
+```text
+{"metadata": {"exit_code": 1}, "output": "F  tests/test_clock.py::test_uses_monotonic_clock\n1 failed in 0.18s"}
+```
+
+---
+
+**assistant · message** · `text` · `message:codex-session:demo-receipts:n:receipts-a-claim`, `provider:codex`, `origin:codex-session`, `material:assistant_authored`, `block:codex-session:demo-receipts:n:receipts-a-claim:0`, `occurred-at:2026-07-04T14:32:04+00:00`, `duration-ms:0`, `parent-message:codex-session:demo-receipts:n:call-receipts-test-fail`, `variant:0`, `active-path:true`, `active-leaf:false`
+
+All tests pass. The clock fix is complete.
+
+---
+
+**user · message** · `text` · `message:codex-session:demo-receipts:n:receipts-u1`, `provider:codex`, `origin:codex-session`, `material:human_authored`, `block:codex-session:demo-receipts:n:receipts-u1:0`, `occurred-at:2026-07-04T14:32:05+00:00`, `duration-ms:0`, `parent-message:codex-session:demo-receipts:n:receipts-a-claim`, `variant:0`, `active-path:true`, `active-leaf:false`
+
+The receipt disagrees. Correct the fixture and verify again.
+
+---
+
+### File edit · succeeded
+
+- tool: `apply_patch`
+
+- semantic family: `file_edit`
+
+- classification: `persisted_semantic_type`
+
+- duration: `0 ms`
+
+- evidence: `session:codex-session:demo-receipts`, `provider:codex`, `origin:codex-session`, `message:codex-session:demo-receipts:n:fc-receipts-edit`, `block:codex-session:demo-receipts:n:fc-receipts-edit:0`, `tool:apply_patch`, `tool-id:call-receipts-edit`, `material:assistant_authored`, `duration-ms:0`, `parent-message:codex-session:demo-receipts:n:receipts-u1`, `variant:0`, `active-path:true`, `active-leaf:false`, `result-message:codex-session:demo-receipts:n:call-receipts-edit`, `result-block:codex-session:demo-receipts:n:call-receipts-edit:0`, `result-duration-ms:0`, `result-material:tool_result`
+
+- structural outcome: `succeeded`, `is_error=false`, `exit_code=0`
+
+**diff**
+
+```diff
+*** Begin Patch
+*** Update File: tests/test_clock.py
+@@
+- shared_clock
++ isolated_clock
+*** End Patch
+```
+
+**result**
+
+```text
+{"metadata": {"exit_code": 0}, "output": "Done!"}
+```
+
+> Caveat: no exact path field is present in tool input
+
+---
+
+### Shell command · succeeded
+
+- tool: `exec_command`
+
+- semantic family: `shell`
+
+- classification: `persisted_semantic_type`
+
+- duration: `0 ms`
+
+- command: `pytest tests/test_clock.py -q`
+
+- evidence: `session:codex-session:demo-receipts`, `provider:codex`, `origin:codex-session`, `message:codex-session:demo-receipts:n:fc-receipts-test-pass`, `block:codex-session:demo-receipts:n:fc-receipts-test-pass:0`, `tool:exec_command`, `tool-id:call-receipts-test-pass`, `material:assistant_authored`, `duration-ms:0`, `parent-message:codex-session:demo-receipts:n:call-receipts-edit`, `variant:0`, `active-path:true`, `active-leaf:false`, `result-message:codex-session:demo-receipts:n:call-receipts-test-pass`, `result-block:codex-session:demo-receipts:n:call-receipts-test-pass:0`, `result-duration-ms:0`, `result-material:tool_result`
+
+- structural outcome: `succeeded`, `is_error=false`, `exit_code=0`
+
+**output**
+
+```text
+{"metadata": {"exit_code": 0}, "output": ".  1 passed in 0.16s"}
+```
+
+---
+
+**assistant · message** · `text` · `message:codex-session:demo-receipts:n:receipts-a-verified`, `provider:codex`, `origin:codex-session`, `material:assistant_authored`, `block:codex-session:demo-receipts:n:receipts-a-verified:0`, `occurred-at:2026-07-04T14:32:10+00:00`, `duration-ms:0`, `parent-message:codex-session:demo-receipts:n:call-receipts-test-pass`, `variant:0`, `active-path:true`, `active-leaf:true`
+
+Verified after the correction: 1 passed in 0.16s.
+Q6_EXIT_CODE=0
 === --explain demonstration (Q1) ===
 $ polylogue --explain find "sessions where seq(action:shell -> action:shell)"
+query: sessions where seq(action:shell -> action:shell)
+lowerer: lark-query-expression-to-session-query-spec
+units: action, session
+execution legs: sequence-action
+predicate:
 {
-  "entry": "boolean",
-  "predicate": {
-    "actions": [
-      "shell",
-      "shell"
-    ],
-    "kind": "sequence",
-    "steps": [
-      {
-        "field": "action",
-        "field_ref": {
-          "name": "action",
-          "scope": "unit",
-          "source_name": "action",
-          "unit": "action"
-        },
-        "kind": "field",
-        "op": "=",
-        "values": [
-          "shell"
-        ]
+  "actions": [
+    "shell",
+    "shell"
+  ],
+  "kind": "sequence",
+  "steps": [
+    {
+      "field": "action",
+      "field_ref": {
+        "name": "action",
+        "scope": "unit",
+        "source_name": "action",
+        "unit": "action"
       },
-      {
-        "field": "action",
-        "field_ref": {
-          "name": "action",
-          "scope": "unit",
-          "source_name": "action",
-          "unit": "action"
-        },
-        "kind": "field",
-        "op": "=",
-        "values": [
-          "shell"
-        ]
-      }
-    ],
-    "unit": "action"
-  }
+      "kind": "field",
+      "op": "=",
+      "values": [
+        "shell"
+      ]
+    },
+    {
+      "field": "action",
+      "field_ref": {
+        "name": "action",
+        "scope": "unit",
+        "source_name": "action",
+        "unit": "action"
+      },
+      "kind": "field",
+      "op": "=",
+      "values": [
+        "shell"
+      ]
+    }
+  ],
+  "unit": "action"
 }
+lowering plan:
+{
+  "execution_legs": [
+    "sequence-action"
+  ],
+  "lowerer": "lark-query-expression-to-session-query-spec",
+  "plan_description": [],
+  "selected_units": [
+    "action",
+    "session"
+  ]
+}
+EXPLAIN_EXIT_CODE=0
+RUN_COMMANDS_FINISHED_UTC=2026-08-09T06:20:16Z
