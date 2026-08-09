@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
@@ -17,17 +18,22 @@ from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.config import Config, Source
 from polylogue.core.enums import Provider
 from polylogue.core.errors import DatabaseError
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.pipeline.payload_types import ParseBatchObservation
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.ingest_worker import _fallback_id
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.planning import PlanningService
+from polylogue.pipeline.services.planning_backlog import collect_parse_backlog
 from polylogue.pipeline.services.validation import ValidationService  # used by TestPlanningService
 from polylogue.sources.parsers.base import RawSessionData
+from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.storage_records import make_raw_session
 
 pytestmark = pytest.mark.uses_real_clock("Same as test_async_index: acquired_at is opaque metadata.")
 
@@ -67,6 +73,134 @@ def _parse_batch_observation(
         "rss_end_mb": rss_end_mb,
         "peak_rss_growth_mb": peak_rss_growth_mb,
     }
+
+
+async def test_parse_backlog_excludes_terminal_failure_authority_until_forced_reparse(tmp_path: Path) -> None:
+    """Scheduled parse selection stops retrying a typed terminal refusal."""
+    initialize_active_archive_root(tmp_path)
+    source_db = tmp_path / "source.db"
+    backend = SQLiteBackend(db_path=source_db)
+    try:
+        await backend.save_raw_session(
+            make_raw_session(
+                raw_id="terminal-unsupported",
+                source_name="codex-session",
+                source_path="unsupported.jsonl",
+                validation_status="skipped",
+                parse_error="unsupported shape",
+                blob_size=1,
+                acquired_at="2026-08-09T00:00:00+00:00",
+            )
+        )
+        await backend.save_raw_failure_evidence(
+            "terminal-unsupported",
+            artifact_kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+            support_status=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.support_status.value,
+            outcome_code="unsupported_shape",
+            retryable=False,
+            evidence_ref="shape",
+            remediation="support it",
+            diagnostic="unsupported shape",
+        )
+
+        assert await collect_parse_backlog(backend, source_paths=None) == []
+        assert await collect_parse_backlog(backend, source_paths=None, force_reparse=True) == ["terminal-unsupported"]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    ["wrong-support-status", "wrong-coordinate"],
+)
+async def test_parse_backlog_keeps_malformed_terminal_evidence_retryable(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """Only an exact, typed terminal carrier suppresses scheduled retry."""
+    initialize_active_archive_root(tmp_path)
+    source_db = tmp_path / "source.db"
+    backend = SQLiteBackend(db_path=source_db)
+    raw_id = "malformed-terminal"
+    try:
+        await backend.save_raw_session(
+            make_raw_session(
+                raw_id=raw_id,
+                source_name="codex-session",
+                source_path="unsupported.jsonl",
+                validation_status="skipped",
+                parse_error="unsupported shape",
+                blob_size=1,
+                acquired_at="2026-08-09T00:00:00+00:00",
+            )
+        )
+        await backend.save_raw_failure_evidence(
+            raw_id,
+            artifact_kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+            support_status=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.support_status.value,
+            outcome_code="unsupported_shape",
+            retryable=False,
+            evidence_ref="shape",
+            remediation="support it",
+            diagnostic="unsupported shape",
+        )
+    finally:
+        await backend.close()
+
+    with sqlite3.connect(source_db) as conn:
+        if mutation == "wrong-support-status":
+            conn.execute(
+                "UPDATE raw_artifacts SET support_status = 'partial_decode' WHERE raw_id = ?",
+                (raw_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE raw_artifacts SET source_path = 'other.jsonl' WHERE raw_id = ?",
+                (raw_id,),
+            )
+
+    backend = SQLiteBackend(db_path=source_db)
+    try:
+        assert await collect_parse_backlog(backend, source_paths=None) == [raw_id]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_validation_failed_unsupported_terminal_evidence_remains_unexplained(tmp_path: Path) -> None:
+    """Validation failure authority is limited to corrupt/decode outcomes."""
+    initialize_active_archive_root(tmp_path)
+    source_db = tmp_path / "source.db"
+    backend = SQLiteBackend(db_path=source_db)
+    try:
+        await backend.save_raw_session(
+            make_raw_session(
+                raw_id="validation-failed-unsupported",
+                source_name="codex-session",
+                source_path="unsupported.jsonl",
+                validation_status="failed",
+                parse_error="unsupported shape",
+                blob_size=1,
+            )
+        )
+        await backend.save_raw_failure_evidence(
+            "validation-failed-unsupported",
+            artifact_kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+            support_status=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.support_status.value,
+            outcome_code="unsupported_shape",
+            retryable=False,
+            evidence_ref="shape",
+            remediation="support it",
+            diagnostic="unsupported shape",
+        )
+    finally:
+        await backend.close()
+
+    lifecycle = read_raw_failure_lifecycle(source_db)
+    assert lifecycle.terminal == 0
+    assert lifecycle.unexplained == 1
+    assert lifecycle.blocking is True
 
 
 class TestParseResultMerge:

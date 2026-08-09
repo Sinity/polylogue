@@ -57,14 +57,25 @@ def validated_raw_failure_evidence_kind(
     *,
     validation_failed: bool,
 ) -> RawFailureEvidenceKind | None:
-    """Return a typed kind only for a complete, self-consistent carrier."""
-    if validation_failed or artifact_kind is None or support_status is None:
+    """Return a typed kind only for a complete, self-consistent carrier.
+
+    Decode failures are reported by the worker as validation failures because
+    the payload cannot satisfy the input contract.  A matching terminal
+    corrupt-input/decode carrier explains that state; deferred evidence still
+    requires validation to have passed or been skipped.
+    """
+    if artifact_kind is None or support_status is None:
         return None
     try:
         evidence_kind = RawFailureEvidenceKind(str(artifact_kind))
     except ValueError:
         return None
     if evidence_kind.support_status.value != str(support_status):
+        return None
+    if validation_failed and evidence_kind not in {
+        RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
+    }:
         return None
     return evidence_kind
 
@@ -104,6 +115,9 @@ RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
         RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
     }
 )
+RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(
+    sorted((kind.value, kind.support_status.value) for kind in RawFailureEvidenceKind if kind.lifecycle == "terminal")
+)
 
 
 __all__ = [
@@ -113,6 +127,7 @@ __all__ = [
     "RAW_FAILURE_EVIDENCE_SUPPORT_STATUS_PAIRS",
     "RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS",
     "RAW_FAILURE_TERMINAL_EVIDENCE_KINDS",
+    "RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS",
     "RawFailureEvidenceKind",
     "validated_raw_failure_evidence_kind",
 ]

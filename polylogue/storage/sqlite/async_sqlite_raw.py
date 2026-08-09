@@ -35,6 +35,7 @@ class SQLiteRawMixin:
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
+        exclude_terminal_failure_evidence: bool = False,
     ) -> tuple[str, tuple[str, ...]]:
         """Build the canonical scoped raw-ID query."""
         return self.queries.raw_id_query(
@@ -43,6 +44,7 @@ class SQLiteRawMixin:
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,
+            exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
         )
 
     async def iter_raw_ids(
@@ -53,6 +55,7 @@ class SQLiteRawMixin:
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
+        exclude_terminal_failure_evidence: bool = False,
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
         """Iterate raw session IDs for a pipeline state slice."""
@@ -62,6 +65,7 @@ class SQLiteRawMixin:
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,
+            exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
             page_size=page_size,
         ):
             yield rid
@@ -74,6 +78,7 @@ class SQLiteRawMixin:
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
+        exclude_terminal_failure_evidence: bool = False,
         page_size: int = 1000,
     ) -> AsyncIterator[tuple[str, int]]:
         """Iterate raw session IDs with blob sizes for lightweight batching."""
@@ -83,6 +88,7 @@ class SQLiteRawMixin:
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,
+            exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
             page_size=page_size,
         ):
             yield raw_header
@@ -128,6 +134,15 @@ class SQLiteRawMixin:
                 evidence_ref=evidence_ref,
                 remediation=remediation,
                 diagnostic=diagnostic,
+                transaction_depth=self._transaction_depth,
+            )
+
+    async def supersede_deferred_cas_evidence(self, raw_id: str) -> None:
+        """Expire exact-coordinate CAS retry authority in the active transaction."""
+        async with self._get_connection() as conn:
+            await artifacts_q.supersede_deferred_cas_evidence(
+                conn,
+                raw_id,
                 transaction_depth=self._transaction_depth,
             )
 

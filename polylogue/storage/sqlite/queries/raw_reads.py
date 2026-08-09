@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Iterable, Sequence
 import aiosqlite
 
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.raw.models import RawSessionState
 from polylogue.storage.runtime import RawSessionRecord
@@ -36,6 +37,7 @@ def _raw_select_query(
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
+    exclude_terminal_failure_evidence: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
     where_clauses: list[str] = []
     params: list[str] = []
@@ -51,6 +53,20 @@ def _raw_select_query(
         placeholders = ",".join("?" for _ in validation_statuses)
         where_clauses.append(f"validation_status IN ({placeholders})")
         params.extend(validation_statuses)
+    if exclude_terminal_failure_evidence:
+        placeholders = ",".join("(?, ?)" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS)
+        where_clauses.append(
+            "NOT EXISTS ("
+            "SELECT 1 FROM raw_artifacts AS terminal_failure "
+            "WHERE terminal_failure.raw_id = raw_sessions.raw_id "
+            "AND terminal_failure.origin IS raw_sessions.origin "
+            "AND terminal_failure.source_path IS raw_sessions.source_path "
+            "AND terminal_failure.source_index IS raw_sessions.source_index "
+            f"AND (terminal_failure.artifact_kind, terminal_failure.support_status) IN ({placeholders})"
+            ")"
+        )
+        for pair in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS:
+            params.extend(pair)
 
     predicate, scope_params = _build_source_path_scope_filter(source_paths)
     if predicate:
@@ -71,6 +87,7 @@ def raw_id_query(
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
+    exclude_terminal_failure_evidence: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
     return _raw_select_query(
         "raw_id",
@@ -79,6 +96,7 @@ def raw_id_query(
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
         validation_statuses=validation_statuses,
+        exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
     )
 
 
@@ -89,6 +107,7 @@ def raw_header_query(
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
+    exclude_terminal_failure_evidence: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
     return _raw_select_query(
         "raw_id, blob_size",
@@ -97,6 +116,7 @@ def raw_header_query(
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
         validation_statuses=validation_statuses,
+        exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
     )
 
 
@@ -108,6 +128,7 @@ async def iter_raw_ids(
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
+    exclude_terminal_failure_evidence: bool = False,
     page_size: int = 1000,
 ) -> AsyncIterator[str]:
     sql, params = raw_id_query(
@@ -116,6 +137,7 @@ async def iter_raw_ids(
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
         validation_statuses=validation_statuses,
+        exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
     )
     cursor = await conn.execute(sql, params)
     while True:
@@ -134,6 +156,7 @@ async def iter_raw_headers(
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
+    exclude_terminal_failure_evidence: bool = False,
     page_size: int = 1000,
 ) -> AsyncIterator[tuple[str, int]]:
     sql, params = raw_header_query(
@@ -142,6 +165,7 @@ async def iter_raw_headers(
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
         validation_statuses=validation_statuses,
+        exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
     )
     cursor = await conn.execute(sql, params)
     while True:

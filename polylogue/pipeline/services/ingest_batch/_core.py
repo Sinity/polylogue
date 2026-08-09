@@ -2355,6 +2355,8 @@ async def _persist_batch_raw_state_updates(
         for rid in succeeded_raw_ids:
             if rid in skipped_raw_ids:
                 continue
+            if source_backend is not None:
+                await source_backend.supersede_deferred_cas_evidence(rid)
             await service.repository.update_raw_state(
                 rid,
                 state=_successful_raw_state_update(
@@ -2371,6 +2373,8 @@ async def _persist_batch_raw_state_updates(
         for rid in skipped_raw_ids:
             if rid in failed_raw_ids:
                 continue
+            if source_backend is not None:
+                await source_backend.supersede_deferred_cas_evidence(rid)
             await service.repository.update_raw_state(
                 rid,
                 state=_skipped_raw_state_update(

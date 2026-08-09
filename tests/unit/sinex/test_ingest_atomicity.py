@@ -66,6 +66,10 @@ class _SourceBackend:
         assert self.active is not None
         yield _AsyncConnection(self.active)
 
+    async def supersede_deferred_cas_evidence(self, raw_id: str) -> None:
+        del raw_id
+        assert self.active is not None
+
 
 class _Repository:
     def __init__(self, backend: _SourceBackend) -> None:

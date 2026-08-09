@@ -33,10 +33,12 @@ from typing import Any
 import pytest
 
 from polylogue import Polylogue
-from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.core.enums import Provider
+from polylogue.sources.live.batch import LiveBatchProcessor, _live_parse_stage_candidates
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
+from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 
 _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "raw_sessions": frozenset({"acquired_at_ms", "parsed_at_ms"}),
@@ -208,3 +210,41 @@ async def test_parse_stage_out_of_order_completion_preserves_archive_write_order
     assert _canonical_snapshot(baseline_root) == _canonical_snapshot(prefetch_root)
     assert _raw_sessions_source_path_order(prefetch_root) == _raw_sessions_source_path_order(baseline_root)
     assert _raw_sessions_source_path_order(prefetch_root) == tuple(str(path) for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_unknown_mixed_jsonl_prefetch_falls_back_to_strict_decode(tmp_path: Path) -> None:
+    """Strict prefetch refuses a partial unknown-provider conversation."""
+    root = tmp_path / "unknown"
+    root.mkdir()
+    path = root / "mixed.jsonl"
+    path.write_bytes(b'{"id":"unknown-1","messages":[{"id":"m1","role":"user","content":"hello"}]}\n{"broken":}\n')
+    candidates = _live_parse_stage_candidates([path], fallback_provider=Provider.UNKNOWN)
+    assert len(candidates) == 1
+    assert candidates[0].provider is Provider.UNKNOWN
+    assert candidates[0].is_stream is False
+    polylogue = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+    stage = LiveParseStage(max_workers=1, max_inflight_bytes=10_000_000)
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+    )
+    try:
+        result = await processor.ingest_files([path], emit_event=False)
+    finally:
+        stage.shutdown()
+
+    assert result.failed_file_count == 0
+    assert result.succeeded_file_count == 1
+    assert len(stage.cache) == 0
+    with _connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    with _connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
+        assert (artifact[0], artifact[1]) == ("terminal_unknown_json_decode", "decode_failed")
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 1
+    assert lifecycle.unexplained == 0

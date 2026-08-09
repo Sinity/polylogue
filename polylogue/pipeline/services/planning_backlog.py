@@ -56,6 +56,7 @@ async def collect_parse_backlog(
         validation_statuses=list(query_spec.validation_statuses)
         if query_spec.validation_statuses is not None
         else None,
+        exclude_terminal_failure_evidence=query_spec.exclude_terminal_failure_evidence,
     ):
         if raw_id not in exclude:
             backlog_parse_ids.append(raw_id)

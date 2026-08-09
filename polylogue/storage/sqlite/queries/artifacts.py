@@ -17,7 +17,9 @@ import aiosqlite
 
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_EVIDENCE_KINDS,
+    RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
     validated_raw_failure_evidence_kind,
 )
 from polylogue.core.sources import origin_from_provider
@@ -29,6 +31,7 @@ __all__ = [
     "artifact_observation_params",
     "save_artifact_observation",
     "save_raw_failure_evidence",
+    "supersede_deferred_cas_evidence",
 ]
 
 
@@ -134,6 +137,7 @@ async def save_raw_failure_evidence(
     evidence_ref: str | None,
     remediation: str | None,
     diagnostic: str | None,
+    artifact_id: str | None = None,
     transaction_depth: int,
 ) -> None:
     """Persist one typed worker disposition beside its retained raw bytes.
@@ -165,26 +169,27 @@ async def save_raw_failure_evidence(
         raise KeyError(raw_id)
     origin, source_path, source_index, acquired_at_ms = raw_row
 
-    failure_kind_placeholders = ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
-    existing_cursor = await conn.execute(
-        f"""
-        SELECT artifact_id
-        FROM raw_artifacts
-        WHERE raw_id = ?
-          AND origin = ?
-          AND source_path = ?
-          AND source_index = ?
-          AND artifact_kind IN ({failure_kind_placeholders})
-        LIMIT 1
-        """,
-        (raw_id, origin, source_path, source_index, *sorted(RAW_FAILURE_EVIDENCE_KINDS)),
-    )
-    existing_row = await existing_cursor.fetchone()
-    artifact_id = (
-        str(existing_row[0])
-        if existing_row is not None
-        else "raw-failure:" + hashlib.sha256(f"{raw_id}:{origin}:{source_path}:{source_index}".encode()).hexdigest()
-    )
+    if artifact_id is None:
+        failure_kind_placeholders = ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
+        existing_cursor = await conn.execute(
+            f"""
+            SELECT artifact_id
+            FROM raw_artifacts
+            WHERE raw_id = ?
+              AND origin = ?
+              AND source_path = ?
+              AND source_index = ?
+              AND artifact_kind IN ({failure_kind_placeholders})
+            LIMIT 1
+            """,
+            (raw_id, origin, source_path, source_index, *sorted(RAW_FAILURE_EVIDENCE_KINDS)),
+        )
+        existing_row = await existing_cursor.fetchone()
+        artifact_id = (
+            str(existing_row[0])
+            if existing_row is not None
+            else "raw-failure:" + hashlib.sha256(f"{raw_id}:{origin}:{source_path}:{source_index}".encode()).hexdigest()
+        )
     classification_reason = json.dumps(
         {
             "diagnostic": diagnostic,
@@ -220,6 +225,71 @@ async def save_raw_failure_evidence(
     )
     if transaction_depth == 0:
         await conn.commit()
+
+
+async def supersede_deferred_cas_evidence(
+    conn: aiosqlite.Connection,
+    raw_id: str,
+    *,
+    transaction_depth: int,
+) -> None:
+    """Terminalize the exact deferred CAS carrier for one retained raw.
+
+    The artifact ID is selected from the raw's own coordinate before the
+    replacement, so an ordinary carrier or neighboring deferred observation
+    cannot be consumed by a successful batch update.
+    """
+    raw_cursor = await conn.execute(
+        """
+        SELECT origin, source_path, source_index
+        FROM raw_sessions
+        WHERE raw_id = ?
+        """,
+        (raw_id,),
+    )
+    raw_row = await raw_cursor.fetchone()
+    if raw_row is None:
+        return
+    origin, source_path, source_index = raw_row
+    placeholders = ", ".join("?" for _ in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS)
+    deferred_cursor = await conn.execute(
+        f"""
+        SELECT artifact_id
+        FROM raw_artifacts
+        WHERE raw_id = ?
+          AND origin IS ?
+          AND source_path IS ?
+          AND source_index IS ?
+          AND artifact_kind IN ({placeholders})
+          AND support_status = ?
+        ORDER BY last_observed_at_ms DESC, artifact_id DESC
+        LIMIT 1
+        """,
+        (
+            raw_id,
+            origin,
+            source_path,
+            source_index,
+            *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
+            RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+        ),
+    )
+    deferred_row = await deferred_cursor.fetchone()
+    if deferred_row is None:
+        return
+    await save_raw_failure_evidence(
+        conn,
+        raw_id,
+        artifact_kind="terminal_superseded_deferred_cas_frontier",
+        support_status="unknown",
+        outcome_code="cas_frontier_resolved",
+        retryable=False,
+        evidence_ref=None,
+        remediation=None,
+        diagnostic=None,
+        artifact_id=str(deferred_row[0]),
+        transaction_depth=transaction_depth,
+    )
 
 
 def _hook_observed_at_ms(value: object, fallback: str) -> int:
