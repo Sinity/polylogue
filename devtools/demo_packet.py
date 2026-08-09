@@ -311,6 +311,125 @@ def _validate_semantic_consistency(payload: object) -> tuple[str, ...]:
     return tuple(errors)
 
 
+def _logged_output(
+    log_text: str,
+    *,
+    section: str,
+    command: str,
+    exit_marker: str,
+) -> tuple[str, int] | str:
+    """Read one structurally delimited command result from a packet log."""
+
+    lines = log_text.splitlines(keepends=True)
+    heading = f"=== {section} ==="
+    heading_indexes = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == heading]
+    if len(heading_indexes) != 1:
+        return f"run.log must contain exactly one section heading {heading!r}"
+    command_index = heading_indexes[0] + 1
+    expected_command = f"$ {command}"
+    if command_index >= len(lines) or lines[command_index].rstrip("\r\n") != expected_command:
+        return f"run.log section {section!r} does not record command {command!r}"
+    output_start = command_index + 1
+    exit_indexes = [index for index in range(output_start, len(lines)) if lines[index].startswith(f"{exit_marker}=")]
+    if len(exit_indexes) != 1:
+        return f"run.log section {section!r} must contain exactly one {exit_marker} marker"
+    exit_index = exit_indexes[0]
+    raw_exit = lines[exit_index].rstrip("\r\n").partition("=")[2]
+    try:
+        exit_code = int(raw_exit)
+    except ValueError:
+        return f"run.log marker {exit_marker!r} has a non-integer exit code"
+    return "".join(lines[output_start:exit_index]), exit_code
+
+
+def _validate_current_run(packet_dir: Path, payload: object) -> tuple[str, ...]:
+    """Bind an opt-in current run receipt to its structured log evidence.
+
+    Older packets intentionally have only historical provenance. A packet that
+    claims a full current SHA must opt into this receipt so the claim cannot be
+    satisfied by editing a command transcript alone.
+    """
+
+    if not isinstance(payload, Mapping):
+        return ()
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, Mapping):
+        return ()
+    commit_sha = provenance.get("commit_sha")
+    current_run = provenance.get("current_run")
+    if current_run is None:
+        if payload.get("packet_id") == "d4-behavioral-archaeology":
+            return ("provenance.current_run is required for the D4 current receipt",)
+        return ()
+    if not isinstance(current_run, Mapping):
+        return ("provenance.current_run must be an object",)
+
+    errors: list[str] = []
+    if current_run.get("code_sha") != commit_sha:
+        errors.append("provenance.current_run.code_sha must equal provenance.commit_sha")
+    if current_run.get("route") != "polylogue":
+        errors.append("provenance.current_run.route must be 'polylogue'")
+    if current_run.get("private_data") is not False:
+        errors.append("provenance.current_run.private_data must be false")
+
+    run_log = current_run.get("run_log")
+    log_path, path_error = _receipt_artifact_path(packet_dir, run_log)
+    if path_error is not None:
+        errors.append(f"provenance.current_run: {path_error}")
+        return tuple(errors)
+    assert log_path is not None
+    if not log_path.is_file():
+        return (f"provenance.current_run log missing: {run_log}",)
+    try:
+        log_text = log_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return (f"provenance.current_run log unreadable: {exc}",)
+
+    raw_commands = current_run.get("commands")
+    if not isinstance(raw_commands, list):
+        return tuple(errors)
+    command_ids = [item.get("id") for item in raw_commands if isinstance(item, Mapping)]
+    if command_ids != ["q1", "q2", "q3", "q4", "q5", "q6"]:
+        errors.append("provenance.current_run.commands must be ordered q1 through q6")
+    for item in raw_commands:
+        if not isinstance(item, Mapping):
+            continue
+        result = _logged_output(
+            log_text,
+            section=str(item.get("section", "")),
+            command=str(item.get("command", "")),
+            exit_marker=f"{str(item.get('id', '')).upper()}_EXIT_CODE",
+        )
+        if isinstance(result, str):
+            errors.append(result)
+            continue
+        output, exit_code = result
+        if exit_code != item.get("exit_code"):
+            errors.append(f"run.log exit code does not match current_run command {item.get('id')!r}")
+        actual_sha = hashlib.sha256(output.encode("utf-8")).hexdigest()
+        if actual_sha != item.get("output_sha256"):
+            errors.append(f"run.log output digest does not match current_run command {item.get('id')!r}")
+
+    explain = current_run.get("explain")
+    if isinstance(explain, Mapping):
+        result = _logged_output(
+            log_text,
+            section=str(explain.get("section", "")),
+            command=str(explain.get("command", "")),
+            exit_marker="EXPLAIN_EXIT_CODE",
+        )
+        if isinstance(result, str):
+            errors.append(result)
+        else:
+            output, exit_code = result
+            if exit_code != explain.get("exit_code"):
+                errors.append("run.log explain exit code does not match provenance")
+            actual_sha = hashlib.sha256(output.encode("utf-8")).hexdigest()
+            if actual_sha != explain.get("output_sha256"):
+                errors.append("run.log explain output digest does not match provenance")
+    return tuple(errors)
+
+
 def validate_packet(packet_dir: Path, *, schema_path: Path = DEFAULT_SCHEMA_PATH) -> PacketValidationResult:
     """Validate *packet_dir* against both the human and v2 machine contracts.
 
@@ -337,11 +456,30 @@ def validate_packet(packet_dir: Path, *, schema_path: Path = DEFAULT_SCHEMA_PATH
             schema_errors = _validate_schema(packet_payload, schema_path=schema_path)
             receipt_errors = _validate_receipts(packet_dir, packet_payload)
             errors.extend(_validate_semantic_consistency(packet_payload))
+            errors.extend(_validate_current_run(packet_dir, packet_payload))
 
     finding_path = packet_dir / "finding.yaml"
     if finding_path.exists():
         stanza = _parse_minimal_yaml_mapping(finding_path.read_text(encoding="utf-8"))
         missing_stanza_fields = tuple(name for name in PROVENANCE_STANZA_FIELDS if not stanza.get(name))
+        if isinstance(packet_payload, Mapping):
+            provenance = packet_payload.get("provenance")
+            current_run = provenance.get("current_run") if isinstance(provenance, Mapping) else None
+            historical = provenance.get("historical_receipt") if isinstance(provenance, Mapping) else None
+            if isinstance(current_run, Mapping):
+                expected_finding_fields = {
+                    "commit_sha": provenance.get("commit_sha") if isinstance(provenance, Mapping) else None,
+                    "run_date": provenance.get("run_date") if isinstance(provenance, Mapping) else None,
+                    "current_run_id": current_run.get("run_id"),
+                    "current_run_timestamp": current_run.get("run_timestamp"),
+                    "current_route": current_run.get("route"),
+                    "historical_commit_sha": historical.get("commit_sha") if isinstance(historical, Mapping) else None,
+                    "historical_run_date": historical.get("run_date") if isinstance(historical, Mapping) else None,
+                    "historical_receipt_status": historical.get("status") if isinstance(historical, Mapping) else None,
+                }
+                for key, expected in expected_finding_fields.items():
+                    if stanza.get(key) != str(expected):
+                        errors.append(f"finding.yaml {key} does not match packet provenance")
 
     report_path = packet_dir / "report.md"
     if report_path.exists():

@@ -260,7 +260,74 @@
         "measure_version": {"type": "string", "minLength": 3},
         "commit_sha": {"type": "string", "minLength": 7},
         "sample_frame_predicate": {"type": "string", "minLength": 8},
-        "run_date": {"type": "string", "format": "date"}
+        "run_date": {"type": "string", "format": "date"},
+        "current_run": {"$ref": "#/$defs/currentRun"},
+        "historical_receipt": {"$ref": "#/$defs/historicalReceipt"}
+      }
+    },
+    "currentRunCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "section", "command", "exit_code", "output_sha256"],
+      "properties": {
+        "id": {"enum": ["q1", "q2", "q3", "q4", "q5", "q6"]},
+        "section": {"type": "string", "minLength": 3},
+        "command": {"type": "string", "pattern": "^polylogue .+"},
+        "exit_code": {"const": 0},
+        "output_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "currentRunExplain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["section", "command", "exit_code", "output_sha256"],
+      "properties": {
+        "section": {"type": "string", "minLength": 3},
+        "command": {"type": "string", "pattern": "^polylogue --explain .+"},
+        "exit_code": {"const": 0},
+        "output_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "currentRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "run_timestamp",
+        "code_sha",
+        "route",
+        "archive_kind",
+        "private_data",
+        "run_log",
+        "commands",
+        "explain"
+      ],
+      "properties": {
+        "run_id": {"type": "string", "pattern": "^run:.+"},
+        "run_timestamp": {"type": "string", "format": "date-time"},
+        "code_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "route": {"const": "polylogue"},
+        "archive_kind": {"type": "string", "minLength": 12},
+        "private_data": {"const": false},
+        "run_log": {"const": "run.log"},
+        "commands": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {"$ref": "#/$defs/currentRunCommand"}
+        },
+        "explain": {"$ref": "#/$defs/currentRunExplain"}
+      }
+    },
+    "historicalReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit_sha", "run_date", "status", "description"],
+      "properties": {
+        "commit_sha": {"type": "string", "minLength": 7},
+        "run_date": {"type": "string", "format": "date"},
+        "status": {"const": "historical-only"},
+        "description": {"type": "string", "minLength": 12}
       }
     }
   }
