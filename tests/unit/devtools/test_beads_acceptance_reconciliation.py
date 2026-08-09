@@ -77,7 +77,7 @@ def test_same_timestamp_different_is_reported_and_refused(tmp_path: Path) -> Non
     assert wave == []
 
 
-def test_live_newer_source_equivalent_row_is_guarded_without_timestamp_churn(tmp_path: Path) -> None:
+def test_live_newer_source_equivalent_row_is_deferred_without_wave_record(tmp_path: Path) -> None:
     master = _issue()
     live = copy.deepcopy(master)
     live["updated_at"] = "2026-08-08T00:00:00Z"
@@ -92,8 +92,11 @@ def test_live_newer_source_equivalent_row_is_guarded_without_timestamp_churn(tmp
 
     assert report["ids"]["live_newer"] == ["polylogue-test"]
     assert report["ids"]["contract_refused"] == []
-    assert [row["id"] for row in wave] == ["polylogue-test"]
-    assert wave[0]["updated_at"] == live["updated_at"]
+    assert report["contract_deferred_denominator"] == 1
+    assert report["contract_deferred_reasons"] == {
+        "polylogue-test": "live-newer record is excluded from the targeted wave; coordinator adjudication is required"
+    }
+    assert wave == []
 
 
 def test_changed_source_refusal_names_the_denominator_and_id(tmp_path: Path) -> None:
@@ -119,7 +122,7 @@ def test_changed_source_refusal_names_the_denominator_and_id(tmp_path: Path) -> 
 def test_guarded_wave_preserves_live_dependencies_comments_status_and_timestamp(tmp_path: Path) -> None:
     master = _issue(updated_at="2026-08-07T00:00:00Z")
     live = copy.deepcopy(master)
-    live["updated_at"] = "2026-08-09T00:00:00Z"
+    live["updated_at"] = "2026-08-06T00:00:00Z"
     live["status"] = "in_progress"
     live["comments"] = [{"id": "comment-live", "body": "Later live comment."}]
     live["acceptance_criteria"] = None
@@ -176,6 +179,45 @@ def test_malformed_live_metadata_is_an_explicit_contract_refusal(tmp_path: Path)
     assert wave == []
 
 
+def test_malformed_timestamp_is_an_explicit_contract_refusal(tmp_path: Path) -> None:
+    master = _issue()
+    live = copy.deepcopy(master)
+    live["updated_at"] = None
+    live["acceptance_criteria"] = None
+    live["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    live_path = tmp_path / "live.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(live_path, [live])
+
+    report, wave = mod.reconcile(repository_path, live_path)
+
+    assert report["ids"]["contract_refused"] == ["polylogue-test"]
+    assert report["contract_refused_reasons"]["polylogue-test"] == [
+        "updated_at must be a string on both repository and live records"
+    ]
+    assert wave == []
+
+
+def test_null_metadata_representation_is_preserved_by_non_contract_digest(tmp_path: Path) -> None:
+    master = _issue()
+    live = copy.deepcopy(master)
+    live["metadata"] = None
+    live["acceptance_criteria"] = None
+    repository_path = tmp_path / "repository.jsonl"
+    live_path = tmp_path / "live.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(live_path, [live])
+
+    _, wave = mod.reconcile(repository_path, live_path)
+
+    assert len(wave) == 1
+    assert mod.non_contract_equality_digest({live["id"]: live}, [live["id"]]) == mod.non_contract_equality_digest(
+        {wave[0]["id"]: wave[0]}, [wave[0]["id"]]
+    )
+    assert wave[0]["metadata"] != live["metadata"]
+
+
 def test_post_import_equality_digest_rejects_unrelated_mutation(tmp_path: Path) -> None:
     master = _issue()
     before = copy.deepcopy(master)
@@ -199,3 +241,28 @@ def test_post_import_equality_digest_rejects_unrelated_mutation(tmp_path: Path) 
         assert "non-contract fields" in str(exc)
     else:
         raise AssertionError("post-import equality must reject status mutation")
+
+
+def test_post_import_equality_digest_rejects_new_live_record(tmp_path: Path) -> None:
+    master = _issue()
+    before = copy.deepcopy(master)
+    before["acceptance_criteria"] = None
+    before["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    before_path = tmp_path / "before.jsonl"
+    wave_path = tmp_path / "wave.jsonl"
+    after_path = tmp_path / "after.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(before_path, [before])
+    _, wave = mod.reconcile(repository_path, before_path)
+    _write_export(wave_path, wave)
+    after = copy.deepcopy(wave[0])
+    after["id"] = "polylogue-live-added"
+    _write_export(after_path, [wave[0], after])
+
+    try:
+        mod.verify_post_import(before=before_path, after=after_path, wave=wave_path)
+    except mod.ReconciliationError as exc:
+        assert "record universe" in str(exc)
+    else:
+        raise AssertionError("post-import equality must reject a newly added record")

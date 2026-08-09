@@ -104,10 +104,19 @@ def non_contract_equality_digest(rows: Mapping[str, Mapping[str, Any]], ids: Ite
     for bead_id in ids:
         row = dict(copy.deepcopy(rows[bead_id]))
         row.pop("acceptance_criteria", None)
-        metadata = _metadata_object(row.get("metadata"))
+        raw_metadata = row.get("metadata")
+        metadata = _metadata_object(raw_metadata)
         if metadata is not None:
             metadata.pop(_CONTRACT_KEY, None)
-            row["metadata"] = metadata
+            if not metadata:
+                # The contract is the only allowed metadata mutation. Remove
+                # the now-empty container from both sides of the projection;
+                # all non-contract metadata keys remain visible and checked.
+                row.pop("metadata", None)
+            elif isinstance(raw_metadata, str):
+                row["metadata"] = json_dumps(metadata)
+            else:
+                row["metadata"] = metadata
         scrubbed[bead_id] = row
     return equality_digest(scrubbed)
 
@@ -139,7 +148,7 @@ def _guarded_row(
         raise ReconciliationError(f"{live.get('id')}: live metadata is not a JSON object")
     row = copy.deepcopy(dict(live))
     metadata[_CONTRACT_KEY] = copy.deepcopy(dict(contract))
-    row["metadata"] = metadata
+    row["metadata"] = json_dumps(metadata) if isinstance(live.get("metadata"), str) else metadata
     row["acceptance_criteria"] = master.get("acceptance_criteria")
     changed = {key for key in set(row) | set(live) if key not in _CONTRACT_FIELDS and row.get(key) != live.get(key)}
     if changed:
@@ -184,6 +193,8 @@ def reconcile(repository: Path, live_export: Path) -> tuple[dict[str, Any], list
         "contract_guarded_count": 0,
         "contract_refused_denominator": 0,
         "contract_refused_reasons": {},
+        "contract_deferred_denominator": 0,
+        "contract_deferred_reasons": {},
         "already_guarded_ids": [],
         "targeted_ids": [],
     }
@@ -215,10 +226,18 @@ def reconcile(repository: Path, live_export: Path) -> tuple[dict[str, Any], list
             reasons.append(f"source digest mismatch: expected contract {expected_digest}, live {actual_digest}")
         if _metadata_object(live_row.get("metadata")) is None:
             reasons.append("live metadata is not a JSON object")
+        if timestamp_category is None:
+            reasons.append("updated_at must be a string on both repository and live records")
         if reasons:
             report["ids"]["contract_refused"].append(bead_id)
             report["counts"]["contract_refused"] += 1
             refused_reasons[bead_id] = reasons
+            continue
+        if timestamp_category == "live_newer":
+            report["contract_deferred_denominator"] += 1
+            report["contract_deferred_reasons"][bead_id] = (
+                "live-newer record is excluded from the targeted wave; coordinator adjudication is required"
+            )
             continue
         candidate = _guarded_row(master=master_row, live=live_row, contract=contract)
         current_contract = _contract(live_row)
@@ -233,7 +252,11 @@ def reconcile(repository: Path, live_export: Path) -> tuple[dict[str, Any], list
 
     report["ids"]["contract_refused"] = sorted(report["ids"]["contract_refused"])
     report["contract_refused_reasons"] = {bead_id: refused_reasons[bead_id] for bead_id in sorted(refused_reasons)}
+    report["contract_deferred_reasons"] = {
+        bead_id: report["contract_deferred_reasons"][bead_id] for bead_id in sorted(report["contract_deferred_reasons"])
+    }
     report["contract_guarded_count"] = len(report["targeted_ids"]) + len(report["already_guarded_ids"])
+    report["live_equality_digest"] = equality_digest(live)
     report["targeted_non_contract_equality_digest"] = non_contract_equality_digest(live, report["targeted_ids"])
     report["targeted_wave_equality_digest"] = equality_digest({row["id"]: row for row in wave}, report["targeted_ids"])
     report["targeted_wave_non_contract_equality_digest"] = non_contract_equality_digest(
@@ -253,6 +276,12 @@ def verify_post_import(*, before: Path, after: Path, wave: Path) -> dict[str, An
     if not target_ids <= set(after_rows):
         raise ReconciliationError("targeted wave contains records absent from the after export")
     unchanged_ids = set(before_rows) - target_ids
+    added_ids = sorted(set(after_rows) - set(before_rows))
+    removed_ids = sorted(set(before_rows) - set(after_rows))
+    if added_ids or removed_ids:
+        raise ReconciliationError(
+            f"post-import export changed the record universe: added={added_ids}, removed={removed_ids}"
+        )
     changed_outside_wave = sorted(
         bead_id for bead_id in unchanged_ids if before_rows[bead_id] != after_rows.get(bead_id)
     )
