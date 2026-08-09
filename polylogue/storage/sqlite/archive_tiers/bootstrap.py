@@ -318,6 +318,12 @@ def initialize_active_archive_root(root: Path) -> None:
         _validate_fresh_durable_bootstrap_intent,
     )
 
+    # Ownership pins an existing directory descriptor. Fresh test and demo
+    # archives legitimately arrive as a not-yet-created path, so create the
+    # root before resolving and acquiring its identity. This is part of
+    # bootstrap, not an authority bypass: the descriptor is still acquired
+    # and checked before any tier is initialized.
+    root.mkdir(parents=True, exist_ok=True)
     with OwnedArchiveLocation.acquire(
         ArchiveLocation.resolve(root),
         owner_id=f"bootstrap:{os.getpid()}",
