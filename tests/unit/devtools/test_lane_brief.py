@@ -134,6 +134,25 @@ def test_fetch_bead_validates_full_contract_and_both_digests(monkeypatch: pytest
     assert fetched.contract_dependency_digest == fetched.computed_dependency_digest
 
 
+def test_fetch_bead_refuses_malformed_dependency_scalars_without_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
+    record = _valid_contract_record()
+    record["dependencies"] = [
+        {"depends_on_id": "polylogue-parent", "type": "blocks"},
+        {"depends_on_id": 7, "type": "blocks"},
+    ]
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: MagicMock(returncode=0, stdout=json.dumps([record]), stderr=""),
+    )
+
+    fetched = lane_brief._fetch_bead("polylogue-a")
+
+    assert fetched.contract_errors == ["dependencies[1].depends_on_id must be a string or null (got int)"]
+    assert fetched.computed_source_digest is None
+    assert fetched.computed_dependency_digest is None
+
+
 @pytest.mark.parametrize("field", ["title", "design", "dependencies"])
 def test_fetch_bead_blocks_source_or_dependency_drift(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
     record = _valid_contract_record()

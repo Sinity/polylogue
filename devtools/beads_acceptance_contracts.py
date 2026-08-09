@@ -76,6 +76,10 @@ _EXPECTED_MANIFEST_COUNT = 218
 _EXPECTED_MANIFEST_DIGEST = "703df11c81dae8af6d7106bc4737502ca8baddc9013916bbb68922696d8206b5"
 
 
+class DependencyProjectionError(ValueError):
+    """Raised when a structured dependency projection contains an invalid scalar."""
+
+
 def _dependency_projection(issue: Mapping[str, Any]) -> list[dict[str, str | None]]:
     """Return a stable, scope-bearing projection of Bead dependencies."""
     raw_dependencies = issue.get("dependencies")
@@ -84,12 +88,14 @@ def _dependency_projection(issue: Mapping[str, Any]) -> list[dict[str, str | Non
     if not isinstance(raw_dependencies, list):
         return [{"invalid_type": type(raw_dependencies).__name__}]
     dependencies: list[dict[str, str | None]] = []
-    for dependency in raw_dependencies:
+    for index, dependency in enumerate(raw_dependencies):
         if isinstance(dependency, dict):
+            depends_on_id = _dependency_scalar(dependency, index, ("depends_on_id", "to_id", "id"), "depends_on_id")
+            dependency_type = _dependency_scalar(dependency, index, ("type", "dep_type"), "type")
             dependencies.append(
                 {
-                    "depends_on_id": dependency.get("depends_on_id") or dependency.get("to_id") or dependency.get("id"),
-                    "type": dependency.get("type") or dependency.get("dep_type"),
+                    "depends_on_id": depends_on_id,
+                    "type": dependency_type,
                 }
             )
         elif isinstance(dependency, str):
@@ -104,6 +110,19 @@ def _dependency_projection(issue: Mapping[str, Any]) -> list[dict[str, str | Non
             dependency.get("invalid_type") or "",
         ),
     )
+
+
+def _dependency_scalar(dependency: Mapping[str, Any], index: int, keys: tuple[str, ...], label: str) -> str | None:
+    for key in keys:
+        value = dependency.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise DependencyProjectionError(
+                f"dependencies[{index}].{label} must be a string or null (got {type(value).__name__})"
+            )
+        return value
+    return None
 
 
 def dependency_digest(issue: Mapping[str, Any]) -> str:
@@ -471,15 +490,22 @@ def validate(issue: dict[str, Any]) -> list[str]:
             errors.append("closure.successor_required_for_partial must be boolean")
         elif disposition == "whole-or-explicit-partial" and not closure.get("successor_required_for_partial"):
             errors.append("whole-or-explicit-partial requires successor_required_for_partial=true")
+    try:
+        computed_source_digest = source_digest(issue)
+        computed_dependency_digest = dependency_digest(issue)
+    except DependencyProjectionError as exc:
+        errors.append(str(exc))
+        computed_source_digest = None
+        computed_dependency_digest = None
     digest = contract.get("source_digest")
     if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
         errors.append("source_digest must be a lowercase SHA-256 digest")
-    elif digest != source_digest(issue):
+    elif computed_source_digest is not None and digest != computed_source_digest:
         errors.append("source_digest does not match the Bead source snapshot")
     dependency_digest_value = contract.get("dependency_digest")
     if not isinstance(dependency_digest_value, str) or not _SHA256.fullmatch(dependency_digest_value):
         errors.append("dependency_digest must be a lowercase SHA-256 digest")
-    elif dependency_digest_value != dependency_digest(issue):
+    elif computed_dependency_digest is not None and dependency_digest_value != computed_dependency_digest:
         errors.append("dependency_digest does not match the Bead dependency projection")
     if issue.get("dependencies") is not None and not isinstance(issue.get("dependencies"), list):
         errors.append("dependencies must be a list")

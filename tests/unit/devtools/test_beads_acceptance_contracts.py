@@ -239,6 +239,25 @@ def test_dependency_changes_invalidate_scope_digest() -> None:
     assert "source_digest does not match the Bead source snapshot" in mod.validate(issue)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "label"),
+    [("depends_on_id", 7, "depends_on_id"), ("type", ["blocks"], "type")],
+)
+def test_malformed_dependency_scalars_are_validation_errors_not_sort_tracebacks(
+    field: str, value: object, label: str
+) -> None:
+    issue = _issue()
+    issue["dependencies"] = [
+        {"depends_on_id": "polylogue-parent", "type": "blocks"},
+        {"depends_on_id": "polylogue-child", "type": "blocks"},
+    ]
+    issue["dependencies"][1][field] = value
+
+    errors = mod.validate(issue)
+
+    assert errors == [f"dependencies[1].{label} must be a string or null (got {type(value).__name__})"]
+
+
 def test_title_and_design_changes_invalidate_scope_digest() -> None:
     issue = _issue()
     issue["title"] = "Changed title"

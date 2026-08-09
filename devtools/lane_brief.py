@@ -194,6 +194,13 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
     contract = metadata.get("acceptance_contract_v1") if isinstance(metadata, dict) else None
     confidence = contract.get("confidence") if isinstance(contract, dict) else None
     contract_errors = acceptance_contracts.validate(record) if isinstance(contract, dict) else [_MISSING_CONTRACT_ERROR]
+    try:
+        computed_source_digest = acceptance_contracts.source_digest(record)
+        computed_dependency_digest = acceptance_contracts.dependency_digest(record)
+    except acceptance_contracts.DependencyProjectionError as exc:
+        contract_errors = sorted({*contract_errors, str(exc)})
+        computed_source_digest = None
+        computed_dependency_digest = None
     contract_source_digest = contract.get("source_digest") if isinstance(contract, dict) else None
     contract_dependency_digest = contract.get("dependency_digest") if isinstance(contract, dict) else None
     priority = record.get("priority")
@@ -216,9 +223,9 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
         contract_confidence=confidence if isinstance(confidence, str) else None,
         contract_errors=contract_errors,
         contract_source_digest=contract_source_digest if isinstance(contract_source_digest, str) else None,
-        computed_source_digest=acceptance_contracts.source_digest(record),
+        computed_source_digest=computed_source_digest,
         contract_dependency_digest=contract_dependency_digest if isinstance(contract_dependency_digest, str) else None,
-        computed_dependency_digest=acceptance_contracts.dependency_digest(record),
+        computed_dependency_digest=computed_dependency_digest,
     )
 
 

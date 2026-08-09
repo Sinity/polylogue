@@ -76,6 +76,13 @@ def _contract(issue: Mapping[str, Any]) -> dict[str, Any] | None:
     return copy.deepcopy(value) if isinstance(value, dict) else None
 
 
+def _source_digest_or_refuse(issue: Mapping[str, Any]) -> str:
+    try:
+        return source_digest(dict(issue))
+    except _contracts.DependencyProjectionError as exc:
+        raise ReconciliationError(f"{issue.get('id')}: {exc}") from exc
+
+
 def load_jsonl(path: Path) -> dict[str, dict[str, Any]]:
     """Load a Beads JSONL export, rejecting malformed or duplicate IDs."""
     rows: dict[str, dict[str, Any]] = {}
@@ -262,7 +269,7 @@ def _validate_report_and_wave(
         contract = _contract(canonical)
         if contract is None or validate(canonical):
             raise ReconciliationError(f"canonical contract revalidation failed for {bead_id}")
-        if source_digest(before_rows[bead_id]) != contract.get("source_digest"):
+        if _source_digest_or_refuse(before_rows[bead_id]) != contract.get("source_digest"):
             raise ReconciliationError(f"stale source digest refuses targeted row {bead_id}")
         expected = _guarded_row(master=canonical, live=before_rows[bead_id], contract=contract)
         if wave_rows[bead_id] != expected:
@@ -359,14 +366,18 @@ def reconcile(
         if contract is None:
             continue
         report["contract_refused_denominator"] += 1
-        expected_digest = contract["source_digest"]
-        actual_digest = source_digest(live_row)
         reasons: list[str] = []
-        if actual_digest != expected_digest:
-            reasons.append(f"source digest mismatch: expected contract {expected_digest}, live {actual_digest}")
+        expected_digest = contract["source_digest"]
+        try:
+            actual_digest = source_digest(live_row)
+        except _contracts.DependencyProjectionError as exc:
+            reasons.append(str(exc))
+        else:
+            if actual_digest != expected_digest:
+                reasons.append(f"source digest mismatch: expected contract {expected_digest}, live {actual_digest}")
         if _metadata_object(live_row.get("metadata")) is None:
             reasons.append("live metadata is not a JSON object")
-        if timestamp_error is not None:
+        if timestamp_error is not None and timestamp_error not in reasons:
             reasons.append(timestamp_error)
         if reasons:
             report["ids"]["contract_refused"].append(bead_id)

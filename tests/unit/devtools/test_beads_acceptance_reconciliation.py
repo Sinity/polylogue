@@ -161,6 +161,29 @@ def test_changed_source_refusal_names_the_denominator_and_id(tmp_path: Path) -> 
     assert wave == []
 
 
+def test_malformed_live_dependency_scalars_are_structured_refusals(tmp_path: Path) -> None:
+    master = _issue()
+    live = copy.deepcopy(master)
+    live["dependencies"] = [
+        {"depends_on_id": "polylogue-parent", "type": "blocks"},
+        {"depends_on_id": 7, "type": "blocks"},
+    ]
+    live["acceptance_criteria"] = None
+    live["metadata"] = {}
+    repository_path = tmp_path / "repository.jsonl"
+    live_path = tmp_path / "live.jsonl"
+    _write_export(repository_path, [master])
+    _write_export(live_path, [live])
+
+    report, wave = mod.reconcile(repository_path, live_path)
+
+    assert report["ids"]["contract_refused"] == ["polylogue-test"]
+    assert report["contract_refused_reasons"]["polylogue-test"] == [
+        "dependencies[1].depends_on_id must be a string or null (got int)"
+    ]
+    assert wave == []
+
+
 def test_guarded_wave_preserves_live_dependencies_comments_status_and_timestamp(tmp_path: Path) -> None:
     master = _issue(updated_at="2026-08-07T00:00:00Z")
     live = copy.deepcopy(master)
