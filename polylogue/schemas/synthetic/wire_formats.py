@@ -1081,11 +1081,15 @@ def build_wire_support_receipt(
     from polylogue.schemas.validator import SchemaValidator, ValidationResult
     from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 
-    catalog_providers = tuple(sorted(providers or registry.list_providers()))  # type: ignore[attr-defined]
+    catalog_providers = tuple(
+        sorted(registry.list_providers() if providers is None else providers)  # type: ignore[attr-defined]
+    )
     entries: list[WireSupportEntry] = []
     missing_routes: list[str] = []
     for provider in catalog_providers:
         route = PROVIDER_WIRE_ROUTES.get(provider)
+        if route is None:
+            missing_routes.append(provider)
         catalog = registry.load_package_catalog(provider)  # type: ignore[attr-defined]
         selections = tuple(
             (package, element)
@@ -1121,8 +1125,6 @@ def build_wire_support_receipt(
                 )
                 continue
             if route is None:
-                if provider not in missing_routes:
-                    missing_routes.append(provider)
                 entries.append(
                     WireSupportEntry(
                         provider=provider,

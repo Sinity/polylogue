@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,40 @@ def test_support_receipt_does_not_substitute_a_default_selection() -> None:
 
     assert all(entry.package_version is not None and entry.element_kind is not None for entry in receipt.entries)
     assert len(receipt.entries) > len(receipt.catalog_providers)
+
+
+def test_support_receipt_preserves_an_explicitly_empty_provider_selection() -> None:
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=())
+
+    assert receipt.catalog_providers == ()
+    assert receipt.entries == ()
+    assert receipt.missing_routes == ()
+
+
+def test_support_receipt_counts_a_missing_route_before_skipping_unsupported_elements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = SchemaRegistry()
+    provider = next(name for name in registry.list_providers() if name in wire_formats.PROVIDER_WIRE_ROUTES)
+    catalog = registry.load_package_catalog(provider)
+    assert catalog is not None
+    unsupported_catalog = replace(
+        catalog,
+        packages=[
+            replace(package, elements=[replace(element, supported=False) for element in package.elements])
+            for package in catalog.packages
+        ],
+    )
+
+    monkeypatch.setattr(registry, "load_package_catalog", lambda _provider: unsupported_catalog)
+    monkeypatch.delitem(wire_formats.PROVIDER_WIRE_ROUTES, provider)
+
+    receipt = wire_formats.build_wire_support_receipt(registry=registry, providers=(provider,))
+
+    assert receipt.missing_routes == (provider,)
+    assert receipt.entries
+    assert all(entry.reason == "catalog element is marked unsupported" for entry in receipt.entries)
+    assert not receipt.complete
 
 
 def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> None:
