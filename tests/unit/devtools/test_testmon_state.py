@@ -160,6 +160,38 @@ def test_green_skipped_slow_attempt_without_typed_terminal_authority_is_selectio
     assert not stamp.release_baseline_allowed
 
 
+def test_typed_complete_markerless_attempt_is_selection_only(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data, failed=False)
+    attempt = _attempt(data, outcomes=("passed", "passed"))
+    attempt["status"] = "complete"
+    attempt["exit_code"] = 0
+    raw_identity = attempt["identity"]
+    assert isinstance(raw_identity, dict)
+    identity = dict(raw_identity)
+    identity["skip_slow"] = False
+    identity["terminal_authorization"] = None
+    attempt["identity"] = identity
+    attempt["verification_scope"] = "release-baseline"
+    attempt["release_baseline_allowed"] = True
+
+    published = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)
+    markerless = stamp_from_attempt(
+        attempt,
+        data,
+        checkout_root=tmp_path,
+        protocol_version=PROTOCOL,
+        published_marker=False,
+    )
+
+    assert published is not None
+    assert published.release_baseline_allowed
+    assert markerless is not None
+    assert markerless.baseline_status is BaselineStatus.RED
+    assert markerless.affected_selection_allowed
+    assert not markerless.release_baseline_allowed
+
+
 def test_malformed_sqlite_and_stale_stamp_fail_closed(tmp_path: Path) -> None:
     malformed = tmp_path / "malformed"
     malformed.write_bytes(b"not sqlite")

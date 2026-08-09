@@ -205,6 +205,7 @@ def decide_testmon_bootstrap(
                     main_testmon_data,
                     checkout_root=root,
                     protocol_version=protocol_version,
+                    published_marker=False,
                 )
             )
             is not None
@@ -385,6 +386,7 @@ def bootstrap_testmon_seed_files(
                 decision.main_testmon_data,
                 checkout_root=source_root,
                 protocol_version=decision.protocol_version,
+                published_marker=False,
             )
             if stamp is None:
                 return False

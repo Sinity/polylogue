@@ -44,6 +44,7 @@ from devtools.verify import (
     TESTMON_SEED_STAMP,
     _anchor_verification_paths,
     _finalize_testmon_seed_attempt,
+    _flatten_seed_outcomes,
     _format_completion_notification,
     _matching_testmon_coverage,
     _parse_pytest_test_count,
@@ -517,6 +518,52 @@ def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pyte
     assert _testmon_seed_can_resume({**identity, "git_tree": "different-tree"}) is False
     assert _testmon_seed_can_resume({**identity, "worktree_fingerprint": "changed"}) is False
     assert _testmon_seed_can_resume({**identity, "skip_slow": False}) is False
+
+
+def test_two_interrupted_resumes_flatten_all_carried_outcomes(tmp_path: Path) -> None:
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.chdir(tmp_path)
+    try:
+        expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
+        TESTMON_DATA.parent.mkdir(parents=True)
+        TESTMON_DATA.write_text("partial")
+        identity = {
+            "git_head": "head",
+            "git_tree": "tree-hash",
+            "worktree_fingerprint": "tree",
+            "python": "3.13",
+            "skip_slow": False,
+            "lab": False,
+            "terminal_authorization": None,
+        }
+        TESTMON_SEED_ATTEMPT.write_text(
+            json.dumps(
+                {
+                    "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                    "status": "incomplete",
+                    "identity": identity,
+                    "expected_nodeids": expected,
+                    "expected_count": len(expected),
+                    "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
+                    "node_outcomes": [{"nodeid": expected[0], "outcome": "passed"}],
+                }
+            )
+        )
+        first = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="head", root=tmp_path)
+        _prepare_testmon_seed_attempt(identity=identity, run=first, resume=True)
+        first_payload = json.loads(TESTMON_SEED_ATTEMPT.read_text())
+        first_payload["status"] = "incomplete"
+        first_payload["node_outcomes"] = [{"nodeid": expected[1], "outcome": "passed"}]
+        TESTMON_SEED_ATTEMPT.write_text(json.dumps(first_payload))
+
+        second = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="head", root=tmp_path)
+        prepared = _prepare_testmon_seed_attempt(identity=identity, run=second, resume=True)
+
+        assert {item["nodeid"] for item in prepared["prior_node_outcomes"]} == set(expected)
+        assert {item["outcome"] for item in prepared["prior_node_outcomes"]} == {"passed"}
+        assert _flatten_seed_outcomes(prepared) == prepared["prior_node_outcomes"]
+    finally:
+        monkeypatch.undo()
 
 
 def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

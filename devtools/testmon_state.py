@@ -701,8 +701,9 @@ def stamp_from_attempt(
     *,
     checkout_root: Path,
     protocol_version: int,
+    published_marker: bool = True,
 ) -> TestmonSeedStamp | None:
-    """Promote only a complete attempt, including a red one, into a stamp."""
+    """Parse a complete attempt, withholding release authority until publication."""
     if attempt.get("protocol_version") != protocol_version or attempt.get("status") not in {"reusable", "complete"}:
         return None
     selection = attempt.get("selection")
@@ -797,6 +798,8 @@ def stamp_from_attempt(
     )
     if baseline is BaselineStatus.GREEN and typed_identity.skip_slow and not terminal_authorized:
         baseline = BaselineStatus.RED
+    if not published_marker:
+        baseline = BaselineStatus.RED
     raw_permission = attempt.get("release_baseline_allowed")
     if baseline is BaselineStatus.GREEN and (
         raw_scope != VerificationScope.NARROW_TERMINAL.value
@@ -806,9 +809,9 @@ def stamp_from_attempt(
         baseline = BaselineStatus.RED
     if baseline is BaselineStatus.GREEN and raw_permission is not True:
         baseline = BaselineStatus.RED
-    if raw_permission is not None and (
-        not isinstance(raw_permission, bool) or raw_permission != (baseline is BaselineStatus.GREEN)
-    ):
+    if raw_permission is not None and not isinstance(raw_permission, bool):
+        return None
+    if published_marker and raw_permission is not None and raw_permission != (baseline is BaselineStatus.GREEN):
         return None
     raw_binding = attempt.get("binding")
     if raw_binding is None:

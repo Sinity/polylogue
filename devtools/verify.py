@@ -2158,6 +2158,7 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
                 TESTMON_DATA,
                 checkout_root=ROOT,
                 protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+                published_marker=False,
             )
             is not None
         ):
@@ -2260,6 +2261,21 @@ def _read_testmon_seed_attempt() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _flatten_seed_outcomes(attempt: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Flatten outcomes from every interrupted attempt, newest result winning."""
+    if attempt is None:
+        return []
+    flattened: dict[str, dict[str, Any]] = {}
+    for field in ("prior_node_outcomes", "node_outcomes"):
+        raw = attempt.get(field)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str) and item["nodeid"]:
+                flattened[item["nodeid"]] = dict(item)
+    return [flattened[nodeid] for nodeid in sorted(flattened)]
+
+
 def _testmon_release_baseline_permission() -> bool | None:
     """Return release permission for current testmon state, or ``None`` when not applicable."""
     if TESTMON_SEED_STAMP.exists():
@@ -2278,6 +2294,7 @@ def _testmon_release_baseline_permission() -> bool | None:
         TESTMON_DATA,
         checkout_root=ROOT,
         protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+        published_marker=False,
     )
     return stamp.release_baseline_allowed if stamp is not None else False
 
@@ -2377,7 +2394,7 @@ def _prepare_testmon_seed_attempt(
 ) -> dict[str, Any]:
     prior = _read_testmon_seed_attempt() if resume else None
     expected = _testmon_seed_expected_nodeids(prior) if prior is not None else []
-    prior_outcomes = prior.get("node_outcomes") if isinstance(prior, Mapping) else None
+    prior_outcomes = _flatten_seed_outcomes(prior)
     payload = {
         "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
         "status": "running",
@@ -2386,7 +2403,7 @@ def _prepare_testmon_seed_attempt(
         "expected_nodeids": expected,
         "expected_count": len(expected),
         "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
-        "prior_node_outcomes": prior_outcomes if isinstance(prior_outcomes, list) else [],
+        "prior_node_outcomes": prior_outcomes,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "run_id": run.run_id,
         "artifact_dir": str(run.relative_run_dir),

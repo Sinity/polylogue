@@ -426,7 +426,7 @@ def test_complete_red_attempt_bootstraps_as_selection_only_state(tmp_path: Path)
     assert "checkout-bound selection attempt" in rebound_decision.reason
 
 
-def test_complete_untyped_green_attempt_bootstraps_only_as_selection_state(tmp_path: Path) -> None:
+def test_complete_typed_markerless_green_attempt_bootstraps_only_as_selection_state(tmp_path: Path) -> None:
     main_root = tmp_path / "main"
     main_data = main_root / "testmondata"
     _write_sqlite_db(main_data, rows=("tests/test.py::test_passed",))
@@ -442,6 +442,7 @@ def test_complete_untyped_green_attempt_bootstraps_only_as_selection_state(tmp_p
                     "python": "python",
                     "skip_slow": False,
                     "lab": False,
+                    "terminal_authorization": None,
                 },
                 "selection": {"selected_count": 1, "selected_nodeids_omitted": 0},
                 "expected_nodeids": ["tests/test.py::test_passed"],
@@ -449,6 +450,8 @@ def test_complete_untyped_green_attempt_bootstraps_only_as_selection_state(tmp_p
                 "expected_digest": hashlib.sha256(b"tests/test.py::test_passed").hexdigest(),
                 "node_outcomes": [{"nodeid": "tests/test.py::test_passed", "outcome": "passed"}],
                 "exit_code": 0,
+                "verification_scope": "release-baseline",
+                "release_baseline_allowed": True,
                 "run_id": "green-run",
                 "artifact_dir": ".cache/verify/runs/green-run",
                 "testmon_data": file_fingerprint(main_data),
