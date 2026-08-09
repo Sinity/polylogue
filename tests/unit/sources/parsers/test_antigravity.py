@@ -51,13 +51,14 @@ The focused checks passed.
         "The focused checks passed.",
     ]
     assert session.messages[0].blocks[0].type == BlockType.TEXT
-    assert session.messages[0].provider_message_id == ""
-    assert session.messages[1].provider_message_id == ""
+    assert session.messages[0].provider_message_id.startswith("synthetic-")
+    assert session.messages[1].provider_message_id.startswith("synthetic-")
+    assert session.messages[0].provider_message_id != session.messages[1].provider_message_id
     assert [message.position for message in session.messages] == [0, 1]
     assert [message.variant_index for message in session.messages] == [0, 0]
     assert [message.is_active_path for message in session.messages] == [True, True]
     assert [message.is_active_leaf for message in session.messages] == [False, True]
-    assert session.active_leaf_message_provider_id is None
+    assert session.active_leaf_message_provider_id == session.messages[1].provider_message_id
 
 
 def test_parse_markdown_export_reordering_keeps_synthetic_revision_identity() -> None:
@@ -108,11 +109,11 @@ Unstructured transcript body.
     session = parse_markdown_export(markdown, summary)
 
     assert [message.role for message in session.messages] == [Role.ASSISTANT]
-    assert session.messages[0].provider_message_id == ""
+    assert session.messages[0].provider_message_id.startswith("synthetic-")
     assert session.messages[0].text == "Unstructured transcript body."
     assert session.messages[0].position == 0
     assert session.messages[0].is_active_leaf is True
-    assert session.active_leaf_message_provider_id is None
+    assert session.active_leaf_message_provider_id == session.messages[0].provider_message_id
     assert session.title_source is None
 
 

@@ -22,7 +22,6 @@ from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SessionKind, TitleSource
-from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.logging import get_logger
 
 from ..base import (
@@ -34,6 +33,7 @@ from ..base import (
     attachment_from_meta,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    synthetic_message_id,
 )
 from .common import (
     _first_identity_field,
@@ -270,7 +270,17 @@ def _design_assistant_messages(
             block.text for block in current_blocks if block.type is BlockType.TEXT and not block.is_error and block.text
         ]
         segment_text = "\n".join(text_parts) if text_parts else None
-        provider_message_id = message_uuid if message_uuid and not has_interjection else ""
+        provider_message_id = (
+            message_uuid
+            if message_uuid and not has_interjection
+            else synthetic_message_id(
+                namespace=message_uuid,
+                role=Role.ASSISTANT,
+                text=segment_text,
+                timestamp=timestamp_str,
+                kind="claude-design-assistant-segment",
+            )
+        )
         input_tokens = 0
         if not first_segment_emitted and isinstance(turn_input_tokens, int):
             input_tokens = turn_input_tokens
@@ -346,7 +356,13 @@ def _design_assistant_messages(
             interjection_timestamp_value = (
                 str(interjection_timestamp) if isinstance(interjection_timestamp, str) else None
             )
-            interjection_id = str(interjection_message.get("id") or "")
+            interjection_id = str(interjection_message.get("id") or "") or synthetic_message_id(
+                namespace=message_uuid,
+                role=interjection_role,
+                text=interjection_text_value,
+                timestamp=interjection_timestamp_value,
+                kind="claude-design-interjection",
+            )
             messages.append(
                 ParsedMessage(
                     provider_message_id=interjection_id,
@@ -416,18 +432,16 @@ def _design_user_message(
     sender_name = str(author_name) if isinstance(author_name, str) and author_name else None
     timestamp_str = str(timestamp) if isinstance(timestamp, str) and timestamp else None
     design_message_text = str(text) if isinstance(text, str) and text else None
-    message_uuid = str(raw_message.get("uuid") or content_payload.get("id") or "")
+    message_uuid = str(raw_message.get("uuid") or content_payload.get("id") or "") or synthetic_message_id(
+        role=Role.USER,
+        text=design_message_text,
+        timestamp=timestamp_str,
+        kind="claude-design-user",
+    )
     for meta in raw_attachments if isinstance(raw_attachments, list) else []:
         attachment = _design_attachment_from_meta(meta, message_uuid)
         if attachment is not None:
-            attachments.append(
-                attachment.model_copy(
-                    update={
-                        "message_position": position,
-                        "owner_coordinate": MessageOwnerCoordinate(position=position, variant_index=0),
-                    }
-                )
-            )
+            attachments.append(attachment)
     message = ParsedMessage(
         provider_message_id=message_uuid,
         role=Role.USER,
@@ -503,9 +517,7 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
                 "claude-design %s: unrecognized message role %r, dropping message", resolved_session_id, role
             )
 
-    active_leaf_message_provider_id = (
-        messages[-1].provider_message_id if messages and messages[-1].provider_message_id else None
-    )
+    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     messages = mark_last_occurrence_as_active_leaf(messages)
 
     title, title_source, title_ref, title_confidence = _resolve_claude_ai_title(

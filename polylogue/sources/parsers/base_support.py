@@ -73,14 +73,12 @@ def synthetic_message_id(
     namespace: str = "",
     kind: str = "",
 ) -> str:
-    """Build a private reorder-stable evidence key for a message with no provider id.
+    """Build a reorder-stable id for a message with no provider id.
 
-    This is reserved for parser-local evidence, such as an exported summary or
-    a transcript section. It must never be assigned to
-    ``ParsedMessage.provider_message_id``: public parser rows without a native
-    id use the empty string so storage applies the canonical fallback law.
-    Native-id fallback paths must pass an empty string instead, so
-    ``pipeline.ids`` can use its role/timestamp/text comparison anchor.
+    This is reserved for parser-produced rows that are inherently synthetic,
+    such as an exported summary or a transcript section. Native-id fallback
+    paths must pass an empty string instead, so ``pipeline.ids`` can use its
+    role/timestamp/text comparison anchor.
     """
     seed = "\x1f".join((namespace, str(role), timestamp or "", text or "", kind))
     return f"synthetic-{hash_text(seed)[:24]}"
