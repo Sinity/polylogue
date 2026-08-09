@@ -31,6 +31,7 @@ from polylogue.operations.raw_authority_verdict_cache import (
     warm_raw_authority_verdict_cache,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -859,7 +860,7 @@ _RAW_PARSE_RECOVERY_BATCH_LIMIT = 200
 _RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES = 1024 * 1024 * 1024
 
 
-def _raw_parse_recovery_pending_count(db_path: Path, path: Path) -> int:
+def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root: Path | None = None) -> int:
     """Count raw rows under ``path`` acquired but never materialized.
 
     Mirrors the non-terminal branch of ``repair.py``'s candidate query at the
@@ -872,16 +873,26 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path) -> int:
     probe so ``check`` stays fast and false positives just cost one wasted
     ``execute`` call rather than silently missing real backlog.
     """
-    source_db = db_path.parent / "source.db"
-    index_db = db_path.parent / "index.db"
+    durable_root = archive_root or db_path.parent
+    source_db = durable_root / "source.db"
     if not source_db.exists():
+        # An uninitialized archive has neither durable nor derived tiers and
+        # has no recovery work.  Once an index exists, however, a missing
+        # source tier is an authority failure and must remain retryable.
+        if db_path.exists() or (durable_root / ".index-active-pointer").exists():
+            raise FileNotFoundError(f"durable source tier is missing: {source_db}")
         return 0
+    index_db = ArchiveLocation.resolve(durable_root).active_index_path
     normalized_root = str(path).rstrip("/")
     try:
         conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
     except sqlite3.Error:
-        logger.warning("raw_parse_recovery: could not open source.db for %s; treating as no pending work", path)
-        return 0
+        logger.warning(
+            "raw_parse_recovery: could not open source.db for %s; refusing to classify as no pending work",
+            path,
+            exc_info=True,
+        )
+        raise
     try:
         if index_db.exists():
             conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
@@ -891,8 +902,13 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path) -> int:
                   ON r.native_id IS NOT NULL
                  AND s_by_native.origin = r.origin
                  AND s_by_native.native_id = r.native_id
+                LEFT JOIN raw_sessions AS existing_native_raw
+                  ON existing_native_raw.raw_id = s_by_native.raw_id
             """
-            materialized_where = "AND s_by_raw.raw_id IS NULL AND s_by_native.native_id IS NULL"
+            materialized_where = """
+              AND s_by_raw.raw_id IS NULL
+              AND (s_by_native.native_id IS NULL OR existing_native_raw.raw_id IS NULL)
+            """
         else:
             materialized_join = ""
             materialized_where = ""
@@ -903,20 +919,29 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path) -> int:
             {materialized_join}
             WHERE (r.source_path = ? OR r.source_path LIKE ?)
               AND r.parsed_at_ms IS NULL
-              AND r.parse_error IS NULL
+              AND (
+                r.parse_error IS NULL
+                OR r.parse_error = 'OperationalError: database is locked'
+                OR r.parse_error LIKE 'decode:%No such file or directory:%'
+                OR r.parse_error LIKE 'membership_replay_conflict:%'
+              )
               {materialized_where}
             """,
             (normalized_root, f"{normalized_root}/%"),
         ).fetchone()
         return int(row[0] or 0) if row is not None else 0
     except sqlite3.Error:
-        logger.warning("raw_parse_recovery: pending-count probe failed for %s; treating as no pending work", path)
-        return 0
+        logger.warning(
+            "raw_parse_recovery: pending-count probe failed for %s; refusing to classify as no pending work",
+            path,
+            exc_info=True,
+        )
+        raise
     finally:
         conn.close()
 
 
-def make_raw_parse_recovery_stage(db_path: Path) -> ConvergenceStage:
+def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = None) -> ConvergenceStage:
     """Requeue raw rows an interrupted ingest attempt never validated/parsed.
 
     polylogue-61jg: when the daemon stops mid-batch,
@@ -933,22 +958,22 @@ def make_raw_parse_recovery_stage(db_path: Path) -> ConvergenceStage:
     """
 
     def check(path: Path) -> bool:
-        return _raw_parse_recovery_pending_count(db_path, path) > 0
+        return _raw_parse_recovery_pending_count(db_path, path, archive_root=archive_root) > 0
 
     def execute(path: Path) -> StageExecuteReturn:
         from polylogue.config import Config
         from polylogue.product.raw_authority import repair_materialization
         from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
 
-        archive_root = db_path.parent
-        if reason := raw_frontier_source_selection_block_reason(archive_root):
+        configured_root = archive_root or db_path.parent
+        if reason := raw_frontier_source_selection_block_reason(configured_root):
             logger.warning(
                 "raw_parse_recovery: source-selection gate blocked for %s: %s",
                 path,
                 reason,
             )
             return False
-        config = Config(archive_root=archive_root, render_root=archive_root, sources=[])
+        config = Config(archive_root=configured_root, render_root=configured_root, sources=[])
         try:
             repair_materialization(
                 config,
@@ -960,7 +985,7 @@ def make_raw_parse_recovery_stage(db_path: Path) -> ConvergenceStage:
         except Exception:
             logger.warning("raw_parse_recovery: repair pass failed for %s", path, exc_info=True)
             return False
-        return _raw_parse_recovery_pending_count(db_path, path) == 0
+        return _raw_parse_recovery_pending_count(db_path, path, archive_root=configured_root) == 0
 
     return ConvergenceStage(
         name="raw_parse_recovery",
@@ -1070,7 +1095,7 @@ def make_default_convergence_stages(
         )
     stages.extend(
         (
-            make_raw_parse_recovery_stage(db_path),
+            make_raw_parse_recovery_stage(db_path, archive_root=archive_root()),
             make_raw_authority_verdict_cache_stage(db_path),
             make_fts_stage(db_path),
             make_embed_stage(db_path, defer=embed_defer),

@@ -3770,6 +3770,11 @@ def _raw_materialization_archive_root(config: Config) -> Path:
     return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
+def _raw_materialization_index_path(config: Config, archive_root: Path) -> Path:
+    """Return the active derived tier while keeping durable tiers at root."""
+    return config.db_path if config.db_path.name == "index.db" else archive_root / "index.db"
+
+
 def _raw_artifact_coordinate_predicate(*, artifact_alias: str, raw_alias: str) -> str:
     """Correlate evidence with the exact failed artifact observation."""
     return f"""
@@ -3801,7 +3806,7 @@ def _raw_materialization_candidate_ids(
     """
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = _raw_materialization_index_path(config, archive_root)
     if not source_db.exists() or not index_db.exists():
         return RawMaterializationCandidates([], 0, 0)
     blob_store = BlobStore(archive_root / "blob")
@@ -4313,7 +4318,7 @@ def raw_materialization_whale_pass_candidate(
     like ``raw_materialization_pending_census_raw_ids``.
     """
     archive_root = _raw_materialization_archive_root(config)
-    if not (archive_root / "source.db").exists() or not (archive_root / "index.db").exists():
+    if not (archive_root / "source.db").exists() or not _raw_materialization_index_path(config, archive_root).exists():
         return None
     candidates = _raw_materialization_candidate_ids(config)
     if not candidates.raw_ids:
@@ -4723,7 +4728,7 @@ def raw_materialization_replay_backlog(
 
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = _raw_materialization_index_path(config, archive_root)
     if not source_db.exists() or not index_db.exists():
         return _unavailable_raw_materialization_backlog("source_or_index_tier_missing")
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source_conn:
