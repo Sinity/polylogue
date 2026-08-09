@@ -183,6 +183,37 @@ def test_census_reset_refuses_malformed_ledger(tmp_path: Path) -> None:
         inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
 
 
+def test_census_reset_refuses_running_daemon_before_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority_recovery.running_daemon_pid", lambda _config: 123)
+
+    with pytest.raises(RawAuthorityRecoveryError, match="polylogued is running"):
+        apply_raw_authority_recovery(plan)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
+
+
+def test_census_reset_refuses_changed_source_fingerprint_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_authority_parser_census SET detail = 'changed' WHERE raw_id = 'r-keep'")
+
+    with pytest.raises(RawAuthorityRecoveryError, match="stale"):
+        apply_raw_authority_recovery(plan)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
+
+
 def _seed_index_seeds(root: Path) -> Path:
     source_db = root / "source.db"
     index_db = root / "index.db"
