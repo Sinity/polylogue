@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
+from polylogue.archive.session_revision_membership import MembershipRevision, _relation, classify_membership_revisions
 from polylogue.core.enums import Provider
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.pipeline.ids import session_revision_projection
@@ -83,6 +83,92 @@ def test_timestamped_idless_edit_shares_revision_identity_but_changes_content() 
     assert old_identity == edited_identity
     assert old_content != edited_content
     assert old_projection.session_hash != edited_projection.session_hash
+
+
+def test_timestamped_idless_sibling_edit_is_not_a_membership_conflict() -> None:
+    """A same-role, same-timestamp sibling set has one mutable revision axis.
+
+    The content hash still changes, so the real writer replaces the stored
+    payload. Membership must compare the axis cardinality instead of treating
+    the sibling's changed text as a contradictory native identity.
+    """
+    older = _session(
+        [
+            _id_less("assistant", "first", "2024-01-01T00:01:00Z"),
+            _id_less("assistant", "second", "2024-01-01T00:01:00Z"),
+        ]
+    )
+    edited = _session(
+        [
+            _id_less("assistant", "edited first", "2024-01-01T00:01:00Z"),
+            _id_less("assistant", "second", "2024-01-01T00:01:00Z"),
+        ]
+    )
+    older_projection = session_revision_projection(older)
+    edited_projection = session_revision_projection(edited)
+
+    assert older_projection.session_hash != edited_projection.session_hash
+    assert _relation(older_projection, edited_projection) == "equal"
+
+
+def test_whitespace_native_id_uses_the_same_revision_axis_as_missing_id() -> None:
+    whitespace = _session(
+        [ParsedMessage(provider_message_id="  ", role=Role.ASSISTANT, text="same", timestamp="2024-01-01")]
+    )
+    missing = _session([_id_less("assistant", "same", "2024-01-01")])
+
+    assert (
+        session_revision_projection(whitespace).message_contents
+        == session_revision_projection(missing).message_contents
+    )
+
+
+def test_duplicate_physical_owner_coordinate_fails_closed_before_hashing_attachment() -> None:
+    messages = [
+        _id_less("assistant", "first", None).model_copy(update={"position": 3, "variant_index": 0}),
+        _id_less("assistant", "second", None).model_copy(update={"position": 3, "variant_index": 0}),
+    ]
+    attachment = ParsedAttachment(
+        provider_attachment_id="attachment-1",
+        message_provider_id="",
+        message_position=3,
+        message_variant_index=0,
+        name="note.txt",
+        mime_type="text/plain",
+    )
+
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(_session(messages, [attachment]))
+
+
+def test_duplicate_native_id_at_duplicate_physical_coordinate_fails_closed() -> None:
+    messages = [
+        ParsedMessage(
+            provider_message_id="duplicate-native",
+            role=Role.ASSISTANT,
+            text="first",
+            position=3,
+            variant_index=0,
+        ),
+        ParsedMessage(
+            provider_message_id="duplicate-native",
+            role=Role.ASSISTANT,
+            text="second",
+            position=3,
+            variant_index=0,
+        ),
+    ]
+    attachment = ParsedAttachment(
+        provider_attachment_id="attachment-duplicate-native",
+        message_provider_id="duplicate-native",
+        message_position=3,
+        message_variant_index=0,
+        name="note.txt",
+        mime_type="text/plain",
+    )
+
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(_session(messages, [attachment]))
 
 
 def test_id_less_and_timestamp_less_message_uses_content_anchor() -> None:

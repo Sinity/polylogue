@@ -103,6 +103,10 @@ class SessionRevisionProjection:
     attachment_contents: frozenset[tuple[bytes, bytes]]
     event_hashes: tuple[bytes, ...]
     event_contents: frozenset[tuple[bytes, bytes]]
+    # Timestamped id-less messages intentionally share a revision axis even
+    # when their mutable content changes. Native-id axes retain strict content
+    # conflict semantics in ``session_revision_membership``.
+    mutable_message_identities: frozenset[bytes] = frozenset()
 
 
 def _normalize_nested_for_hash(value: object) -> object:
@@ -271,8 +275,9 @@ def _message_revision_match_id(message: ParsedMessage) -> str:
     reaching this function. Parser-local occurrence keys may use position,
     but they are not persisted as ``provider_message_id``.
     """
-    if message.provider_message_id:
-        return message.provider_message_id.strip()
+    native_id = message.provider_message_id.strip()
+    if native_id:
+        return native_id
     payload: dict[str, JSONValue] = {
         "role": str(message.role),
         "timestamp": _normalize_for_hash(message.timestamp),
@@ -290,6 +295,7 @@ class MessageOwnerResolution:
 
     keys: tuple[str, ...]
     by_physical_coordinate: Mapping[tuple[int, int], str]
+    ambiguous_physical_coordinates: frozenset[tuple[int, int]]
     by_stable_key: Mapping[str, str]
     ambiguous_keys: frozenset[str]
     unique_provider_keys: Mapping[str, str]
@@ -342,10 +348,13 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
 
     key_counts = Counter(keys)
     ambiguous_keys = frozenset(key for key, count in key_counts.items() if count > 1)
+    physical_counts = Counter(
+        coordinate.physical_key for coordinate in coordinates if coordinate.physical_key is not None
+    )
     by_physical_coordinate = {
         coordinate.physical_key: key
         for coordinate, key in zip(coordinates, keys, strict=True)
-        if coordinate.physical_key is not None
+        if coordinate.physical_key is not None and physical_counts[coordinate.physical_key] == 1
     }
     by_stable_key = {
         coordinate.stable_key: key
@@ -363,6 +372,9 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
     return MessageOwnerResolution(
         keys=tuple(keys),
         by_physical_coordinate=by_physical_coordinate,
+        ambiguous_physical_coordinates=frozenset(
+            coordinate for coordinate, count in physical_counts.items() if count > 1
+        ),
         by_stable_key=by_stable_key,
         ambiguous_keys=ambiguous_keys,
         unique_provider_keys=provider_keys,
@@ -393,6 +405,8 @@ def attachment_message_owner_key(attachment: ParsedAttachment, resolution: Messa
         if coordinate.stable_key in resolution.by_stable_key:
             return resolution.by_stable_key[coordinate.stable_key]
     if coordinate.physical_key is not None:
+        if coordinate.physical_key in resolution.ambiguous_physical_coordinates:
+            raise MessageOwnerAmbiguityError(f"attachment owner coordinate is duplicated: {coordinate.physical_key!r}")
         key = resolution.by_physical_coordinate.get(coordinate.physical_key)
         if key is not None:
             if key in resolution.ambiguous_keys:
@@ -651,7 +665,10 @@ def _session_hash_components(
     payload independently -- pure sharing of an already-pure computation.
     """
     owner_resolution = message_owner_resolution(convo.messages)
-    message_comparison_ids = list(owner_resolution.keys)
+    # Private owner keys may use duplicate-occurrence evidence. Revision
+    # identity must remain the intrinsic role/timestamp axis for timestamped
+    # id-less messages, independent of the sibling count in this acquisition.
+    message_comparison_ids = [_message_revision_match_id(message) for message in convo.messages]
     messages_payload = [
         _message_hash_payload(message, comparison_id)
         for message, comparison_id in zip(convo.messages, message_comparison_ids, strict=True)
@@ -748,10 +765,13 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     )
     message_content_counts: Counter[tuple[bytes, bytes]] = Counter()
     message_hashes: list[bytes] = []
-    for payload in messages_payload:
+    mutable_message_identities: set[bytes] = set()
+    for message, payload in zip(convo.messages, messages_payload, strict=True):
         message_native_id = payload["id"]
         assert isinstance(message_native_id, str)  # built as str above, never anything else
         identity = message_identity_hash(id=message_native_id)
+        if not message.provider_message_id.strip() and message.timestamp is not None:
+            mutable_message_identities.add(identity)
         content = bytes.fromhex(hash_payload(payload))
         message_content_counts[(identity, content)] += 1
         message_hashes.append(content)
@@ -809,4 +829,5 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         attachment_contents=frozenset(attachment_contents),
         event_hashes=tuple(event_hashes),
         event_contents=frozenset(event_contents),
+        mutable_message_identities=frozenset(mutable_message_identities),
     )

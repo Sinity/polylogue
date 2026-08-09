@@ -89,24 +89,57 @@ def _message_identities(contents: frozenset[MessageContent]) -> frozenset[bytes]
     return frozenset(identity for identity, _content, _multiplicity in contents)
 
 
-def _message_axis_relation(contents_a: frozenset[MessageContent], contents_b: frozenset[MessageContent]) -> _Relation:
+def _message_axis_relation(
+    contents_a: frozenset[MessageContent],
+    contents_b: frozenset[MessageContent],
+    *,
+    mutable_identities: frozenset[bytes] = frozenset(),
+) -> _Relation:
     """Compare message content as an unordered multiset.
 
     Reordering remains equivalent, while a repeated id-less message is an
     additional persisted turn rather than a duplicate that set semantics can
-    erase. A shared identity carrying different content remains a conflict.
+    erase. Native shared identities carrying different content remain a
+    conflict. Timestamped id-less identities are deliberately mutable: their
+    content hash still triggers archive replacement, while their revision
+    membership axis must not turn an edit into a false fork merely because a
+    sibling was added or changed.
     """
     counts_a = {(identity, content): multiplicity for identity, content, multiplicity in contents_a}
     counts_b = {(identity, content): multiplicity for identity, content, multiplicity in contents_b}
+    identity_counts_a: dict[bytes, int] = {}
+    identity_counts_b: dict[bytes, int] = {}
+    for (identity, _content), multiplicity in counts_a.items():
+        identity_counts_a[identity] = identity_counts_a.get(identity, 0) + multiplicity
+    for (identity, _content), multiplicity in counts_b.items():
+        identity_counts_b[identity] = identity_counts_b.get(identity, 0) + multiplicity
     identities_a = _message_identities(contents_a)
     identities_b = _message_identities(contents_b)
     for identity in identities_a & identities_b:
         content_values_a = {content for candidate_identity, content in counts_a if candidate_identity == identity}
         content_values_b = {content for candidate_identity, content in counts_b if candidate_identity == identity}
+        if identity in mutable_identities:
+            continue
         if content_values_a != content_values_b:
             return "conflict"
-    a_richer = bool(identities_a - identities_b) or any(count > counts_b.get(key, 0) for key, count in counts_a.items())
-    b_richer = bool(identities_b - identities_a) or any(count > counts_a.get(key, 0) for key, count in counts_b.items())
+
+    def _has_extra(
+        side: dict[tuple[bytes, bytes], int],
+        other: dict[tuple[bytes, bytes], int],
+        side_identity_counts: dict[bytes, int],
+        other_identity_counts: dict[bytes, int],
+    ) -> bool:
+        for key, count in side.items():
+            identity = key[0]
+            if identity in mutable_identities:
+                if side_identity_counts.get(identity, 0) > other_identity_counts.get(identity, 0):
+                    return True
+            elif count > other.get(key, 0):
+                return True
+        return False
+
+    a_richer = bool(identities_a - identities_b) or _has_extra(counts_a, counts_b, identity_counts_a, identity_counts_b)
+    b_richer = bool(identities_b - identities_a) or _has_extra(counts_b, counts_a, identity_counts_b, identity_counts_a)
     if a_richer and b_richer:
         return "conflict"
     if a_richer:
@@ -183,7 +216,11 @@ def _relation(a: SessionRevisionProjection, b: SessionRevisionProjection) -> _Re
     any single axis already is.
     """
     axes = (
-        _message_axis_relation(a.message_contents, b.message_contents),
+        _message_axis_relation(
+            a.message_contents,
+            b.message_contents,
+            mutable_identities=a.mutable_message_identities | b.mutable_message_identities,
+        ),
         _axis_relation(a.attachment_identities, a.attachment_contents, b.attachment_identities, b.attachment_contents),
         _axis_relation(
             _identities(a.event_contents), a.event_contents, _identities(b.event_contents), b.event_contents

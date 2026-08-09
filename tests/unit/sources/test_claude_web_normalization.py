@@ -19,7 +19,11 @@ from polylogue.sources.parsers.browser_capture import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
-from polylogue.sources.parsers.claude.common import CLAUDE_LINEAGE_CYCLE_INGEST_FLAG
+from polylogue.sources.parsers.claude.common import (
+    CLAUDE_LINEAGE_CYCLE_INGEST_FLAG,
+    _message_attachments,
+    _owner_stable_key,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.pipeline_roundtrip import parse_payload_roundtrip, write_and_hydrate
@@ -706,6 +710,42 @@ def test_claude_duplicate_native_attachment_owner_keeps_variant_coordinate(
         ]
 
     assert rows == [("att-variant-a", 0), ("att-variant-b", 1)]
+
+
+def test_claude_repeated_position_owner_evidence_keeps_attachment_identity() -> None:
+    """Attachment evidence remains distinct even before variant repair.
+
+    This directly exercises the private owner-key constructor with repeated
+    explicit positions and omitted variants. Removing attachment evidence from
+    ``_owner_stable_key`` makes the two keys collide and the assertion fails.
+    """
+    first = {"position": 4, "files": [{"id": "owner-a", "file_name": "a.txt"}]}
+    second = {"position": 4, "files": [{"id": "owner-b", "file_name": "b.txt"}]}
+
+    first_attachments = _message_attachments(first, "")
+    second_attachments = _message_attachments(second, "")
+    first_key = _owner_stable_key(
+        first,
+        parent_message_provider_id=None,
+        explicit_position=4,
+        explicit_branch_index=None,
+        explicit_variant_index=None,
+        blocks=[],
+        attachments=first_attachments,
+    )
+    second_key = _owner_stable_key(
+        second,
+        parent_message_provider_id=None,
+        explicit_position=4,
+        explicit_branch_index=None,
+        explicit_variant_index=None,
+        blocks=[],
+        attachments=second_attachments,
+    )
+
+    assert first_key is not None
+    assert second_key is not None
+    assert first_key != second_key
 
 
 def test_claude_duplicate_native_owner_move_changes_real_ingest_hash_and_owner(

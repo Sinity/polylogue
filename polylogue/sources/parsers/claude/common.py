@@ -644,14 +644,13 @@ def _owner_stable_key(
     block_ids = sorted(block.tool_id for block in blocks if block.tool_id)
     if block_ids:
         evidence["tool_ids"] = block_ids
-    if explicit_position is None and explicit_branch_index is None and explicit_variant_index is None:
-        attachment_ids = sorted(
-            (attachment.provider_attachment_id, attachment.provider_file_id, attachment.provider_drive_id)
-            for attachment in attachments
-            if attachment.provider_attachment_id or attachment.provider_file_id or attachment.provider_drive_id
-        )
-        if attachment_ids:
-            evidence["attachment_ids"] = [list(values) for values in attachment_ids]
+    attachment_ids = sorted(
+        (attachment.provider_attachment_id, attachment.provider_file_id, attachment.provider_drive_id)
+        for attachment in attachments
+        if attachment.provider_attachment_id or attachment.provider_file_id or attachment.provider_drive_id
+    )
+    if attachment_ids:
+        evidence["attachment_ids"] = [list(values) for values in attachment_ids]
     if not evidence:
         return None
     return f"claude-owner-evidence:{hash_payload(evidence)}"
