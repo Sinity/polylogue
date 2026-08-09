@@ -166,7 +166,8 @@ def _validate_route_spec(errors: list[str], contract: dict[str, Any]) -> bool:
     if set(route_spec) != {"mode", "identifier", "class", "dispatch"}:
         errors.append("route_spec fields must be exactly mode, identifier, class, and dispatch")
         valid = False
-    if route_spec.get("mode") not in _ALLOWED_ROUTE_MODES:
+    mode = route_spec.get("mode")
+    if not isinstance(mode, str) or mode not in _ALLOWED_ROUTE_MODES:
         errors.append("route_spec.mode must be named")
         valid = False
     identifier = route_spec.get("identifier")
@@ -176,7 +177,8 @@ def _validate_route_spec(errors: list[str], contract: dict[str, Any]) -> bool:
     elif not _ROUTE_IDENTIFIER.fullmatch(identifier):
         errors.append("route_spec.identifier must be a structured named identifier")
         valid = False
-    if route_spec.get("dispatch") not in _ALLOWED_ROUTE_DISPATCH:
+    dispatch = route_spec.get("dispatch")
+    if not isinstance(dispatch, str) or dispatch not in _ALLOWED_ROUTE_DISPATCH:
         errors.append("route_spec.dispatch is invalid")
         valid = False
     else:
@@ -184,10 +186,9 @@ def _validate_route_spec(errors: list[str], contract: dict[str, Any]) -> bool:
         allowed_dispatch = _ROUTE_DISPATCH_BY_TYPE.get(
             contract_type if isinstance(contract_type, str) else "", frozenset()
         )
-        if route_spec.get("dispatch") not in allowed_dispatch:
+        if dispatch not in allowed_dispatch:
             errors.append(
-                f"route_spec.dispatch {route_spec['dispatch']!r} is incompatible with "
-                f"contract_type {contract.get('contract_type')!r}"
+                f"route_spec.dispatch {dispatch!r} is incompatible with contract_type {contract.get('contract_type')!r}"
             )
             valid = False
     identifier = route_spec.get("identifier")
@@ -200,25 +201,32 @@ def _validate_route_spec(errors: list[str], contract: dict[str, Any]) -> bool:
         errors.append(f"route_spec.identifier {identifier!r} is not registered")
         return False
     registered_bead_id = registered.get("bead_id")
-    if registered_bead_id not in {None, contract.get("bead_id")}:
+    if not isinstance(registered_bead_id, str) or not registered_bead_id:
+        errors.append("registered route authority must bind a non-empty Bead id")
+        valid = False
+    if not isinstance(contract.get("bead_id"), str) or registered_bead_id != contract.get("bead_id"):
         errors.append("route_spec.identifier is registered for a different Bead")
         valid = False
-    if registered_bead_id is not None and registered.get("contract_type") != contract.get("contract_type"):
+    registered_contract_type = registered.get("contract_type")
+    if not isinstance(registered_contract_type, str) or registered_contract_type != contract.get("contract_type"):
         errors.append("route_spec.identifier is registered for a different contract_type")
         valid = False
-    if registered.get("dispatch") not in {"*", route_spec.get("dispatch")}:
+    registered_dispatch = registered.get("dispatch")
+    if not isinstance(registered_dispatch, str) or registered_dispatch != dispatch:
         errors.append("route_spec.dispatch does not match the registered route class")
         valid = False
     contract_type = contract.get("contract_type")
     expected_class = _ROUTE_CLASS_BY_TYPE.get(contract_type if isinstance(contract_type, str) else "")
-    if route_spec.get("class") != expected_class:
+    route_class = route_spec.get("class")
+    if not isinstance(route_class, str) or route_class != expected_class:
         errors.append("route_spec.class does not match the contract_type")
         valid = False
-    if registered.get("class") not in {"*", route_spec.get("class")}:
+    registered_class = registered.get("class")
+    if not isinstance(registered_class, str) or registered_class != route_class:
         errors.append("route_spec.class does not match the registered route class")
         valid = False
     targets = registered.get("targets")
-    if not isinstance(targets, list):
+    if not isinstance(targets, list) or any(not isinstance(target, str) for target in targets):
         errors.append("registered route authority has no target list")
         valid = False
     elif targets != contract.get("routes"):
@@ -232,13 +240,16 @@ def _validate_verification_route(errors: list[str], contract: dict[str, Any]) ->
     if route is None:
         return False
     valid = True
-    if route.get("manager") not in _ALLOWED_VERIFICATION_MANAGERS:
+    manager = route.get("manager")
+    if not isinstance(manager, str) or manager not in _ALLOWED_VERIFICATION_MANAGERS:
         errors.append("verification_route.manager must be devtools")
         valid = False
-    if route.get("focused") not in _ALLOWED_VERIFICATION_FOCUSED:
+    focused = route.get("focused")
+    if not isinstance(focused, str) or focused not in _ALLOWED_VERIFICATION_FOCUSED:
         errors.append("verification_route.focused must be devtools test")
         valid = False
-    if route.get("default") not in _ALLOWED_VERIFICATION_DEFAULT:
+    default = route.get("default")
+    if not isinstance(default, str) or default not in _ALLOWED_VERIFICATION_DEFAULT:
         errors.append("verification_route.default must be devtools verify")
         valid = False
     return valid
@@ -249,10 +260,12 @@ def _validate_receipt(errors: list[str], contract: dict[str, Any]) -> bool:
     if receipt is None:
         return False
     valid = True
-    if receipt.get("kind") not in _ALLOWED_RECEIPT_KINDS:
+    kind = receipt.get("kind")
+    if not isinstance(kind, str) or kind not in _ALLOWED_RECEIPT_KINDS:
         errors.append("receipt.kind must be live-operation")
         valid = False
-    if receipt.get("requirement") not in _ALLOWED_RECEIPT_REQUIREMENTS:
+    requirement = receipt.get("requirement")
+    if not isinstance(requirement, str) or requirement not in _ALLOWED_RECEIPT_REQUIREMENTS:
         errors.append("receipt.requirement must be required")
         valid = False
     bindings = receipt.get("bindings")
@@ -394,13 +407,14 @@ def render(contract: dict[str, Any]) -> str:
         add("Anti-vacuity", value)
     for value in contract.get("safety", []):
         add("Safety", value)
-    if contract.get("contract_type") in {"implementation", "test_harness"}:
+    contract_type = contract.get("contract_type")
+    if isinstance(contract_type, str) and contract_type in {"implementation", "test_harness"}:
         verification_route = contract["verification_route"]
         add(
             "Managed verification route",
             f"focused={verification_route['focused']}; default={verification_route['default']}",
         )
-    if contract.get("contract_type") == "live_operation":
+    if contract_type == "live_operation":
         receipt = contract["receipt"]
         add(
             "Receipt requirement",
@@ -427,32 +441,35 @@ def validate(issue: dict[str, Any]) -> list[str]:
         errors.append("schema_version must be 1")
     if contract.get("bead_id") != issue.get("id"):
         errors.append("bead_id does not match issue id")
-    if contract.get("contract_type") not in _ALLOWED_TYPES:
+    contract_type = contract.get("contract_type")
+    if not isinstance(contract_type, str) or contract_type not in _ALLOWED_TYPES:
         errors.append("invalid contract_type")
-    if contract.get("risk") not in _ALLOWED_RISKS:
+    risk = contract.get("risk")
+    if not isinstance(risk, str) or risk not in _ALLOWED_RISKS:
         errors.append("invalid risk")
-    if contract.get("confidence") not in _ALLOWED_CONFIDENCE:
+    confidence = contract.get("confidence")
+    if not isinstance(confidence, str) or confidence not in _ALLOWED_CONFIDENCE:
         errors.append("confidence must be high, medium, or planner-review")
+    _require_string(errors, contract.get("bead_id"), "bead_id")
     _require_string(errors, contract.get("outcome"), "outcome")
     for key in ("routes", "evidence", "verification", "anti_vacuity"):
         _require_string_list(errors, contract, key)
     _require_string_list(errors, contract, "retained_scope", optional=True)
     _require_string_list(errors, contract, "safety", optional=True)
     _validate_route_spec(errors, contract)
-    if contract.get("contract_type") in {"implementation", "test_harness"}:
+    if isinstance(contract_type, str) and contract_type in {"implementation", "test_harness"}:
         _validate_verification_route(errors, contract)
     closure = contract.get("closure")
     if not isinstance(closure, Mapping):
         errors.append("closure must be an object")
     else:
         _require_string(errors, closure.get("rule"), "closure.rule")
-        if closure.get("disposition") not in _ALLOWED_CLOSURE_DISPOSITIONS:
+        disposition = closure.get("disposition")
+        if not isinstance(disposition, str) or disposition not in _ALLOWED_CLOSURE_DISPOSITIONS:
             errors.append("closure.disposition must be whole-or-explicit-partial")
         if not isinstance(closure.get("successor_required_for_partial"), bool):
             errors.append("closure.successor_required_for_partial must be boolean")
-        elif closure.get("disposition") == "whole-or-explicit-partial" and not closure.get(
-            "successor_required_for_partial"
-        ):
+        elif disposition == "whole-or-explicit-partial" and not closure.get("successor_required_for_partial"):
             errors.append("whole-or-explicit-partial requires successor_required_for_partial=true")
     digest = contract.get("source_digest")
     if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
@@ -466,11 +483,11 @@ def validate(issue: dict[str, Any]) -> list[str]:
         errors.append("dependency_digest does not match the Bead dependency projection")
     if issue.get("dependencies") is not None and not isinstance(issue.get("dependencies"), list):
         errors.append("dependencies must be a list")
-    if contract.get("contract_type") == "live_operation" and not contract.get("safety"):
+    if contract_type == "live_operation" and not contract.get("safety"):
         errors.append("live_operation requires safety clauses")
-    if contract.get("contract_type") == "live_operation":
+    if contract_type == "live_operation":
         _validate_receipt(errors, contract)
-    if contract.get("risk") == "durable-mutation" and not contract.get("safety"):
+    if risk == "durable-mutation" and not contract.get("safety"):
         errors.append("durable-mutation requires safety clauses")
     for value in contract.get("routes", []) if isinstance(contract.get("routes"), list) else []:
         if isinstance(value, str) and _ROUTE_PLACEHOLDER.search(value):
@@ -508,10 +525,34 @@ def validate_route_registry(required_ids: Iterable[str]) -> list[str]:
     except AcceptanceRouteRegistryError as exc:
         return [str(exc)]
     required = set(required_ids)
-    canonical = {entry.get("bead_id") for entry in registry.values() if isinstance(entry.get("bead_id"), str)}
     errors: list[str] = []
-    if canonical != required:
-        errors.append(f"route registry Bead population mismatch: expected {len(required)}, found {len(canonical)}")
+    entries = list(registry.items())
+    if len(entries) != len(required):
+        errors.append(f"route registry entry count mismatch: expected {len(required)}, found {len(entries)}")
+    bound_ids: list[str] = []
+    for identifier, entry in entries:
+        bead_id = entry.get("bead_id")
+        if not isinstance(bead_id, str) or not bead_id:
+            errors.append(f"route registry entry {identifier!r} must bind one non-empty manifest Bead id")
+        else:
+            bound_ids.append(bead_id)
+            if bead_id not in required:
+                errors.append(f"route registry entry {identifier!r} binds unlisted Bead {bead_id!r}")
+        for field in ("class", "contract_type", "dispatch"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value or value == "*":
+                errors.append(f"route registry entry {identifier!r} has invalid {field} authority")
+        targets = entry.get("targets")
+        if (
+            not isinstance(targets, list)
+            or not targets
+            or any(not isinstance(target, str) or not target for target in targets)
+        ):
+            errors.append(f"route registry entry {identifier!r} must have a non-empty string target list")
+    if len(bound_ids) != len(set(bound_ids)):
+        errors.append("route registry contains duplicate Bead bindings")
+    if set(bound_ids) != required:
+        errors.append(f"route registry Bead population mismatch: expected {len(required)}, found {len(set(bound_ids))}")
     return errors
 
 

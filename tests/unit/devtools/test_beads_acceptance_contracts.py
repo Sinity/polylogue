@@ -16,18 +16,38 @@ spec.loader.exec_module(mod)
 
 @pytest.fixture(autouse=True)
 def _synthetic_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    route_classes = {
+        "implementation": {
+            "class": "ImplementationRoute",
+            "contract_type": "implementation",
+            "dispatch": "production",
+        },
+        "live_operation": {
+            "class": "LiveOperationRoute",
+            "contract_type": "live_operation",
+            "dispatch": "production",
+        },
+        "audit": {"class": "AuditRoute", "contract_type": "audit", "dispatch": "read-only"},
+        "decision": {"class": "DecisionRoute", "contract_type": "decision", "dispatch": "decision"},
+        "documentation": {
+            "class": "DocumentationRoute",
+            "contract_type": "documentation",
+            "dispatch": "documentation",
+        },
+    }
     monkeypatch.setattr(
         mod,
         "resolve_route",
         lambda identifier: (
             {
-                "bead_id": None,
-                "class": "*",
-                "contract_type": "*",
-                "dispatch": "*",
+                "bead_id": "polylogue-test",
+                **route_classes[identifier.removeprefix("test/")],
+                "identifier": identifier,
                 "targets": ["Test production route."],
             }
-            if identifier == "test/production"
+            if isinstance(identifier, str)
+            and identifier.startswith("test/")
+            and identifier.removeprefix("test/") in route_classes
             else None
         ),
     )
@@ -59,7 +79,7 @@ def _issue(kind: str = "implementation", risk: str = "ordinary") -> dict[str, An
         else [],
         "route_spec": {
             "mode": "named",
-            "identifier": "test/production",
+            "identifier": f"test/{kind}",
             "class": {
                 "live_operation": "LiveOperationRoute",
                 "audit": "AuditRoute",
@@ -381,6 +401,47 @@ def test_malformed_shapes_return_validation_errors_without_render_tracebacks(key
     assert all(isinstance(error, str) for error in errors)
 
 
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("contract_type",), []),
+        (("risk",), {}),
+        (("confidence",), ["high"]),
+        (("route_spec", "mode"), []),
+        (("route_spec", "dispatch"), {}),
+        (("route_spec", "class"), []),
+        (("verification_route", "manager"), []),
+        (("verification_route", "focused"), {}),
+        (("verification_route", "default"), []),
+        (("closure", "disposition"), {}),
+    ],
+)
+def test_untrusted_scalar_membership_values_fail_closed(path: tuple[str, ...], value: object) -> None:
+    issue = _issue()
+    contract = issue["metadata"]["acceptance_contract_v1"]
+    target: dict[str, object] = contract
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    errors = mod.validate(issue)
+
+    assert errors
+    assert all(isinstance(error, str) for error in errors)
+
+
+@pytest.mark.parametrize("field", ["kind", "requirement"])
+def test_untrusted_receipt_scalar_membership_values_fail_closed(field: str) -> None:
+    issue = _issue(kind="live_operation")
+    receipt = issue["metadata"]["acceptance_contract_v1"]["receipt"]
+    receipt[field] = []
+
+    errors = mod.validate(issue)
+
+    assert errors
+    assert all(isinstance(error, str) for error in errors)
+
+
 def test_optional_null_lists_use_the_empty_list_canonical_form() -> None:
     issue = _issue()
     contract = issue["metadata"]["acceptance_contract_v1"]
@@ -429,3 +490,61 @@ def test_manifest_is_required_and_cannot_shrink(tmp_path: Path) -> None:
         assert "manifest inventory is invalid" in str(exc)
     else:
         raise AssertionError("shrunk manifest must fail closed")
+
+
+def test_committed_route_registry_has_exact_manifest_population() -> None:
+    required = mod.load_manifest(mod._DEFAULT_MANIFEST)
+
+    assert mod.validate_route_registry(required) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("bead_id", None, "must bind one non-empty manifest Bead id"),
+        ("class", "*", "invalid class authority"),
+        ("contract_type", "*", "invalid contract_type authority"),
+        ("dispatch", "*", "invalid dispatch authority"),
+    ],
+)
+def test_route_registry_rejects_unbound_or_wildcard_authority(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: object, expected: str
+) -> None:
+    registry = {
+        "test/one": {
+            "bead_id": "polylogue-one",
+            "class": "ImplementationRoute",
+            "contract_type": "implementation",
+            "dispatch": "production",
+            "targets": ["named target"],
+        },
+        "test/two": {
+            "bead_id": "polylogue-two",
+            "class": "ImplementationRoute",
+            "contract_type": "implementation",
+            "dispatch": "production",
+            "targets": ["named target"],
+        },
+    }
+    registry["test/one"][field] = value
+    monkeypatch.setattr(mod, "load_registry", lambda: registry)
+
+    errors = mod.validate_route_registry(("polylogue-one", "polylogue-two"))
+
+    assert any(expected in error for error in errors)
+
+
+def test_route_registry_rejects_duplicate_and_unlisted_bindings(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = {
+        "bead_id": "polylogue-one",
+        "class": "ImplementationRoute",
+        "contract_type": "implementation",
+        "dispatch": "production",
+        "targets": ["named target"],
+    }
+    monkeypatch.setattr(mod, "load_registry", lambda: {"test/one": entry, "test/two": dict(entry)})
+
+    errors = mod.validate_route_registry(("polylogue-one", "polylogue-two"))
+
+    assert any("duplicate Bead bindings" in error for error in errors)
+    assert any("population mismatch" in error for error in errors)
