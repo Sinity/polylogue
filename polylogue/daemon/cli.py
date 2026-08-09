@@ -2513,7 +2513,10 @@ async def run_daemon_services(
                 periodic_embedding_orphan_reconcile_check(catch_up_complete=catch_up_complete_gate),
                 _periodic_db_optimize(),
                 _periodic_status_snapshot_refresh(),
-                periodic_judgment_automation_sweep(catch_up_complete=catch_up_complete_gate),
+                periodic_judgment_automation_sweep(
+                    catch_up_complete=catch_up_complete_gate,
+                    archive_root_path=archive_root_path,
+                ),
                 periodic_fts_identity_drift_recompute(catch_up_complete=catch_up_complete_gate),
                 periodic_fts_orphan_audit(catch_up_complete=catch_up_complete_gate),
                 periodic_blob_gc_check(catch_up_complete=catch_up_complete_gate),

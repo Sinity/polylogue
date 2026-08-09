@@ -1791,16 +1791,33 @@ def upsert_judgment_automation_receipt_outbox(
 
 def list_judgment_automation_receipt_outbox(
     conn: sqlite3.Connection,
+    *,
+    limit: int | None = None,
 ) -> list[ArchiveAssertionEnvelope]:
     """List active scheduler receipt markers, newest first."""
 
-    return [
-        marker
-        for marker in list_assertions_by_kind(conn, AssertionKind.RUN_STATE)
-        if marker.scope_ref == JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE
-        and marker.status == AssertionStatus.ACTIVE
-        and marker.key
-    ]
+    if limit is not None and limit <= 0:
+        raise ValueError("judgment automation receipt outbox limit must be a positive integer")
+    if not _table_exists(conn, "assertions"):
+        return []
+    limit_clause = " LIMIT ?" if limit is not None else ""
+    params: tuple[object, ...] = (
+        AssertionKind.RUN_STATE.value,
+        JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE,
+        AssertionStatus.ACTIVE.value,
+        *(() if limit is None else (limit,)),
+    )
+    rows = conn.execute(
+        f"""
+        SELECT {_ASSERTION_COLUMNS}
+        FROM assertions
+        WHERE kind = ? AND scope_ref = ? AND status = ? AND key IS NOT NULL
+        ORDER BY updated_at_ms DESC, assertion_id
+        {limit_clause}
+        """,
+        params,
+    ).fetchall()
+    return [_assertion_row_to_envelope(row) for row in rows]
 
 
 def ack_judgment_automation_receipt_outbox(

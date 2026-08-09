@@ -64,6 +64,7 @@ JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS = 60
 JUDGMENT_AUTOMATION_STAGE = "judgment-automation"
 JUDGMENT_AUTOMATION_RECEIPT_GRACE_MIN_SECONDS = 5 * 60
 JUDGMENT_AUTOMATION_RECEIPT_GRACE_MAX_SECONDS = 60 * 60
+JUDGMENT_AUTOMATION_RECEIPT_RECOVERY_BATCH_LIMIT = 100
 JudgmentAutomationReceiptStatus = Literal["completed", "parked", "failed"]
 
 JudgmentAutomationDecisionKind = Literal["accept", "reject", "escalate"]
@@ -331,7 +332,10 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
     conn.row_factory = sqlite3.Row
     acknowledged = 0
     try:
-        for marker in list_judgment_automation_receipt_outbox(conn):
+        for marker in list_judgment_automation_receipt_outbox(
+            conn,
+            limit=JUDGMENT_AUTOMATION_RECEIPT_RECOVERY_BATCH_LIMIT,
+        ):
             value = marker.value if isinstance(marker.value, dict) else {}
             operation_id = value.get("operation_id")
             receipt = value.get("receipt")
@@ -371,7 +375,7 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
                     root,
                     status=raw_status,
                     reason=raw_reason,
-                    now_ms=now_ms,
+                    now_ms=marker.created_at_ms,
                     batch_limit=batch_limit,
                     result=result,
                     retryable=bool(receipt.get("retryable", True)),
@@ -799,6 +803,7 @@ def run_judgment_automation_sweep_once(
 async def periodic_judgment_automation_sweep(
     *,
     catch_up_complete: asyncio.Event | None = None,
+    archive_root_path: Path | None = None,
 ) -> None:
     """Periodically run one bounded judgment-automation sweep.
 
@@ -816,7 +821,7 @@ async def periodic_judgment_automation_sweep(
 
     await _await_catch_up_gate(catch_up_complete, loop_name="judgment automation sweep")
     coordinator = daemon_write_coordinator()
-    last_valid_root: Path | None = None
+    last_valid_root: Path | None = archive_root_path
 
     def receipt_root() -> Path:
         """Resolve the archive root without letting a reload error kill the loop."""
@@ -1030,6 +1035,7 @@ async def periodic_judgment_automation_sweep(
 __all__ = [
     "JUDGMENT_AUTOMATION_ACTOR_REF",
     "JUDGMENT_AUTOMATION_AUTHOR_KIND",
+    "JUDGMENT_AUTOMATION_RECEIPT_RECOVERY_BATCH_LIMIT",
     "JUDGMENT_AUTOMATION_STAGE",
     "JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS",
     "JudgmentAutomationDecision",

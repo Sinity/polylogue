@@ -31,6 +31,7 @@ from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibi
 from polylogue.daemon.events import emit_daemon_event
 from polylogue.daemon.judgment_automation import (
     JUDGMENT_AUTOMATION_ACTOR_REF,
+    JUDGMENT_AUTOMATION_RECEIPT_RECOVERY_BATCH_LIMIT,
     JudgmentAutomationPolicyRule,
     JudgmentAutomationReceiptOutcome,
     _JudgmentAutomationReceiptContext,
@@ -381,11 +382,12 @@ def test_committed_judgment_receipt_outbox_recovers_after_ops_crash(tmp_path: Pa
     assert recover_pending_judgment_automation_receipts(tmp_path, now_ms=12_000) == 0
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         row = conn.execute(
-            "SELECT operation_id, payload_json FROM daemon_events WHERE kind = 'judgment-automation'"
+            "SELECT operation_id, ts_ms, payload_json FROM daemon_events WHERE kind = 'judgment-automation'"
         ).fetchone()
     assert row is not None
     assert row[0] == operation_id
-    recovered_receipt = json.loads(row[1])
+    assert row[1] == 10_000
+    recovered_receipt = json.loads(row[2])
     assert recovered_receipt["status"] == "completed"
     assert recovered_receipt["accepted"] == 1
     assert recovered_receipt["receipt_persistence_recovered"] is True
@@ -544,10 +546,14 @@ def test_coalesced_receipt_keeps_outbox_marker_for_operation_recovery(tmp_path: 
 def test_periodic_recovers_receipt_outbox_before_invalid_config_reload(tmp_path: Path) -> None:
     """Fresh-process recovery is not gated by a malformed reload."""
 
-    _init_user_db(tmp_path / "user.db")
-    _init_ops_db(tmp_path / "ops.db")
+    configured_root = tmp_path / "configured-archive"
+    fallback_root = tmp_path / "ambient-fallback"
+    configured_root.mkdir()
+    fallback_root.mkdir()
+    _init_user_db(configured_root / "user.db")
+    _init_ops_db(configured_root / "ops.db")
     operation_id = "judgment-automation:startup-recovery"
-    with sqlite3.connect(tmp_path / "user.db") as conn:
+    with sqlite3.connect(configured_root / "user.db") as conn:
         upsert_judgment_automation_receipt_outbox(
             conn,
             operation_id=operation_id,
@@ -579,14 +585,14 @@ def test_periodic_recovers_receipt_outbox_before_invalid_config_reload(tmp_path:
         patch("polylogue.daemon.judgment_automation.load_polylogue_config", side_effect=ConfigError("bad reload")),
         patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
         patch("polylogue.paths.archive_root", side_effect=ConfigError("bad root reload")),
-        patch("polylogue.paths.data_home", return_value=tmp_path),
+        patch("polylogue.paths.data_home", return_value=fallback_root),
         patch("asyncio.sleep", AsyncMock(side_effect=[_StopLoopError()])),
     ):
         write_coordinator.run_sync.side_effect = _fake_run_sync
         with pytest.raises(_StopLoopError):
-            asyncio.run(periodic_judgment_automation_sweep())
+            asyncio.run(periodic_judgment_automation_sweep(archive_root_path=configured_root))
 
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
+    with sqlite3.connect(configured_root / "ops.db") as conn:
         row = conn.execute(
             "SELECT operation_id, payload_json FROM daemon_events "
             "WHERE kind = 'judgment-automation' AND operation_id = ?",
@@ -595,6 +601,45 @@ def test_periodic_recovers_receipt_outbox_before_invalid_config_reload(tmp_path:
     assert row is not None
     assert row[0] == operation_id
     assert json.loads(row[1])["receipt_persistence_recovered"] is True
+
+
+def test_receipt_outbox_recovery_is_bounded_and_resumes_next_tick(tmp_path: Path) -> None:
+    """Recovery drains a bounded batch so an outage cannot monopolize the writer."""
+
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        for index in range(JUDGMENT_AUTOMATION_RECEIPT_RECOVERY_BATCH_LIMIT + 1):
+            operation_id = f"judgment-automation:backlog-{index}"
+            upsert_judgment_automation_receipt_outbox(
+                conn,
+                operation_id=operation_id,
+                receipt_payload={
+                    "status": "completed",
+                    "reason": "sweep_completed",
+                    "retryable": False,
+                    "retry_route": "next enabled judgment-automation tick",
+                    "batch_limit": 200,
+                    "receipt_persistence_degraded": False,
+                    "receipt_persistence_recovered": False,
+                },
+                now_ms=10_000 + index,
+            )
+        conn.commit()
+
+    assert recover_pending_judgment_automation_receipts(tmp_path, now_ms=20_000) == (
+        JUDGMENT_AUTOMATION_RECEIPT_RECOVERY_BATCH_LIMIT
+    )
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert len(list_judgment_automation_receipt_outbox(conn)) == 1
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM daemon_events WHERE kind = 'judgment-automation'").fetchone() == (
+            JUDGMENT_AUTOMATION_RECEIPT_RECOVERY_BATCH_LIMIT,
+        )
+
+    assert recover_pending_judgment_automation_receipts(tmp_path, now_ms=21_000) == 1
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert list_judgment_automation_receipt_outbox(conn) == []
 
 
 def test_sweep_rejects_non_positive_batch_limit_at_runtime(tmp_path: Path) -> None:
