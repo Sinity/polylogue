@@ -1763,6 +1763,7 @@ class ArchiveStore:
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_source_validation = frozen_source_validation
         self._frozen_index_path = frozen_index_path
+        self._pinned_read = frozen_index_path is not None
         self._inactive_candidate_durable_read_only = owned_inactive_generation is not None or frozen_source_validation
         self._active_writer_lease = None
         if not read_only:
@@ -1931,7 +1932,7 @@ class ArchiveStore:
             self._conn.execute(statement)
         if read_only:
             self._conn.execute(f"PRAGMA busy_timeout = {max(0, int(read_timeout * 1000))}")
-        else:
+        elif not self._pinned_read:
             # Fresh-bootstrap and same-version reopen both skip runtime-index
             # ensure elsewhere (initialize_archive_tier only replays DDL once,
             # at current_version==0. Owned inactive generations (bulk
