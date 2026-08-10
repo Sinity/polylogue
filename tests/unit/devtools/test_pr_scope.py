@@ -206,6 +206,20 @@ def test_fetch_pr_metadata_fetches_files_for_authoritative_dependabot(
     ]
 
 
+def test_fetch_pr_files_rejects_truncated_automated_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = [{"filename": f"dependency-{index}.toml"} for index in range(100)]
+    monkeypatch.setattr(
+        pr_scope,
+        "_github_request_bytes",
+        lambda _path: json.dumps(payload).encode(),
+    )
+
+    with pytest.raises(ValueError, match="100 or more changed files"):
+        pr_scope.fetch_pr_files(42, repository="Sinity/polylogue")
+
+
 def test_fetch_pr_for_head_reports_when_no_open_pr_matches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
