@@ -428,6 +428,7 @@ def bootstrap_testmon_seed_files(
         staged_attempt_path: Path | None = None
         publishes_selection_attempt = decision.main_seed_attempt is not None and decision.selection_only
         if publishes_selection_attempt:
+            assert decision.main_seed_attempt is not None
             assert local_seed_attempt is not None
             source_attempt = json.loads(decision.main_seed_attempt.read_text(encoding="utf-8"))
             if not isinstance(source_attempt, dict):
