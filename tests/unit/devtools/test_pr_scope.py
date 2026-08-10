@@ -172,6 +172,54 @@ def test_ci_resolves_pr_from_exact_head_when_circle_pr_url_is_absent(
     assert requests[0].full_url == f"https://api.github.com/repos/Sinity/polylogue/commits/{HEAD_SHA}/pulls"
 
 
+def test_fetch_pr_metadata_fetches_files_for_authoritative_dependabot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
+
+    def _urlopen(api_request: request.Request, *, timeout: int) -> _FakeHttpResponse:
+        assert timeout == 30
+        requests.append(api_request.full_url)
+        payload: object
+        if api_request.full_url.endswith("/pulls/42"):
+            payload = {
+                "body": "",
+                "draft": False,
+                "head": {"sha": HEAD_SHA},
+                "base": {"sha": "b" * 40},
+                "user": {"login": "dependabot[bot]", "type": "Bot"},
+            }
+        else:
+            payload = [{"filename": "pyproject.toml"}, {"filename": "uv.lock"}]
+        return _FakeHttpResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(request, "urlopen", _urlopen)
+
+    metadata = pr_scope.fetch_pr_metadata(42, repository="Sinity/polylogue")
+
+    assert metadata.author_login == "dependabot[bot]"
+    assert metadata.author_type == "Bot"
+    assert metadata.changed_files == ("pyproject.toml", "uv.lock")
+    assert requests == [
+        "https://api.github.com/repos/Sinity/polylogue/pulls/42",
+        "https://api.github.com/repos/Sinity/polylogue/pulls/42/files?per_page=100",
+    ]
+
+
+def test_fetch_pr_files_rejects_truncated_automated_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = [{"filename": f"dependency-{index}.toml"} for index in range(100)]
+    monkeypatch.setattr(
+        pr_scope,
+        "_github_request_bytes",
+        lambda _path: json.dumps(payload).encode(),
+    )
+
+    with pytest.raises(ValueError, match="100 or more changed files"):
+        pr_scope.fetch_pr_files(42, repository="Sinity/polylogue")
+
+
 def test_fetch_pr_for_head_reports_when_no_open_pr_matches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -214,6 +262,7 @@ def test_ci_check_refuses_head_mismatch_before_fetching_base(
         is_draft=False,
     )
     fetch_base = MagicMock()
+    fetch_base.return_value = b"not a validator"
     monkeypatch.setattr(pr_scope, "fetch_base_validator_source", fetch_base)
 
     assert (
@@ -253,6 +302,82 @@ def test_ci_check_refuses_draft_before_fetching_base(
         == 2
     )
     fetch_base.assert_not_called()
+
+
+def test_ci_accepts_authoritative_dependabot_dependency_only_pr(
+    monkeypatch: pytest.MonkeyPatch,
+    beads_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    metadata = pr_scope.PullRequestMetadata(
+        body="",
+        head_sha=HEAD_SHA,
+        base_sha="b" * 40,
+        is_draft=False,
+        author_login="dependabot[bot]",
+        author_type="Bot",
+        changed_files=("pyproject.toml", "uv.lock"),
+    )
+    fetch_base = MagicMock()
+    monkeypatch.setattr(pr_scope, "fetch_base_validator_source", fetch_base)
+
+    assert (
+        pr_scope.check_ci_metadata(
+            metadata,
+            repository="Sinity/polylogue",
+            beads_path=beads_path,
+            checkout_head_sha=HEAD_SHA,
+            expected_head_sha=HEAD_SHA,
+        )
+        == 0
+    )
+    assert "typed automated-dependency disposition" in capsys.readouterr().out
+    fetch_base.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        pr_scope.PullRequestMetadata(
+            body="",
+            head_sha=HEAD_SHA,
+            base_sha="b" * 40,
+            is_draft=False,
+            author_login="dependabot[bot]",
+            author_type="User",
+            changed_files=("pyproject.toml",),
+        ),
+        pr_scope.PullRequestMetadata(
+            body="",
+            head_sha=HEAD_SHA,
+            base_sha="b" * 40,
+            is_draft=False,
+            author_login="dependabot[bot]",
+            author_type="Bot",
+            changed_files=("pyproject.toml", "polylogue/storage/write.py"),
+        ),
+    ],
+)
+def test_ci_rejects_spoofed_or_extra_file_automated_scope(
+    metadata: pr_scope.PullRequestMetadata,
+    monkeypatch: pytest.MonkeyPatch,
+    beads_path: Path,
+) -> None:
+    fetch_base = MagicMock()
+    fetch_base.return_value = b"not a validator"
+    monkeypatch.setattr(pr_scope, "fetch_base_validator_source", fetch_base)
+
+    assert (
+        pr_scope.check_ci_metadata(
+            metadata,
+            repository="Sinity/polylogue",
+            beads_path=beads_path,
+            checkout_head_sha=HEAD_SHA,
+            expected_head_sha=HEAD_SHA,
+        )
+        == 1
+    )
+    fetch_base.assert_called_once()
 
 
 def test_ci_check_executes_base_revision_validator(

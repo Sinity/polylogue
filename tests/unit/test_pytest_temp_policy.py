@@ -94,6 +94,31 @@ def test_managed_pytest_temp_root_uses_tmpfs_when_requested_and_it_has_headroom(
     assert label == "tmpfs opt-in"
 
 
+def test_managed_pytest_temp_root_uses_scratch_when_tmpfs_budget_leaves_no_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _make_real_candidates(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        verify_runs,
+        "_fs_usage",
+        lambda path: {"used_kb": 0, "free_kb": 1_500 * 1024} if path in (shm, scratch.parent) else None,
+    )
+    monkeypatch.delenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", raising=False)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_TMPFS", "1")
+    monkeypatch.setenv("POLYLOGUE_PYTEST_TMPFS_MAX_MB", "512")
+
+    root, label = verify_runs.resolve_pytest_basetemp_root(
+        {
+            "POLYLOGUE_PYTEST_TMPFS": "1",
+            "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+        }
+    )
+
+    assert root == scratch
+    assert label == "scratch"
+
+
 def test_managed_pytest_temp_root_refuses_when_every_candidate_is_full(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -107,6 +132,13 @@ def test_managed_pytest_temp_root_refuses_when_every_candidate_is_full(
 
     with pytest.raises(verify_runs.PytestResourceError, match="no pytest basetemp location has enough free space"):
         conftest._managed_pytest_temp_root()
+
+
+def test_negative_declared_basetemp_demand_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB", "-1")
+
+    with pytest.raises(verify_runs.PytestResourceError, match="invalid POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB"):
+        verify_runs.pytest_basetemp_required_kb(os.environ)
 
 
 def test_pytest_configure_reports_low_space_as_usage_error(

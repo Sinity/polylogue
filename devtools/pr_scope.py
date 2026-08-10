@@ -74,6 +74,9 @@ class PullRequestMetadata:
     head_sha: str
     base_sha: str
     is_draft: bool
+    author_login: str | None = None
+    author_type: str | None = None
+    changed_files: tuple[str, ...] = ()
 
 
 class NoOpenPullRequestError(ValueError):
@@ -424,19 +427,65 @@ def _pr_metadata_from_payload(payload: object) -> PullRequestMetadata:
         raise ValueError("GitHub PR response is missing head.sha")
     if not isinstance(base, dict) or not isinstance(base.get("sha"), str):
         raise ValueError("GitHub PR response is missing base.sha")
+    user = payload.get("user")
+    author_login = user.get("login") if isinstance(user, dict) and isinstance(user.get("login"), str) else None
+    author_type = user.get("type") if isinstance(user, dict) and isinstance(user.get("type"), str) else None
+    files = payload.get("changed_files")
+    changed_files = tuple(files) if isinstance(files, list) and all(isinstance(item, str) for item in files) else ()
     return PullRequestMetadata(
         body=payload.get("body") or "",
         head_sha=head["sha"],
         base_sha=base["sha"],
         is_draft=bool(payload.get("draft")),
+        author_login=author_login,
+        author_type=author_type,
+        changed_files=changed_files,
     )
+
+
+def fetch_pr_files(pr: int, *, repository: str) -> tuple[str, ...]:
+    """Fetch the complete changed-file list used by automated-scope policy."""
+    raw = _github_request_bytes(f"repos/{repository}/pulls/{pr}/files?per_page=100")
+    if raw is None:
+        raise RuntimeError(f"GitHub API returned no file list for PR #{pr}")
+    payload = json.loads(raw)
+    if not isinstance(payload, list):
+        raise ValueError("GitHub PR files response must be a list")
+    names = tuple(
+        item["filename"] for item in payload if isinstance(item, dict) and isinstance(item.get("filename"), str)
+    )
+    if len(names) != len(payload):
+        raise ValueError("GitHub PR files response contains an invalid filename")
+    if len(names) >= 100:
+        raise ValueError("automated dependency scope refuses PRs with 100 or more changed files")
+    return names
 
 
 def fetch_pr_metadata(pr: int, *, repository: str) -> PullRequestMetadata:
     raw = _github_request_bytes(f"repos/{repository}/pulls/{pr}")
     if raw is None:
         raise RuntimeError(f"GitHub API returned no metadata for PR #{pr}")
-    return _pr_metadata_from_payload(json.loads(raw))
+    metadata = _pr_metadata_from_payload(json.loads(raw))
+    if metadata.author_login == "dependabot[bot]" and metadata.author_type == "Bot":
+        metadata = PullRequestMetadata(
+            **{**asdict(metadata), "changed_files": fetch_pr_files(pr, repository=repository)}
+        )
+    return metadata
+
+
+def _automated_dependency_scope_allowed(metadata: PullRequestMetadata) -> bool:
+    """Recognize only GitHub's bot identity and an exact dependency file set."""
+    allowed = {
+        ".github/workflows/codeql.yml",
+        "pyproject.toml",
+        "uv.lock",
+    }
+    return (
+        metadata.author_login == "dependabot[bot]"
+        and metadata.author_type == "Bot"
+        and bool(metadata.changed_files)
+        and set(metadata.changed_files).issubset(allowed)
+    )
 
 
 def fetch_pr_for_head(*, repository: str, head_sha: str) -> tuple[int, PullRequestMetadata]:
@@ -452,6 +501,10 @@ def fetch_pr_for_head(*, repository: str, head_sha: str) -> tuple[int, PullReque
             continue
         metadata = _pr_metadata_from_payload(item)
         if metadata.head_sha == head_sha:
+            if metadata.author_login == "dependabot[bot]" and metadata.author_type == "Bot":
+                metadata = PullRequestMetadata(
+                    **{**asdict(metadata), "changed_files": fetch_pr_files(item["number"], repository=repository)}
+                )
             candidates.append((item["number"], metadata))
     if not candidates:
         raise NoOpenPullRequestError(f"no open PR found for head {head_sha[:8]}")
@@ -542,6 +595,13 @@ def check_ci_metadata(
     if metadata.is_draft:
         print("REFUSING CI pr-scope check: PR is draft; publish it before validation", file=sys.stderr)
         return 2
+
+    if _automated_dependency_scope_allowed(metadata):
+        print(
+            "pr-scope CI OK: typed automated-dependency disposition "
+            f"(no Bead carrier; files={','.join(metadata.changed_files)})"
+        )
+        return 0
 
     base_source = fetch_base_validator_source(repository=repository, base_sha=metadata.base_sha)
     if base_source is not None:

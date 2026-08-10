@@ -93,6 +93,7 @@ from devtools.verify_runs import (
     pytest_basetemp_path,
     pytest_tmpfs_budget_kb,
     utc_now,
+    xdist_uninterruptible_stall_reason,
 )
 from polylogue.scenarios.workload import (
     BudgetMeasure,
@@ -1159,6 +1160,7 @@ def _run_pytest_with_heartbeat(
     last_progress_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
     last_progress_at = last_sample
     seen_any_progress_event = initial_event is not None
+    xdist_uninterruptible_since: float | None = None
 
     def _refresh_progress_marker(at: float, latest: dict[str, Any] | None = None) -> None:
         nonlocal last_progress_marker, last_progress_at, seen_any_progress_event
@@ -1232,6 +1234,7 @@ def _run_pytest_with_heartbeat(
                 and stall_timeout_s > 0
                 and seen_any_progress_event
                 and progress_idle >= stall_timeout_s
+                and xdist_uninterruptible_since is None
             ):
                 termination_reason = (
                     f"pytest reported no test progress for {stall_timeout_s:g}s "
@@ -1375,6 +1378,18 @@ def _run_pytest_with_heartbeat(
                         f"pytest tmpfs budget exceeded: {basetemp_size_kb / 1024:.1f} MiB "
                         f"> {tmpfs_budget_kb / 1024:.0f} MiB"
                     )
+                if resource_sample.get("all_xdist_workers_uninterruptible") is True:
+                    if xdist_uninterruptible_since is None:
+                        xdist_uninterruptible_since = sample_now
+                    elif termination_reason is None:
+                        termination_reason = xdist_uninterruptible_stall_reason(
+                            resource_sample,
+                            started_at=xdist_uninterruptible_since,
+                            now=sample_now,
+                            timeout_s=stall_timeout_s,
+                        )
+                else:
+                    xdist_uninterruptible_since = None
                 last_resource_sample = sample_now
             if process.poll() is not None and not selector.get_map():
                 break
