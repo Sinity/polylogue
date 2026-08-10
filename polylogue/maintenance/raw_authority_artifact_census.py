@@ -299,22 +299,34 @@ def _checkpoint_page_raw_ids(
     return selected, len(rows) > limit or not checkpoint.universe_complete
 
 
-def _page_inventory_digest(conn: sqlite3.Connection, raw_ids: tuple[str, ...]) -> str:
-    if not raw_ids:
+def _page_inventory_digest(
+    conn: sqlite3.Connection,
+    raw_ids: tuple[str, ...],
+    artifact_ids: tuple[str, ...],
+) -> str:
+    if not raw_ids and not artifact_ids:
         return _canonical_digest({"raw_sessions": [], "raw_artifacts": []})
     records: dict[str, list[list[object]]] = {"raw_sessions": [], "raw_artifacts": []}
     for start in range(0, len(raw_ids), 500):
         selected = raw_ids[start : start + 500]
         marks = ",".join("?" for _ in selected)
-        for table, columns in (
-            ("raw_sessions", "raw_id, revision_authority, parse_error, blob_hash, blob_size"),
-            ("raw_artifacts", "raw_id, artifact_kind, support_status, parse_as_session, schema_eligible"),
-        ):
-            rows = conn.execute(
-                f"SELECT {columns} FROM {table} WHERE raw_id IN ({marks}) ORDER BY raw_id",
-                selected,
-            ).fetchall()
-            records[table].extend([[_json_value(value) for value in row] for row in rows])
+        rows = conn.execute(
+            "SELECT raw_id, revision_authority, parse_error, blob_hash, blob_size "
+            f"FROM raw_sessions WHERE raw_id IN ({marks}) ORDER BY raw_id",
+            selected,
+        ).fetchall()
+        records["raw_sessions"].extend([[_json_value(value) for value in row] for row in rows])
+    for start in range(0, len(artifact_ids), 500):
+        selected = artifact_ids[start : start + 500]
+        marks = ",".join("?" for _ in selected)
+        rows = conn.execute(
+            "SELECT artifact_id, raw_id, origin, source_path, source_index, artifact_kind, support_status, "
+            "classification_reason, parse_as_session, schema_eligible, malformed_jsonl_lines, decode_error, "
+            "cohort_id, link_group_key, sidecar_agent_type, first_observed_at_ms, last_observed_at_ms "
+            f"FROM raw_artifacts WHERE artifact_id IN ({marks}) ORDER BY artifact_id",
+            selected,
+        ).fetchall()
+        records["raw_artifacts"].extend([[_json_value(value) for value in row] for row in rows])
     return _canonical_digest(records)
 
 
@@ -496,9 +508,11 @@ def run_raw_authority_artifact_census(
                         has_more=has_more,
                         page_next_after_raw_id=page_raw_ids[-1] if has_more and page_raw_ids else None,
                     )
-                    before_inventory = _page_inventory_digest(source_conn, page_raw_ids)
-                    observations_written = write_artifact_observations(source_conn, census.artifact_observations())
-                    after_inventory = _page_inventory_digest(source_conn, page_raw_ids)
+                    artifact_observations = census.artifact_observations()
+                    artifact_ids = tuple(observation.observation_id for observation in artifact_observations)
+                    before_inventory = _page_inventory_digest(source_conn, page_raw_ids, artifact_ids)
+                    observations_written = write_artifact_observations(source_conn, artifact_observations)
+                    after_inventory = _page_inventory_digest(source_conn, page_raw_ids, artifact_ids)
                     evidence = {
                         "backup": backup_evidence,
                         "archive": {

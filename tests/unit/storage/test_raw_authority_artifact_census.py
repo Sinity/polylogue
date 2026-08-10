@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Provider
+from polylogue.maintenance import raw_authority_artifact_census as maintenance
 from polylogue.storage.artifacts import raw_authority_census as census_module
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.artifacts.raw_authority_census import (
@@ -379,6 +380,102 @@ def test_artifact_observation_upsert_preserves_newest_acquisition(archive: Path)
         assert conn.execute(
             "SELECT raw_id, last_observed_at_ms FROM raw_artifacts WHERE artifact_id = 'shared-artifact'"
         ).fetchone() == ("raw-newer", 200)
+
+
+def test_artifact_observation_equal_timestamps_use_source_acquisition_order(archive: Path) -> None:
+    payload = _tool_result_payload()
+    with ArchiveStore.open_existing(archive, read_only=False) as store:
+        _write_raw(
+            store,
+            raw_id="raw-z-earlier",
+            provider=Provider.CLAUDE_CODE,
+            payload=payload,
+            source_path="/exports/shared.json",
+        )
+        _write_raw(
+            store,
+            raw_id="raw-a-later",
+            provider=Provider.CLAUDE_CODE,
+            payload=payload + b" ",
+            source_path="/exports/shared.json",
+        )
+        store.commit()
+    later = ArtifactObservationRecord(
+        observation_id="shared-artifact",
+        raw_id="raw-a-later",
+        payload_provider=Provider.CLAUDE_CODE,
+        source_path="/exports/shared.json",
+        source_index=0,
+        artifact_kind="tool_result",
+        classification_reason="later acquisition",
+        parse_as_session=False,
+        schema_eligible=False,
+        support_status=ArtifactSupportStatus.RECOGNIZED_UNPARSED,
+        first_observed_at="200",
+        last_observed_at="200",
+    )
+    earlier = later.model_copy(update={"raw_id": "raw-z-earlier", "classification_reason": "earlier acquisition"})
+    with sqlite3.connect(archive / "source.db") as conn:
+        assert write_artifact_observations(conn, (later, earlier)) == 1
+        assert conn.execute("SELECT raw_id FROM raw_artifacts WHERE artifact_id = 'shared-artifact'").fetchone() == (
+            "raw-a-later",
+        )
+        conn.execute("DELETE FROM raw_artifacts WHERE artifact_id = 'shared-artifact'")
+        assert write_artifact_observations(conn, (earlier, later)) == 2
+        assert conn.execute("SELECT raw_id FROM raw_artifacts WHERE artifact_id = 'shared-artifact'").fetchone() == (
+            "raw-a-later",
+        )
+
+
+def test_page_inventory_binds_complete_rows_by_affected_artifact_identity(archive: Path) -> None:
+    payload = _tool_result_payload()
+    with ArchiveStore.open_existing(archive, read_only=False) as store:
+        _write_raw(
+            store,
+            raw_id="raw-old",
+            provider=Provider.CLAUDE_CODE,
+            payload=payload,
+            source_path="/exports/old.json",
+        )
+        _write_raw(
+            store,
+            raw_id="raw-new",
+            provider=Provider.CLAUDE_CODE,
+            payload=payload + b" ",
+            source_path="/exports/new.json",
+        )
+        store.commit()
+    old = ArtifactObservationRecord(
+        observation_id="shared-artifact",
+        raw_id="raw-old",
+        payload_provider=Provider.CLAUDE_CODE,
+        source_path="/exports/shared.json",
+        source_index=0,
+        artifact_kind="tool_result",
+        classification_reason="first classification",
+        parse_as_session=False,
+        schema_eligible=False,
+        support_status=ArtifactSupportStatus.RECOGNIZED_UNPARSED,
+        first_observed_at="100",
+        last_observed_at="100",
+    )
+    updated = old.model_copy(
+        update={"raw_id": "raw-new", "last_observed_at": "200", "classification_reason": "second classification"}
+    )
+    revised = updated.model_copy(update={"last_observed_at": "300", "classification_reason": "revised reason"})
+    with sqlite3.connect(archive / "source.db") as conn:
+        assert write_artifact_observations(conn, (old,)) == 1
+        before = maintenance._page_inventory_digest(conn, ("raw-new",), ("shared-artifact",))
+        assert before != maintenance._page_inventory_digest(conn, ("raw-new",), ())
+        assert write_artifact_observations(conn, (updated,)) == 1
+        after_coordinate_change = maintenance._page_inventory_digest(conn, ("raw-new",), ("shared-artifact",))
+        assert before != after_coordinate_change
+        assert write_artifact_observations(conn, (revised,)) == 1
+        assert after_coordinate_change != maintenance._page_inventory_digest(
+            conn,
+            ("raw-new",),
+            ("shared-artifact",),
+        )
 
 
 def test_census_passes_the_selected_archive_blob_store_to_inspection(

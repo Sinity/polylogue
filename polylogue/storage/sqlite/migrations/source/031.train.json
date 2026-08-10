@@ -25,6 +25,7 @@
         "table:raw_authority_artifact_census_checkpoints",
         "table:raw_authority_artifact_census_checkpoint_members",
         "index:idx_raw_authority_artifact_census_checkpoint_members_page",
+        "trigger:invalidate_pending_raw_authority_artifact_census_checkpoint_on_raw_delete",
         "index:idx_raw_sessions_raw_authority_census_candidates"
       ],
       "runtime_consumers": [
@@ -69,5 +70,5 @@
   "release_evidence_ref": null,
   "proof_refs": [],
   "source_continuity_evidence": null,
-  "manifest_sha256": "40b655ddbb9c21a40d8c465809b7df7b0ef55430c150573d0ebcc0de434b96c6"
+  "manifest_sha256": "224f3a2207d957269fd31c01d8f2053650c49e0ebba2a4c348b25ded5fd7eada"
 }

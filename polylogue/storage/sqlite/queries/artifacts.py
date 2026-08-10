@@ -74,7 +74,15 @@ ON CONFLICT(artifact_id) DO UPDATE SET
     link_group_key = excluded.link_group_key,
     sidecar_agent_type = excluded.sidecar_agent_type,
     last_observed_at_ms = excluded.last_observed_at_ms
-WHERE excluded.last_observed_at_ms >= raw_artifacts.last_observed_at_ms
+WHERE excluded.last_observed_at_ms > raw_artifacts.last_observed_at_ms
+   OR (
+       excluded.last_observed_at_ms = raw_artifacts.last_observed_at_ms
+       AND (
+           SELECT rowid FROM raw_sessions WHERE raw_id = excluded.raw_id
+       ) > (
+           SELECT rowid FROM raw_sessions WHERE raw_id = raw_artifacts.raw_id
+       )
+   )
 """
 
 
