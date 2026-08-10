@@ -4213,11 +4213,11 @@ def raw_materialization_pending_census_raw_ids(
     BEFORE taking the writer hold, to know which raws to pre-parse. Reuses
     the exact same candidate + uncensused-receipt filters as
     ``repair_raw_materialization``'s own census phase, and (like
-    ``_raw_materialization_candidate_ids``) opens only ``mode=ro``
+    ``_raw_materialization_parser_census_candidates``) opens only ``mode=ro``
     connections -- no write connection, and thus no writer hold, is ever
     required or taken here.
 
-    Order matches ``_raw_materialization_candidate_ids``'s row order. The
+    Order matches ``_raw_materialization_parser_census_candidates``'s row order. The
     real pass additionally narrows by component grouping (only
     ``census_component_limit`` components' worth of raws are actually
     censused per pass), so this is a superset preview suitable for warming a

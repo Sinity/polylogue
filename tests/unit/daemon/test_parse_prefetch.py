@@ -93,6 +93,47 @@ def test_warm_parses_pending_candidates_off_writer_hold(tmp_path: Path) -> None:
         assert payload_bytes > 0
 
 
+def test_warm_parses_indexed_raw_with_missing_parser_receipt(tmp_path: Path) -> None:
+    """The daemon warmer includes all-raw census debt, not only replay debt.
+
+    The raw is already materialized in ``index.db`` but its parser receipt is
+    removed. ``DaemonParseStage.warm`` must still parse it outside the writer
+    hold, because ``repair_raw_materialization`` will census that same raw.
+    Replacing the preview's parser-census selector with the ordinary replay
+    selector makes ``warmed`` zero and leaves the cache empty.
+    """
+    initialize_active_archive_root(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="indexed-missing-receipt",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="warm this census debt")],
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id, _session_id = archive.write_raw_and_parsed(
+            session,
+            payload=_codex_payload("indexed-missing-receipt", "warm this census debt"),
+            source_path="indexed-missing-receipt.jsonl",
+            acquired_at_ms=1,
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+    with sqlite3.connect(f"file:{tmp_path / 'index.db'}?mode=ro", uri=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+    stage = DaemonParseStage(max_workers=2, max_inflight_bytes=10_000_000)
+    try:
+        warmed = stage.warm(_config(tmp_path), limit=10, max_payload_bytes=10_000_000)
+    finally:
+        stage.shutdown()
+
+    assert warmed == 1
+    assert stage.cache.contains(raw_id)
+    sessions, _payload_bytes, _kind = stage.cache.pop(raw_id)  # type: ignore[misc]
+    assert [parsed.provider_session_id for parsed in sessions] == ["indexed-missing-receipt"]
+
+
 def test_warm_recovers_append_native_id_not_source_path_stem(tmp_path: Path) -> None:
     """polylogue-6lyh1: the daemon's off-writer-hold warmer must apply the
     same APPEND fallback-identity recovery as the sequential path
