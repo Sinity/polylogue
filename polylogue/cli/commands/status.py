@@ -2528,6 +2528,26 @@ def _render_assertion_candidate_queue(env: AppEnv, queue: dict[str, Any]) -> Non
         receipt_reason = queue.get("judgment_scheduler_receipt_reason")
         if receipt_reason:
             receipt_details.append(f"reason={receipt_reason}")
+        retryable = queue.get("judgment_scheduler_receipt_retryable")
+        if isinstance(retryable, bool):
+            receipt_details.append(f"retryable={retryable}")
+        retry_route = queue.get("judgment_scheduler_receipt_retry_route")
+        if retry_route is not None:
+            receipt_details.append(f"route={retry_route}")
+        batch_limit = queue.get("judgment_scheduler_receipt_batch_limit")
+        if isinstance(batch_limit, int) and not isinstance(batch_limit, bool):
+            receipt_details.append(f"batch={batch_limit}")
+        counter_parts = []
+        for name in ("considered", "accepted", "rejected", "escalated", "idempotent", "failed"):
+            value = queue.get(f"judgment_scheduler_receipt_{name}")
+            if value is not None:
+                counter_parts.append(f"{name}={value}")
+        if counter_parts:
+            receipt_details.append("counts=" + ",".join(counter_parts))
+        degraded = queue.get("judgment_scheduler_receipt_persistence_degraded")
+        recovered = queue.get("judgment_scheduler_receipt_persistence_recovered")
+        if isinstance(degraded, bool) or isinstance(recovered, bool):
+            receipt_details.append(f"persistence_degraded={degraded};persistence_recovered={recovered}")
         env.ui.console.print(f"    judgment scheduler receipt: {', '.join(receipt_details)}")
 
 

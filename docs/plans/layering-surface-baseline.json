@@ -1485,21 +1485,6 @@
     "import": "polylogue.storage.sqlite.connection_profile"
   },
   {
-    "target": "polylogue/api",
-    "file": "polylogue/api/archive.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/events.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/judgment_automation.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
-  },
-  {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/status_snapshot.py",
     "import": "polylogue.storage.archive_identity"

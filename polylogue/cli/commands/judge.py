@@ -247,6 +247,35 @@ def _render_queue_health(payload: AssertionCandidateQueueHealthPayload, output_f
         f"  producer: {payload.producer_status or 'unobserved'}; "
         f"scheduler: {payload.scheduler_state}; debt: {payload.producer_debt_count}"
     )
+    if payload.judgment_scheduler_receipt_status != "unknown":
+        click.echo(
+            f"  receipt: {payload.judgment_scheduler_receipt_status}; "
+            f"retryable={payload.judgment_scheduler_receipt_retryable}; "
+            f"route={payload.judgment_scheduler_receipt_retry_route or 'none'}; "
+            f"batch={payload.judgment_scheduler_receipt_batch_limit or 'none'}"
+        )
+        counter_values = (
+            payload.judgment_scheduler_receipt_considered,
+            payload.judgment_scheduler_receipt_accepted,
+            payload.judgment_scheduler_receipt_rejected,
+            payload.judgment_scheduler_receipt_escalated,
+            payload.judgment_scheduler_receipt_idempotent,
+            payload.judgment_scheduler_receipt_failed,
+        )
+        if any(value is not None for value in counter_values):
+            rendered_counters = tuple("unknown" if value is None else str(value) for value in counter_values)
+            click.echo(
+                "  receipt counts: "
+                f"considered={rendered_counters[0]}, accepted={rendered_counters[1]}, "
+                f"rejected={rendered_counters[2]}, escalated={rendered_counters[3]}, "
+                f"idempotent={rendered_counters[4]}, failed={rendered_counters[5]}"
+            )
+        if payload.judgment_scheduler_receipt_persistence_degraded is not None:
+            click.echo(
+                "  receipt persistence: "
+                f"degraded={payload.judgment_scheduler_receipt_persistence_degraded}; "
+                f"recovered={payload.judgment_scheduler_receipt_persistence_recovered}"
+            )
     click.echo(f"  retention: {payload.retention_outcome}")
     for caveat in payload.caveats:
         click.echo(f"  caveat: {caveat}")

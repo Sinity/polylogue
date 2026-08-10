@@ -346,7 +346,7 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
     if not user_db.exists():
         return 0
     from polylogue.daemon.events import get_latest_daemon_event
-    from polylogue.storage.sqlite.archive_tiers.ops_write import _read_latest_judgment_scheduler_receipt
+    from polylogue.operations.judgment_scheduler import read_latest_judgment_scheduler_receipt
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ack_judgment_automation_receipt_outbox,
         list_judgment_automation_receipt_outbox,
@@ -376,7 +376,7 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
                 continue
             if ops_conn is not None:
                 try:
-                    typed_receipt = _read_latest_judgment_scheduler_receipt(ops_conn, operation_id=operation_id)
+                    typed_receipt = read_latest_judgment_scheduler_receipt(ops_conn, operation_id=operation_id)
                 except (sqlite3.Error, ValueError) as exc:
                     logger.warning(
                         "judgment_automation: typed receipt recovery probe failed for marker %s: %s",

@@ -2241,6 +2241,17 @@ class AssertionCandidateQueueHealthPayload(SurfacePayloadModel):
     judgment_scheduler_receipt_at_ms: int | None = None
     judgment_scheduler_receipt_age_ms: int | None = None
     judgment_scheduler_receipt_reason: str | None = None
+    judgment_scheduler_receipt_retryable: bool | None = None
+    judgment_scheduler_receipt_retry_route: str | None = None
+    judgment_scheduler_receipt_batch_limit: int | None = None
+    judgment_scheduler_receipt_considered: int | None = None
+    judgment_scheduler_receipt_accepted: int | None = None
+    judgment_scheduler_receipt_rejected: int | None = None
+    judgment_scheduler_receipt_escalated: int | None = None
+    judgment_scheduler_receipt_idempotent: int | None = None
+    judgment_scheduler_receipt_failed: int | None = None
+    judgment_scheduler_receipt_persistence_degraded: bool | None = None
+    judgment_scheduler_receipt_persistence_recovered: bool | None = None
     producer_debt_count: int = 0
     caveats: tuple[str, ...] = ()
 

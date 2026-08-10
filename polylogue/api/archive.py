@@ -1570,7 +1570,7 @@ def _archive_assertion_candidate_queue_health(
         judgment_automation_receipt_freshness_window_ms,
     )
     from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
-    from polylogue.storage.sqlite.archive_tiers.ops_write import _read_latest_judgment_scheduler_receipt
+    from polylogue.operations.judgment_scheduler import read_latest_judgment_scheduler_receipt
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ASSERTION_CANDIDATE_JUDGMENT_KINDS,
         ASSERTION_CANDIDATE_REVIEW_STATUSES,
@@ -1680,6 +1680,17 @@ def _archive_assertion_candidate_queue_health(
     judgment_scheduler_receipt_status: Literal["completed", "parked", "failed", "unknown"] = "unknown"
     judgment_scheduler_receipt_at_ms: int | None = None
     judgment_scheduler_receipt_reason: str | None = None
+    judgment_scheduler_receipt_retryable: bool | None = None
+    judgment_scheduler_receipt_retry_route: str | None = None
+    judgment_scheduler_receipt_batch_limit: int | None = None
+    judgment_scheduler_receipt_considered: int | None = None
+    judgment_scheduler_receipt_accepted: int | None = None
+    judgment_scheduler_receipt_rejected: int | None = None
+    judgment_scheduler_receipt_escalated: int | None = None
+    judgment_scheduler_receipt_idempotent: int | None = None
+    judgment_scheduler_receipt_failed: int | None = None
+    judgment_scheduler_receipt_persistence_degraded: bool | None = None
+    judgment_scheduler_receipt_persistence_recovered: bool | None = None
     caveats: list[str] = []
     ops_db = archive_root / "ops.db"
     if not ops_db.exists():
@@ -1734,13 +1745,24 @@ def _archive_assertion_candidate_queue_health(
                             scheduler_state = "fresh"
                         else:
                             scheduler_state = "stale"
-                typed_receipt = _read_latest_judgment_scheduler_receipt(ops_conn)
+                typed_receipt = read_latest_judgment_scheduler_receipt(ops_conn)
                 if typed_receipt is not None:
                     judgment_scheduler_receipt_status = cast(
                         Literal["completed", "parked", "failed"], typed_receipt.status
                     )
                     judgment_scheduler_receipt_at_ms = typed_receipt.observed_at_ms
                     judgment_scheduler_receipt_reason = typed_receipt.reason
+                    judgment_scheduler_receipt_retryable = typed_receipt.retryable
+                    judgment_scheduler_receipt_retry_route = typed_receipt.retry_route
+                    judgment_scheduler_receipt_batch_limit = typed_receipt.batch_limit
+                    judgment_scheduler_receipt_considered = typed_receipt.considered
+                    judgment_scheduler_receipt_accepted = typed_receipt.accepted
+                    judgment_scheduler_receipt_rejected = typed_receipt.rejected
+                    judgment_scheduler_receipt_escalated = typed_receipt.escalated
+                    judgment_scheduler_receipt_idempotent = typed_receipt.idempotent
+                    judgment_scheduler_receipt_failed = typed_receipt.failed
+                    judgment_scheduler_receipt_persistence_degraded = typed_receipt.receipt_persistence_degraded
+                    judgment_scheduler_receipt_persistence_recovered = typed_receipt.receipt_persistence_recovered
                 elif ops_conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daemon_events'"
                 ).fetchone():
@@ -1776,6 +1798,39 @@ def _archive_assertion_candidate_queue_health(
                         judgment_scheduler_receipt_at_ms = int(receipt_row[0])
                         if receipt_is_valid and isinstance(receipt_payload, dict):
                             judgment_scheduler_receipt_reason = str(receipt_payload["reason"])
+                            judgment_scheduler_receipt_retryable = bool(receipt_payload["retryable"])
+                            judgment_scheduler_receipt_retry_route = str(receipt_payload["retry_route"])
+                            judgment_scheduler_receipt_batch_limit = int(receipt_payload["batch_limit"])
+                            counter_names = (
+                                "considered",
+                                "accepted",
+                                "rejected",
+                                "escalated",
+                                "idempotent",
+                                "failed",
+                            )
+                            if all(name in receipt_payload for name in counter_names):
+                                for name in counter_names:
+                                    value = receipt_payload[name]
+                                    if isinstance(value, int) and not isinstance(value, bool):
+                                        if name == "considered":
+                                            judgment_scheduler_receipt_considered = value
+                                        elif name == "accepted":
+                                            judgment_scheduler_receipt_accepted = value
+                                        elif name == "rejected":
+                                            judgment_scheduler_receipt_rejected = value
+                                        elif name == "escalated":
+                                            judgment_scheduler_receipt_escalated = value
+                                        elif name == "idempotent":
+                                            judgment_scheduler_receipt_idempotent = value
+                                        elif name == "failed":
+                                            judgment_scheduler_receipt_failed = value
+                            judgment_scheduler_receipt_persistence_degraded = bool(
+                                receipt_payload["receipt_persistence_degraded"]
+                            )
+                            judgment_scheduler_receipt_persistence_recovered = bool(
+                                receipt_payload["receipt_persistence_recovered"]
+                            )
             finally:
                 ops_conn.close()
         except sqlite3.Error as exc:
@@ -1860,6 +1915,17 @@ def _archive_assertion_candidate_queue_health(
         judgment_scheduler_receipt_at_ms=judgment_scheduler_receipt_at_ms,
         judgment_scheduler_receipt_age_ms=judgment_receipt_age_ms,
         judgment_scheduler_receipt_reason=judgment_scheduler_receipt_reason,
+        judgment_scheduler_receipt_retryable=judgment_scheduler_receipt_retryable,
+        judgment_scheduler_receipt_retry_route=judgment_scheduler_receipt_retry_route,
+        judgment_scheduler_receipt_batch_limit=judgment_scheduler_receipt_batch_limit,
+        judgment_scheduler_receipt_considered=judgment_scheduler_receipt_considered,
+        judgment_scheduler_receipt_accepted=judgment_scheduler_receipt_accepted,
+        judgment_scheduler_receipt_rejected=judgment_scheduler_receipt_rejected,
+        judgment_scheduler_receipt_escalated=judgment_scheduler_receipt_escalated,
+        judgment_scheduler_receipt_idempotent=judgment_scheduler_receipt_idempotent,
+        judgment_scheduler_receipt_failed=judgment_scheduler_receipt_failed,
+        judgment_scheduler_receipt_persistence_degraded=judgment_scheduler_receipt_persistence_degraded,
+        judgment_scheduler_receipt_persistence_recovered=judgment_scheduler_receipt_persistence_recovered,
         producer_debt_count=producer_debt_count,
         caveats=tuple(dict.fromkeys(caveats)),
     )

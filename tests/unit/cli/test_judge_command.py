@@ -5,14 +5,16 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
+import pytest
 from click.testing import CliRunner
 
-from polylogue.cli.commands.judge import JudgeCandidateRow, _edit_and_accept, judge_command
+from polylogue.cli.commands.judge import JudgeCandidateRow, _edit_and_accept, _render_queue_health, judge_command
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.surfaces.payloads import (
     AssertionBulkJudgmentItemPayload,
     AssertionBulkJudgmentPayload,
+    AssertionCandidateQueueHealthPayload,
     AssertionClaimPayload,
     AssertionJudgmentPayload,
     AssertionJudgmentResultPayload,
@@ -41,6 +43,44 @@ def test_judge_mutation_requires_candidate_ref() -> None:
 
     assert invocation.exit_code == 2
     assert "requires an argument" in invocation.output
+
+
+def test_queue_health_text_does_not_invent_legacy_receipt_counters(capsys: pytest.CaptureFixture[str]) -> None:
+    payload = AssertionCandidateQueueHealthPayload(
+        state="pending",
+        observed_at_ms=1,
+        pending_count=1,
+        judgment_scheduler_receipt_status="completed",
+        judgment_scheduler_receipt_reason="legacy_receipt",
+    )
+
+    _render_queue_health(payload, "text")
+
+    output = capsys.readouterr().out
+    assert "reason=legacy_receipt" not in output
+    assert "receipt counts:" not in output
+
+
+def test_queue_health_text_renders_typed_receipt_persistence_flags(capsys: pytest.CaptureFixture[str]) -> None:
+    payload = AssertionCandidateQueueHealthPayload(
+        state="scheduler-stalled",
+        observed_at_ms=1,
+        pending_count=1,
+        judgment_scheduler_receipt_status="failed",
+        judgment_scheduler_receipt_retryable=True,
+        judgment_scheduler_receipt_retry_route="next tick",
+        judgment_scheduler_receipt_batch_limit=10,
+        judgment_scheduler_receipt_considered=2,
+        judgment_scheduler_receipt_failed=2,
+        judgment_scheduler_receipt_persistence_degraded=True,
+        judgment_scheduler_receipt_persistence_recovered=False,
+    )
+
+    _render_queue_health(payload, "text")
+
+    output = capsys.readouterr().out
+    assert "degraded=True; recovered=False" in output
+    assert "considered=2" in output
 
 
 def test_judge_injection_requires_explicit_flag() -> None:
