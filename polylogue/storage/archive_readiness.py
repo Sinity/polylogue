@@ -397,13 +397,19 @@ def raw_materialization_readiness_snapshot(
                     SELECT r.raw_id, r.origin, {blob_size_expression}, p.raw_id, p.parser_fingerprint,
                            p.status, p.logical_keys_json, r.logical_source_key, r.revision_kind,
                            m.logical_source_key,
-                           EXISTS(SELECT 1 FROM source.raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
+                           EXISTS(SELECT 1 FROM source.raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
+                           EXISTS(
+                               SELECT 1 FROM source.raw_membership_census AS mc
+                               WHERE mc.raw_id = r.raw_id
+                                 AND mc.parser_fingerprint = ?
+                                 AND mc.status = 'non_session'
+                           )
                     FROM source.raw_sessions AS r
                     LEFT JOIN source.raw_authority_parser_census AS p ON p.raw_id = r.raw_id
                     LEFT JOIN source.raw_session_memberships AS m ON m.raw_id = r.raw_id
-                    WHERE COALESCE(r.validation_status, '') != 'skipped'
                     ORDER BY r.raw_id, m.logical_source_key
-                    """
+                    """,
+                    (RAW_AUTHORITY_PARSER_FINGERPRINT,),
                 )
                 incomplete_origins: Counter[str] = Counter()
                 incomplete_origin_bytes: Counter[str] = Counter()
@@ -428,6 +434,7 @@ def raw_materialization_readiness_snapshot(
                         revision_kind,
                         _membership_key,
                         typed_non_session,
+                        parser_confirmed_non_session,
                     ) = current_row
                     recorded_keys = parser_census_logical_keys(logical_keys_json)
                     durable_keys = durable_authority_logical_keys(
@@ -443,7 +450,7 @@ def raw_materialization_readiness_snapshot(
                         and recorded_keys is not None
                         and durable_keys is not None
                         and recorded_keys == durable_keys
-                        and (bool(durable_keys) or bool(typed_non_session))
+                        and (bool(durable_keys) or bool(typed_non_session) or bool(parser_confirmed_non_session))
                     )
                     if complete:
                         parser_census_complete_count += 1

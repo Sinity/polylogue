@@ -482,7 +482,8 @@ def uncensused_historical_revision_raw_ids(
             WHERE r.raw_id IN ({placeholders})
               AND NOT COALESCE(
                   c.parser_fingerprint IN ({known_placeholders})
-                  AND c.status = 'complete',
+                  AND c.status = 'complete'
+                  AND c.detail LIKE 'parser-observed:%',
                   0
               )
               AND NOT COALESCE(
@@ -562,24 +563,6 @@ def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, 
     with sqlite3.connect(archive_root / "source.db") as conn, conn:
         for raw_id in raw_ids:
             record_current_parser_source_census(conn, raw_id)
-
-
-def refresh_current_parser_source_census(archive_root: Path) -> int:
-    """Refresh receipts for every non-skipped raw row readiness audits.
-
-    This source-only pass lets daemon repair heal legacy indexed rows without
-    reparsing or rewriting their rebuildable index state.
-    """
-    refreshed = 0
-    with sqlite3.connect(archive_root / "source.db") as conn, conn:
-        cursor = conn.execute(
-            "SELECT raw_id FROM raw_sessions WHERE COALESCE(validation_status, '') != 'skipped' ORDER BY raw_id"
-        )
-        while raw_ids := cursor.fetchmany(500):
-            for (raw_id,) in raw_ids:
-                record_current_parser_source_census(conn, str(raw_id))
-                refreshed += 1
-    return refreshed
 
 
 def _census_historical_revision_evidence(

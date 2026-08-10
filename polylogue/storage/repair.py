@@ -4103,6 +4103,98 @@ def _raw_materialization_candidate_ids(
     )
 
 
+def _raw_materialization_parser_census_candidates(
+    config: Config,
+    *,
+    raw_artifact_id: str | None = None,
+    provider: str | None = None,
+    source_family: str | None = None,
+    source_root: Path | None = None,
+) -> RawMaterializationCandidates:
+    """Return every raw in this repair scope for bounded parser recensus.
+
+    Parser receipts attest to parser observation, not index materialization.
+    This deliberately includes already-indexed and validation-skipped raws so
+    an old durable binding can never certify a new parser fingerprint without
+    opening the retained bytes through the ordinary census path.
+    """
+    archive_root = _raw_materialization_archive_root(config)
+    source_db = archive_root / "source.db"
+    if not source_db.exists():
+        return RawMaterializationCandidates([], 0, 0)
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        params: list[object] = []
+        filters: list[str] = []
+        if raw_artifact_id is not None:
+            filters.append("r.raw_id = ?")
+            params.append(raw_artifact_id)
+        provider_origin = _raw_materialization_origin_from_provider(provider)
+        if provider_origin is not None:
+            filters.append("r.origin = ?")
+            params.append(provider_origin)
+        if source_family is not None:
+            filters.append("r.origin = ?")
+            params.append(source_family)
+        if source_root is not None:
+            normalized_root = str(source_root).rstrip("/")
+            filters.append("(r.source_path = ? OR r.source_path LIKE ?)")
+            params.extend((normalized_root, f"{normalized_root}/%"))
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        rows = conn.execute(
+            f"""
+            SELECT r.raw_id, r.blob_size, r.origin, r.source_path, r.acquired_at_ms
+            FROM raw_sessions AS r
+            {where}
+            ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
+            """,
+            params,
+        )
+        raw_ids: list[str] = []
+        raw_blob_bytes: dict[str, int] = {}
+        raw_origins: dict[str, str] = {}
+        raw_source_paths: dict[str, str] = {}
+        raw_acquired_at_ms: dict[str, int] = {}
+        for row in rows:
+            raw_id = str(row["raw_id"])
+            raw_ids.append(raw_id)
+            raw_blob_bytes[raw_id] = int(row["blob_size"] or 0)
+            raw_origins[raw_id] = str(row["origin"] or "")
+            raw_source_paths[raw_id] = str(row["source_path"] or "")
+            raw_acquired_at_ms[raw_id] = int(row["acquired_at_ms"] or 0)
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        authority_components = ArchiveStore.raw_membership_selection_components_sync(conn, raw_ids)
+        expanded_raw_ids = tuple(sorted({raw_id for component in authority_components for raw_id in component}))
+        expanded_blob_bytes: dict[str, int] = {}
+        expanded_origins: dict[str, str] = {}
+        expanded_source_paths: dict[str, str] = {}
+        if expanded_raw_ids:
+            placeholders = ",".join("?" for _ in expanded_raw_ids)
+            for row in conn.execute(
+                f"SELECT raw_id, blob_size, origin, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                expanded_raw_ids,
+            ):
+                raw_id = str(row[0])
+                expanded_blob_bytes[raw_id] = int(row[1] or 0)
+                expanded_origins[raw_id] = str(row[2] or "")
+                expanded_source_paths[raw_id] = str(row[3] or "")
+    return RawMaterializationCandidates(
+        raw_ids=raw_ids,
+        missing_blobs=0,
+        already_parsed=0,
+        raw_blob_bytes=raw_blob_bytes,
+        raw_origins=raw_origins,
+        raw_source_paths=raw_source_paths,
+        raw_acquired_at_ms=raw_acquired_at_ms,
+        expanded_raw_ids=expanded_raw_ids,
+        expanded_blob_bytes=expanded_blob_bytes,
+        expanded_origins=expanded_origins,
+        expanded_source_paths=expanded_source_paths,
+        authority_components=authority_components,
+    )
+
+
 def raw_materialization_pending_census_raw_ids(
     config: Config,
     *,
@@ -6197,13 +6289,17 @@ def repair_raw_materialization(
     from polylogue.sources.revision_backfill import (
         RawRevisionReplayResourceBlockedError,
         census_historical_revision_evidence,
-        refresh_current_parser_source_census,
         uncensused_historical_revision_raw_ids,
     )
 
-    refresh_current_parser_source_census(archive_root)
-
-    relevant_raw_ids = list(candidates.expanded_raw_ids or tuple(candidates.raw_ids))
+    census_candidates = _raw_materialization_parser_census_candidates(
+        config,
+        raw_artifact_id=raw_artifact_id,
+        provider=provider,
+        source_family=source_family,
+        source_root=source_root,
+    )
+    relevant_raw_ids = list(census_candidates.expanded_raw_ids or tuple(census_candidates.raw_ids))
     uncensused_raw_ids = set(
         uncensused_historical_revision_raw_ids(archive_root, relevant_raw_ids, max_payload_bytes=max_payload_bytes)
     )
@@ -6216,7 +6312,7 @@ def repair_raw_materialization(
         raise ValueError("raw_artifact_limit must be positive")
     census_components_attempted = 0
     if uncensused_raw_ids:
-        preliminary_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
+        preliminary_components = _raw_materialization_ordered_components(census_candidates, archive_root=archive_root)
         for component in preliminary_components:
             if not uncensused_raw_ids.intersection(component):
                 continue
@@ -6231,7 +6327,7 @@ def repair_raw_materialization(
                 )
                 break
             census_components_attempted += 1
-            seed = _raw_materialization_component_seed(candidates, component)
+            seed = _raw_materialization_component_seed(census_candidates, component)
             try:
                 census_historical_revision_evidence(
                     archive_root,
@@ -6255,7 +6351,7 @@ def repair_raw_materialization(
                     tuple(sorted(uncensused_raw_ids.intersection(component))),
                     max_payload_bytes=max_payload_bytes,
                     total_payload_bytes=exc.total_bytes,
-                    stream_safe=_raw_materialization_component_stream_safe(candidates, component),
+                    stream_safe=_raw_materialization_component_stream_safe(census_candidates, component),
                 )
             except Exception:
                 logger.exception("raw authority census failed for component containing %s", seed)
@@ -6267,7 +6363,14 @@ def repair_raw_materialization(
             source_family=source_family,
             source_root=source_root,
         )
-        relevant_raw_ids = list(candidates.expanded_raw_ids or tuple(candidates.raw_ids))
+        census_candidates = _raw_materialization_parser_census_candidates(
+            config,
+            raw_artifact_id=raw_artifact_id,
+            provider=provider,
+            source_family=source_family,
+            source_root=source_root,
+        )
+        relevant_raw_ids = list(census_candidates.expanded_raw_ids or tuple(census_candidates.raw_ids))
         uncensused_raw_ids = set(
             uncensused_historical_revision_raw_ids(archive_root, relevant_raw_ids, max_payload_bytes=max_payload_bytes)
         )

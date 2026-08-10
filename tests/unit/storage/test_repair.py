@@ -33,8 +33,8 @@ def _config(tmp_path: Path) -> Config:
     return Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "archive.db")
 
 
-def test_raw_materialization_refreshes_receipt_for_legacy_indexed_raw(tmp_path: Path) -> None:
-    """The daemon repair route heals receipt debt even when the raw is already indexed."""
+def test_raw_materialization_reparses_legacy_indexed_raw_before_receipting(tmp_path: Path) -> None:
+    """The daemon reopens legacy bytes instead of certifying old durable bindings."""
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -51,22 +51,78 @@ def test_raw_materialization_refreshes_receipt_for_legacy_indexed_raw(tmp_path: 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id, _session_id = archive.write_raw_and_parsed(
             session,
-            payload=b'{"type":"session_meta","payload":{"id":"legacy-indexed-receipt"}}\n',
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"legacy-indexed-receipt"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+                b'"content":[{"type":"input_text","text":"legacy receipt"}]}}\n'
+            ),
             source_path="legacy/codex.jsonl",
             acquired_at_ms=1,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.execute("DELETE FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,))
+        conn.execute(
+            """
+            UPDATE raw_authority_parser_census
+            SET detail = 'current parser established durable authority identity'
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
         conn.commit()
 
     repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=True)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(
-            "SELECT parser_fingerprint, status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+            "SELECT parser_fingerprint, status, detail FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
         ).fetchone()
 
-    assert receipt == (RAW_AUTHORITY_PARSER_FINGERPRINT, "complete")
+    assert receipt is not None
+    assert receipt[:2] == (RAW_AUTHORITY_PARSER_FINGERPRINT, "complete")
+    assert str(receipt[2]).startswith("parser-observed:")
+
+
+def test_raw_materialization_parser_census_respects_raw_scope(tmp_path: Path) -> None:
+    """A one-raw repair census does not scan or receipt unrelated raw evidence."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids: list[str] = []
+        for provider_session_id in ("scope-selected", "scope-unselected"):
+            session = ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=provider_session_id,
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text=provider_session_id)],
+            )
+            raw_id, _session_id = archive.write_raw_and_parsed(
+                session,
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"{provider_session_id}"}}}}\n'
+                    f'{{"type":"response_item","payload":{{"type":"message","id":"m1","role":"user",'
+                    f'"content":[{{"type":"input_text","text":"{provider_session_id}"}}]}}}}\n'
+                ).encode(),
+                source_path=f"scope/{provider_session_id}.jsonl",
+                acquired_at_ms=1,
+            )
+            raw_ids.append(raw_id)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM raw_authority_parser_census WHERE raw_id IN (?, ?)", raw_ids)
+        conn.commit()
+
+    repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_id=raw_ids[0])
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        receipts = dict(
+            conn.execute("SELECT raw_id, detail FROM raw_authority_parser_census WHERE raw_id IN (?, ?)", raw_ids)
+        )
+
+    assert str(receipts[raw_ids[0]]).startswith("parser-observed:")
+    assert raw_ids[1] not in receipts
 
 
 def _complete_bounded_raw_census(config: Config, *, limit: int) -> tuple[repair_mod.RepairResult, list[str]]:

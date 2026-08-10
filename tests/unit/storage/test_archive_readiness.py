@@ -131,6 +131,62 @@ def test_raw_materialization_snapshot_rejects_receipt_key_drift_from_durable_bin
     assert parser_census["incomplete_count"] == 1
 
 
+def test_raw_materialization_snapshot_audits_validation_skipped_raws(tmp_path: Path) -> None:
+    """Skipped schema validation does not exempt a raw from parser authority."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"skipped-census"}}\n',
+            source_path="codex/skipped-census.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET validation_status = 'skipped' WHERE raw_id = ?", (raw_id,))
+        conn.execute("DELETE FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+
+    parser_census = cast(
+        Mapping[str, object], raw_materialization_readiness_snapshot(tmp_path)["raw_authority_parser_census"]
+    )
+
+    assert parser_census["complete_count"] == 0
+    assert parser_census["incomplete_count"] == 1
+    assert parser_census["missing_receipt_count"] == 1
+
+
+def test_raw_materialization_snapshot_accepts_parser_confirmed_empty_non_session(tmp_path: Path) -> None:
+    """A real parser census may authoritatively establish no sessions."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"empty-census"}}\n',
+            source_path="codex/empty-census.jsonl",
+            acquired_at_ms=1,
+            post_parse=True,
+        )
+        archive.replace_raw_membership_census(
+            raw_id,
+            [],
+            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            censused_at_ms=1,
+        )
+
+    parser_census = cast(
+        Mapping[str, object], raw_materialization_readiness_snapshot(tmp_path)["raw_authority_parser_census"]
+    )
+
+    assert parser_census["complete_count"] == 1
+    assert parser_census["incomplete_count"] == 0
+
+
 def test_raw_materialization_snapshot_streams_parser_census_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

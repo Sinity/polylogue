@@ -1880,9 +1880,11 @@ def record_current_parser_source_census(conn: sqlite3.Connection, raw_id: str) -
         or (membership_census is not None and str(membership_census[0]) in {"complete", "non_session"})
     )
     detail = (
-        "typed non-session admission established no parser identity"
+        "parser-observed: typed non-session admission established no parser identity"
         if typed_non_session and complete
-        else "current parser established durable authority identity"
+        else "parser-observed: membership census established durable authority identity"
+        if membership_census is not None and complete
+        else "parser-observed: live parser admission established durable authority identity"
         if complete
         else (
             str(membership_census[1])
