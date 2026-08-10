@@ -78,7 +78,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import merge_gate
-from devtools.testmon_state import VerificationScope
+from devtools.testmon_state import TerminalAuthorization, VerificationScope
 
 _LEDGER_PATH = Path(".cache/verify/merge-gate/merge-train-ledger.json")
 _LEDGER_PENDING_PATH = _LEDGER_PATH.with_name(f"{_LEDGER_PATH.name}.pending")
@@ -219,8 +219,7 @@ def _validate_ledger(data: object) -> dict[str, Any]:
 
 
 def _read_ledger_unlocked() -> dict[str, Any]:
-    if _LEDGER_PENDING_PATH.exists():
-        raise LedgerStateError("merge-train ledger has an unfinished durable write")
+    _recover_pending_ledger_unlocked()
     if not _LEDGER_PATH.exists():
         return {"merges": [], "merge_intents": [], "last_full_verify": None}
     try:
@@ -232,6 +231,34 @@ def _read_ledger_unlocked() -> dict[str, Any]:
         data.setdefault("merge_intents", [])
         data.setdefault("last_full_verify", None)
     return _validate_ledger(data)
+
+
+def _read_ledger_file(path: Path, *, description: str) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LedgerStateError(f"{description} is unreadable or truncated") from exc
+    if isinstance(data, dict):
+        data.setdefault("merges", [])
+        data.setdefault("merge_intents", [])
+        data.setdefault("last_full_verify", None)
+    return _validate_ledger(data)
+
+
+def _recover_pending_ledger_unlocked() -> None:
+    """Finish or clear the write-ahead ledger journal after interruption."""
+    if not _LEDGER_PENDING_PATH.exists():
+        return
+    pending = _read_ledger_file(_LEDGER_PENDING_PATH, description="merge-train pending ledger write")
+    parent = _LEDGER_PATH.parent
+    try:
+        if _LEDGER_PATH.exists() and pending == _read_ledger_file(_LEDGER_PATH, description="merge-train ledger"):
+            _LEDGER_PENDING_PATH.unlink()
+        else:
+            _durable_replace(_LEDGER_PENDING_PATH, _LEDGER_PATH)
+        _fsync_directory(parent)
+    except OSError as exc:
+        raise LedgerStateError(f"merge-train ledger pending-write recovery failed: {exc}") from exc
 
 
 def _read_ledger() -> dict[str, Any]:
@@ -368,7 +395,13 @@ def _pending_prs_since_last_full_verify(ledger: dict[str, Any]) -> list[dict[str
         if last_verify.get("accepted") is True
         and last_verify.get("exit_code") == 0
         and last_verify.get("release_baseline_allowed") is True
-        and scope == VerificationScope.RELEASE_BASELINE.value
+        and (
+            scope == VerificationScope.RELEASE_BASELINE.value
+            or (
+                scope == VerificationScope.NARROW_TERMINAL.value
+                and last_verify.get("terminal_authorization") == TerminalAuthorization.NARROW_TERMINAL.value
+            )
+        )
         else 0.0
     )
     snapshot_sequence = last_verify.get("merge_sequence")
@@ -465,6 +498,12 @@ def _terminal_verify_snapshot() -> tuple[dict[str, Any], float, int]:
         ledger = _read_ledger_unlocked()
         started_at = time.time()
         return ledger, started_at, _merge_sequence(ledger)
+
+
+def _reconciled_terminal_verify_snapshot() -> tuple[dict[str, Any], float, int]:
+    """Recover merged intents before fixing the terminal verification boundary."""
+    _reconcile_merge_intents()
+    return _terminal_verify_snapshot()
 
 
 def _remove_detached_worktree(repo_root: Path, worktree: Path) -> bool:
@@ -601,7 +640,7 @@ def cmd_merge(
 
     if with_verify:
         try:
-            ledger_snapshot = _terminal_verify_snapshot()
+            ledger_snapshot = _reconciled_terminal_verify_snapshot()
         except LedgerStateError as exc:
             print(f"REFUSING terminal verify: {exc}", file=sys.stderr)
             return 1
@@ -679,7 +718,7 @@ def cmd_record_full_verify(
         print("REFUSING: terminal verification has no fetched merged-master target", file=sys.stderr)
         return 1
     try:
-        snapshot = ledger_snapshot or _terminal_verify_snapshot()
+        snapshot = ledger_snapshot or _reconciled_terminal_verify_snapshot()
     except LedgerStateError as exc:
         print(f"REFUSING to run terminal verification: {exc}", file=sys.stderr)
         return 1
@@ -704,7 +743,13 @@ def cmd_record_full_verify(
     accepted = (
         result.returncode == 0
         and release_allowed is True
-        and verification_scope == VerificationScope.RELEASE_BASELINE.value
+        and (
+            verification_scope == VerificationScope.RELEASE_BASELINE.value
+            or (
+                verification_scope == VerificationScope.NARROW_TERMINAL.value
+                and terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
+            )
+        )
         and verified_head == target_sha
     )
 
@@ -804,7 +849,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "train-status":
         return cmd_train_status(args.as_json)
     try:
-        ledger_snapshot = _terminal_verify_snapshot()
+        ledger_snapshot = _reconciled_terminal_verify_snapshot()
     except LedgerStateError as exc:
         print(f"REFUSING terminal verify: {exc}", file=sys.stderr)
         return 1

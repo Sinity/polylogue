@@ -544,7 +544,7 @@ def test_train_status_fails_closed_on_valid_json_partial_merge_entry(
     assert "Traceback" not in capsys.readouterr().err
 
 
-def test_merge_write_failure_leaves_durable_pending_latch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_merge_write_failure_recovers_valid_pending_ledger(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
     monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
@@ -570,7 +570,20 @@ def test_merge_write_failure_leaves_durable_pending_latch(monkeypatch: pytest.Mo
         == 1
     )
     assert merge_boundary._LEDGER_PENDING_PATH.exists()
+    monkeypatch.setattr(merge_boundary, "_durable_replace", os.replace)
     assert merge_boundary.cmd_train_status(as_json=False) == 1
+    assert not merge_boundary._LEDGER_PENDING_PATH.exists()
+    assert merge_boundary._read_ledger()["merge_intents"]
+
+
+def test_read_ledger_clears_byte_identical_pending_write(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._write_ledger({"merges": [], "merge_intents": [], "last_full_verify": None})
+    serialized = merge_boundary._LEDGER_PATH.read_text()
+    merge_boundary._LEDGER_PENDING_PATH.write_text(serialized)
+
+    assert merge_boundary._read_ledger() == {"merges": [], "merge_intents": [], "last_full_verify": None}
+    assert not merge_boundary._LEDGER_PENDING_PATH.exists()
 
 
 def test_train_status_blocks_when_pr_merged_after_last_full_verify(
@@ -707,7 +720,7 @@ def test_record_full_verify_rejects_skip_slow_without_typed_authorization(
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
-def test_record_full_verify_rejects_explicit_typed_narrow_terminal_authorization(
+def test_record_full_verify_accepts_explicit_typed_narrow_terminal_authorization(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -719,6 +732,7 @@ def test_record_full_verify_rejects_explicit_typed_narrow_terminal_authorization
             returncode=0,
             stdout=json.dumps(
                 {
+                    "git_head": "merged-master",
                     "verification_scope": "narrow-terminal",
                     "terminal_authorization": "narrow-terminal",
                     "release_baseline_allowed": True,
@@ -728,9 +742,9 @@ def test_record_full_verify_rejects_explicit_typed_narrow_terminal_authorization
         ),
     )
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow", target_sha="merged-master") == 1
-    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
-    assert merge_boundary.cmd_train_status(as_json=False) == 1
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow", target_sha="merged-master") == 0
+    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is True
+    assert merge_boundary.cmd_train_status(as_json=False) == 0
 
 
 def test_record_full_verify_rejects_untyped_scope_even_when_permission_is_true(
@@ -899,6 +913,33 @@ def test_external_merge_before_completion_is_reconciled_from_durable_intent(
     ledger = merge_boundary._read_ledger()
     assert not ledger["merge_intents"]
     assert ledger["merges"][0]["pr"] == 42
+
+
+def test_record_full_verify_reconciles_durable_intents_before_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._record_merge_intent(42, "pr-head", "merged before recovery")
+    monkeypatch.setattr(
+        merge_boundary,
+        "_gh_json",
+        lambda _args: {"state": "MERGED", "mergeCommit": {"oid": "merge-commit"}},
+    )
+    monkeypatch.setattr(merge_boundary, "_fetched_current_default_branch_sha", lambda: "merged-master")
+    snapshots: list[tuple[dict[str, Any], float, int]] = []
+
+    def post_verify(
+        _command: str, _target: str, *, ledger_snapshot: tuple[dict[str, Any], float, int] | None = None
+    ) -> int:
+        assert ledger_snapshot is not None
+        snapshots.append(ledger_snapshot)
+        return 0
+
+    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", post_verify)
+
+    assert merge_boundary.main(["record-full-verify", "--command", "devtools verify --all"]) == 0
+    assert snapshots[0][2] == 1
+    assert not merge_boundary._read_ledger()["merge_intents"]
 
 
 def test_external_merge_completion_write_failure_keeps_recovery_latch(
