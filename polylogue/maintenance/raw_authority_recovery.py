@@ -50,6 +50,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainError,
+    assert_source_continuity_apply_allowed,
     clear_source_continuity_pending_intent,
     reconcile_durable_change_train_startup,
     write_source_continuity_pending_intent,
@@ -83,7 +84,7 @@ _INDEX_SEED_KEY_COLUMNS = {
     "raw_revision_heads": "logical_source_key",
     "raw_revision_applications": "decision_id",
 }
-_INDEX_SEED_APPEND_ONLY_TABLES = frozenset({"raw_revision_applications"})
+_INDEX_SEED_SUCCESSOR_TABLES = frozenset({"raw_revision_heads", "raw_revision_applications"})
 
 
 class RawAuthorityRecoveryError(RuntimeError):
@@ -423,7 +424,7 @@ def _index_seed_digest(conn: sqlite3.Connection, *, excluded_keys: Mapping[str, 
 
 
 def _verify_index_seed_post_target(conn: sqlite3.Connection, plan: RawAuthorityRecoveryPlan) -> bool:
-    """Prove a committed prune while permitting later append-only applications."""
+    """Prove a committed prune while permitting legitimate post-plan seed rows."""
 
     if plan.post_target_proof is None:
         raise RawAuthorityRecoveryError("recovery plan is missing its bounded index seed post-target proof")
@@ -460,7 +461,17 @@ def _verify_index_seed_post_target(conn: sqlite3.Connection, plan: RawAuthorityR
         )
         if (observed_count, observed_digest) != (expected_count, expected_digest):
             raise RawAuthorityRecoveryError("recovery intent does not match the exact committed index seed state")
-        if table not in _INDEX_SEED_APPEND_ONLY_TABLES:
+        if table == "raw_revision_heads":
+            missing_source = conn.execute(
+                "SELECT 1 FROM raw_revision_heads AS h "
+                "WHERE h.rowid > ? "
+                "AND NOT EXISTS (SELECT 1 FROM src.raw_sessions AS r WHERE r.raw_id = h.accepted_raw_id) "
+                "LIMIT 1",
+                (rowid_watermark,),
+            ).fetchone()
+            if missing_source is not None:
+                raise RawAuthorityRecoveryError("recovery intent has an unbacked post-plan index head successor")
+        if table not in _INDEX_SEED_SUCCESSOR_TABLES:
             quoted_table = _quote_identifier(table)
             if conn.execute(f"SELECT 1 FROM {quoted_table} WHERE rowid > ?", (rowid_watermark,)).fetchone() is not None:
                 raise RawAuthorityRecoveryError("recovery intent has an unexpected post-plan index seed successor")
@@ -1054,6 +1065,7 @@ def _write_source_continuity_pending_intent(plan: RawAuthorityRecoveryPlan) -> P
             pre_mutation_evidence=before,
             operation_id=plan.operation_id,
             evidence_ref=f"proof:raw-authority-recovery:{plan.plan_digest}",
+            mutation_kind="raw_authority_recovery",
         )
     except (DurableChangeTrainError, KeyError, OSError, sqlite3.Error) as exc:
         raise RawAuthorityRecoveryError(f"could not persist source continuity recovery intent: {exc}") from exc
@@ -1198,6 +1210,11 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
                 after_counts=after_counts,
                 postflight=postflight,
             )
+    if operation is RecoveryOperation.RESET_CENSUS:
+        try:
+            assert_source_continuity_apply_allowed(root, allowed_pending_operation_id=plan.operation_id)
+        except DurableChangeTrainError as exc:
+            raise RawAuthorityRecoveryError(str(exc)) from exc
     _write_recovery_intent(plan)
     if operation is RecoveryOperation.RESET_CENSUS:
         continuity_intent = _write_source_continuity_pending_intent(plan)

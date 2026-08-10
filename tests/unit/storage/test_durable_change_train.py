@@ -704,6 +704,7 @@ def test_startup_skips_unfinalized_raw_authority_receipt_and_recovers_other_inte
         pre_mutation_evidence=before,
         operation_id="raw-authority-recovery",
         evidence_ref="proof:raw-authority-recovery",
+        mutation_kind="raw_authority_recovery",
     )
     rolled_back_receipt = tmp_path / "rolled-back.jsonl"
     rolled_back_receipt.write_text('{"phase": "recovered_rolled_back"}\n', encoding="utf-8")
@@ -720,6 +721,30 @@ def test_startup_skips_unfinalized_raw_authority_receipt_and_recovers_other_inte
 
     assert missing_pending.exists()
     assert not rolled_back_pending.exists()
+
+
+def test_startup_rejects_a_missing_liveness_receipt(tmp_path: Path) -> None:
+    """Liveness pending evidence is corrupt when its prewritten receipt disappears."""
+
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        before = migration_runner.capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    pending = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=tmp_path / "missing-liveness-receipt.jsonl",
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="liveness-operation",
+        evidence_ref="proof:blob-ref-liveness:liveness-operation",
+    )
+
+    with pytest.raises(DurableChangeTrainError, match="liveness receipt is missing"):
+        durable_change_train_module._recover_pending_source_continuity_intents(tmp_path)
+
+    assert pending.exists()
 
 
 @pytest.mark.parametrize("after_counts", ({}, {"raw_authority_censuses": False}))

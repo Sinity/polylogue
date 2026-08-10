@@ -31,8 +31,9 @@ from polylogue.maintenance.raw_authority_reset import (
 )
 from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import write_source_continuity_pending_intent
-from polylogue.storage.sqlite.migration_runner import DurableDatabaseEvidence
+from polylogue.storage.sqlite.migration_runner import DurableDatabaseEvidence, capture_durable_database_evidence
 from polylogue.version import VERSION_INFO
 
 
@@ -701,10 +702,13 @@ def test_index_prune_resume_refuses_changed_retained_seed_rows(tmp_path: Path, m
         )
 
 
-def test_index_prune_resume_accepts_append_only_successor_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Receipt finalization keeps the committed candidate outcome despite later ingest successors."""
+def test_index_prune_resume_accepts_source_backed_successor_heads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Receipt finalization admits later source-backed heads beyond the proof watermark."""
 
     initialize_active_archive_root(tmp_path)
+    monkeypatch.setattr(VERSION_INFO, "dirty", False)
     active_index = _seed_index_seeds(tmp_path)
     backup = _backup_authority(tmp_path, monkeypatch, tier="index")
     plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
@@ -723,7 +727,15 @@ def test_index_prune_resume_accepts_append_only_successor_rows(tmp_path: Path, m
         apply_raw_authority_recovery(plan)
     monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", original_write)
 
+    _seed_raw(tmp_path / "source.db", "r-successor")
     with sqlite3.connect(active_index) as conn:
+        conn.execute(
+            "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
+            "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
+            "acquisition_generation, decided_at_ms) VALUES "
+            "('k-successor', 's-successor', 'r-successor', 'sr', ?, 'byte', 1, 0, 2)",
+            (bytes.fromhex("03" * 32),),
+        )
         conn.execute(
             "INSERT INTO raw_revision_applications "
             "(decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation, "
@@ -739,8 +751,41 @@ def test_index_prune_resume_accepts_append_only_successor_rows(tmp_path: Path, m
     assert recovered.status == "already_satisfied"
     with sqlite3.connect(active_index) as conn:
         assert conn.execute(
+            "SELECT COUNT(*) FROM raw_revision_heads WHERE logical_source_key = 'k-successor'"
+        ).fetchone() == (1,)
+        assert conn.execute(
             "SELECT COUNT(*) FROM raw_revision_applications WHERE decision_id = 'd-successor'"
         ).fetchone() == (1,)
+
+
+def test_census_reset_refuses_a_competing_source_continuity_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reset never overlaps another source mutation's recovery evidence."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    monkeypatch.setattr(VERSION_INFO, "dirty", False)
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        before = capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+    pending = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=tmp_path / "liveness-receipt.jsonl",
+        backup_manifest=backup,
+        pre_mutation_evidence=before,
+        operation_id="other-source-mutation",
+        evidence_ref="proof:other-source-mutation",
+    )
+
+    with pytest.raises(RawAuthorityRecoveryError, match="continuity recovery is pending"):
+        apply_raw_authority_recovery(plan)
+
+    assert pending.exists()
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
 
 
 def test_uncommitted_index_prune_intent_reauthorizes_before_deleting_candidates(

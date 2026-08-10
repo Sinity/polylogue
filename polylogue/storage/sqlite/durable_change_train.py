@@ -16,7 +16,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Literal, cast
 
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
@@ -74,6 +74,7 @@ _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")
 _DROP_SQL_RE = re.compile(r"(?is)\bDROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)\b")
 _SOURCE_CONTINUITY_PENDING_FORMAT = "polylogue.source-continuity-pending.v1"
+_SourceContinuityMutationKind = Literal["blob_ref_liveness", "raw_authority_recovery"]
 _FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
 _FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
 _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER = ".bootstrap.pending"
@@ -553,6 +554,7 @@ def write_source_continuity_pending_intent(
     pre_mutation_evidence: DurableDatabaseEvidence,
     operation_id: str,
     evidence_ref: str,
+    mutation_kind: _SourceContinuityMutationKind = "blob_ref_liveness",
 ) -> Path:
     """Persist the recovery input before a source mutation can commit."""
     mutation_receipt = mutation_receipt.resolve()
@@ -568,6 +570,7 @@ def write_source_continuity_pending_intent(
         "backup_manifest": str(backup_manifest),
         "operation_id": operation_id,
         "evidence_ref": evidence_ref,
+        "mutation_kind": mutation_kind,
         "source_before": _migration_runner._manifest_json_value(pre_mutation_evidence),
     }
     pending_digest = _canonical_json_sha256(payload)
@@ -658,11 +661,19 @@ def clear_source_continuity_pending_intent(path: Path) -> None:
     _migration_runner._fsync_manifest_directory(path.parent)
 
 
-def assert_source_continuity_apply_allowed(archive_root: Path) -> None:
+def assert_source_continuity_apply_allowed(
+    archive_root: Path, *, allowed_pending_operation_id: str | None = None
+) -> None:
     """Reject a new source mutation that could invalidate continuity recovery."""
     archive_root = archive_root.resolve()
     pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
     pending_intents = tuple(sorted(pending_root.glob("*.json"))) if pending_root.is_dir() else ()
+    if allowed_pending_operation_id is not None:
+        pending_intents = tuple(
+            path
+            for path in pending_intents
+            if _load_source_continuity_pending_intent(path).get("operation_id") != allowed_pending_operation_id
+        )
     if pending_intents:
         raise DurableChangeTrainError("source liveness apply is blocked while source continuity recovery is pending")
 
@@ -741,9 +752,15 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             backup = Path(str(raw["backup_manifest"]))
             operation_id = str(raw["operation_id"])
             evidence_ref = str(raw["evidence_ref"])
+            mutation_kind = raw.get("mutation_kind", "blob_ref_liveness")
+            if mutation_kind not in {"blob_ref_liveness", "raw_authority_recovery"}:
+                raise ValueError("mutation_kind is unsupported")
         except (DurableChangeTrainError, KeyError, TypeError, ValueError) as exc:
             raise DurableChangeTrainError(f"source continuity pending intent is malformed: {path}") from exc
-        receipt_phase = _source_mutation_receipt_phase(receipt)
+        receipt_phase = _source_mutation_receipt_phase(
+            receipt,
+            allow_unfinalized_raw_authority=mutation_kind == "raw_authority_recovery",
+        )
         if receipt_phase == "not_yet_finalized":
             continue
         if receipt_phase == "recovered_rolled_back":
@@ -802,13 +819,17 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             clear_source_continuity_pending_intent(path)
 
 
-def _source_mutation_receipt_phase(receipt_path: Path) -> str:
+def _source_mutation_receipt_phase(receipt_path: Path, *, allow_unfinalized_raw_authority: bool) -> str:
     """Classify a committed source-maintenance receipt without guessing its format."""
 
     try:
         raw = json.loads(receipt_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return "not_yet_finalized"
+        if allow_unfinalized_raw_authority:
+            return "not_yet_finalized"
+        raise DurableChangeTrainError(
+            f"source continuity pending liveness receipt is missing: {receipt_path}"
+        ) from None
     except json.JSONDecodeError:
         return _liveness_receipt_phase(receipt_path)
     except (OSError, UnicodeDecodeError) as exc:
