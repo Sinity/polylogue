@@ -2852,6 +2852,8 @@ def test_migrate_tier_cli_refuses_to_initialize_a_tier_in_an_established_archive
         ".index-rebuild-transactions",
         "source-continuity-pending",
         "source-continuity-refreshes",
+        "operation.json",
+        "failures.jsonl",
     ],
 )
 def test_migrate_tier_cli_missing_initialization_refuses_retained_archive_evidence(
@@ -2867,6 +2869,10 @@ def test_migrate_tier_cli_missing_initialization_refuses_retained_archive_eviden
         retained_path = root / ".maintenance-state" / retained_evidence
         retained_path.mkdir(parents=True)
         (retained_path / "intent.json").write_text("{}", encoding="utf-8")
+    elif retained_evidence in {"operation.json", "failures.jsonl"}:
+        retained_path = root / ".maintenance-state" / retained_evidence
+        retained_path.parent.mkdir(parents=True, exist_ok=True)
+        retained_path.write_text("{}", encoding="utf-8")
     else:
         retained_path.mkdir(parents=True)
         (retained_path / "retained.json").write_text("{}", encoding="utf-8")
@@ -2890,6 +2896,46 @@ def test_migrate_tier_cli_missing_initialization_refuses_retained_archive_eviden
     assert "established archive" in json.loads(result.stdout)["error"]
     assert retained_path.exists()
     assert not missing_path.exists()
+
+
+def test_migrate_tier_cli_rechecks_adoption_evidence_before_publication(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A maintenance record appearing during image build must block the visible link."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    real_initialize = bootstrap.initialize_archive_tier
+
+    def establish_archive_during_build(connection: sqlite3.Connection, tier: ArchiveTier) -> None:
+        real_initialize(connection, tier)
+        maintenance_state = root / ".maintenance-state"
+        maintenance_state.mkdir(exist_ok=True)
+        (maintenance_state / "failures.jsonl").write_text('{"operation":"interrupted"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(bootstrap, "initialize_archive_tier", establish_archive_during_build)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "established archive" in json.loads(result.stdout)["error"]
+    assert (root / ".maintenance-state" / "failures.jsonl").exists()
+    assert not audit_db.exists()
 
 
 @pytest.mark.parametrize("blob_state", ["nonempty-directory", "regular-file"])

@@ -139,78 +139,95 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier, *, directory_
                 os.close(child_descriptor)
 
         target_name = path.name
-        if adoption_lstat(target_name, "durable tier target") is not None:
-            raise MigrationError(f"{tier.value} tier already exists; refusing missing-tier initialization: {path}")
 
-        durable_siblings = tuple(f"{sibling.value}.db" for sibling in ArchiveTier if sibling is not tier)
-        existing_siblings = [
-            archive_root / sibling
-            for sibling in durable_siblings
-            if adoption_lstat(sibling, "archive tier") is not None
-        ]
-        adoption_markers: list[Path] = []
-        active_pointer_marker = ".index-active-pointer"
-        if adoption_lstat(active_pointer_marker, "active index pointer") is not None:
-            # Presence is enough. ArchiveLocation intentionally ignores a dangling
-            # symlink via Path.exists(), but missing-tier initialization must treat
-            # malformed or dangling adoption evidence as established and fail
-            # closed rather than publishing an empty durable database.
-            adoption_markers.append(archive_root / active_pointer_marker)
-        blob_relative = "blob"
-        blob_metadata = adoption_lstat(blob_relative, "retained blob path")
-        if blob_metadata is not None:
-            if stat.S_ISLNK(blob_metadata.st_mode) or not stat.S_ISDIR(blob_metadata.st_mode):
-                adoption_markers.append(archive_root / blob_relative)
-            else:
-                blob_has_entries = bool(directory_entries(blob_relative, blob_metadata, "retained blob path"))
-                if blob_has_entries:
+        def assert_no_adoption_evidence() -> None:
+            if adoption_lstat(target_name, "durable tier target") is not None:
+                raise MigrationError(f"{tier.value} tier already exists; refusing missing-tier initialization: {path}")
+
+            durable_siblings = tuple(f"{sibling.value}.db" for sibling in ArchiveTier if sibling is not tier)
+            existing_siblings = [
+                archive_root / sibling
+                for sibling in durable_siblings
+                if adoption_lstat(sibling, "archive tier") is not None
+            ]
+            adoption_markers: list[Path] = []
+            active_pointer_marker = ".index-active-pointer"
+            if adoption_lstat(active_pointer_marker, "active index pointer") is not None:
+                # Presence is enough. ArchiveLocation intentionally ignores a dangling
+                # symlink via Path.exists(), but missing-tier initialization must treat
+                # malformed or dangling adoption evidence as established and fail
+                # closed rather than publishing an empty durable database.
+                adoption_markers.append(archive_root / active_pointer_marker)
+            blob_relative = "blob"
+            blob_metadata = adoption_lstat(blob_relative, "retained blob path")
+            if blob_metadata is not None:
+                if stat.S_ISLNK(blob_metadata.st_mode) or not stat.S_ISDIR(blob_metadata.st_mode):
                     adoption_markers.append(archive_root / blob_relative)
-        maintenance_state_relative = ".maintenance-state"
-        maintenance_state_metadata = adoption_lstat(maintenance_state_relative, "maintenance state parent")
-        if maintenance_state_metadata is not None and (
-            stat.S_ISLNK(maintenance_state_metadata.st_mode) or not stat.S_ISDIR(maintenance_state_metadata.st_mode)
-        ):
-            adoption_markers.append(archive_root / maintenance_state_relative)
-        train_marker_relative = ".maintenance-state/durable-change-trains"
-        train_marker_metadata = adoption_lstat(train_marker_relative, "durable change-train adoption marker")
-        if train_marker_metadata is not None:
-            if stat.S_ISLNK(train_marker_metadata.st_mode) or not stat.S_ISDIR(train_marker_metadata.st_mode):
-                adoption_markers.append(archive_root / train_marker_relative)
-            else:
-                marker_entries = tuple(
-                    directory_entries(
-                        train_marker_relative, train_marker_metadata, "durable change-train adoption marker"
+                else:
+                    blob_has_entries = bool(directory_entries(blob_relative, blob_metadata, "retained blob path"))
+                    if blob_has_entries:
+                        adoption_markers.append(archive_root / blob_relative)
+            maintenance_state_relative = ".maintenance-state"
+            maintenance_state_metadata = adoption_lstat(maintenance_state_relative, "maintenance state parent")
+            if maintenance_state_metadata is not None:
+                if stat.S_ISLNK(maintenance_state_metadata.st_mode) or not stat.S_ISDIR(
+                    maintenance_state_metadata.st_mode
+                ):
+                    adoption_markers.append(archive_root / maintenance_state_relative)
+                else:
+                    known_maintenance_children = {
+                        "durable-change-trains",
+                        "source-continuity-pending",
+                        "source-continuity-refreshes",
+                    }
+                    for name in directory_entries(
+                        maintenance_state_relative, maintenance_state_metadata, "maintenance state parent"
+                    ):
+                        if name not in known_maintenance_children:
+                            adoption_markers.append(archive_root / maintenance_state_relative / name)
+            train_marker_relative = ".maintenance-state/durable-change-trains"
+            train_marker_metadata = adoption_lstat(train_marker_relative, "durable change-train adoption marker")
+            if train_marker_metadata is not None:
+                if stat.S_ISLNK(train_marker_metadata.st_mode) or not stat.S_ISDIR(train_marker_metadata.st_mode):
+                    adoption_markers.append(archive_root / train_marker_relative)
+                else:
+                    marker_entries = tuple(
+                        directory_entries(
+                            train_marker_relative, train_marker_metadata, "durable change-train adoption marker"
+                        )
                     )
-                )
-                if marker_entries:
-                    for marker_name in (".bootstrap", ".bootstrap.pending"):
-                        marker_relative = f"{train_marker_relative}/{marker_name}"
-                        if adoption_lstat(marker_relative, "durable bootstrap marker") is not None:
-                            adoption_markers.append(archive_root / marker_relative)
-                    train_marker_path = archive_root / train_marker_relative
-                    if train_marker_path not in adoption_markers:
-                        adoption_markers.append(train_marker_path)
-        retained_evidence_roots = (
-            (".index-generations", "retained index-generation evidence"),
-            (".index-rebuild-transactions", "retained index-rebuild transaction evidence"),
-            (".maintenance-state/source-continuity-pending", "source-continuity recovery evidence"),
-            (".maintenance-state/source-continuity-refreshes", "source-continuity refresh evidence"),
-        )
-        for evidence_relative, description in retained_evidence_roots:
-            evidence_metadata = adoption_lstat(evidence_relative, description)
-            if evidence_metadata is None:
-                continue
-            if stat.S_ISLNK(evidence_metadata.st_mode) or not stat.S_ISDIR(evidence_metadata.st_mode):
-                adoption_markers.append(archive_root / evidence_relative)
-                continue
-            has_retained_evidence = bool(directory_entries(evidence_relative, evidence_metadata, description))
-            if has_retained_evidence:
-                adoption_markers.append(archive_root / evidence_relative)
-        if existing_siblings or adoption_markers:
-            details = ", ".join(str(item) for item in (*existing_siblings, *adoption_markers))
-            raise MigrationError(
-                f"cannot initialize missing {tier.value} tier in an established archive; adoption marker(s): {details}"
+                    if marker_entries:
+                        for marker_name in (".bootstrap", ".bootstrap.pending"):
+                            marker_relative = f"{train_marker_relative}/{marker_name}"
+                            if adoption_lstat(marker_relative, "durable bootstrap marker") is not None:
+                                adoption_markers.append(archive_root / marker_relative)
+                        train_marker_path = archive_root / train_marker_relative
+                        if train_marker_path not in adoption_markers:
+                            adoption_markers.append(train_marker_path)
+            retained_evidence_roots = (
+                (".index-generations", "retained index-generation evidence"),
+                (".index-rebuild-transactions", "retained index-rebuild transaction evidence"),
+                (".maintenance-state/source-continuity-pending", "source-continuity recovery evidence"),
+                (".maintenance-state/source-continuity-refreshes", "source-continuity refresh evidence"),
             )
+            for evidence_relative, description in retained_evidence_roots:
+                evidence_metadata = adoption_lstat(evidence_relative, description)
+                if evidence_metadata is None:
+                    continue
+                if stat.S_ISLNK(evidence_metadata.st_mode) or not stat.S_ISDIR(evidence_metadata.st_mode):
+                    adoption_markers.append(archive_root / evidence_relative)
+                    continue
+                has_retained_evidence = bool(directory_entries(evidence_relative, evidence_metadata, description))
+                if has_retained_evidence:
+                    adoption_markers.append(archive_root / evidence_relative)
+            if existing_siblings or adoption_markers:
+                details = ", ".join(str(item) for item in (*existing_siblings, *adoption_markers))
+                raise MigrationError(
+                    f"cannot initialize missing {tier.value} tier in an established archive; "
+                    f"adoption marker(s): {details}"
+                )
+
+        assert_no_adoption_evidence()
     except BaseException:
         os.close(directory_descriptor)
         raise
@@ -310,6 +327,10 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier, *, directory_
         ):
             raise MigrationError(f"durable-tier publication image is incomplete: {path}")
         publication_identity = (publication_metadata.st_dev, publication_metadata.st_ino)
+        # Image construction can take long enough for retained archive evidence
+        # to appear. Re-census immediately before the first visible link so an
+        # empty durable tier is never adopted over a newly established archive.
+        assert_no_adoption_evidence()
         try:
             os.link(
                 f"/proc/self/fd/{descriptor}",
