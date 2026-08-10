@@ -560,15 +560,6 @@ def record_resource_blocked_revision_census(
             )
 
 
-def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, ...]) -> None:
-    """Persist per-raw current-parser completion without changing governance."""
-    if not raw_ids:
-        return
-    with sqlite3.connect(archive_root / "source.db") as conn, conn:
-        for raw_id in raw_ids:
-            record_current_parser_source_census(conn, raw_id)
-
-
 def _census_historical_revision_evidence(
     archive: ArchiveStore,
     spill: _ParsedSessionSpill,

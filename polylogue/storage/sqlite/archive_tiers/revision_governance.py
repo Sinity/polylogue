@@ -1837,12 +1837,12 @@ def record_current_parser_source_census(
     *,
     parser_sessions: Sequence[ParsedSession] | None = None,
 ) -> None:
-    """Persist one current-parser receipt from the durable admission bindings.
+    """Persist one current-parser receipt from parsed identities.
 
     Ordinary admissions have a typed raw logical key; grouped imports instead
-    establish their keys through ``raw_session_memberships``.  Reading both
-    through this writer-owned route makes every successful parser admission
-    accountable to the same source-tier census that replay promotion reads.
+    establish their keys through ``raw_session_memberships``. The parsed
+    identities must match that durable authority before this writer records a
+    complete receipt for replay promotion.
     """
     raw = conn.execute(
         """
