@@ -22,6 +22,10 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Provider
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+    RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
+)
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import get_logger
@@ -884,6 +888,7 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
         return 0
     index_db = ArchiveLocation.resolve(durable_root).active_index_path
     normalized_root = str(path).rstrip("/")
+    replay_authority_placeholders = ", ".join("?" for _ in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS)
     try:
         conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
     except sqlite3.Error:
@@ -924,10 +929,25 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
                 OR r.parse_error = 'OperationalError: database is locked'
                 OR r.parse_error LIKE 'decode:%No such file or directory:%'
                 OR r.parse_error LIKE 'membership_replay_conflict:%'
+                OR EXISTS (
+                    SELECT 1
+                    FROM raw_artifacts AS failure_evidence
+                    WHERE failure_evidence.raw_id IS r.raw_id
+                      AND failure_evidence.origin IS r.origin
+                      AND failure_evidence.source_path IS r.source_path
+                      AND failure_evidence.source_index IS r.source_index
+                      AND failure_evidence.artifact_kind IN ({replay_authority_placeholders})
+                      AND failure_evidence.support_status = ?
+                )
               )
               {materialized_where}
             """,
-            (normalized_root, f"{normalized_root}/%"),
+            (
+                normalized_root,
+                f"{normalized_root}/%",
+                *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
+                RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+            ),
         ).fetchone()
         return int(row[0] or 0) if row is not None else 0
     except sqlite3.Error:
