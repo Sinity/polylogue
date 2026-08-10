@@ -353,6 +353,75 @@ def test_completed_checkpoint_members_do_not_block_raw_excision(
         assert conn.execute("SELECT COUNT(*) FROM raw_authority_artifact_census_checkpoint_members").fetchone() == (0,)
 
 
+def test_pending_checkpoint_is_invalidated_when_a_member_is_excised(
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_artifact(archive, raw_id="raw-a")
+    _write_artifact(archive, raw_id="raw-b")
+    first_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="pending-excision-first")
+    first = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=first_manifest, limit=1)
+    evidence = first.receipt["evidence"]
+    assert isinstance(evidence, dict)
+    checkpoint_evidence = evidence["checkpoint"]
+    assert isinstance(checkpoint_evidence, dict)
+    census_id = checkpoint_evidence["census_id"]
+    assert isinstance(census_id, str)
+    assert first.census.next_after_raw_id == "raw-a"
+
+    with sqlite3.connect(archive / "source.db") as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("DELETE FROM raw_sessions WHERE raw_id = 'raw-b'")
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_authority_artifact_census_checkpoints WHERE census_id = ?", (census_id,)
+        ).fetchone() == (0,)
+
+    continuation_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="pending-excision-continuation")
+    with pytest.raises(RawAuthorityArtifactCensusError, match="unknown durable census checkpoint"):
+        run_raw_authority_artifact_census(
+            archive,
+            apply=True,
+            backup_manifest=continuation_manifest,
+            census_id=census_id,
+            after_raw_id="raw-a",
+            limit=1,
+        )
+
+
+def test_apply_refuses_continuation_after_index_session_witness_changes(
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_artifact(archive, raw_id="raw-a")
+    _write_artifact(archive, raw_id="raw-b")
+    first_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="index-witness-first")
+    first = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=first_manifest, limit=1)
+    evidence = first.receipt["evidence"]
+    assert isinstance(evidence, dict)
+    checkpoint_evidence = evidence["checkpoint"]
+    assert isinstance(checkpoint_evidence, dict)
+    census_id = checkpoint_evidence["census_id"]
+    assert isinstance(census_id, str)
+    assert first.census.next_after_raw_id == "raw-a"
+
+    active_index = ArchiveLocation.resolve(archive).active_index_path
+    with sqlite3.connect(active_index) as index_conn:
+        index_conn.execute(
+            "INSERT INTO sessions (origin, native_id, content_hash, raw_id, created_at_ms, updated_at_ms) "
+            "VALUES ('chatgpt-export', 'new-witness', ?, 'raw-new-index-witness', 0, 0)",
+            (bytes.fromhex("02" * 32),),
+        )
+
+    continuation_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="index-witness-continuation")
+    with pytest.raises(RawAuthorityArtifactCensusError, match="index authority changed"):
+        run_raw_authority_artifact_census(
+            archive,
+            apply=True,
+            backup_manifest=continuation_manifest,
+            census_id=census_id,
+            after_raw_id="raw-a",
+            limit=1,
+        )
+
+
 def test_apply_rejects_receipt_option_before_mutating_source(archive: Path) -> None:
     _write_artifact(archive)
     receipt_path = archive.parent / "apply-receipt.json"

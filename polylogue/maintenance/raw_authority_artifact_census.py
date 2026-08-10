@@ -155,14 +155,31 @@ def _open_readonly(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30.0)
 
 
-def _index_authority_identity(location: ArchiveLocation) -> tuple[str, str]:
-    return location.active_generation, _canonical_digest({"active_generation": location.active_generation})
+def _index_session_witness_digest(conn: sqlite3.Connection) -> str:
+    """Hash the exact index relation the census uses as authority evidence."""
+    digest = hashlib.sha256(b"raw-authority-artifact-census:index-sessions:v1\0")
+    for raw_id, session_id in conn.execute("SELECT raw_id, session_id FROM sessions ORDER BY raw_id, session_id"):
+        encoded = json.dumps([raw_id, session_id], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, byteorder="big"))
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
-def _create_checkpoint(conn: sqlite3.Connection, *, location: ArchiveLocation, now_ms: int) -> _CheckpointState:
+def _index_authority_identity(location: ArchiveLocation, conn: sqlite3.Connection) -> tuple[str, str]:
+    return location.active_generation, _canonical_digest(
+        {
+            "active_generation": location.active_generation,
+            "session_witness_sha256": _index_session_witness_digest(conn),
+        }
+    )
+
+
+def _create_checkpoint(
+    conn: sqlite3.Connection, *, location: ArchiveLocation, index_conn: sqlite3.Connection, now_ms: int
+) -> _CheckpointState:
     census_id = f"raw-authority-artifact-census:{uuid.uuid4().hex}"
     snapshot_max_raw_rowid = int(conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions").fetchone()[0])
-    index_generation, index_identity_sha256 = _index_authority_identity(location)
+    index_generation, index_identity_sha256 = _index_authority_identity(location, index_conn)
     conn.execute(
         """
         INSERT INTO raw_authority_artifact_census_checkpoints (
@@ -433,8 +450,14 @@ def run_raw_authority_artifact_census(
                 try:
                     backup_evidence = _validate_source_backup(backup_manifest, source_conn)
                     observed_at_ms = int(time.time() * 1000)
+                    index_conn.execute("BEGIN")
                     if census_id is None:
-                        checkpoint = _create_checkpoint(source_conn, location=location, now_ms=observed_at_ms)
+                        checkpoint = _create_checkpoint(
+                            source_conn,
+                            location=location,
+                            index_conn=index_conn,
+                            now_ms=observed_at_ms,
+                        )
                         expected_after_raw_id = None
                     else:
                         checkpoint = _checkpoint_state(source_conn, census_id)
@@ -443,7 +466,7 @@ def run_raw_authority_artifact_census(
                             raise RawAuthorityArtifactCensusError(
                                 "continuation cursor must equal the durable checkpoint next_after_raw_id"
                             )
-                        index_generation, index_identity_sha256 = _index_authority_identity(location)
+                        index_generation, index_identity_sha256 = _index_authority_identity(location, index_conn)
                         if (
                             index_generation != checkpoint.index_generation
                             or index_identity_sha256 != checkpoint.index_identity_sha256
@@ -457,7 +480,6 @@ def run_raw_authority_artifact_census(
                         after_raw_id=expected_after_raw_id,
                         limit=scan_limit,
                     )
-                    index_conn.execute("BEGIN")
                     census = scan_quarantined_raw_authority(
                         source_conn,
                         index_conn,

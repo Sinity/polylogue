@@ -36,5 +36,27 @@ CREATE TABLE raw_authority_artifact_census_checkpoint_members (
 CREATE INDEX idx_raw_authority_artifact_census_checkpoint_members_page
 ON raw_authority_artifact_census_checkpoint_members(census_id, ordinal);
 
+CREATE TRIGGER invalidate_pending_raw_authority_artifact_census_checkpoint_on_raw_delete
+BEFORE DELETE ON raw_sessions
+WHEN EXISTS (
+    SELECT 1
+    FROM raw_authority_artifact_census_checkpoint_members AS member
+    JOIN raw_authority_artifact_census_checkpoints AS checkpoint
+      ON checkpoint.census_id = member.census_id
+    WHERE member.raw_id = OLD.raw_id
+      AND checkpoint.completed_at_ms IS NULL
+)
+BEGIN
+    DELETE FROM raw_authority_artifact_census_checkpoints
+    WHERE census_id IN (
+        SELECT member.census_id
+        FROM raw_authority_artifact_census_checkpoint_members AS member
+        JOIN raw_authority_artifact_census_checkpoints AS checkpoint
+          ON checkpoint.census_id = member.census_id
+        WHERE member.raw_id = OLD.raw_id
+          AND checkpoint.completed_at_ms IS NULL
+    );
+END;
+
 CREATE INDEX idx_raw_sessions_raw_authority_census_candidates
 ON raw_sessions(revision_authority, parse_error);

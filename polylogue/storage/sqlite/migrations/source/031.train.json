@@ -12,7 +12,7 @@
     "slot": 31,
     "path": "031_raw_authority_artifact_census_receipts.sql",
     "owner_ref": "feature/fix/raw-authority-census",
-    "sql_sha256": "74b7f518648f83a9ae6eca8fb3af4214b246f9f40c7b765db6ceee8b8221198b",
+    "sql_sha256": "63b7d4d17e5e8c1807b11118f29b41a55a483071b3f7dd965882f59980613986",
     "requires_backup": true
   },
   "riders": [
@@ -69,5 +69,5 @@
   "release_evidence_ref": null,
   "proof_refs": [],
   "source_continuity_evidence": null,
-  "manifest_sha256": "5594bdba31efb05ff1a5e2d7ff285a16a39d5a62115a708141e4ec89ba987c14"
+  "manifest_sha256": "40b655ddbb9c21a40d8c465809b7df7b0ef55430c150573d0ebcc0de434b96c6"
 }
