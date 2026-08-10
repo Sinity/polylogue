@@ -234,7 +234,6 @@ DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
-DEFAULT_TESTMON_WORKERS = "4"
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -1912,7 +1911,7 @@ def build_verify_steps(
             else:
                 pytest_cmd.append("--testmon-noselect")
                 label = "pytest seed-testmon"
-            pytest_cmd.extend(_pytest_worker_args(default="4"))
+            pytest_cmd.extend(_pytest_worker_args(maximum=4))
             steps.append((label, pytest_cmd))
         elif full_pytest:
             # #1775: the full diagnostic runs as two lanes. The bulk lane keeps
@@ -1927,7 +1926,7 @@ def build_verify_steps(
                 *pytest_cmd,
                 "-m",
                 f"({base_marker}) and not load_sensitive and not tui",
-                *_pytest_worker_args(default="4"),
+                *_pytest_worker_args(),
             ]
             steps.append(("pytest full (parallel)", bulk_cmd))
 
@@ -1944,8 +1943,7 @@ def build_verify_steps(
             isolated_cmd.extend(["-m", f"({base_marker}) and (load_sensitive or tui)", "-p", "no:randomly", "-n", "0"])
             steps.append(("pytest load-sensitive (isolated)", isolated_cmd))
         else:
-            default_workers = DEFAULT_TESTMON_WORKERS
-            pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args(default=default_workers)])
+            pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args()])
             pytest_cmd.append("--testmon-forceselect")
             label = "pytest testmon (broad)" if broad_testmon else "pytest testmon"
             steps.append((label, pytest_cmd))
@@ -2055,9 +2053,12 @@ def _file_fingerprint(path: Path) -> str:
     return h.hexdigest()
 
 
-def _pytest_worker_args(*, default: str) -> list[str]:
-    del default
-    return ["-n", str(adaptive_pytest_worker_count(os.environ))]
+def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
+    """Return the managed worker count, optionally capped for a bounded lane."""
+    workers = adaptive_pytest_worker_count(os.environ)
+    if maximum is not None:
+        workers = min(workers, maximum)
+    return ["-n", str(workers)]
 
 
 _BROAD_TESTMON_CHANGED_PATHS = {

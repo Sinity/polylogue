@@ -236,7 +236,18 @@ def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "-n" in command
-    assert command[command.index("-n") + 1] == "8"
+    assert command[command.index("-n") + 1] == "4"
+
+
+def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 12)
+
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, seed_testmon=True)
+
+    label, command = steps[-1]
+    assert label == "pytest seed-testmon"
+    assert command[command.index("-n") + 1] == "4"
 
 
 def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:
