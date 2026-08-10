@@ -126,6 +126,13 @@ def migrate_tier_command(
             )
         else:
             click.echo(f"Migration blocked for {tier}: {exc}", err=True)
+            if isinstance(exc, DurablePublicationError) and exc.cleanup is not None:
+                cleanup = exc.cleanup
+                if cleanup.state == "uncertain":
+                    click.echo(
+                        f"Durable recovery required ({cleanup.code}): {cleanup.detail}",
+                        err=True,
+                    )
         raise SystemExit(1) from exc
 
     result = execution.migration_result if execution is not None else None

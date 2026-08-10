@@ -10,7 +10,6 @@ import sqlite3
 import stat
 import subprocess
 import time
-from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2404,24 +2403,18 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
     module_name = "polylogue.operations.durable_change_train"
 
     real_fsync = os.fsync
-    fsync_calls = 0
-    directory_fsyncs = 0
+    real_open = os.open
+    publication_descriptor: int | None = None
 
     def fail_fsync(descriptor: int) -> None:
-        nonlocal directory_fsyncs, fsync_calls
-        fsync_calls += 1
         is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
-        if is_directory:
-            directory_fsyncs += 1
-        if failure_stage == "image_fsync" and not is_directory and fsync_calls == 2:
+        if failure_stage == "image_fsync" and descriptor == publication_descriptor:
             raise OSError(f"{failure_stage} failed")
         if failure_stage == "directory_fsync" and is_directory:
             raise OSError(f"{failure_stage} failed")
         real_fsync(descriptor)
 
     monkeypatch.setattr(f"{module_name}.os.fsync", fail_fsync)
-
-    real_open = os.open
     dup_failure_armed = False
 
     from polylogue.cli.commands.maintenance import _migrate_tier
@@ -2435,24 +2428,21 @@ def test_migrate_tier_cli_cleans_up_after_publication_failure(
 
     monkeypatch.setattr(_migrate_tier, "_require_stopped_daemon", arm_dup_failure)
 
-    def fail_directory_open(
+    def record_publication_open(
         file: os.PathLike[str] | str,
         flags: int,
         mode: int = 0o777,
         *,
         dir_fd: int | None = None,
     ) -> int:
-        if (
-            failure_stage == "directory_open"
-            and dup_failure_armed
-            and Path(file) == root
-            and flags & getattr(os, "O_DIRECTORY", 0)
-            and flags & getattr(os, "O_TMPFILE", 0) != getattr(os, "O_TMPFILE", 0)
-        ):
-            raise OSError("directory open failed")
-        return real_open(file, flags, mode, dir_fd=dir_fd)
+        nonlocal publication_descriptor
+        descriptor = real_open(file, flags, mode, dir_fd=dir_fd)
+        tmpfile_flag = getattr(os, "O_TMPFILE", 0)
+        if tmpfile_flag and (flags & tmpfile_flag) == tmpfile_flag:
+            publication_descriptor = descriptor
+        return descriptor
 
-    monkeypatch.setattr(f"{module_name}.os.open", fail_directory_open)
+    monkeypatch.setattr(f"{module_name}.os.open", record_publication_open)
 
     real_dup = os.dup
 
@@ -2545,6 +2535,108 @@ def test_migrate_tier_cli_serializes_cleanup_fsync_uncertainty(
         "target": str(audit_db),
     }
     assert audit_db.exists()
+
+
+def test_migrate_tier_cli_plain_output_reports_uncertain_durable_recovery(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    from polylogue.cli.commands.maintenance import _migrate_tier
+    from polylogue.operations.durable_change_train import DurableCleanupOutcome, DurablePublicationError
+
+    cleanup = DurableCleanupOutcome(
+        "uncertain",
+        "cleanup_not_atomic",
+        str(cli_workspace["archive_root"] / "audit.db"),
+        "publication target requires manual inspection",
+    )
+
+    def refuse_initialization(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        raise DurablePublicationError("publication blocked", cleanup=cleanup)
+
+    monkeypatch.setattr(_migrate_tier, "initialize_missing_durable_tier", refuse_initialization)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "plain",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert (
+        "Durable recovery required (cleanup_not_atomic): publication target requires manual inspection" in result.output
+    )
+
+
+def test_missing_tier_initialization_closes_directory_after_publication_descriptor_close_failure(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    from polylogue.operations import durable_change_train
+    from polylogue.operations.durable_change_train import (
+        DurablePublicationError,
+        acquire_durable_archive_ownership,
+        initialize_missing_durable_tier,
+    )
+
+    publication_descriptor: int | None = None
+    publication_close_failed = False
+    directory_closed = False
+    real_open = os.open
+    real_close = os.close
+
+    def record_publication_open(
+        file: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal publication_descriptor
+        descriptor = real_open(file, flags, mode, dir_fd=dir_fd)
+        tmpfile_flag = getattr(os, "O_TMPFILE", 0)
+        if tmpfile_flag and (flags & tmpfile_flag) == tmpfile_flag:
+            publication_descriptor = descriptor
+        return descriptor
+
+    def fail_publication_close(descriptor: int) -> None:
+        nonlocal directory_closed, publication_close_failed
+        if descriptor == publication_descriptor and not publication_close_failed:
+            publication_close_failed = True
+            raise OSError("publication close failed")
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_closed = True
+        real_close(descriptor)
+
+    owner = acquire_durable_archive_ownership(root, owner_id="publication-close-test")
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(durable_change_train.os, "open", record_publication_open)
+            scoped.setattr(durable_change_train, "_close_publication_descriptor", fail_publication_close)
+            with pytest.raises(DurablePublicationError) as raised:
+                initialize_missing_durable_tier(
+                    root / "audit.db",
+                    ArchiveTier.AUDIT,
+                    directory_fd=owner.directory_fd,
+                )
+    finally:
+        if publication_descriptor is not None and publication_close_failed:
+            real_close(publication_descriptor)
+        owner.release()
+
+    assert directory_closed is True
+    assert raised.value.cleanup is not None
+    assert raised.value.cleanup.state == "uncertain"
 
 
 def test_migrate_tier_cli_serializes_target_absent_cleanup(
@@ -3012,7 +3104,7 @@ def test_migrate_tier_cli_missing_initialization_refuses_blob_inspection_failure
     blob_identity = blob_root.stat()
     real_listdir = os.listdir
 
-    def fail_blob_inspection(candidate: int | os.PathLike[str] | str) -> list[str] | Iterator[Path]:
+    def fail_blob_inspection(candidate: int | os.PathLike[str] | str) -> list[str]:
         if isinstance(candidate, int):
             candidate_metadata = os.fstat(candidate)
             if (candidate_metadata.st_dev, candidate_metadata.st_ino) == (blob_identity.st_dev, blob_identity.st_ino):

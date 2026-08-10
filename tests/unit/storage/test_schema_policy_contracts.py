@@ -225,6 +225,8 @@ def test_pinned_read_only_archive_open_does_not_mutate_physical_index_after_prom
     old_index = (old_root / "index.db").resolve()
     new_index = (new_root / "index.db").resolve()
     with sqlite3.connect(old_index) as conn:
+        conn.execute("CREATE TABLE pinned_evidence (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO pinned_evidence VALUES ('old physical index')")
         conn.execute("DROP INDEX idx_messages_message_type")
         conn.commit()
         assert not any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
@@ -244,6 +246,7 @@ def test_pinned_read_only_archive_open_does_not_mutate_physical_index_after_prom
     )
     with ArchiveStore.open_existing(archive_root, index_path=pinned_index) as archive:
         assert archive._read_only is True
+        assert tuple(archive._conn.execute("SELECT value FROM pinned_evidence").fetchone()) == ("old physical index",)
 
     with sqlite3.connect(old_index) as conn:
         assert not any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))

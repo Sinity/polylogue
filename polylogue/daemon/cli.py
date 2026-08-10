@@ -2123,7 +2123,7 @@ async def run_daemon_services(
     # create an otherwise absent configured root before identity/ownership
     # validation rather than making fresh service startup depend on a separate
     # bootstrap invocation.
-    archive_root_path.mkdir(parents=True, exist_ok=True)
+    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
     from polylogue.storage.archive_identity import assert_writable_archive_identity
 
     # Identity precedes schema checks, pidfiles, HTTP startup, and every other

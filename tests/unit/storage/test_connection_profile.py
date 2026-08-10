@@ -39,3 +39,20 @@ def test_open_readonly_connection_refuses_without_descriptor_bound_path(
             connection_profile.open_readonly_connection(db_path, opened_main_fd=descriptor_handle.fileno())
     finally:
         descriptor_handle.close()
+
+
+def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE evidence (value TEXT)")
+
+    descriptor_handle = db_path.open("rb")
+    try:
+        with pytest.raises(ValueError, match="immutable mode"):
+            connection_profile.open_readonly_connection(
+                db_path,
+                immutable=True,
+                opened_main_fd=descriptor_handle.fileno(),
+            )
+    finally:
+        descriptor_handle.close()

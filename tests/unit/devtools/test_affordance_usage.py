@@ -218,7 +218,7 @@ def test_affordance_usage_selected_external_index_is_the_report_evidence_source(
 
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert report["index_db"] == str(selected_db.resolve())
-    assert report["index_db"] != str(configured_root.resolve())
+    assert report["index_db"] != str((configured_root / "index.db").resolve())
     assert report["evidence_root"] == str(selected_root.resolve())
     snapshot_identity = report["snapshot_identity"]
     assert snapshot_identity["before"]["path"] == str(selected_db.resolve())
@@ -291,6 +291,44 @@ def test_affordance_usage_selected_sibling_index_bypasses_archive_store_fast_pat
     assert report["index_db"] == str(selected_db.resolve())
     assert {row["family"]: row["actions"] for row in report["family_counts"]}["codebase-memory"] == 2
     assert report["samples"]
+
+
+def test_affordance_usage_rejects_product_fast_path_on_different_physical_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    other_db = _make_index_db(tmp_path / "other")
+
+    class DivergentArchive(AbstractContextManager["DivergentArchive"]):
+        index_db_path = other_db
+
+        def __enter__(self) -> DivergentArchive:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _root, **_kwargs: DivergentArchive(),
+    )
+
+    with pytest.raises(RuntimeError, match="different physical index"):
+        affordance_usage.build_report(
+            affordance_usage.AffordanceUsageArgs(
+                archive_root=archive_root,
+                out_dir=None,
+                days=36500,
+                family=(),
+                detail_pattern=("codebase-memory",),
+                sample_limit=10,
+                json=True,
+                all_time=False,
+                index_db=selected_db,
+            )
+        )
 
 
 def test_affordance_usage_product_fast_path_stays_pinned_across_promotion(
@@ -747,20 +785,27 @@ def test_affordance_usage_captures_reader_created_sqlite_sidecars(
     """WAL, SHM, and journal names created after reader open enter the authority set."""
     archive_root = tmp_path / "archive"
     selected_db = _make_index_db(archive_root)
-    from devtools.index_snapshot import OpenedIndexFileSet
+    real_snapshot = affordance_usage._snapshot_observation
+    snapshot_calls = 0
 
-    real_capture = OpenedIndexFileSet.capture_sidecars
-    capture_calls = 0
-
-    def create_sidecars_after_census(self: OpenedIndexFileSet, path: Path) -> None:
-        nonlocal capture_calls
-        capture_calls += 1
-        if capture_calls == 4:
+    def create_sidecars_before_after_snapshot(
+        path: Path,
+        *,
+        opened_main_fd: int | None = None,
+        opened_sidecar_fds: dict[str, int] | None = None,
+    ) -> dict[str, object]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 2:
             for suffix in ("-wal", "-shm", "-journal"):
                 Path(f"{path}{suffix}").write_bytes(b"created after reader open")
-        real_capture(self, path)
+        return real_snapshot(
+            path,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=opened_sidecar_fds,
+        )
 
-    monkeypatch.setattr(OpenedIndexFileSet, "capture_sidecars", create_sidecars_after_census)
+    monkeypatch.setattr(affordance_usage, "_snapshot_observation", create_sidecars_before_after_snapshot)
     monkeypatch.setattr(affordance_usage, "_data_version", lambda _connection: 1)
     report = affordance_usage.build_report(
         affordance_usage.AffordanceUsageArgs(

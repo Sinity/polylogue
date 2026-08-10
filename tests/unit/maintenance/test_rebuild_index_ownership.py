@@ -28,7 +28,7 @@ from polylogue.sources.revision_backfill import census_historical_revision_evide
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
+from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -68,6 +68,7 @@ def _init_nonempty_source(root: Path) -> None:
         conn.commit()
     census = census_historical_revision_evidence(root)
     assert census.scanned == 1
+    assert census.classified_full == 1
 
 
 def test_rebuild_rejects_source_schema_behind_runtime_before_candidate_creation(tmp_path: Path) -> None:
@@ -398,6 +399,83 @@ def test_empty_source_rebuild_retains_consumed_evidence_for_resumed_request(tmp_
     )
     assert checkpoint.status == "stale"
     assert checkpoint.error == "rebuild source is empty; resumable transaction cannot continue"
+
+
+def _replace_root_after_rebuild_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    moved_root: Path,
+) -> None:
+    real_enter = RebuildLease.__enter__
+    swapped = False
+
+    def swap_after_acquire(lease: RebuildLease) -> RebuildLease:
+        nonlocal swapped
+        entered = real_enter(lease)
+        if not swapped:
+            root.rename(moved_root)
+            initialize_active_archive_root(root)
+            swapped = True
+        return entered
+
+    monkeypatch.setattr(RebuildLease, "__enter__", swap_after_acquire)
+
+
+def test_invalid_resume_refuses_root_replacement_before_marking_transaction_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    moved_root = tmp_path / "moved-archive"
+    _init_empty_source(root)
+    transaction = IndexGenerationStore.for_archive_root(root).create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root),
+        operation_id="invalid-resume-root-replacement",
+    )
+    transaction_before = (root / ".index-rebuild-transactions" / f"{transaction.operation_id}.json").read_bytes()
+    receipt_path = tmp_path / "invalid-receipt.json"
+    receipt_path.write_text("{}", encoding="utf-8")
+    _replace_root_after_rebuild_lease(monkeypatch, root, moved_root)
+
+    with pytest.raises(ArchiveOwnershipError, match="archive root"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                operation_id=transaction.operation_id,
+                schema_inference_receipt_path=receipt_path,
+            )
+        )
+
+    assert (
+        moved_root / ".index-rebuild-transactions" / f"{transaction.operation_id}.json"
+    ).read_bytes() == transaction_before
+
+
+def test_empty_source_resume_refuses_root_replacement_before_retiring_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    moved_root = tmp_path / "moved-archive"
+    _init_empty_source(root)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
+    transaction = IndexGenerationStore.for_archive_root(root).create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root),
+        operation_id="empty-resume-root-replacement",
+    )
+    transaction_before = (root / ".index-rebuild-transactions" / f"{transaction.operation_id}.json").read_bytes()
+    _replace_root_after_rebuild_lease(monkeypatch, root, moved_root)
+
+    with pytest.raises(ArchiveOwnershipError, match="archive root"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                operation_id=transaction.operation_id,
+                schema_inference_receipt_path=receipt_path,
+            )
+        )
+
+    assert (
+        moved_root / ".index-rebuild-transactions" / f"{transaction.operation_id}.json"
+    ).read_bytes() == transaction_before
 
 
 def test_empty_source_rebuild_does_not_bypass_archive_ownership(

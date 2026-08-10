@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.storage.archive_identity as archive_identity
 from polylogue.storage.archive_identity import (
     ArchiveIdentity,
     ArchiveIdentityConflictError,
@@ -79,6 +80,43 @@ def test_resolve_active_index_path_rejects_malformed_pointer(tmp_path: Path, poi
         ArchiveLocation.resolve(root)
     with pytest.raises(ArchiveLocationError, match="invalid active index pointer"):
         resolve_active_index_path(root)
+
+
+def test_archive_location_rejects_undecodable_active_pointer(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / ".index-active-pointer").write_bytes(b"\xff")
+
+    with pytest.raises(ArchiveLocationError, match="cannot read active index pointer"):
+        ArchiveLocation.resolve(root)
+
+
+def test_lock_holder_pid_ignores_undecodable_owner_metadata(tmp_path: Path) -> None:
+    lock_path = tmp_path / ".archive-ownership.lock"
+    lock_path.write_bytes(b"\xff")
+
+    assert archive_identity._lock_holder_pid(lock_path) is None
+
+
+def test_ownership_metadata_write_failure_closes_lock_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    closed: list[int] = []
+    real_close = os.close
+
+    def record_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(archive_identity.os, "close", record_close)
+    monkeypatch.setattr(archive_identity.os, "fsync", lambda _descriptor: (_ for _ in ()).throw(OSError("disk full")))
+
+    with pytest.raises(ArchiveOwnershipError, match="cannot record archive ownership lock owner"):
+        OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+
+    assert closed
 
 
 def test_split_roots_sharing_durable_tiers_reject_distinct_indexes_before_mutation(tmp_path: Path) -> None:

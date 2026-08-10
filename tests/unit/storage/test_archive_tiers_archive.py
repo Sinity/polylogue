@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 from hashlib import sha256
 from pathlib import Path
 
@@ -42,6 +44,17 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 from polylogue.surfaces.payloads import ActionQueryRowPayload
 from tests.infra.identity import archive_message_id
 from tests.infra.workload_artifacts import build_seeded_archive
+
+
+def test_active_archive_root_creation_is_private_under_permissive_umask(tmp_path: Path) -> None:
+    root = tmp_path / "private-archive"
+    previous_umask = os.umask(0)
+    try:
+        initialize_active_archive_root(root)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
 
 
 def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_path: Path) -> None:

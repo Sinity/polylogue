@@ -1423,6 +1423,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
             # transaction before any empty-source shortcut can turn the same
             # invalid operation into a successful receipt.
             with RebuildLease(root):
+                assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
                 _mark_rebuild_transaction_stale_after_provenance_failure(
                     root, request.operation_id, initial_provenance_error
                 )
@@ -1430,6 +1431,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         if raw_count == 0:
             if request.operation_id is not None:
                 with RebuildLease(root):
+                    assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
                     _retire_empty_source_resume_transaction(root, request.operation_id)
             return _empty_source_receipt(root, consumed_evidence)
         consumed_evidence = _validate_rebuild_provenance_receipt(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,11 @@ class DurablePublicationError(MigrationError):
     def __init__(self, message: str, *, cleanup: DurableCleanupOutcome | None = None) -> None:
         super().__init__(message)
         self.cleanup = cleanup
+
+
+def _close_publication_descriptor(descriptor: int) -> None:
+    """Close a publication descriptor through one fault-injectable boundary."""
+    os.close(descriptor)
 
 
 def acquire_durable_archive_ownership(root: Path, *, owner_id: str) -> OwnedArchiveLocation:
@@ -372,20 +378,37 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier, *, directory_
             f"cannot publish {tier.value} tier at {path} via durable publication", cleanup=cleanup
         ) from exc
     finally:
+        primary_exception = sys.exception()
+        close_failures: list[tuple[BaseException, OSError]] = []
         if publication_descriptor is not None:
             try:
-                os.close(publication_descriptor)
+                _close_publication_descriptor(publication_descriptor)
             except OSError as exc:
                 cleanup = cleanup_published_target(exc)
                 if cleanup.state == "uncertain":
                     exc.add_note(cleanup.detail or cleanup.code or "durable cleanup is uncertain")
-                raise MigrationError(
-                    f"cannot close {tier.value} tier publication at {path} after durable publication"
-                ) from exc
+                failure: BaseException
+                if published_target:
+                    failure = DurablePublicationError(
+                        f"cannot close {tier.value} tier publication at {path} after durable publication",
+                        cleanup=cleanup,
+                    )
+                else:
+                    failure = MigrationError(
+                        f"cannot close {tier.value} tier publication at {path} after durable publication"
+                    )
+                close_failures.append((failure, exc))
         try:
-            os.close(directory_descriptor)
+            _close_publication_descriptor(directory_descriptor)
         except OSError as exc:
-            raise MigrationError(f"cannot close durable tier parent directory: {archive_root}") from exc
+            failure = MigrationError(f"cannot close durable tier parent directory: {archive_root}")
+            close_failures.append((failure, exc))
+        if primary_exception is not None:
+            for failure, _cause in close_failures:
+                primary_exception.add_note(str(failure))
+        elif close_failures:
+            failure, cause = close_failures[0]
+            raise failure from cause
 
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 

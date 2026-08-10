@@ -323,7 +323,7 @@ def initialize_active_archive_root(root: Path) -> None:
     # root before resolving and acquiring its identity. This is part of
     # bootstrap, not an authority bypass: the descriptor is still acquired
     # and checked before any tier is initialized.
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     with OwnedArchiveLocation.acquire(
         ArchiveLocation.resolve(root),
         owner_id=f"bootstrap:{os.getpid()}",

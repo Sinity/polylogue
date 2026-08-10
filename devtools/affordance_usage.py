@@ -43,6 +43,10 @@ _snapshot_identity = snapshot_identity
 _snapshot_observation = snapshot_index_file_set
 
 
+class _DivergentSelectedIndexError(RuntimeError):
+    """The product route opened a physical index other than the selected evidence."""
+
+
 @dataclass(frozen=True, slots=True)
 class AffordanceUsageArgs:
     archive_root: Path | None
@@ -913,7 +917,7 @@ def _try_product_detail_report(
         ) as archive:
             opened_index_db = Path(archive.index_db_path).resolve(strict=True)
             if opened_index_db != selected_index_db:
-                raise RuntimeError(
+                raise _DivergentSelectedIndexError(
                     "ArchiveStore opened a different physical index than the selected affordance evidence database"
                 )
             merged_rows: dict[tuple[str, str, str, str, str, str], dict[str, object]] = {}
@@ -942,6 +946,8 @@ def _try_product_detail_report(
                     bucket["normalized_tool_name"] = str(
                         bucket.get("normalized_tool_name") or f"{family}/command-detail"
                     )
+    except _DivergentSelectedIndexError:
+        raise
     except Exception:
         return None
     rows = sorted(

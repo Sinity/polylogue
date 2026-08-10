@@ -124,7 +124,7 @@ class ArchiveLocation:
                     if stat.S_ISLNK(pointer_metadata.st_mode)
                     else pointer_file.read_text(encoding="utf-8")
                 ).strip()
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 raise ArchiveLocationError(f"cannot read active index pointer: {pointer_file}") from exc
             candidate = Path(raw)
             if not candidate.is_absolute() or candidate.name != "index.db":
@@ -475,7 +475,7 @@ def _lock_holder_pid(path: Path, *, fd: int | None = None) -> int | None:
     """Best-effort recorded pid from an existing lock file; ``None`` if absent/unreadable."""
     try:
         text = path.read_text(encoding="utf-8") if fd is None else os.pread(fd, 4096, 0).decode("utf-8")
-    except OSError:
+    except (OSError, ValueError):
         return None
     for token in text.split():
         if token.startswith("pid="):
@@ -610,9 +610,13 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str, dir_fd: int | None = N
     except BaseException:
         os.close(fd)
         raise
-    os.ftruncate(fd, 0)
-    os.write(fd, owner.encode("utf-8"))
-    os.fsync(fd)
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, owner.encode("utf-8"))
+        os.fsync(fd)
+    except OSError as exc:
+        os.close(fd)
+        raise ArchiveOwnershipError(f"cannot record archive ownership lock owner: {path}") from exc
     return fd
 
 

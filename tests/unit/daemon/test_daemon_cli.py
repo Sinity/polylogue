@@ -6,6 +6,7 @@ import functools
 import inspect
 import os
 import sqlite3
+import stat
 import threading
 import time
 from pathlib import Path
@@ -3497,19 +3498,24 @@ def test_daemon_startup_creates_missing_archive_root_before_ownership(
         stop_after_ownership,
     )
 
-    with pytest.raises(RuntimeError, match="owned first-run archive"):
-        asyncio.run(
-            daemon_cli.run_daemon_services(
-                sources=(),
-                debounce_s=1.0,
-                enable_watch=False,
-                enable_browser_capture=False,
-                browser_capture_host="127.0.0.1",
-                browser_capture_port=8765,
-                browser_capture_spool_path=None,
+    previous_umask = os.umask(0)
+    try:
+        with pytest.raises(RuntimeError, match="owned first-run archive"):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    debounce_s=1.0,
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                )
             )
-        )
+    finally:
+        os.umask(previous_umask)
 
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o700
     assert (archive / ".archive-ownership.lock").exists()
 
 

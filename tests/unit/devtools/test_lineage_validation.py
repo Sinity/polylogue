@@ -644,20 +644,27 @@ def test_lineage_validation_captures_reader_created_sqlite_sidecars(
     """Lineage evidence adopts sidecars created by the second SQLite reader."""
     archive_root = tmp_path / "archive"
     selected_db = _make_index_db(archive_root)
-    from devtools.index_snapshot import OpenedIndexFileSet
+    real_snapshot = lineage_validation._snapshot_identity
+    snapshot_calls = 0
 
-    real_capture = OpenedIndexFileSet.capture_sidecars
-    capture_calls = 0
-
-    def create_sidecars_after_census(self: OpenedIndexFileSet, path: Path) -> None:
-        nonlocal capture_calls
-        capture_calls += 1
-        if capture_calls == 4:
+    def create_sidecars_before_after_snapshot(
+        path: Path,
+        *,
+        opened_main_fd: int | None = None,
+        opened_sidecar_fds: dict[str, int] | None = None,
+    ) -> dict[str, object]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 2:
             for suffix in ("-wal", "-shm", "-journal"):
                 Path(f"{path}{suffix}").write_bytes(b"created after reader open")
-        real_capture(self, path)
+        return real_snapshot(
+            path,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=opened_sidecar_fds,
+        )
 
-    monkeypatch.setattr(OpenedIndexFileSet, "capture_sidecars", create_sidecars_after_census)
+    monkeypatch.setattr(lineage_validation, "_snapshot_identity", create_sidecars_before_after_snapshot)
     monkeypatch.setattr(lineage_validation, "_data_version", lambda _connection: 1)
     report = lineage_validation.build_report(_args(archive_root, index_db=selected_db))
 

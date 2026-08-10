@@ -75,7 +75,14 @@ inode, and requires filesystem support for `O_TMPFILE`. If the filesystem does
 not support anonymous temporary files, the command fails closed and leaves the
 tier absent. It fsyncs the image, publishes it with a no-replace hard link, then
 fsyncs the directory. It refuses any existing target including one created
-concurrently, and never replaces durable data. For each existing tier that the selected package reports behind, run its numbered
+concurrently, and never replaces durable data.
+
+If publication fails after the file becomes visible, JSON output carries a
+`durable_recovery` object. A state of `uncertain` means the command preserved a
+visible tier because it could not prove a pathname still names its inode.
+Inspect the reported target and remove it manually before retrying.
+
+For each existing tier that the selected package reports behind, run its numbered
 migration with the verified full-evidence backup manifest:
 
 ```bash

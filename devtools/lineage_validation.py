@@ -912,17 +912,6 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
             opened_sidecar_fds=dict(opened_file_set.sidecar_fds),
         )
         observer_data_version_after = _data_version(observer)
-        observations_complete = bool(
-            snapshot_before.get("observation_complete") and snapshot_after.get("observation_complete")
-        )
-        file_set_stable = snapshot_before["sha256"] == snapshot_after["sha256"]
-        no_concurrent_commits = observer_data_version_before == observer_data_version_after
-        if not observations_complete:
-            reasons.append("index file-set observation was incomplete")
-        if not file_set_stable:
-            reasons.append("index file set changed during the read-only census")
-        if not no_concurrent_commits:
-            reasons.append("index received a concurrent commit during the read-only census")
         snapshot_identity = _snapshot_report_identity(
             index_db,
             snapshot_before,
@@ -930,6 +919,12 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
             observer_data_version_before=observer_data_version_before,
             observer_data_version_after=observer_data_version_after,
         )
+        if not snapshot_identity["observation_complete"]:
+            reasons.append("index file-set observation was incomplete")
+        if not snapshot_identity["file_set_stable"]:
+            reasons.append("index file set changed during the read-only census")
+        if not snapshot_identity["no_concurrent_commits"]:
+            reasons.append("index received a concurrent commit during the read-only census")
         report: dict[str, Any] = {
             "report_version": 2,
             "captured_at": datetime.now(UTC).isoformat(),
