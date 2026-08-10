@@ -3095,6 +3095,7 @@ def _parse_stream_raw(
 
 
 __all__ = [
+    "RAW_AUTHORITY_PARSER_FINGERPRINT",
     "RawParsePrefetchCache",
     "RawRevisionReplayResourceBlockedError",
     "RebuildDeadlineExceededError",
