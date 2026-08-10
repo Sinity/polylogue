@@ -462,6 +462,61 @@ def test_raw_with_no_typed_refusal_and_no_session_is_untyped_gap(tmp_path: Path)
     assert check.evidence["orphan_count"] == 0
 
 
+def test_source_index_coverage_census_deletion_does_not_hide_raw_head(tmp_path: Path) -> None:
+    """RED TWIN (polylogue-r4jiu): census removal cannot shrink I1's universe.
+
+    The raw source of truth keeps an unindexed, byte-proven logical head while
+    the derived census ledger first records it and then loses it.  The actual
+    ``verify_archive`` registry route must remain red after that deletion;
+    the predecessor's census-derived query instead returned green because it
+    selected only rows the ledger still described.
+    """
+    _seed_coherent_archive(tmp_path)
+    source_path = tmp_path / "source.db"
+    source_conn = _connect(source_path)
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms, revision_authority
+            )
+            VALUES ('raw-census-deleted', 'codex-session', 'never-materialized', '/census-deleted', ?, 10, 100,
+                    'byte_proven')
+            """,
+            (b"d" * 32,),
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_membership_census(raw_id, parser_fingerprint, status, member_count, censused_at_ms)
+            VALUES ('raw-census-deleted', 'fp', 'complete', 1, 100)
+            """
+        )
+        source_conn.commit()
+
+        assert _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage").status is (
+            OutcomeStatus.ERROR
+        )
+
+        source_conn.execute("DELETE FROM raw_membership_census WHERE raw_id = 'raw-census-deleted'")
+        source_conn.commit()
+        raw = source_conn.execute(
+            "SELECT raw_id, parse_error, revision_authority FROM raw_sessions WHERE raw_id = 'raw-census-deleted'"
+        ).fetchone()
+    finally:
+        source_conn.close()
+
+    assert raw == ("raw-census-deleted", None, "byte_proven")
+    check = _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["untyped_count"] == 1
+    assert check.evidence["untyped_sample"] == ["raw-census-deleted"]
+
+    spec = next(spec for spec in ARCHIVE_VERIFICATION_CHECKS if spec.name == "source-index-coverage")
+    assert spec.incident is not None and spec.incident.bead_id == "polylogue-r4jiu"
+    assert spec.red_twin is not None
+    assert spec.red_twin.test_name == "test_source_index_coverage_census_deletion_does_not_hide_raw_head"
+
+
 def test_quarantined_head_with_no_session_is_warning_not_error(tmp_path: Path) -> None:
     """The polylogue-in24n bug class in reverse: a quarantined raw (the
     default ``revision_authority``) that never materialized is a *typed*

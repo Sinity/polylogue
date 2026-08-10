@@ -513,7 +513,7 @@ extensible registry):
 | --- | --- |
 | `tier-schema` | Every tier file (source/index/embeddings/user/ops) exists at its current `PRAGMA user_version`. |
 | `pointer-coherence` | The conventional `index.db` path and the active `.index-active-pointer` generation agree (an interrupted blue-green promotion leaves these diverged — polylogue-k8kj class). |
-| `source-index-coverage` | Every raw session with a complete census has a materialized index session (missing work), and every index session's `raw_id` still resolves to a real raw row (orphans) — reported as counts and id samples, not booleans. |
+| `source-index-coverage` | Every raw logical head is materialized, has an explicit terminal disposition, or is quarantined, and every index session's `raw_id` still resolves to a real raw row (orphans). The raw source population, not the derived census ledger, defines the coverage universe. |
 | `fts-parity` | `messages_fts`/`blocks_command_trigram` exactly cover their source `blocks` rows, archive-wide, with the worst-offending sessions surfaced by name. |
 | `lineage-sanity` | `session_links.resolved_dst_session_id` and `branch_point_message_id` resolve to real sessions/messages (the latter is deliberately not a foreign key — see the data-model docs). |
 | `planner-stats` | `sqlite_stat1` covers `blocks`/`messages`/`action_pairs` (warn-level: a fresh generation without `ANALYZE` picks pathological query plans — polylogue-l3tk class). |
