@@ -2,7 +2,7 @@
   "schema_version": 1,
   "ledger_id": "polylogue-incident-coverage-ledger",
   "target_bead_id": "polylogue-818fy",
-  "graph_fixture_id": "reindex-campaign-graph-426851d0e",
+  "graph_fixture_id": "reindex-campaign-graph-6a63a4f71f",
   "dependency_kinds": [
     "blocks",
     "discovered-from",

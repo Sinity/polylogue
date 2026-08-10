@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import subprocess
@@ -396,6 +397,38 @@ def _committed_paths() -> set[str]:
     return {raw.decode("utf-8") for raw in completed.stdout.split(b"\0") if raw}
 
 
+def _validate_graph_provenance(graph: JsonObject, *, beads_path: Path) -> None:
+    source_commit = _string(graph.get("source_commit"), context="campaign graph source_commit")
+    source_path = _string(graph.get("source_path"), context="campaign graph source_path")
+    if source_path != ".beads/issues.jsonl":
+        _fail("graph_source_path_invalid", f"campaign graph source path must be .beads/issues.jsonl, got {source_path}")
+    try:
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+        source_bytes = subprocess.run(
+            ["git", "show", f"{source_commit}:{source_path}"], cwd=ROOT, check=True, capture_output=True, timeout=10
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        _fail(
+            "graph_source_commit_missing",
+            f"campaign graph source commit cannot be read: {exc}",
+            source_commit=source_commit,
+        )
+    actual_bytes = beads_path.read_bytes()
+    if hashlib.sha256(source_bytes).hexdigest() != hashlib.sha256(actual_bytes).hexdigest():
+        _fail(
+            "graph_source_snapshot_mismatch",
+            "campaign graph source commit does not contain the current Beads snapshot",
+            source_commit=source_commit,
+            source_path=source_path,
+        )
+
+
 def _validate_sources(
     catalogs: dict[str, dict[str, JsonObject]],
     *,
@@ -442,6 +475,8 @@ def resolve_incident_coverage(
         )
 
     bead_records = load_beads_jsonl(beads_path or BEADS_PATH)
+    if beads_path is None or beads_path == BEADS_PATH:
+        _validate_graph_provenance(graph, beads_path=beads_path or BEADS_PATH)
     derived_dependencies = _derive_forcing_dependencies(bead_records, target)
     graph_dependencies = _graph_dependencies(graph, bead_records=bead_records)
     _assert_same_forcing_graph(derived_dependencies, graph_dependencies)
@@ -611,6 +646,20 @@ def resolve_incident_coverage(
                 fixture_id=fixture_id,
                 mutation_id=mutation_id,
             )
+        fixture_source = _string(fixture_catalog.get("source"), context=f"ledger fixture {fixture_id}.source")
+        if fixture_source.endswith(".json"):
+            fixture_payload = _load_json(ROOT / fixture_source)
+            source_mutations = _strings(
+                fixture_payload.get("mutation_ids"), context=f"fixture source {fixture_source}.mutation_ids"
+            )
+            if mutation_id not in source_mutations:
+                _fail(
+                    "fixture_mutation_missing",
+                    f"mutation {mutation_id} is absent from fixture source {fixture_source}",
+                    bead_id=bead_id,
+                    fixture_id=fixture_id,
+                    mutation_id=mutation_id,
+                )
 
         check_ids = _strings(row.get("registry_checks"), context=f"ledger row {bead_id}.registry_checks")
         unknown_checks = sorted(set(check_ids) - set(catalogs["checks"]))
