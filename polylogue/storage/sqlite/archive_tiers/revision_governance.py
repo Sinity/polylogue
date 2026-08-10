@@ -785,8 +785,7 @@ def bind_raw_revision(
     store: RawRevisionGovernanceHost, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True
 ) -> None:
     """Bind acquisition evidence; ``manage_transaction=False`` batches (polylogue-amg1)."""
-    conn = store._ensure_source_conn()
-    bind_source_raw_revision(conn, raw_id, revision, manage_transaction=manage_transaction)
+    bind_source_raw_revision(store._ensure_source_conn(), raw_id, revision, manage_transaction=manage_transaction)
 
 
 def release_provisional_full_revisions(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) -> None:
