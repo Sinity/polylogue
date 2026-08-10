@@ -1198,7 +1198,7 @@ def validate_message_owner_scope_for_index_replacement(
     *,
     receipt_path: Path | None,
     candidate_index_path: Path | None = None,
-) -> None:
+) -> dict[str, object] | None:
     """Gate promotion on backfilled durable owners and the actual candidate."""
     root = archive_root.resolve()
     active_index_path = ArchiveLocation.resolve(root).active_index_path
@@ -1208,12 +1208,12 @@ def validate_message_owner_scope_for_index_replacement(
                 raise MessageOwnerScopeBackfillError(
                     "message-owner scope backfill complete receipt is required after index reset"
                 )
-            validate_message_owner_scope_backfill_receipt(
+            return validate_message_owner_scope_backfill_receipt(
                 root,
                 receipt_path,
                 candidate_index_path=candidate_index_path,
             )
-        return
+        return None
     current = census_message_owner_scope_backfill(root)
     if current.unresolved_denominator:
         raise MessageOwnerScopeBackfillError(
@@ -1226,13 +1226,14 @@ def validate_message_owner_scope_for_index_replacement(
             "message-owner scope backfill complete receipt is required after backfill before index replacement"
         )
     if receipt_path is not None:
-        validate_message_owner_scope_backfill_receipt(
+        return validate_message_owner_scope_backfill_receipt(
             root,
             receipt_path,
             candidate_index_path=candidate_index_path,
         )
     elif candidate_index_path is not None:
         _validate_candidate_message_owners(root, candidate_index_path, owner_bindings={})
+    return None
 
 
 __all__ = [

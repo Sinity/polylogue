@@ -93,14 +93,19 @@ def message_owner_scope_backfill_command(
         return
 
     payload = report.to_dict()
+    blocked = report.after_plan is not None and report.after_plan.unresolved_denominator != 0
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    click.echo("Message-owner scope backfill apply")
-    click.echo(f"Updated:          {report.updated_count:,}")
-    click.echo(f"Terminal state:   {report.terminal_state}")
-    click.echo(f"Unresolved:       {report.after_plan.unresolved_denominator if report.after_plan else 0:,}")
-    click.echo(f"Receipt:          {receipt_file}")
+    else:
+        click.echo("Message-owner scope backfill apply")
+        click.echo(f"Updated:          {report.updated_count:,}")
+        click.echo(f"Terminal state:   {report.terminal_state}")
+        click.echo(f"Unresolved:       {report.after_plan.unresolved_denominator if report.after_plan else 0:,}")
+        click.echo(f"Receipt:          {receipt_file}")
+    if blocked:
+        if output_format == "json":
+            raise click.exceptions.Exit(1)
+        raise click.ClickException("message-owner scope backfill remains blocked by unresolved owners")
 
 
 __all__ = ["message_owner_scope_backfill_command"]

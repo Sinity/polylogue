@@ -136,7 +136,7 @@ def _require_message_owner_scope_backfill(
     request: RebuildIndexRequest,
     *,
     candidate_index_path: Path | None = None,
-) -> None:
+) -> dict[str, object]:
     """Admit every replacement candidate against current durable owner scopes."""
     from polylogue.maintenance.message_owner_scope_backfill import (
         MessageOwnerScopeBackfillError,
@@ -144,13 +144,23 @@ def _require_message_owner_scope_backfill(
     )
 
     try:
-        validate_message_owner_scope_for_index_replacement(
+        receipt = validate_message_owner_scope_for_index_replacement(
             root,
             receipt_path=request.message_owner_scope_backfill_receipt_path,
             candidate_index_path=candidate_index_path,
         )
     except MessageOwnerScopeBackfillError as exc:
         raise RuntimeError(f"reindex message-owner scope gate failed: {exc}") from exc
+    receipt_path = request.message_owner_scope_backfill_receipt_path
+    if receipt is None or receipt_path is None:
+        return {}
+    bindings = receipt.get("after_owner_bindings")
+    return {
+        "receipt_path": str(receipt_path.resolve()),
+        "receipt_sha256": receipt["receipt_sha256"],
+        "owner_bindings": bindings,
+        "candidate_index_path": str(candidate_index_path.resolve()) if candidate_index_path is not None else None,
+    }
 
 
 def validate_rebuild_source_admission(root: Path, location: ArchiveLocation) -> None:
@@ -1382,9 +1392,11 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     require_rebuild_schema_currency(root)
     pre_ownership_raw_count = count_source_raw_sessions(root)
     receipt_free_empty_probe = request.operation_id is None and pre_ownership_raw_count == 0
-    _require_message_owner_scope_backfill(root, request)
+    owner_gate_evidence = _require_message_owner_scope_backfill(root, request)
     initial_provenance_error: RebuildProvenanceError | None = None
     consumed_evidence: dict[str, object] = {}
+    if owner_gate_evidence:
+        consumed_evidence["message_owner_scope_backfill"] = owner_gate_evidence
     if not receipt_free_empty_probe:
         try:
             consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
@@ -1478,7 +1490,9 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
             except RebuildProvenanceError as exc:
                 _mark_rebuild_transaction_stale_after_provenance_failure(root, request.operation_id, exc)
                 raise
-            _require_message_owner_scope_backfill(root, request)
+            owner_gate_evidence = _require_message_owner_scope_backfill(root, request)
+            if owner_gate_evidence:
+                consumed_evidence["message_owner_scope_backfill"] = owner_gate_evidence
             return await _rebuild_index_from_source_owned(
                 request,
                 root=root,
@@ -2075,11 +2089,13 @@ async def _rebuild_index_from_source_owned(
                     index_path_override=Path(generation.index_path),
                 ),
             )
-            _require_message_owner_scope_backfill(
+            owner_gate_evidence = _require_message_owner_scope_backfill(
                 root,
                 request,
                 candidate_index_path=Path(generation.index_path) if resumable_full_source else None,
             )
+            if owner_gate_evidence:
+                provenance.consumed_evidence["message_owner_scope_backfill"] = owner_gate_evidence
             terminal_timings_s["terminal.reindex_acceptance"] = time.perf_counter() - terminal_started_at
             logger.info(
                 "rebuild_terminal_stage_complete",

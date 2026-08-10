@@ -303,6 +303,39 @@ def test_missing_owner_is_a_typed_blocker_and_not_a_complete_receipt(
         validate_message_owner_scope_backfill_receipt(root, receipt)
 
 
+def test_backfill_cli_returns_nonzero_after_persisting_a_blocked_apply(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _seed_opaque_archive(workspace_env)
+    with sqlite3.connect(root / "user.db") as conn:
+        upsert_mark(conn, "message", "missing:opaque:n:id", "missing")
+        conn.commit()
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("verified user backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    monkeypatch.setattr(owner_backfill_cli, "archive_root", lambda: root)
+
+    result = CliRunner().invoke(
+        owner_backfill_cli.message_owner_scope_backfill_command,
+        [
+            "--apply",
+            "--plan-file",
+            str(plan_path),
+            "--backup-manifest",
+            str(backup),
+            "--receipt-file",
+            str(receipt),
+            "--output-format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.output)["terminal_state"] == "blocked"
+    assert receipt.exists()
+
+
 @pytest.mark.parametrize("scope_ref, message", [("session:other", "conflicting"), ("owner:other", "malformed")])
 def test_conflict_and_malformed_scope_refuse_before_mutation(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_ref: str, message: str
@@ -769,15 +802,29 @@ def test_no_promote_rebuild_runs_candidate_message_owner_admission_gate(
         conn.commit()
     backfill_historical_revision_evidence(root)
     schema_receipt = write_valid_rebuild_receipt(root, tmp_path / "schema-receipt.json")
+    owner_plan_path, owner_backup, owner_receipt = _plan_and_paths(tmp_path, root)
+    owner_backup.parent.mkdir()
+    owner_backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    apply_message_owner_scope_backfill(
+        root,
+        plan_path=owner_plan_path,
+        backup_manifest=owner_backup,
+        receipt_path=owner_receipt,
+        dry_run=False,
+    )
     candidate_paths: list[Path] = []
     original_gate = owner_backfill_module.validate_message_owner_scope_for_index_replacement
 
     def record_candidate_gate(
         archive_root: Path, *, receipt_path: Path | None, candidate_index_path: Path | None = None
-    ) -> None:
-        original_gate(archive_root, receipt_path=receipt_path, candidate_index_path=candidate_index_path)
+    ) -> dict[str, object] | None:
+        validated_receipt = original_gate(
+            archive_root, receipt_path=receipt_path, candidate_index_path=candidate_index_path
+        )
         if candidate_index_path is not None:
             candidate_paths.append(candidate_index_path)
+        return validated_receipt
 
     monkeypatch.setattr(
         owner_backfill_module, "validate_message_owner_scope_for_index_replacement", record_candidate_gate
@@ -787,11 +834,24 @@ def test_no_promote_rebuild_runs_candidate_message_owner_admission_gate(
             archive_root=root,
             promote=False,
             schema_inference_receipt_path=schema_receipt,
+            message_owner_scope_backfill_receipt_path=owner_receipt,
         )
     )
 
     assert rebuilt.generation["state"] == "inactive"
     assert candidate_paths and candidate_paths[0].is_file()
+    owner_evidence = rebuilt.consumed_evidence["message_owner_scope_backfill"]
+    assert owner_evidence == {
+        "receipt_path": str(owner_receipt.resolve()),
+        "receipt_sha256": validate_message_owner_scope_backfill_receipt(root, owner_receipt)["receipt_sha256"],
+        "owner_bindings": [],
+        "candidate_index_path": str(candidate_paths[0].resolve()),
+    }
+    candidate_receipt = candidate_paths[0].parent / "rebuild-receipt.json"
+    assert (
+        json.loads(candidate_receipt.read_text(encoding="utf-8"))["consumed_evidence"]["message_owner_scope_backfill"]
+        == owner_evidence
+    )
 
 
 def test_deleted_message_assertions_do_not_block_the_owner_scope_census(workspace_env: dict[str, Path]) -> None:
