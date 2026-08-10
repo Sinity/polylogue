@@ -682,7 +682,7 @@ def test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_da
             "raw_ids": ["raw-1"],
             "selected_session_ids": ["codex-session:one"],
             "promote": False,
-            "candidate_acceptance_checks": ["pathology-zoo-invariants"],
+            "canary": True,
             "schema_inference_receipt_path": str(tmp_path / "schema.json"),
         },
     )

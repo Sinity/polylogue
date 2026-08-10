@@ -5318,6 +5318,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         raw_ids_value = body.get("raw_ids", [])
         selected_session_ids = body.get("selected_session_ids", [])
         candidate_acceptance_checks = body.get("candidate_acceptance_checks")
+        canary = body.get("canary", False)
         if not isinstance(raw_ids_value, list) or not all(
             isinstance(raw_id, str) and raw_id for raw_id in raw_ids_value
         ):
@@ -5343,7 +5344,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         raw_batch_size = body.get("raw_batch_size", 500)
         pass_byte_budget_mb = body.get("pass_byte_budget_mb")
         pass_deadline_seconds = body.get("pass_deadline_seconds")
-        if not isinstance(only_missing, bool) or not isinstance(promote, bool):
+        if not isinstance(only_missing, bool) or not isinstance(promote, bool) or not isinstance(canary, bool):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
         if max_blob_mb is not None and (
@@ -5384,6 +5385,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             rebuild_index_from_source_sync,
             validate_rebuild_index_request,
         )
+
+        if canary:
+            from polylogue.maintenance.archive_verification import REINDEX_CANARY_ACCEPTANCE_CHECKS
+
+            candidate_acceptance_checks = list(REINDEX_CANARY_ACCEPTANCE_CHECKS)
         from polylogue.paths import archive_root
 
         request = RebuildIndexRequest(

@@ -414,6 +414,7 @@ def run_reindex_canary(
             expected_parser_fingerprints=selection.parser_fingerprints,
             expected_lowering_fingerprint=selection.lowering_fingerprint,
             expected_replay_routing_fingerprint=selection.replay_routing_fingerprint,
+            expected_materializer_fingerprint=selection.materializer_fingerprint,
         )
         candidate_path = _validate_canary_candidate(
             root,
@@ -902,6 +903,7 @@ def _validate_selection_evidence(
     )
     _validate_live_replay_routing_fingerprint(expected_replay_routing_fingerprint)
     _validate_live_materializer_fingerprint(expected_materializer_fingerprint)
+    _validate_live_parser_and_lowering_fingerprints(expected_parser_fingerprints, expected_lowering_fingerprint)
 
 
 def _validate_live_replay_routing_fingerprint(expected: str | None) -> None:
@@ -924,6 +926,19 @@ def _validate_live_materializer_fingerprint(expected: str | None) -> None:
 
     if materializer_fingerprint() != expected:
         raise UnclassifiedCanaryDiffError("canary materializer fingerprint no longer matches the running code")
+
+
+def _validate_live_parser_and_lowering_fingerprints(
+    expected_parsers: Iterable[tuple[str, str]], expected_lowering: str | None
+) -> None:
+    """Reject reports whose parser or lowering semantics differ from live code."""
+    from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+
+    if expected_lowering is not None and lowering_fingerprint() != expected_lowering:
+        raise UnclassifiedCanaryDiffError("canary lowering fingerprint no longer matches the running code")
+    for origin, fingerprint in expected_parsers:
+        if parser_fingerprint_for_origin(origin) != fingerprint:
+            raise UnclassifiedCanaryDiffError("canary parser fingerprints no longer match the running code")
 
 
 def _validate_parser_binding(

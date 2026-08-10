@@ -484,7 +484,9 @@ def run_daemon_canary_rebuild(
     client = DaemonClient(
         daemon_socket_path(root),
         timeout_s=None,
-        auth_token=resolve_api_auth_token(config.api_auth_token, allow_no_auth=config.api_allow_no_auth),
+        auth_token=resolve_api_auth_token(
+            config.api_auth_token, allow_no_auth=config.api_allow_no_auth, token_path=root / "api-auth-token"
+        ),
     )
     if (
         client.probe(
@@ -502,8 +504,8 @@ def run_daemon_canary_rebuild(
             "raw_ids": list(raw_ids),
             "selected_session_ids": list(selected_session_ids),
             "promote": False,
-            "candidate_acceptance_checks": list(candidate_acceptance_checks),
-            "schema_inference_receipt_path": str(schema_inference_receipt_path),
+            "canary": True,
+            "schema_inference_receipt_path": str(schema_inference_receipt_path.resolve()),
             "message_owner_scope_backfill_receipt_path": (
                 str(message_owner_scope_backfill_receipt_path.resolve())
                 if message_owner_scope_backfill_receipt_path is not None
@@ -534,7 +536,9 @@ def discard_daemon_canary_candidate(
     client = DaemonClient(
         daemon_socket_path(root),
         timeout_s=None,
-        auth_token=resolve_api_auth_token(config.api_auth_token, allow_no_auth=config.api_allow_no_auth),
+        auth_token=resolve_api_auth_token(
+            config.api_auth_token, allow_no_auth=config.api_allow_no_auth, token_path=root / "api-auth-token"
+        ),
     )
     result = client.request_json(
         "POST",
@@ -558,7 +562,9 @@ def consume_daemon_canary_report(*, archive_root: Path, report_path: Path) -> di
     client = DaemonClient(
         daemon_socket_path(root),
         timeout_s=None,
-        auth_token=resolve_api_auth_token(config.api_auth_token, allow_no_auth=config.api_allow_no_auth),
+        auth_token=resolve_api_auth_token(
+            config.api_auth_token, allow_no_auth=config.api_allow_no_auth, token_path=root / "api-auth-token"
+        ),
     )
     payload = client.request_json(
         "POST",
