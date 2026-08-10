@@ -952,7 +952,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Last-resort reset of poisoned raw-authority census bookkeeping. The route is dry-run first, "
             "requires an exact source-tier backup-attested plan and explicit offline operator-maintenance ownership "
             "with the daemon stopped, "
-            "and never touches parser census, accepted raws, or blobs."
+            "and never touches parser census, accepted raws, or blobs. Fresh applies run through OperationExecutor; "
+            "only a durable already-authorized intent may resume receipt finalization offline."
         ),
         consumes=("raw_authority_census_ledger",),
         produces=("raw_authority_census_recovery_receipt",),
@@ -975,7 +976,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Remove only active-index raw revision seed rows whose source raws are absent. The route binds "
             "the exact active generation, source snapshot, recoverable index backup, and stopped-daemon "
-            "offline operator-maintenance ownership; it never performs a broad index reset."
+            "offline operator-maintenance ownership; it never performs a broad index reset. Fresh applies run through "
+            "OperationExecutor; only a durable already-authorized intent may resume receipt finalization offline."
         ),
         consumes=("raw_revision_heads", "raw_revision_applications", "raw_sessions"),
         produces=("raw_authority_index_seed_recovery_receipt",),

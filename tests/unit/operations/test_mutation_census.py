@@ -85,3 +85,5 @@ def test_raw_authority_recovery_routes_are_executor_routed() -> None:
     ):
         assert rows[operation]["status"] == "executor-routed"
         assert rows[operation]["actuator"] == actuator
+        assert rows[operation]["execution_owner"] == "offline-operator-maintenance"
+        assert rows[operation]["recovery_continuation"] == "offline-durable-intent"

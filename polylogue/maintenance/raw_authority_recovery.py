@@ -459,8 +459,9 @@ def _default_receipt_path(root: Path, operation_id: str) -> Path:
 def _resolve_receipt_path(root: Path, receipt_path: Path) -> Path:
     """Keep recovery evidence inside the archive's durable maintenance state."""
 
-    receipts_root = (root / ".maintenance-state" / RECOVERY_DIRNAME).resolve(strict=False)
-    candidate = receipt_path.expanduser().resolve(strict=False)
+    archive_root = root.expanduser().resolve(strict=False)
+    receipts_root = archive_root / ".maintenance-state" / RECOVERY_DIRNAME
+    candidate = Path(os.path.abspath(receipt_path.expanduser()))
     try:
         candidate.relative_to(receipts_root)
     except ValueError as exc:
@@ -469,6 +470,11 @@ def _resolve_receipt_path(root: Path, receipt_path: Path) -> Path:
         ) from exc
     if candidate.suffix != ".json":
         raise RawAuthorityRecoveryError("recovery receipt path must end in .json")
+    current = archive_root
+    for component in candidate.relative_to(archive_root).parts:
+        current /= component
+        if current.is_symlink():
+            raise RawAuthorityRecoveryError(f"recovery receipt path must not traverse an archive symlink: {current}")
     return candidate
 
 
@@ -678,6 +684,7 @@ def _recovery_intent(plan: RawAuthorityRecoveryPlan) -> dict[str, object]:
         "before_counts": plan.before_counts,
         "candidate_keys": {key: list(value) for key, value in plan.candidate_keys.items()},
         "protected_digest": plan.protected_digest,
+        "plan": plan.to_dict(),
     }
 
 
@@ -991,6 +998,42 @@ def _validate_existing_receipt(plan: RawAuthorityRecoveryPlan, receipt: dict[str
         raise RawAuthorityRecoveryError("existing recovery receipt has inconsistent postflight evidence")
 
 
+def _plan_from_intent(
+    archive_root: Path,
+    operation: RecoveryOperation,
+    *,
+    operation_id: str,
+) -> RawAuthorityRecoveryPlan:
+    root = archive_root.expanduser().resolve(strict=False)
+    receipt_path = _resolve_receipt_path(root, _default_receipt_path(root, operation_id))
+    intent_path = _intent_path(receipt_path)
+    if not intent_path.is_file():
+        raise RawAuthorityRecoveryError(f"no restartable recovery intent exists for operation {operation_id!r}")
+    payload = _read_json(intent_path)
+    serialized_plan = payload.get("plan")
+    if not isinstance(serialized_plan, dict):
+        raise RawAuthorityRecoveryError("existing recovery intent does not contain a complete recovery plan")
+    plan = RawAuthorityRecoveryPlan.from_dict(cast(Mapping[str, object], serialized_plan))
+    if plan.archive_root != str(root) or plan.operation != operation.value or plan.operation_id != operation_id:
+        raise RawAuthorityRecoveryError("existing recovery intent does not match the requested archive operation")
+    _resolve_receipt_path(root, Path(plan.receipt_path))
+    _intent_for_plan(plan)
+    return plan
+
+
+def resume_raw_authority_recovery(
+    archive_root: Path,
+    operation: RecoveryOperation | str,
+    *,
+    operation_id: str,
+) -> RawAuthorityRecoveryReport:
+    """Resume a durable intent when the external dry-run plan artifact is unavailable."""
+
+    selected = RecoveryOperation(operation)
+    plan = _plan_from_intent(archive_root, selected, operation_id=operation_id)
+    return apply_raw_authority_recovery(plan)
+
+
 def apply_raw_authority_recovery(
     plan: RawAuthorityRecoveryPlan | Path,
     *,
@@ -1100,5 +1143,6 @@ __all__ = [
     "ResetRawAuthorityCensusActuator",
     "apply_raw_authority_recovery",
     "inspect_raw_authority_recovery",
+    "resume_raw_authority_recovery",
     "write_recovery_plan",
 ]

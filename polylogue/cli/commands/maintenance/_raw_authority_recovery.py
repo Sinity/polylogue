@@ -14,6 +14,7 @@ from polylogue.maintenance.raw_authority_recovery import (
     RecoveryOperation,
     apply_raw_authority_recovery,
     inspect_raw_authority_recovery,
+    resume_raw_authority_recovery,
     write_recovery_plan,
 )
 
@@ -26,6 +27,7 @@ from polylogue.maintenance.raw_authority_recovery import (
     help="One exact recovery actuator to inspect or apply.",
 )
 @click.option("--apply", "apply_changes", is_flag=True, help="Apply the exact previously inspected plan.")
+@click.option("--operation-id", default=None, help="Recovery operation id for an interrupted intent resume.")
 @click.option(
     "--plan-file",
     type=click.Path(dir_okay=False, path_type=Path),
@@ -50,6 +52,7 @@ def raw_authority_recovery_command(
     env: AppEnv,
     operation: str,
     apply_changes: bool,
+    operation_id: str | None,
     plan_file: Path | None,
     backup_manifest: Path | None,
     receipt_file: Path | None,
@@ -60,14 +63,22 @@ def raw_authority_recovery_command(
     try:
         selected = RecoveryOperation(operation)
         if apply_changes:
-            if plan_file is None:
-                raise click.ClickException("--apply requires --plan-file from a prior inspect")
-            report = apply_raw_authority_recovery(plan_file, backup_manifest=backup_manifest)
+            if plan_file is not None:
+                report = apply_raw_authority_recovery(plan_file, backup_manifest=backup_manifest)
+            elif operation_id is not None:
+                report = resume_raw_authority_recovery(
+                    env.config.archive_root,
+                    selected,
+                    operation_id=operation_id,
+                )
+            else:
+                raise click.ClickException("--apply requires --plan-file or --operation-id for an interrupted intent")
             payload = report.to_dict()
         else:
             plan_obj = inspect_raw_authority_recovery(
                 env.config.archive_root,
                 selected,
+                operation_id=operation_id,
                 backup_manifest=backup_manifest,
                 receipt_path=receipt_file,
             )

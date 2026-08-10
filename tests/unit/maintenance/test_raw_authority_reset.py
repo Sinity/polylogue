@@ -15,6 +15,8 @@ from polylogue.maintenance.raw_authority_recovery import (
     RecoveryOperation,
     apply_raw_authority_recovery,
     inspect_raw_authority_recovery,
+    resume_raw_authority_recovery,
+    write_recovery_plan,
 )
 from polylogue.maintenance.raw_authority_reset import (
     prune_orphaned_index_revision_seeds,
@@ -170,6 +172,8 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
     plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan_file = tmp_path / "external-recovery-plan.json"
+    write_recovery_plan(plan, plan_file)
 
     from polylogue.maintenance import raw_authority_recovery
 
@@ -192,10 +196,18 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     assert not receipt_path.exists()
 
     monkeypatch.setattr(raw_authority_recovery, "_write_immutable", original_write)
-    recovered = apply_raw_authority_recovery(plan)
+    operation_id = plan.operation_id
+    plan_file.unlink()
+    recovered = resume_raw_authority_recovery(
+        tmp_path,
+        RecoveryOperation.RESET_CENSUS,
+        operation_id=operation_id,
+    )
     assert recovered.status == "already_satisfied"
     assert recovered.receipt_path == receipt_path
-    assert receipt_path.is_file()
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["operation_id"] == operation_id
+    assert receipt["plan_digest"] == recovered.plan.plan_digest
 
 
 def test_recovery_receipt_path_must_be_owned_by_the_archive(tmp_path: Path) -> None:
@@ -208,6 +220,24 @@ def test_recovery_receipt_path_must_be_owned_by_the_archive(tmp_path: Path) -> N
             tmp_path,
             RecoveryOperation.RESET_CENSUS,
             receipt_path=tmp_path.parent / "arbitrary-recovery-receipt.json",
+        )
+
+
+def test_recovery_receipt_path_rejects_archive_symlink_escape(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    escaped = tmp_path.parent / "escaped-recovery-receipts"
+    escaped.mkdir()
+    receipt_dir = tmp_path / ".maintenance-state" / "raw-authority-recovery"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "escape").symlink_to(escaped, target_is_directory=True)
+
+    with pytest.raises(RawAuthorityRecoveryError, match="must not traverse an archive symlink"):
+        inspect_raw_authority_recovery(
+            tmp_path,
+            RecoveryOperation.RESET_CENSUS,
+            receipt_path=receipt_dir / "escape" / "receipt.json",
         )
 
 
