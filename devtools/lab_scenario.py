@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TextIO
@@ -16,6 +17,7 @@ from devtools.cli_boundary import invoke_polylogue_cli
 from devtools.rebuild_safety_scenario import (
     REBUILD_DIFFERENTIAL_SCENARIO_NAME,
     REBUILD_SAFETY_SCENARIO_NAME,
+    RebuildComparisonResult,
     run_rebuild_differential,
     run_rebuild_safety,
 )
@@ -129,8 +131,35 @@ class RebuildSafetyResult:
 
     def __init__(self, *, report_dir: Path | None) -> None:
         self.report_dir = report_dir
-        self.safety = run_rebuild_safety()
-        self.differential = run_rebuild_differential()
+        self.safety, self.safety_error = self._run("rebuild-safety", run_rebuild_safety)
+        self.differential, self.differential_error = self._run("rebuild-differential", run_rebuild_differential)
+        self._write_report()
+
+    @staticmethod
+    def _run(
+        name: str, runner: Callable[[], RebuildComparisonResult]
+    ) -> tuple[RebuildComparisonResult | None, str | None]:
+        try:
+            return runner(), None
+        except Exception as exc:
+            return None, f"{name} failed: {type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def _report(value: RebuildComparisonResult | None, error: str | None) -> str:
+        if error is not None:
+            return error
+        assert value is not None
+        return value.format_report()
+
+    def _write_report(self) -> None:
+        if self.report_dir is None:
+            return
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        (self.report_dir / "rebuild-safety.txt").write_text(
+            f"{self._report(self.safety, self.safety_error)}\n\n"
+            f"{self._report(self.differential, self.differential_error)}\n",
+            encoding="utf-8",
+        )
 
     @property
     def scenario_name(self) -> str:
@@ -138,13 +167,22 @@ class RebuildSafetyResult:
 
     @property
     def all_passed(self) -> bool:
-        return self.safety.all_passed and self.differential.all_passed
+        return (
+            self.safety_error is None
+            and self.differential_error is None
+            and self.safety is not None
+            and self.differential is not None
+            and self.safety.all_passed
+            and self.differential.all_passed
+        )
 
     def stage_statuses(self) -> dict[str, OutcomeStatus]:
         return {
-            REBUILD_SAFETY_SCENARIO_NAME: OutcomeStatus.OK if self.safety.all_passed else OutcomeStatus.ERROR,
+            REBUILD_SAFETY_SCENARIO_NAME: OutcomeStatus.OK
+            if self.safety_error is None and self.safety is not None and self.safety.all_passed
+            else OutcomeStatus.ERROR,
             REBUILD_DIFFERENTIAL_SCENARIO_NAME: OutcomeStatus.OK
-            if self.differential.all_passed
+            if self.differential_error is None and self.differential is not None and self.differential.all_passed
             else OutcomeStatus.ERROR,
         }
 
@@ -153,15 +191,9 @@ class RebuildSafetyResult:
 
     def extra_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
-            "safety_report": self.safety.format_report(),
-            "differential_report": self.differential.format_report(),
+            "safety_report": self._report(self.safety, self.safety_error),
+            "differential_report": self._report(self.differential, self.differential_error),
         }
-        if self.report_dir is not None:
-            self.report_dir.mkdir(parents=True, exist_ok=True)
-            (self.report_dir / "rebuild-safety.txt").write_text(
-                f"{self.safety.format_report()}\n\n{self.differential.format_report()}\n",
-                encoding="utf-8",
-            )
         return payload
 
 
@@ -455,6 +487,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(_format_scenario_summary(result))
     return 0 if result.all_passed else 1
+
+
+def run_main(argv: list[str] | None = None) -> int:
+    """Run a named lab scenario through the advertised ``devtools lab run`` route."""
+    return main(["run", *(argv or [])])
 
 
 if __name__ == "__main__":

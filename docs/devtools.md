@@ -78,6 +78,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab probe pipeline` | Run real pipeline stages and optionally capture emitted summaries as regression cases. |
 | `devtools lab probe turso` | Collect executable evidence before changing production storage backends: Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, vector functions, ATTACH, and WAL pragma behavior. |
 | `devtools lab projections` | Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps. |
+| `devtools lab run` | Run a scenario such as rebuild-safety through the direct lab command path. |
 | `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |
 | `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
 | `devtools lab schema commit` | Actually regenerate and write `polylogue/schemas/providers/<provider>/versions/...` from the live archive -- 'lab schema generate' only ever previews and never writes committed package files. |
@@ -207,6 +208,7 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools lab projections` | Render the authored scenario-bearing verification projections. |
 | `devtools lab provider completeness` | Report provider/importer package completeness by origin and capture mode. |
 | `devtools lab pytest-witness-repetitions` | Repeat the exact optimize, WAL, and embedding seed-hang witnesses with durable receipts. |
+| `devtools lab run` | Run a named archive verification scenario. |
 | `devtools lab schema audit` | Run committed provider schema package quality checks. |
 | `devtools lab schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
 | `devtools lab schema compare` | Compare two committed schema package versions for a provider. |
