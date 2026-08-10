@@ -760,10 +760,10 @@ def test_uncommitted_index_prune_intent_reauthorizes_before_deleting_candidates(
     assert resumed.status == "applied"
 
 
-def test_index_recovery_actuator_reports_index_targets_and_deleted_candidates(
+def test_index_recovery_actuator_receipt_retains_authorized_plan_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The executor receipt describes the active-index mutation it actually performed."""
+    """The executor receipt remains bound to the plan it authorized."""
 
     initialize_active_archive_root(tmp_path)
     _seed_index_seeds(tmp_path)
@@ -779,10 +779,26 @@ def test_index_recovery_actuator_reports_index_targets_and_deleted_candidates(
     )
     actuator = PruneOrphanedIndexRevisionSeedsActuator()
 
-    prepared = actuator.prepare(args)
+    executor = OperationExecutor()
+    prepared = executor.prepare(actuator, args)
     assert prepared.target_refs == ("index:prune_orphaned_index_revision_seeds",)
     assert prepared.affected_tiers == ("index",)
-    receipt = actuator.apply(prepared, args)
+    authorization = executor.authorize(
+        actuator,
+        prepared,
+        actor="test:raw-authority",
+        role="maintenance",
+        capability="archive.raw_authority_recovery",
+        confirmation_strength="confirm_flag",
+    )
+    receipt = executor.execute(actuator, prepared, authorization, args)
+
+    assert authorization.plan_hash == prepared.plan_hash
+    assert receipt.plan_hash == prepared.plan_hash
+    assert receipt.plan_hash != plan.plan_digest
+    domain_plan = receipt.domain_receipt["plan"]
+    assert isinstance(domain_plan, dict)
+    assert domain_plan["plan_digest"] == plan.plan_digest
     assert receipt.target_refs == ("index:prune_orphaned_index_revision_seeds",)
     assert receipt.affected_count == 2
 

@@ -1320,7 +1320,6 @@ class _RecoveryActuator:
         )
 
     def apply(self, plan: MutationPlan, args: _RecoveryArgs) -> MutationReceipt:
-        del plan
         live = inspect_raw_authority_recovery(
             args.archive_root,
             args.operation,
@@ -1343,7 +1342,7 @@ class _RecoveryActuator:
         )
         return MutationReceipt(
             operation=self.operation,
-            plan_hash=args.expected_plan_digest,
+            plan_hash=plan.plan_hash,
             status="applied" if report.applied else "already_satisfied",
             target_refs=(target_ref,),
             affected_count=affected_count if report.applied else 0,
