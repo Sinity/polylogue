@@ -14,7 +14,7 @@ New checks slot into :data:`ARCHIVE_VERIFICATION_CHECKS` without touching
 :func:`verify_archive` or its callers -- the registry is the extension point
 for future checks (blob-reference debt, cost rollups, ...).
 
-**Registry contract rule (polylogue-in24n):** a check's universe must be a
+**Registry contract rule (polylogue-r4jiu):** a check's universe must be a
 ground-truth table, never a derived ledger of the mechanism under audit. The
 canonical violation this rule exists to prevent: an earlier version of
 ``source-index-coverage`` computed its universe from ``raw_membership_census``
@@ -487,7 +487,7 @@ def _check_source_index_coverage_at_index_path(
 ) -> ArchiveVerificationCheck:
     """Every logical source's head is indexed OR carries a typed refusal.
 
-    Universe (polylogue-in24n, invariant I1): ``raw_sessions`` logical heads --
+    Universe (polylogue-r4jiu, invariant I1): ``raw_sessions`` logical heads --
     the latest revision per ``(origin, COALESCE(native_id, source_path))`` --
     which is a ground-truth table every acquired raw lands in, not a ledger a
     downstream reconciliation stage can silently omit rows from. A logical
@@ -2669,13 +2669,15 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
     _registry_spec(
         "source-index-coverage",
         "Every raw_sessions logical head is indexed or typed (parse_error/non_session/quarantined); "
-        "untyped gaps and index-orphans (raw_id ground truth, not the census ledger, polylogue-in24n) block.",
+        "untyped gaps and index-orphans (raw_id ground truth, not the census ledger, polylogue-r4jiu) block.",
         _check_source_index_coverage,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
-        incident_bead="polylogue-in24n",
+        incident_bead="polylogue-r4jiu",
         universe_tables=("source.db.raw_sessions", "index.db.sessions"),
         red_twin=_red_twin(
-            "coherent-archive", "untyped raw head", "test_raw_with_no_typed_refusal_and_no_session_is_untyped_gap"
+            "coherent-archive",
+            "delete an unindexed raw head from the derived census",
+            "test_source_index_coverage_census_deletion_does_not_hide_raw_head",
         ),
         execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE),
         candidate_mode=_CROSS_TIER,
