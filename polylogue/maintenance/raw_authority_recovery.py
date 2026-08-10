@@ -84,7 +84,6 @@ _INDEX_SEED_KEY_COLUMNS = {
     "raw_revision_heads": "logical_source_key",
     "raw_revision_applications": "decision_id",
 }
-_INDEX_SEED_SUCCESSOR_TABLES = frozenset({"raw_revision_heads", "raw_revision_applications"})
 
 
 class RawAuthorityRecoveryError(RuntimeError):
@@ -192,6 +191,12 @@ def _protected_digest(conn: sqlite3.Connection, *, excluded: tuple[str, ...]) ->
         if str(row[0]) not in excluded
     )
     return _digest({name: _table_digest(conn, name) for name in tables})
+
+
+def _ledger_digest(conn: sqlite3.Connection) -> str:
+    """Bind census reset plans to the SQL-visible rows they will delete."""
+
+    return _digest({name: _table_digest(conn, name) for name in _RESET_TABLES})
 
 
 def _schema_versions(root: Path, location: ArchiveLocation) -> dict[str, int]:
@@ -451,6 +456,15 @@ def _verify_index_seed_post_target(conn: sqlite3.Connection, plan: RawAuthorityR
             or not isinstance(expected_digest, str)
         ):
             raise RawAuthorityRecoveryError("recovery plan has malformed bounded index seed post-target proof")
+        if table == "raw_revision_heads":
+            missing_source = conn.execute(
+                "SELECT 1 FROM raw_revision_heads AS h "
+                "WHERE NOT EXISTS (SELECT 1 FROM src.raw_sessions AS r WHERE r.raw_id = h.accepted_raw_id) "
+                "LIMIT 1",
+            ).fetchone()
+            if missing_source is not None:
+                raise RawAuthorityRecoveryError("recovery intent has an unbacked index head")
+            continue
         columns = [str(row[1]) for row in conn.execute(f"PRAGMA table_info({_quote_identifier(table)})")]
         observed_count, observed_digest = _stream_index_seed_table(
             conn,
@@ -461,25 +475,6 @@ def _verify_index_seed_post_target(conn: sqlite3.Connection, plan: RawAuthorityR
         )
         if (observed_count, observed_digest) != (expected_count, expected_digest):
             raise RawAuthorityRecoveryError("recovery intent does not match the exact committed index seed state")
-        if table == "raw_revision_heads":
-            missing_source = conn.execute(
-                "SELECT 1 FROM raw_revision_heads AS h "
-                "WHERE h.rowid > ? "
-                "AND NOT EXISTS (SELECT 1 FROM src.raw_sessions AS r WHERE r.raw_id = h.accepted_raw_id) "
-                "LIMIT 1",
-                (rowid_watermark,),
-            ).fetchone()
-            if missing_source is not None:
-                raise RawAuthorityRecoveryError("recovery intent has an unbacked post-plan index head successor")
-        if table not in _INDEX_SEED_SUCCESSOR_TABLES:
-            quoted_table = _quote_identifier(table)
-            if conn.execute(f"SELECT 1 FROM {quoted_table} WHERE rowid > ?", (rowid_watermark,)).fetchone() is not None:
-                raise RawAuthorityRecoveryError("recovery intent has an unexpected post-plan index seed successor")
-            if any(
-                conn.execute(f"SELECT 1 FROM {quoted_table} WHERE rowid = ?", (rowid,)).fetchone() is not None
-                for rowid in excluded_rowids
-            ):
-                raise RawAuthorityRecoveryError("recovery intent replaced a non-append-only index seed candidate")
     return True
 
 
@@ -552,6 +547,7 @@ class RawAuthorityRecoveryPlan:
     source_snapshot: str
     active_generation: dict[str, object]
     before_counts: dict[str, int]
+    ledger_digest: str | None
     candidate_keys: dict[str, tuple[str, ...]]
     post_target_proof: dict[str, dict[str, object]] | None
     protected_digest: str
@@ -574,6 +570,7 @@ class RawAuthorityRecoveryPlan:
             "source_snapshot": self.source_snapshot,
             "active_generation": self.active_generation,
             "before_counts": self.before_counts,
+            "ledger_digest": self.ledger_digest,
             "candidate_keys": {key: list(value) for key, value in self.candidate_keys.items()},
             "post_target_proof": self.post_target_proof,
             "protected_digest": self.protected_digest,
@@ -601,6 +598,9 @@ class RawAuthorityRecoveryPlan:
             str(key): tuple(str(value) for value in cast(list[object], value_list))
             for key, value_list in candidates_raw.items()
         }
+        ledger_digest = payload.get("ledger_digest")
+        if ledger_digest is not None and not isinstance(ledger_digest, str):
+            raise RawAuthorityRecoveryError("raw-authority recovery plan ledger digest is malformed")
         required = (
             "operation_id",
             "operation",
@@ -647,6 +647,7 @@ class RawAuthorityRecoveryPlan:
             source_snapshot=str(payload["source_snapshot"]),
             active_generation=cast(dict[str, object], payload["active_generation"]),
             before_counts=_int_mapping(payload["before_counts"], field="before_counts"),
+            ledger_digest=cast(str | None, ledger_digest),
             candidate_keys=candidates,
             post_target_proof=cast(dict[str, dict[str, object]] | None, post_target_proof),
             protected_digest=str(payload["protected_digest"]),
@@ -916,6 +917,7 @@ def _build_plan(
             _validate_ledger(source)
             _validate_integrity(source, tier="source")
             counts = source_counts
+            ledger_digest = _ledger_digest(source)
             candidate_keys: dict[str, tuple[str, ...]] = {}
             post_target_proof: dict[str, dict[str, object]] | None = None
             protected = _protected_digest(source, excluded=_RESET_TABLES)
@@ -926,6 +928,7 @@ def _build_plan(
                 _validate_integrity(index, tier="active index")
                 candidate_keys = _index_candidates(index)
                 counts = _count_tables(index, _INDEX_TARGETS)
+                ledger_digest = None
                 post_target_proof = _stream_index_seed_rows(index, excluded_keys=candidate_keys)
                 protected = _protected_digest(index, excluded=_INDEX_TARGETS)
         source_snapshot = source_revision_snapshot(root)
@@ -951,6 +954,7 @@ def _build_plan(
         "source_snapshot": source_snapshot,
         "active_generation": _generation_identity(root, location),
         "before_counts": counts,
+        "ledger_digest": ledger_digest,
         "candidate_keys": {key: list(value) for key, value in candidate_keys.items()},
         "post_target_proof": post_target_proof,
         "protected_digest": protected,
@@ -970,6 +974,7 @@ def _build_plan(
         source_snapshot=source_snapshot,
         active_generation=cast(dict[str, object], payload["active_generation"]),
         before_counts=counts,
+        ledger_digest=ledger_digest,
         candidate_keys=candidate_keys,
         post_target_proof=post_target_proof,
         protected_digest=protected,
@@ -1014,7 +1019,13 @@ def _same(value: object, expected: object, field: str) -> None:
         raise RawAuthorityRecoveryError(f"recovery plan is stale: {field} changed")
 
 
-def _revalidate_common(plan: RawAuthorityRecoveryPlan, root: Path, location: ArchiveLocation) -> None:
+def _revalidate_common(
+    plan: RawAuthorityRecoveryPlan,
+    root: Path,
+    location: ArchiveLocation,
+    *,
+    source_connection: sqlite3.Connection | None = None,
+) -> None:
     if str(root.resolve(strict=False)) != plan.archive_root:
         raise RawAuthorityRecoveryError("recovery plan names a different archive root")
     _same(_recovery_code_sha(), plan.code_sha, "code SHA")
@@ -1025,6 +1036,15 @@ def _revalidate_common(plan: RawAuthorityRecoveryPlan, root: Path, location: Arc
     _same(_file_fingerprint(root / "source.db"), plan.source_fingerprint, "source database")
     _same(_file_fingerprint(location.active_index_path), plan.index_fingerprint, "active index database")
     _same(source_revision_snapshot(root), plan.source_snapshot, "source snapshot")
+    if RecoveryOperation(plan.operation) is RecoveryOperation.RESET_CENSUS:
+        if plan.ledger_digest is None:
+            raise RawAuthorityRecoveryError("recovery plan does not bind a census ledger snapshot")
+        if source_connection is None:
+            with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as source:
+                observed_ledger_digest = _ledger_digest(source)
+        else:
+            observed_ledger_digest = _ledger_digest(source_connection)
+        _same(observed_ledger_digest, plan.ledger_digest, "census ledger snapshot")
 
 
 def _recovery_intent(plan: RawAuthorityRecoveryPlan) -> dict[str, object]:
@@ -1228,7 +1248,7 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 transaction_started = True
-                _revalidate_common(plan, root, location)
+                _revalidate_common(plan, root, location, source_connection=conn)
                 _validate_ledger(conn)
                 _validate_integrity(conn, tier="source")
                 _same(_count_tables(conn, _RESET_TABLES), before_counts, "census ledger counts")

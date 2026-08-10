@@ -192,6 +192,32 @@ def test_census_reset_refuses_a_build_dirtied_after_planning(tmp_path: Path, mon
         assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
 
 
+def test_census_reset_refuses_wal_visible_ledger_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A changed ledger row invalidates a reset plan even when its main file is unchanged."""
+
+    initialize_active_archive_root(tmp_path)
+    source_db = tmp_path / "source.db"
+    _seed_ledger(source_db)
+    _seed_raw(source_db, "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    main_database_before = source_db.read_bytes()
+
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("UPDATE raw_authority_censuses SET residual_json = '{\"changed\":true}' WHERE census_id = 'c1'")
+
+    assert source_db.read_bytes() == main_database_before
+    assert source_db.with_name("source.db-wal").is_file()
+    with pytest.raises(RawAuthorityRecoveryError, match="census ledger snapshot"):
+        apply_raw_authority_recovery(plan)
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT residual_json FROM raw_authority_censuses WHERE census_id = 'c1'").fetchone() == (
+            '{"changed":true}',
+        )
+
+
 def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -672,8 +698,8 @@ def test_index_prune_refuses_stale_active_pointer_and_wrong_backup(
         apply_raw_authority_recovery(plan, backup_manifest=tmp_path / "different.json")
 
 
-def test_index_prune_resume_refuses_changed_retained_seed_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Receipt finalization requires the exact retained target rows from the committed prune."""
+def test_index_prune_resume_refuses_an_unbacked_retained_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Receipt finalization refuses a retained head whose raw source no longer exists."""
 
     initialize_active_archive_root(tmp_path)
     active_index = _seed_index_seeds(tmp_path)
@@ -695,9 +721,11 @@ def test_index_prune_resume_refuses_changed_retained_seed_rows(tmp_path: Path, m
     monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", original_write)
 
     with sqlite3.connect(active_index) as conn:
-        conn.execute("UPDATE raw_revision_heads SET session_id = 'changed' WHERE logical_source_key = 'k-r-present'")
+        conn.execute(
+            "UPDATE raw_revision_heads SET accepted_raw_id = 'r-gone' WHERE logical_source_key = 'k-r-present'"
+        )
 
-    with pytest.raises(RawAuthorityRecoveryError, match="exact committed index seed state"):
+    with pytest.raises(RawAuthorityRecoveryError, match="unbacked index head"):
         resume_raw_authority_recovery(
             tmp_path,
             RecoveryOperation.PRUNE_INDEX_SEEDS,
@@ -759,6 +787,68 @@ def test_index_prune_resume_accepts_source_backed_successor_heads(
         assert conn.execute(
             "SELECT COUNT(*) FROM raw_revision_applications WHERE decision_id = 'd-successor'"
         ).fetchone() == (1,)
+
+
+def test_index_prune_resume_accepts_source_backed_in_place_successor_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Receipt finalization admits a production-style replacement of a retained head row."""
+
+    initialize_active_archive_root(tmp_path)
+    monkeypatch.setattr(VERSION_INFO, "dirty", False)
+    active_index = _seed_index_seeds(tmp_path)
+    backup = _backup_authority(tmp_path, monkeypatch, tier="index")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+
+    from polylogue.maintenance import raw_authority_recovery
+
+    original_write = raw_authority_recovery._write_durable_immutable
+
+    def fail_final_receipt(root: Path, path: Path, payload: dict[str, object], *, digest_field: str) -> Path:
+        if digest_field == "receipt_sha256":
+            raise OSError("injected final receipt write failure")
+        return original_write(root, path, payload, digest_field=digest_field)
+
+    monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", fail_final_receipt)
+    with pytest.raises(RawAuthorityRecoveryError, match="injected final receipt write failure"):
+        apply_raw_authority_recovery(plan)
+    monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", original_write)
+
+    from polylogue.archive.revision_replay import ApplicationDecision
+    from polylogue.storage.sqlite.archive_tiers.revision_application import (
+        RevisionApplicationReceipt,
+        record_revision_application_sync,
+    )
+
+    with sqlite3.connect(active_index) as conn:
+        record_revision_application_sync(
+            conn,
+            RevisionApplicationReceipt(
+                raw_id="r-present",
+                session_id="s-successor",
+                logical_source_key="k-r-present",
+                source_revision="sr",
+                acquisition_generation=0,
+                decision=ApplicationDecision.SELECTED_BASELINE,
+                accepted_raw_id="r-present",
+                accepted_source_revision="sr",
+                accepted_content_hash=bytes.fromhex("04" * 32),
+                accepted_frontier_kind="byte",
+                accepted_frontier=1,
+            ),
+            decided_at_ms=2,
+        )
+
+    recovered = resume_raw_authority_recovery(
+        tmp_path,
+        RecoveryOperation.PRUNE_INDEX_SEEDS,
+        operation_id=plan.operation_id,
+    )
+    assert recovered.status == "already_satisfied"
+    with sqlite3.connect(active_index) as conn:
+        assert conn.execute(
+            "SELECT session_id, accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'k-r-present'"
+        ).fetchone() == ("s-successor", bytes.fromhex("04" * 32))
 
 
 def test_census_reset_refuses_a_competing_source_continuity_intent(

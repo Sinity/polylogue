@@ -718,11 +718,13 @@ def assert_source_continuity_apply_allowed(
             _verify_released_train_live_tier(archive_root, connection, released[0])
 
 
-def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
+def _recover_pending_source_continuity_intents(archive_root: Path) -> frozenset[ArchiveTier]:
     """Finish committed source mutations whose manifest refresh was interrupted."""
+
+    deferred_tiers: set[ArchiveTier] = set()
     pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
     if not pending_root.is_dir():
-        return
+        return frozenset()
     for path in sorted(pending_root.glob("*.json")):
         raw = _load_source_continuity_pending_intent(path)
         terminal = raw.get("terminal_outcome")
@@ -762,6 +764,7 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             allow_unfinalized_raw_authority=mutation_kind == "raw_authority_recovery",
         )
         if receipt_phase == "not_yet_finalized":
+            deferred_tiers.add(ArchiveTier.SOURCE)
             continue
         if receipt_phase == "recovered_rolled_back":
             clear_source_continuity_pending_intent(path)
@@ -817,6 +820,7 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             mark_source_continuity_pending_intent_terminal(path, error=exc)
         else:
             clear_source_continuity_pending_intent(path)
+    return frozenset(deferred_tiers)
 
 
 def _source_mutation_receipt_phase(receipt_path: Path, *, allow_unfinalized_raw_authority: bool) -> str:
@@ -2274,7 +2278,7 @@ def _reconcile_durable_change_train_startup_locked(
     live_evidence_cache: dict[ArchiveTier, _DurableForwardVersionEvidence] | None = None,
 ) -> tuple[Path, ...]:
     """Reconcile persisted trains while the caller holds archive ownership."""
-    _recover_pending_source_continuity_intents(archive_root)
+    deferred_tiers = _recover_pending_source_continuity_intents(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     reconciled: list[Path] = []
     live_evidence_by_tier: dict[ArchiveTier, DurableDatabaseEvidence] = {}
@@ -2339,6 +2343,8 @@ def _reconcile_durable_change_train_startup_locked(
     # Recovery runs first so an indeterminate persisted failure keeps its
     # stronger fail-closed error rather than being masked by chain validation.
     for tier, adoption_floor in DURABLE_MIGRATION_ADOPTION_FLOORS.items():
+        if tier in deferred_tiers:
+            continue
         tier_path = archive_root / f"{tier.value}.db"
         if not tier_path.is_file():
             continue
@@ -2367,6 +2373,8 @@ def _reconcile_durable_change_train_startup_locked(
     for manifest_path in manifest_paths:
         train = load_durable_change_train_manifest(manifest_path)
         if train.state is not DurableChangeTrainState.RELEASED:
+            continue
+        if train.tier in deferred_tiers:
             continue
         with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
             actual = live_evidence_by_tier.get(train.tier)
