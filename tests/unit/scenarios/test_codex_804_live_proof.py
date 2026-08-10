@@ -42,7 +42,7 @@ from polylogue.scenarios import (
 from polylogue.scenarios.workload import raw_authority_fixed_point_spec
 from polylogue.schemas.operator.receipt import package_hashes_for_registry
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import RAW_AUTHORITY_PARSER_FINGERPRINT, backfill_historical_revision_evidence
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -109,6 +109,7 @@ def _assert_exact_authority_census(
     raw_ids: set[str],
     authority_rows: tuple[tuple[str, str, int], ...],
     authority_counts: tuple[tuple[str, int], ...],
+    parser_census_rows: tuple[tuple[str, str, str, str, str], ...],
     application_rows: tuple[tuple[str, str, str | None], ...],
     head_rows: tuple[tuple[str, str, str, str, int], ...],
     source_key: str,
@@ -121,6 +122,16 @@ def _assert_exact_authority_census(
     assert {row[0] for row in authority_rows} == raw_ids
     assert all(row[1] == "byte_proven" and row[2] == 1 for row in authority_rows)
     assert authority_counts == (("byte_proven", REVISION_COUNT),)
+    assert len(parser_census_rows) == REVISION_COUNT
+    assert {row[0] for row in parser_census_rows} == raw_ids
+    assert all(
+        row[1] == RAW_AUTHORITY_PARSER_FINGERPRINT
+        and row[2] == "complete"
+        and row[4].startswith("parser-observed:")
+        and isinstance(json.loads(row[3]), list)
+        and len(json.loads(row[3])) == 1
+        for row in parser_census_rows
+    )
     assert len(application_rows) == REVISION_COUNT
     assert {row[0] for row in application_rows} == raw_ids
     assert {row[1] for row in application_rows} <= {"selected_baseline", "applied_append", "superseded"}
@@ -706,6 +717,13 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
             (str(row[0]), str(row[1]))
             for row in conn.execute("SELECT raw_id, status FROM raw_membership_census ORDER BY raw_id")
         )
+        parser_census_rows = tuple(
+            (str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]))
+            for row in conn.execute(
+                "SELECT raw_id, parser_fingerprint, status, logical_keys_json, detail "
+                "FROM raw_authority_parser_census ORDER BY raw_id"
+            )
+        )
     # This fixture is the byte-revision authority route, so semantic
     # membership census remains exactly empty. The application ledger below
     # is the production coverage relation for all 804 byte revisions.
@@ -784,6 +802,7 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
         raw_ids=raw_ids,
         authority_rows=authority_rows,
         authority_counts=authority_counts,
+        parser_census_rows=parser_census_rows,
         application_rows=tuple(
             (str(row[0]), str(row[1]), None if row[2] is None else str(row[2])) for row in application_rows
         ),
@@ -941,6 +960,9 @@ def test_codex_804_incomplete_authority_red_mutation_is_rejected() -> None:
             raw_ids={"raw-000", "raw-001"},
             authority_rows=(("raw-000", "byte_proven", 1),),
             authority_counts=(("byte_proven", 1),),
+            parser_census_rows=(
+                ("raw-000", RAW_AUTHORITY_PARSER_FINGERPRINT, "complete", "[]", "parser-observed: inherited"),
+            ),
             application_rows=(("raw-000", "selected_baseline", "raw-001"),),
             head_rows=(("codex-session:fixture", "codex-session:fixture", "raw-001", "byte", 1),),
             source_key="codex-session:fixture",
