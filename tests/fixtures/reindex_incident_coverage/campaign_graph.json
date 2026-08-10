@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_commit": "6a63a4f71f8171adc6d5e737bd55dcb564a046da",
+  "source_commit": "dfb4854b67076f8c8708eedafc31c513c6873526",
   "source_path": ".beads/issues.jsonl",
   "target_bead_id": "polylogue-818fy",
   "forcing_dependencies": [
