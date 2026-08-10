@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast
 
 from polylogue.archive.raw_payload.decode import JSONValue
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Role
 
 if TYPE_CHECKING:
     from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticGenerationBatch
@@ -1101,6 +1102,25 @@ def _parser_artifact_message_keys(
     return tuple(keys)
 
 
+def _parser_artifact_message_semantic_witnesses(
+    sessions: Sequence[ParsedSession],
+) -> tuple[tuple[str, Role, MaterialOrigin], ...]:
+    """Return parsed identity/text plus authoredness for semantic witnesses."""
+    return tuple(
+        (key, message.role, message.material_origin)
+        for session in sessions
+        for message in session.messages
+        for key in (
+            f"id:{message.provider_message_id}"
+            if message.provider_message_id
+            else f"text:{_normalise_evidence_text(message.text)}"
+            if isinstance(message.text, str) and message.text.strip()
+            else None,
+        )
+        if key is not None
+    )
+
+
 def _parser_artifact_expected_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[str, JSONValue], ...]:
     """Return the parser-owned raw nodes used for message coverage."""
     native_payload = payload.get("raw_provider_payload") if isinstance(payload, dict) else None
@@ -1151,6 +1171,152 @@ def _parser_artifact_node_identity(provider: str, node: Mapping[str, JSONValue])
     return identity if isinstance(identity, str) and identity else None
 
 
+def _parser_artifact_node_role(provider: str, node: Mapping[str, JSONValue]) -> Role:
+    """Normalize the role asserted by one raw parser-owned message node."""
+    raw_role: object = None
+    if provider == "chatgpt":
+        message = node.get("message")
+        author = message.get("author") if isinstance(message, Mapping) else None
+        raw_role = author.get("role") if isinstance(author, Mapping) else None
+    elif provider == "claude-ai":
+        raw_role = node.get("sender")
+    elif provider == "claude-code":
+        message = node.get("message")
+        raw_role = message.get("role") if isinstance(message, Mapping) else node.get("type")
+    else:
+        raw_role = node.get("role")
+    if not isinstance(raw_role, str) or not raw_role:
+        return Role.UNKNOWN
+    try:
+        role = Role.normalize(raw_role)
+    except ValueError:
+        return Role.UNKNOWN
+    if provider == "claude-code" and role is Role.USER:
+        message = node.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if (
+            isinstance(content, list)
+            and content
+            and all(isinstance(item, Mapping) and item.get("type") == "tool_result" for item in content)
+        ):
+            return Role.TOOL
+    return role
+
+
+def _parser_artifact_node_tool_witnesses(
+    provider: str,
+    node: Mapping[str, JSONValue],
+) -> tuple[tuple[BlockType, str, bool | None, int | None], ...]:
+    """Project load-bearing tool identity/outcome fields from a raw node.
+
+    Synthetic routes exercise Claude's shared content-segment protocol for
+    both Claude Code and Codex. A Claude Code background-task acknowledgement
+    deliberately distrusts its immediate ``is_error`` result: the result only
+    reports that the task started, not its terminal outcome. Match that
+    production semantic here instead of treating the intentional downgrade as
+    a parser loss.
+    """
+    if provider not in {"claude-code", "codex"}:
+        return ()
+    if provider == "claude-code":
+        message = node.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        tool_use_result = node.get("toolUseResult")
+        background_task = (
+            isinstance(tool_use_result, Mapping)
+            and isinstance(tool_use_result.get("backgroundTaskId"), str)
+            and bool(tool_use_result.get("backgroundTaskId"))
+        )
+    else:
+        content = node.get("content")
+        background_task = False
+    if not isinstance(content, list):
+        return ()
+
+    witnesses: list[tuple[BlockType, str, bool | None, int | None]] = []
+    for item in content:
+        if not isinstance(item, Mapping):
+            continue
+        item_type = item.get("type")
+        if item_type == "tool_use":
+            tool_id = item.get("id")
+            if isinstance(tool_id, str) and tool_id:
+                witnesses.append((BlockType.TOOL_USE, tool_id, None, None))
+        elif item_type == "tool_result":
+            tool_id = item.get("tool_use_id")
+            if not isinstance(tool_id, str) or not tool_id:
+                continue
+            raw_is_error = item.get("is_error")
+            raw_exit_code = item.get("exit_code")
+            is_error = raw_is_error if isinstance(raw_is_error, bool) and not background_task else None
+            exit_code = (
+                raw_exit_code if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool) else None
+            )
+            if background_task:
+                exit_code = None
+            witnesses.append((BlockType.TOOL_RESULT, tool_id, is_error, exit_code))
+    return tuple(witnesses)
+
+
+def _parser_artifact_node_message_type(
+    provider: str,
+    node: Mapping[str, JSONValue],
+) -> MessageType:
+    """Derive the raw node's message type using shared structural semantics."""
+    from polylogue.archive.message.artifacts import classify_block_message_type, classify_text_message_type
+
+    if provider == "claude-code":
+        return MessageType.CONTEXT if node.get("isMeta") else MessageType.MESSAGE
+    if provider == "codex":
+        raw_role = node.get("role")
+        return MessageType.CONTEXT if raw_role in {"system", "developer"} else MessageType.MESSAGE
+    block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
+    if block_message_type := classify_block_message_type(block_types):
+        return block_message_type
+    text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+    return classify_text_message_type(text) or MessageType.MESSAGE
+
+
+def _parser_artifact_node_material_origin(
+    provider: str,
+    node: Mapping[str, JSONValue],
+    role: Role,
+) -> MaterialOrigin:
+    """Derive authoredness from raw role, structure, and documented provenance."""
+    from polylogue.archive.message.artifacts import classify_material_origin
+    from polylogue.sources.parsers.base_support import human_authored_override
+
+    message_type = _parser_artifact_node_message_type(provider, node)
+    block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
+    text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+    material_origin = classify_material_origin(
+        role=role,
+        message_type=message_type,
+        text=text,
+        block_types=block_types,
+    )
+    if provider != "claude-code":
+        return human_authored_override(role, message_type, material_origin)
+    if material_origin is not MaterialOrigin.UNKNOWN:
+        return material_origin
+    message = node.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    has_tool_result = isinstance(content, list) and any(
+        isinstance(item, Mapping) and item.get("type") == "tool_result" for item in content
+    )
+    if (
+        node.get("type") == "user"
+        and role is Role.USER
+        and message_type is MessageType.MESSAGE
+        and not node.get("isMeta")
+        and not node.get("isCompactSummary")
+        and node.get("toolUseResult") is None
+        and not has_tool_result
+    ):
+        return MaterialOrigin.HUMAN_AUTHORED
+    return material_origin
+
+
 def _parser_artifact_expected_message_keys(
     provider: str,
     payload: JSONValue,
@@ -1162,9 +1328,52 @@ def _parser_artifact_expected_message_keys(
         if identity is not None:
             keys.append(f"id:{identity}")
             continue
-
         keys.extend(f"text:{text}" for text in _parser_artifact_node_content_texts(provider, node))
     return tuple(keys)
+
+
+def _parser_artifact_expected_message_semantic_witnesses(
+    provider: str,
+    payload: JSONValue,
+) -> tuple[tuple[str, Role, MaterialOrigin], ...]:
+    """Derive identity/text and authoredness from the canonical raw witness."""
+    witnesses: list[tuple[str, Role, MaterialOrigin]] = []
+    for node in _parser_artifact_expected_nodes(provider, payload):
+        identity = _parser_artifact_node_identity(provider, node)
+        role = _parser_artifact_node_role(provider, node)
+        material_origin = _parser_artifact_node_material_origin(provider, node, role)
+        if identity is not None:
+            witnesses.append((f"id:{identity}", role, material_origin))
+            continue
+        witnesses.extend(
+            (f"text:{text}", role, material_origin) for text in _parser_artifact_node_content_texts(provider, node)
+        )
+    return tuple(witnesses)
+
+
+def _parser_artifact_expected_tool_witnesses(
+    provider: str,
+    payload: JSONValue,
+) -> tuple[tuple[BlockType, str, bool | None, int | None], ...]:
+    """Collect every raw structured tool assertion owned by this artifact."""
+    return tuple(
+        witness
+        for node in _parser_artifact_expected_nodes(provider, payload)
+        for witness in _parser_artifact_node_tool_witnesses(provider, node)
+    )
+
+
+def _parser_artifact_tool_witnesses(
+    sessions: Sequence[ParsedSession],
+) -> tuple[tuple[BlockType, str, bool | None, int | None], ...]:
+    """Collect parsed structured tool identity and provider outcome fields."""
+    return tuple(
+        (block.type, block.tool_id, block.is_error, block.exit_code)
+        for session in sessions
+        for message in session.messages
+        for block in message.blocks
+        if block.type in {BlockType.TOOL_USE, BlockType.TOOL_RESULT} and block.tool_id
+    )
 
 
 def _parser_artifact_messages_have_artifact_bound_content(
@@ -1261,6 +1470,24 @@ def _parser_artifact_has_complete_message_coverage(
     return (
         bool(expected)
         and Counter(expected) == Counter(observed)
+        and _parser_artifact_messages_have_artifact_bound_content(sessions, provider, payload)
+    )
+
+
+def _parser_artifact_has_complete_semantic_coverage(
+    sessions: Sequence[ParsedSession],
+    provider: str,
+    payload: JSONValue,
+) -> bool:
+    """Require the canonical raw witness to retain authoredness and tool outcomes."""
+    expected = _parser_artifact_expected_message_semantic_witnesses(provider, payload)
+    observed = _parser_artifact_message_semantic_witnesses(sessions)
+    expected_tools = _parser_artifact_expected_tool_witnesses(provider, payload)
+    observed_tools = _parser_artifact_tool_witnesses(sessions)
+    return (
+        bool(expected)
+        and Counter(expected) == Counter(observed)
+        and Counter(expected_tools) == Counter(observed_tools)
         and _parser_artifact_messages_have_artifact_bound_content(sessions, provider, payload)
     )
 
@@ -1477,7 +1704,14 @@ def build_wire_support_receipt(
                         f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
                     )
                     coverage_error: str | None = None
-                    if not _parser_artifact_has_complete_message_coverage(artifact_sessions, provider, parser_payload):
+                    if not _parser_artifact_has_complete_message_coverage(
+                        artifact_sessions, provider, parser_payload
+                    ) or (
+                        index == 0
+                        and not _parser_artifact_has_complete_semantic_coverage(
+                            artifact_sessions, provider, parser_payload
+                        )
+                    ):
                         artifact_evidence = ()
                         coverage_error = "artifact message coverage is incomplete"
                     parsed_sessions.extend(artifact_sessions)
