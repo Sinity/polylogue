@@ -37,6 +37,7 @@ from polylogue.cli.commands.status import (
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary
+from polylogue.daemon.events import emit_daemon_event
 from polylogue.maintenance.failure_routing import route_failure_sample
 from polylogue.maintenance.planner import FailureSample
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -1947,6 +1948,54 @@ class TestNoArchiveStatus:
         assert payload["source"] == "direct"
         assert payload["assertion_candidate_queue"]["pending_count"] == 1
         assert payload["assertion_candidate_queue"]["state"] == "parked-pending"
+
+    def test_status_command_direct_json_fallback_projects_typed_scheduler_failure(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        for tier in (ArchiveTier.INDEX, ArchiveTier.USER, ArchiveTier.OPS):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="direct-status-stalled",
+                target_ref="session:direct-status",
+                kind=AssertionKind.LESSON,
+                body_text="pending direct status candidate",
+                author_ref="agent:test",
+                author_kind="agent",
+            )
+            conn.commit()
+        emit_daemon_event(
+            "judgment-automation",
+            archive_root_path=tmp_path,
+            operation_id="judgment-automation:direct-status-stalled",
+            observed_at_ms=1_800_000_000_000,
+            payload={
+                "status": "failed",
+                "reason": "transient_sqlite_lock",
+                "retryable": True,
+                "retry_route": "next enabled judgment-automation tick",
+                "batch_limit": 200,
+                "receipt_persistence_degraded": False,
+                "receipt_persistence_recovered": False,
+            },
+        )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._daemon_live", return_value=False),
+            patch("polylogue.cli.commands.status.urlopen", side_effect=TimeoutError),
+        ):
+            result = CliRunner().invoke(
+                status_command,
+                ["--daemon-url", "http://127.0.0.1:8766", "--json"],
+                obj=env,
+            )
+
+        assert result.exit_code == 1
+        payload = json.loads(_combined_calls(env))
+        assert payload["assertion_candidate_queue"]["state"] == "scheduler-stalled"
+        assert payload["assertion_candidate_queue"]["judgment_scheduler_receipt_reason"] == "transient_sqlite_lock"
 
     def test_status_command_direct_json_fallback_uses_configured_scheduler_interval(self, tmp_path: Path) -> None:
         env = _make_app_env()

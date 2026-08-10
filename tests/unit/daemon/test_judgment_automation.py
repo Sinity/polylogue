@@ -313,6 +313,29 @@ def test_sweep_receipt_and_bounded_retry_drain(tmp_path: Path) -> None:
     assert receipt["status"] == "completed"
     assert row[0] == 2_000
     assert receipt["accepted"] == 1
+    typed = conn.execute(
+        """
+        SELECT operation_id, observed_at_ms, status, reason, retryable, batch_limit,
+               considered, accepted, rejected, escalated, idempotent, failed
+        FROM judgment_scheduler_receipts
+        ORDER BY observed_at_ms DESC, rowid DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    assert typed is not None
+    assert typed[1:] == (
+        2_000,
+        "completed",
+        "sweep_completed",
+        0,
+        2,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+    )
 
 
 def test_missing_ops_receipt_failure_preserves_committed_result_metadata(tmp_path: Path) -> None:
@@ -388,6 +411,18 @@ def test_committed_judgment_receipt_outbox_recovers_after_ops_crash(tmp_path: Pa
     assert row is not None
     assert row[0] == operation_id
     assert row[1] == 10_000
+    typed = conn.execute(
+        """
+        SELECT operation_id, observed_at_ms, status, reason, retryable,
+               considered, accepted, rejected, escalated, idempotent, failed,
+               receipt_persistence_recovered
+        FROM judgment_scheduler_receipts
+        """
+    ).fetchone()
+    assert typed is not None
+    assert typed[0] == operation_id
+    assert typed[1:11] == (10_000, "completed", "sweep_completed", 0, 1, 1, 0, 0, 0, 0)
+    assert typed[11] == 1
     recovered_receipt = json.loads(row[2])
     assert recovered_receipt["status"] == "completed"
     assert recovered_receipt["accepted"] == 1
@@ -505,6 +540,52 @@ def test_recovery_retains_marker_when_latest_durable_event_is_malformed(tmp_path
 
     with sqlite3.connect(tmp_path / "user.db") as conn:
         assert len(list_judgment_automation_receipt_outbox(conn)) == 1
+
+
+def test_recovery_acknowledges_typed_receipt_before_newer_malformed_legacy_event(tmp_path: Path) -> None:
+    _init_user_db(tmp_path / "user.db")
+    _init_ops_db(tmp_path / "ops.db")
+    operation_id = "judgment-automation:typed-recovery"
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        upsert_judgment_automation_receipt_outbox(
+            conn,
+            operation_id=operation_id,
+            receipt_payload={
+                "status": "completed",
+                "reason": "sweep_completed",
+                "retryable": False,
+                "retry_route": "next enabled judgment-automation tick",
+                "batch_limit": 200,
+                "receipt_persistence_degraded": False,
+                "receipt_persistence_recovered": False,
+            },
+            now_ms=10_000,
+        )
+        conn.commit()
+    emit_daemon_event(
+        "judgment-automation",
+        operation_id=operation_id,
+        archive_root_path=tmp_path,
+        observed_at_ms=10_000,
+        payload={
+            "status": "completed",
+            "reason": "sweep_completed",
+            "retryable": False,
+            "retry_route": "next enabled judgment-automation tick",
+            "batch_limit": 200,
+            "receipt_persistence_degraded": False,
+            "receipt_persistence_recovered": False,
+        },
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
+            (11_000, "judgment-automation", operation_id, '{"status":"completed"}'),
+        )
+
+    assert recover_pending_judgment_automation_receipts(tmp_path, now_ms=12_000) == 1
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert list_judgment_automation_receipt_outbox(conn) == []
 
 
 def test_coalesced_receipt_keeps_outbox_marker_for_operation_recovery(tmp_path: Path) -> None:

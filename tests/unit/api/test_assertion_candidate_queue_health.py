@@ -216,6 +216,48 @@ def test_pending_queue_with_fresh_scheduler_receipt_is_active_pending(tmp_path: 
     assert health.judgment_scheduler_receipt_age_ms == 60_000
 
 
+def test_typed_scheduler_receipt_is_authoritative_over_newer_legacy_event(tmp_path: Path) -> None:
+    config = _initialize(tmp_path)
+    now_ms = 1_800_000_000_000
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id="candidate-typed-authority",
+            target_ref="session:queue-health",
+            kind=AssertionKind.LESSON,
+            body_text="A pending judgment candidate",
+            author_ref="agent:standing-queries",
+            author_kind="agent",
+            now_ms=now_ms - 25 * _DAY_MS,
+        )
+    emit_daemon_event(
+        "judgment-automation",
+        archive_root_path=tmp_path,
+        operation_id="judgment-automation:typed-authority",
+        observed_at_ms=now_ms - 60_000,
+        payload={
+            "status": "completed",
+            "reason": "sweep_completed",
+            "retryable": False,
+            "retry_route": "next enabled judgment-automation tick",
+            "batch_limit": 200,
+            "receipt_persistence_degraded": False,
+            "receipt_persistence_recovered": False,
+        },
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
+            (now_ms, "judgment-automation", "legacy-newer", '{"status":"failed","reason":"stale-legacy"}'),
+        )
+
+    health = _archive_assertion_candidate_queue_health(config, now_ms=now_ms)
+
+    assert health.state == "pending"
+    assert health.judgment_scheduler_receipt_status == "completed"
+    assert health.judgment_scheduler_receipt_reason == "sweep_completed"
+
+
 def test_latest_scheduler_receipt_uses_ledger_order_when_clock_regresses(tmp_path: Path) -> None:
     config = _initialize(tmp_path)
     now_ms = 1_800_000_000_000
