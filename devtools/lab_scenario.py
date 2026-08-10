@@ -13,6 +13,12 @@ from typing import Protocol, TextIO
 
 from devtools import repo_root as _get_root
 from devtools.cli_boundary import invoke_polylogue_cli
+from devtools.rebuild_safety_scenario import (
+    REBUILD_DIFFERENTIAL_SCENARIO_NAME,
+    REBUILD_SAFETY_SCENARIO_NAME,
+    run_rebuild_differential,
+    run_rebuild_safety,
+)
 from devtools.storage_correctness_scenario import (
     STORAGE_CORRECTNESS_SCENARIO_NAME,
     run_storage_correctness,
@@ -25,7 +31,12 @@ from devtools.visual_artifacts import (
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.scenarios import AssertionSpec, ExecutionSpec, polylogue_execution
 
-_SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke", STORAGE_CORRECTNESS_SCENARIO_NAME)
+_SCENARIO_NAMES = (
+    "archive-smoke",
+    "reader-visual-smoke",
+    STORAGE_CORRECTNESS_SCENARIO_NAME,
+    REBUILD_SAFETY_SCENARIO_NAME,
+)
 _ARCHIVE_SMOKE_TIER = 0
 
 
@@ -113,6 +124,47 @@ class ArchiveSmokeResult:
         return tuple(name for name, status in self.stage_statuses().items() if status is OutcomeStatus.ERROR)
 
 
+class RebuildSafetyResult:
+    """Direct result wrapper for the derived-tier rebuild lab lane."""
+
+    def __init__(self, *, report_dir: Path | None) -> None:
+        self.report_dir = report_dir
+        self.safety = run_rebuild_safety()
+        self.differential = run_rebuild_differential()
+
+    @property
+    def scenario_name(self) -> str:
+        return REBUILD_SAFETY_SCENARIO_NAME
+
+    @property
+    def all_passed(self) -> bool:
+        return self.safety.all_passed and self.differential.all_passed
+
+    def stage_statuses(self) -> dict[str, OutcomeStatus]:
+        return {
+            REBUILD_SAFETY_SCENARIO_NAME: OutcomeStatus.OK if self.safety.all_passed else OutcomeStatus.ERROR,
+            REBUILD_DIFFERENTIAL_SCENARIO_NAME: OutcomeStatus.OK
+            if self.differential.all_passed
+            else OutcomeStatus.ERROR,
+        }
+
+    def failed_stages(self) -> tuple[str, ...]:
+        return tuple(name for name, status in self.stage_statuses().items() if status is OutcomeStatus.ERROR)
+
+    def extra_payload(self) -> dict[str, object]:
+        payload = {
+            "safety_report": self.safety.format_report(),
+            "differential_report": self.differential.format_report(),
+        }
+        if self.report_dir is not None:
+            self.report_dir.mkdir(parents=True, exist_ok=True)
+            (self.report_dir / "rebuild-safety.txt").write_text(
+                f"{self.safety.format_report()}\n\n{self.differential.format_report()}\n",
+                encoding="utf-8",
+            )
+        return payload
+
+
 def get_archive_smoke_checks() -> tuple[ArchiveSmokeCheck, ...]:
     """Return direct CLI checks for the archive-smoke lab smoke."""
     return _ARCHIVE_SMOKE_CHECKS
@@ -171,6 +223,11 @@ def list_scenarios(*, as_json: bool) -> int:
             "artifact_count": len(reader_visual_artifact_payloads()),
         },
         storage_correctness_scenario_entry(),
+        {
+            "name": REBUILD_SAFETY_SCENARIO_NAME,
+            "kind": "derived-tier-differential",
+            "checks": [REBUILD_SAFETY_SCENARIO_NAME, REBUILD_DIFFERENTIAL_SCENARIO_NAME],
+        },
     ]
     payload = {"scenarios": scenarios}
     if as_json:
@@ -183,6 +240,9 @@ def list_scenarios(*, as_json: bool) -> int:
             continue
         if name == "storage-correctness":
             print(f"{name:<20s}  checks: {entry['check_count']}")
+            continue
+        if name == REBUILD_SAFETY_SCENARIO_NAME:
+            print(f"{name:<20s}  checks: rebuild safety + differential")
             continue
         print(f"{name:<20s}  tier-0 checks: {entry['tier_0_check_count']}")
     return 0
@@ -379,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     result: _ScenarioResult
     if args.scenario == "storage-correctness":
         result = run_storage_correctness(report_dir=args.report_dir)
+    elif args.scenario == REBUILD_SAFETY_SCENARIO_NAME:
+        result = RebuildSafetyResult(report_dir=args.report_dir)
     else:
         result = run_archive_smoke(
             live=bool(args.live),

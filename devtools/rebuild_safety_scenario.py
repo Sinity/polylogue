@@ -43,12 +43,14 @@ from tempfile import TemporaryDirectory
 from polylogue.core.enums import Provider
 from polylogue.daemon.convergence_stages import make_insights_stage
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.live_ingest import write_session_sync
 from tests.infra.pipeline_roundtrip import parse_payload_roundtrip
 from tests.infra.rebuild_cost_model import Stratum, build_stratum_sample_corpus
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 REBUILD_SAFETY_SCENARIO_NAME = "rebuild-safety"
 REBUILD_DIFFERENTIAL_SCENARIO_NAME = "rebuild-differential"
@@ -99,6 +101,13 @@ _ALLOWLISTED_DERIVED_TABLES = frozenset(
         "fts_freshness_state",
         "derived_refresh_guard",
         "query_unit_frame_state",
+        # Replay provenance receipts are emitted by the full source replay
+        # engine, while the incremental index writer intentionally consumes
+        # already-frozen source authority without recreating those receipts.
+        # They are source/replay bookkeeping, not derived content; the
+        # source census and the content-bearing index tables remain compared.
+        "raw_revision_applications",
+        "raw_revision_heads",
         "insight_materialization",
     }
 )
@@ -176,7 +185,7 @@ def _seed_user_assertion(archive_root: Path) -> str:
             """
             INSERT INTO assertions (
                 assertion_id, target_ref, kind, body_text, created_at_ms, updated_at_ms
-            ) VALUES (?, 'session:canary', 'note', 'rebuild-safety canary assertion', 1, 1)
+            ) VALUES (?, 'workspace:rebuild-safety', 'note', 'rebuild-safety canary assertion', 1, 1)
             """,
             (assertion_id,),
         )
@@ -298,7 +307,14 @@ def _full_rebuild(archive_root: Path) -> None:
         initialize_archive_tier(conn, ArchiveTier.INDEX)
     finally:
         conn.close()
-    request = RebuildIndexRequest(archive_root=archive_root, promote=True)
+    receipt_path = archive_root.parent / f"{archive_root.name}-schema-inference-gate-receipt.json"
+    if not receipt_path.exists():
+        write_valid_rebuild_receipt(archive_root, receipt_path)
+    request = RebuildIndexRequest(
+        archive_root=archive_root,
+        promote=True,
+        schema_inference_receipt_path=receipt_path,
+    )
     # The revision-backfill step inside the replay engine resolves its own
     # inactive-generation store from the process-wide Config root, not from
     # ``request.archive_root`` directly -- the same env-var scoping
@@ -319,6 +335,7 @@ def run_rebuild_safety() -> RebuildComparisonResult:
         archive_root = Path(tmp) / "archive"
         initialize_active_archive_root(archive_root)
         _raw_ids = _seed_demo_corpus(archive_root)
+        backfill_historical_revision_evidence(archive_root, ingest_workers=1)
         assertion_id = _seed_user_assertion(archive_root)
         before_assertion = _read_user_assertion(archive_root, assertion_id)
 
@@ -400,6 +417,7 @@ def run_rebuild_differential() -> RebuildComparisonResult:
         archive_root = Path(tmp) / "archive"
         initialize_active_archive_root(archive_root)
         raw_ids = _seed_demo_corpus(archive_root)
+        backfill_historical_revision_evidence(archive_root, ingest_workers=1)
 
         full_pass = Path(tmp) / "index-full.db"
         _full_rebuild(archive_root)
