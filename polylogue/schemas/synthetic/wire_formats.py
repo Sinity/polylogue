@@ -1178,6 +1178,8 @@ def _parser_artifact_node_role(provider: str, node: Mapping[str, JSONValue]) -> 
         message = node.get("message")
         author = message.get("author") if isinstance(message, Mapping) else None
         raw_role = author.get("role") if isinstance(author, Mapping) else None
+        if not isinstance(raw_role, str) or not raw_role:
+            raw_role = node.get("role")
     elif provider == "claude-ai":
         raw_role = node.get("sender")
     elif provider == "claude-code":
@@ -1191,8 +1193,8 @@ def _parser_artifact_node_role(provider: str, node: Mapping[str, JSONValue]) -> 
         role = Role.normalize(raw_role)
     except ValueError:
         return Role.UNKNOWN
-    if provider == "claude-code" and role is Role.USER:
-        message = node.get("message")
+    if provider in {"claude-ai", "claude-code"} and role is Role.USER:
+        message = node.get("message") if provider == "claude-code" else node
         content = message.get("content") if isinstance(message, Mapping) else None
         if (
             isinstance(content, list)
@@ -1216,7 +1218,7 @@ def _parser_artifact_node_tool_witnesses(
     production semantic here instead of treating the intentional downgrade as
     a parser loss.
     """
-    if provider not in {"claude-code", "codex"}:
+    if provider not in {"claude-ai", "claude-code", "codex"}:
         return ()
     if provider == "claude-code":
         message = node.get("message")
@@ -1227,6 +1229,9 @@ def _parser_artifact_node_tool_witnesses(
             and isinstance(tool_use_result.get("backgroundTaskId"), str)
             and bool(tool_use_result.get("backgroundTaskId"))
         )
+    elif provider == "codex":
+        content = node.get("content")
+        background_task = False
     else:
         content = node.get("content")
         background_task = False
@@ -1270,6 +1275,8 @@ def _parser_artifact_node_message_type(
     if provider == "codex":
         raw_role = node.get("role")
         return MessageType.CONTEXT if raw_role in {"system", "developer"} else MessageType.MESSAGE
+    if provider == "chatgpt" and _parser_artifact_node_role(provider, node) is Role.TOOL:
+        return MessageType.TOOL_RESULT
     block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
     if block_message_type := classify_block_message_type(block_types):
         return block_message_type
@@ -1287,7 +1294,14 @@ def _parser_artifact_node_material_origin(
     from polylogue.sources.parsers.base_support import human_authored_override
 
     message_type = _parser_artifact_node_message_type(provider, node)
-    block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
+    # Codex message records retain their message type from their role/text;
+    # inline content segments do not reclassify the whole record into a tool
+    # turn.  Its parser makes the same deliberately narrow distinction.
+    block_types = (
+        ()
+        if provider == "codex"
+        else tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
+    )
     text = "\n".join(_parser_artifact_node_content_texts(provider, node))
     material_origin = classify_material_origin(
         role=role,
@@ -1360,6 +1374,56 @@ def _parser_artifact_expected_tool_witnesses(
         witness
         for node in _parser_artifact_expected_nodes(provider, payload)
         for witness in _parser_artifact_node_tool_witnesses(provider, node)
+    )
+
+
+def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fallback_id: str) -> str | None:
+    """Return the one provider session identity asserted by this wire artifact."""
+    if isinstance(payload, Mapping):
+        native_payload = payload.get("raw_provider_payload")
+        if provider == "claude-ai" and isinstance(native_payload, Mapping):
+            for field in ("uuid", "id", "conversation_id", "conversationId"):
+                session_id = native_payload.get(field)
+                if isinstance(session_id, str) and session_id:
+                    return session_id
+        captured_session = payload.get("session")
+        captured_session_id = (
+            captured_session.get("provider_session_id") if isinstance(captured_session, Mapping) else None
+        )
+        if isinstance(captured_session_id, str) and captured_session_id:
+            return captured_session_id
+        if provider == "chatgpt":
+            for field in ("id", "uuid", "conversation_id", "conversationId"):
+                session_id = payload.get(field)
+                if isinstance(session_id, str) and session_id:
+                    return session_id
+        if provider == "claude-ai":
+            for field in ("uuid", "id", "conversation_id", "conversationId"):
+                session_id = payload.get(field)
+                if isinstance(session_id, str) and session_id:
+                    return session_id
+    if provider == "claude-code" and isinstance(payload, list):
+        session_ids = {
+            record.get("sessionId")
+            for record in payload
+            if isinstance(record, Mapping) and isinstance(record.get("sessionId"), str) and record.get("sessionId")
+        }
+        return next(iter(session_ids)) if len(session_ids) == 1 else None
+    return fallback_id
+
+
+def _parser_artifact_has_expected_session_grouping(
+    sessions: Sequence[ParsedSession],
+    provider: str,
+    payload: JSONValue,
+    fallback_id: str,
+) -> bool:
+    """Require this single-session artifact to retain its provider session key."""
+    expected_session_id = _parser_artifact_expected_session_id(provider, payload, fallback_id)
+    return (
+        expected_session_id is not None
+        and len(sessions) == 1
+        and sessions[0].provider_session_id == expected_session_id
     )
 
 
@@ -1463,6 +1527,7 @@ def _parser_artifact_has_complete_message_coverage(
     sessions: Sequence[ParsedSession],
     provider: str,
     payload: JSONValue,
+    fallback_id: str,
 ) -> bool:
     """Require every parser-relevant generated node to survive parsing."""
     expected = _parser_artifact_expected_message_keys(provider, payload)
@@ -1470,6 +1535,7 @@ def _parser_artifact_has_complete_message_coverage(
     return (
         bool(expected)
         and Counter(expected) == Counter(observed)
+        and _parser_artifact_has_expected_session_grouping(sessions, provider, payload, fallback_id)
         and _parser_artifact_messages_have_artifact_bound_content(sessions, provider, payload)
     )
 
@@ -1478,8 +1544,9 @@ def _parser_artifact_has_complete_semantic_coverage(
     sessions: Sequence[ParsedSession],
     provider: str,
     payload: JSONValue,
+    fallback_id: str,
 ) -> bool:
-    """Require the canonical raw witness to retain authoredness and tool outcomes."""
+    """Require every raw witness to retain authoredness and tool outcomes."""
     expected = _parser_artifact_expected_message_semantic_witnesses(provider, payload)
     observed = _parser_artifact_message_semantic_witnesses(sessions)
     expected_tools = _parser_artifact_expected_tool_witnesses(provider, payload)
@@ -1488,6 +1555,7 @@ def _parser_artifact_has_complete_semantic_coverage(
         bool(expected)
         and Counter(expected) == Counter(observed)
         and Counter(expected_tools) == Counter(observed_tools)
+        and _parser_artifact_has_expected_session_grouping(sessions, provider, payload, fallback_id)
         and _parser_artifact_messages_have_artifact_bound_content(sessions, provider, payload)
     )
 
@@ -1704,13 +1772,11 @@ def build_wire_support_receipt(
                         f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
                     )
                     coverage_error: str | None = None
+                    fallback_id = f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}"
                     if not _parser_artifact_has_complete_message_coverage(
-                        artifact_sessions, provider, parser_payload
-                    ) or (
-                        index == 0
-                        and not _parser_artifact_has_complete_semantic_coverage(
-                            artifact_sessions, provider, parser_payload
-                        )
+                        artifact_sessions, provider, parser_payload, fallback_id
+                    ) or not _parser_artifact_has_complete_semantic_coverage(
+                        artifact_sessions, provider, parser_payload, fallback_id
                     ):
                         artifact_evidence = ()
                         coverage_error = "artifact message coverage is incomplete"

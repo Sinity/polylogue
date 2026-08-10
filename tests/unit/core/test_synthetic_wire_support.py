@@ -275,9 +275,11 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_ever
 
 
 @pytest.mark.parametrize("provider", sorted(wire_formats.PROVIDER_WIRE_FORMATS))
+@pytest.mark.parametrize("artifact_index", (0, 1))
 def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_route(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
+    artifact_index: int,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     mutated_messages = 0
@@ -300,7 +302,7 @@ def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_ro
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
-        if parsed_provider != provider or not fallback_id.endswith(":0"):
+        if parsed_provider != provider or not fallback_id.endswith(f":{artifact_index}"):
             return sessions
         corrupted_sessions: list[ParsedSession] = []
         for session in sessions:
@@ -332,15 +334,17 @@ def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_ro
         witness.validation_error == "artifact message coverage is incomplete"
         for entry in supported_entries
         for witness in entry.parser_witnesses
-        if witness.artifact_kind == "baseline"
+        if witness.index == (-1 if artifact_index == 0 else artifact_index - 1)
     )
     assert not receipt.complete
 
 
 @pytest.mark.parametrize("provider", ("claude-code", "codex"))
+@pytest.mark.parametrize("artifact_index", (0, 1))
 def test_parser_witness_tool_identity_loss_is_not_accepted(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
+    artifact_index: int,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     mutated_blocks = 0
@@ -363,7 +367,7 @@ def test_parser_witness_tool_identity_loss_is_not_accepted(
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
-        if parsed_provider != provider or not fallback_id.endswith(":0"):
+        if parsed_provider != provider or not fallback_id.endswith(f":{artifact_index}"):
             return sessions
         corrupted_sessions: list[ParsedSession] = []
         for session in sessions:
@@ -392,10 +396,14 @@ def test_parser_witness_tool_identity_loss_is_not_accepted(
     )
 
 
-@pytest.mark.parametrize("provider", ("claude-code", "codex"))
+@pytest.mark.parametrize(
+    ("provider", "artifact_index"),
+    (("claude-code", 0), ("claude-code", 2), ("codex", 0), ("codex", 1)),
+)
 def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
+    artifact_index: int,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     mutated_outcomes = 0
@@ -410,7 +418,7 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
         source_path: str | None = None,
     ) -> list[ParsedSession]:
         nonlocal mutated_outcomes
-        if parsed_provider == provider and fallback_id.endswith(":0") and isinstance(payload, list):
+        if parsed_provider == provider and fallback_id.endswith(f":{artifact_index}") and isinstance(payload, list):
             injected_outcome = False
             for record in payload:
                 if not isinstance(record, dict):
@@ -462,7 +470,7 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
-        if parsed_provider != provider or not fallback_id.endswith(":0"):
+        if parsed_provider != provider or not fallback_id.endswith(f":{artifact_index}"):
             return sessions
         corrupted_sessions: list[ParsedSession] = []
         for session in sessions:
@@ -495,6 +503,63 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
     assert not receipt.complete
     assert any(
         witness.validation_error == "artifact message coverage is incomplete"
+        for entry in receipt.entries
+        for witness in entry.parser_witnesses
+    )
+
+
+@pytest.mark.parametrize("provider", sorted(wire_formats.PROVIDER_WIRE_FORMATS))
+def test_parser_witness_rejects_messages_rehomed_to_another_raw_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+    rehomed_sessions = 0
+
+    def rehome_to_message_id(
+        parsed_provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        nonlocal rehomed_sessions
+        sessions = original_parse_payload(
+            parsed_provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if parsed_provider != provider or not fallback_id.endswith(":0"):
+            return sessions
+        corrupted_sessions: list[ParsedSession] = []
+        for session in sessions:
+            foreign_raw_identity = next(
+                (
+                    message.provider_message_id or message.text
+                    for message in session.messages
+                    if message.provider_message_id or (isinstance(message.text, str) and message.text)
+                ),
+                None,
+            )
+            if foreign_raw_identity is None or foreign_raw_identity == session.provider_session_id:
+                corrupted_sessions.append(session)
+                continue
+            rehomed_sessions += 1
+            corrupted_sessions.append(session.model_copy(update={"provider_session_id": foreign_raw_identity}))
+        return corrupted_sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", rehome_to_message_id)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+
+    assert rehomed_sessions > 0
+    assert not receipt.complete
+    assert any(
+        witness.artifact_kind == "baseline" and witness.validation_error == "artifact message coverage is incomplete"
         for entry in receipt.entries
         for witness in entry.parser_witnesses
     )
