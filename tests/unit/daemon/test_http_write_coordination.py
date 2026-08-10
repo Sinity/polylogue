@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+from polylogue.daemon.http import _REBUILD_INDEX_WRITE_TIMEOUT_S, DaemonAPIHandler, DaemonAPIHTTPServer
 from polylogue.daemon.web_auth import WebCredentialScope
 
 
@@ -153,7 +153,7 @@ def test_rebuild_index_route_uses_the_bridge_run_sync_with_timeout_writer_path(m
         with patch.object(handler, "_send_json") as send_json:
             handler._do_post_impl()
 
-    assert timeline == ["run_sync_with_timeout:http.maintenance.rebuild-index:None"]
+    assert timeline == [f"run_sync_with_timeout:http.maintenance.rebuild-index:{_REBUILD_INDEX_WRITE_TIMEOUT_S}"]
     request = rebuild.call_args.args[0]
     assert request.raw_ids == ("raw-1",)
     assert request.promote is False

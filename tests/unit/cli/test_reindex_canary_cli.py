@@ -16,6 +16,10 @@ import polylogue.cli.commands.maintenance._reindex_canary as reindex_canary_cli
 from polylogue.cli.click_app import cli
 from polylogue.core.enums import Provider
 from polylogue.maintenance import reindex_canary as reindex_canary_module
+from polylogue.maintenance.archive_verification import (
+    REINDEX_CANARY_ACCEPTANCE_CHECKS,
+    REINDEX_CANARY_ACCEPTANCE_PROFILE,
+)
 from polylogue.maintenance.rebuild_index import (
     RebuildIndexRequest,
     rebuild_index_from_source_sync,
@@ -1130,8 +1134,21 @@ def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> Ca
                 selected_session_ids=selection.selected_session_ids,
             ),
             "source_evidence_after": "0" * 64,
+            "canary_acceptance": _canary_acceptance_attestation(),
         },
     )
+
+
+def _canary_acceptance_attestation() -> dict[str, object]:
+    """Return the daemon-owned acceptance evidence required of canary receipts."""
+
+    return {
+        "profile": REINDEX_CANARY_ACCEPTANCE_PROFILE,
+        "results": [
+            {"name": name, "status": "ok", "summary": "fixture acceptance", "count": 0}
+            for name in REINDEX_CANARY_ACCEPTANCE_CHECKS
+        ],
+    }
 
 
 def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
@@ -1173,6 +1190,7 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
                 selected_session_ids=result.selection.selected_session_ids,
             ),
             "source_evidence_after": "0" * 64,
+            "canary_acceptance": _canary_acceptance_attestation(),
         },
     )
 
@@ -1869,6 +1887,7 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
             source_snapshot="snapshot",
             selected_session_ids=selection.selected_session_ids,
         )
+        canary_acceptance = _canary_acceptance_attestation()
 
         def to_dict(self) -> dict[str, object]:
             return {
@@ -1878,6 +1897,7 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
                 "materialized": self.materialized,
                 "generation": self.generation,
                 "selection_evidence": self.selection_evidence,
+                "canary_acceptance": self.canary_acceptance,
             }
 
     def fake_rebuild(**request: object) -> Receipt:
@@ -1926,4 +1946,5 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
         "materialized": Receipt.materialized,
         "generation": Receipt.generation,
         "selection_evidence": Receipt.selection_evidence,
+        "canary_acceptance": Receipt.canary_acceptance,
     }
