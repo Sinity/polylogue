@@ -131,6 +131,28 @@ def require_rebuild_schema_currency(root: Path) -> dict[str, object]:
     return diagnostic
 
 
+def _require_message_owner_scope_backfill(
+    root: Path,
+    request: RebuildIndexRequest,
+    *,
+    candidate_index_path: Path | None = None,
+) -> None:
+    """Admit every replacement candidate against current durable owner scopes."""
+    from polylogue.maintenance.message_owner_scope_backfill import (
+        MessageOwnerScopeBackfillError,
+        validate_message_owner_scope_for_index_replacement,
+    )
+
+    try:
+        validate_message_owner_scope_for_index_replacement(
+            root,
+            receipt_path=request.message_owner_scope_backfill_receipt_path,
+            candidate_index_path=candidate_index_path,
+        )
+    except MessageOwnerScopeBackfillError as exc:
+        raise RuntimeError(f"reindex message-owner scope gate failed: {exc}") from exc
+
+
 def validate_rebuild_source_admission(root: Path, location: ArchiveLocation) -> None:
     """Validate frozen source authority under the owned archive identity."""
     from polylogue.sources.revision_backfill import validate_frozen_source_authority
@@ -1360,19 +1382,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     require_rebuild_schema_currency(root)
     pre_ownership_raw_count = count_source_raw_sessions(root)
     receipt_free_empty_probe = request.operation_id is None and pre_ownership_raw_count == 0
-    if request.promote:
-        from polylogue.maintenance.message_owner_scope_backfill import (
-            MessageOwnerScopeBackfillError,
-            validate_message_owner_scope_for_index_replacement,
-        )
-
-        try:
-            validate_message_owner_scope_for_index_replacement(
-                root,
-                receipt_path=request.message_owner_scope_backfill_receipt_path,
-            )
-        except MessageOwnerScopeBackfillError as exc:
-            raise RuntimeError(f"reindex message-owner scope gate failed: {exc}") from exc
+    _require_message_owner_scope_backfill(root, request)
     initial_provenance_error: RebuildProvenanceError | None = None
     consumed_evidence: dict[str, object] = {}
     if not receipt_free_empty_probe:
@@ -1468,19 +1478,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
             except RebuildProvenanceError as exc:
                 _mark_rebuild_transaction_stale_after_provenance_failure(root, request.operation_id, exc)
                 raise
-            if request.promote:
-                from polylogue.maintenance.message_owner_scope_backfill import (
-                    MessageOwnerScopeBackfillError,
-                    validate_message_owner_scope_for_index_replacement,
-                )
-
-                try:
-                    validate_message_owner_scope_for_index_replacement(
-                        root,
-                        receipt_path=request.message_owner_scope_backfill_receipt_path,
-                    )
-                except MessageOwnerScopeBackfillError as exc:
-                    raise RuntimeError(f"reindex message-owner scope gate failed: {exc}") from exc
+            _require_message_owner_scope_backfill(root, request)
             return await _rebuild_index_from_source_owned(
                 request,
                 root=root,
@@ -2077,20 +2075,11 @@ async def _rebuild_index_from_source_owned(
                     index_path_override=Path(generation.index_path),
                 ),
             )
-            if request.promote:
-                from polylogue.maintenance.message_owner_scope_backfill import (
-                    MessageOwnerScopeBackfillError,
-                    validate_message_owner_scope_for_index_replacement,
-                )
-
-                try:
-                    validate_message_owner_scope_for_index_replacement(
-                        root,
-                        receipt_path=request.message_owner_scope_backfill_receipt_path,
-                        candidate_index_path=Path(generation.index_path),
-                    )
-                except MessageOwnerScopeBackfillError as exc:
-                    raise RuntimeError(f"reindex message-owner scope gate failed: {exc}") from exc
+            _require_message_owner_scope_backfill(
+                root,
+                request,
+                candidate_index_path=Path(generation.index_path),
+            )
             terminal_timings_s["terminal.reindex_acceptance"] = time.perf_counter() - terminal_started_at
             logger.info(
                 "rebuild_terminal_stage_complete",

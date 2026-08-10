@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.maintenance.message_owner_scope_backfill as owner_backfill_module
 from polylogue.archive.message.roles import Role
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.daemon import bulk_rebuild
 from polylogue.maintenance.message_owner_scope_backfill import (
@@ -16,13 +18,20 @@ from polylogue.maintenance.message_owner_scope_backfill import (
     apply_message_owner_scope_backfill,
     census_message_owner_scope_backfill,
     validate_message_owner_scope_backfill_receipt,
+    validate_message_owner_scope_for_index_replacement,
     write_message_owner_scope_backfill_plan,
 )
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_annotation, upsert_mark
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -362,3 +371,204 @@ def test_complete_receipt_is_consumable_after_index_rows_are_deleted(
     assert {row["target_id"] for row in marks} == {message_id for message_id, _ in message_rows}
     assert {row["target_id"] for row in annotations} == {message_id for message_id, _ in message_rows}
     assert {row["session_id"] for row in marks} == {session_id for _, session_id in message_rows}
+
+
+def test_stale_active_index_schema_can_backfill_and_validate_a_current_candidate(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The durable pass may start from an obsolete derived generation.
+
+    Anti-vacuity: this uses the production census, transaction, receipt, and
+    candidate-validation paths over the fixture's file-backed archive.  Restoring
+    the old active-index currency rejection makes the initial census fail.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] - 1}")
+        conn.commit()
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+
+    apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+    candidate = tmp_path / "candidate-index.db"
+    with sqlite3.connect(root / "index.db") as source, sqlite3.connect(candidate) as target:
+        source.backup(target)
+    with sqlite3.connect(candidate) as conn:
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
+        conn.commit()
+
+    assert (
+        validate_message_owner_scope_backfill_receipt(root, receipt, candidate_index_path=candidate)["complete"] is True
+    )
+
+
+def test_completed_message_owner_backfill_requires_a_receipt_for_index_replacement(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A receipt authorizes only the completed durable state, never a planned one."""
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+
+    with pytest.raises(MessageOwnerScopeBackfillError, match="complete receipt is required"):
+        validate_message_owner_scope_for_index_replacement(root, receipt_path=None)
+
+
+def test_no_promote_rebuild_runs_candidate_message_owner_admission_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real inactive generation must be admitted before the no-promote route returns.
+
+    Anti-vacuity: the raw payload is persisted through ``ArchiveStore`` and the
+    production rebuild constructs a real generation.  Dropping the terminal
+    gate from no-promote rebuilds leaves ``candidate_paths`` empty.
+    """
+
+    root = tmp_path / "candidate-archive"
+    initialize_active_archive_root(root)
+    payload = (
+        b"\n".join(
+            (
+                b'{"type":"session_meta","payload":{"id":"candidate-gate"}}',
+                b'{"type":"response_item","payload":{"type":"message","id":"candidate-gate-m0",'
+                b'"role":"user","content":[{"type":"input_text","text":"candidate gate"}]}}',
+            )
+        )
+        + b"\n"
+    )
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="candidate-gate.jsonl",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_source_key="codex-session:candidate-gate",
+                kind=RawRevisionKind.FULL,
+                source_revision="candidate-gate-v1",
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.ASSERTED,
+            ),
+        )
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET baseline_raw_id = raw_id, revision_authority = 'byte_proven'")
+        conn.commit()
+    backfill_historical_revision_evidence(root)
+    schema_receipt = write_valid_rebuild_receipt(root, tmp_path / "schema-receipt.json")
+    candidate_paths: list[Path] = []
+    original_gate = owner_backfill_module.validate_message_owner_scope_for_index_replacement
+
+    def record_candidate_gate(
+        archive_root: Path, *, receipt_path: Path | None, candidate_index_path: Path | None = None
+    ) -> None:
+        original_gate(archive_root, receipt_path=receipt_path, candidate_index_path=candidate_index_path)
+        if candidate_index_path is not None:
+            candidate_paths.append(candidate_index_path)
+
+    monkeypatch.setattr(
+        owner_backfill_module, "validate_message_owner_scope_for_index_replacement", record_candidate_gate
+    )
+    rebuilt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            promote=False,
+            schema_inference_receipt_path=schema_receipt,
+        )
+    )
+
+    assert rebuilt.generation["state"] == "inactive"
+    assert candidate_paths and candidate_paths[0].is_file()
+
+
+def test_deleted_message_assertions_do_not_block_the_owner_scope_census(workspace_env: dict[str, Path]) -> None:
+    """Soft-deleted overlays are absent from both the census and replacement gate."""
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute("UPDATE assertions SET status = 'deleted' WHERE kind IN ('mark', 'annotation')")
+        conn.commit()
+
+    assert census_message_owner_scope_backfill(root).rows == ()
+    validate_message_owner_scope_for_index_replacement(root, receipt_path=None)
+
+
+def test_prepared_recovery_rejects_a_nonidentity_assertion_change_after_commit(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Commit-before-receipt recovery binds the entire durable assertion row.
+
+    Anti-vacuity: this interrupts the production receipt writer after its
+    transaction commits, mutates only ``body_text`` in SQLite, then re-enters
+    the production recovery path.  Identity-only recovery would publish a
+    receipt for the altered durable state.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    with monkeypatch.context() as post_commit_failure:
+        post_commit_failure.setattr(
+            "polylogue.maintenance.message_owner_scope_backfill._final_receipt",
+            lambda **_kwargs: (_ for _ in ()).throw(OSError("simulated receipt fsync failure")),
+        )
+        with pytest.raises(OSError, match="receipt fsync"):
+            apply_message_owner_scope_backfill(
+                root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+            )
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute("UPDATE assertions SET body_text = 'changed after commit' WHERE kind = 'annotation' LIMIT 1")
+        conn.commit()
+
+    with pytest.raises(MessageOwnerScopeBackfillError, match="does not prove the committed durable state"):
+        apply_message_owner_scope_backfill(
+            root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+        )
+
+
+def test_prepared_recovery_preserves_a_partial_receipt_before_republishing(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-commit partial receipt is quarantined and recovered without reapplying SQL."""
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+
+    def write_partial_then_fail(**kwargs: object) -> object:
+        receipt_path = kwargs["receipt_path"]
+        assert isinstance(receipt_path, Path)
+        receipt_path.write_text('{"partial":', encoding="utf-8")
+        raise OSError("simulated partial receipt publication failure")
+
+    with monkeypatch.context() as post_commit_failure:
+        post_commit_failure.setattr(
+            "polylogue.maintenance.message_owner_scope_backfill._final_receipt", write_partial_then_fail
+        )
+        with pytest.raises(OSError, match="partial receipt"):
+            apply_message_owner_scope_backfill(
+                root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+            )
+
+    recovered = apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+
+    fragment = receipt.with_name(receipt.name + ".partial")
+    assert recovered.terminal_state == "committed"
+    assert json.loads(receipt.read_text(encoding="utf-8"))["recovered_receipt_fragment"]["path"] == str(fragment)
+    assert fragment.read_text(encoding="utf-8") == '{"partial":'

@@ -40,6 +40,38 @@ TOOL_VERSION = "message-owner-scope-backfill-v1"
 PLAN_FORMAT = "polylogue.message-owner-scope-backfill-plan.v1"
 RECEIPT_FORMAT = "polylogue.message-owner-scope-backfill-receipt.v1"
 
+_ACTIVE_MESSAGE_ASSERTION_COLUMNS = (
+    "assertion_id",
+    "scope_ref",
+    "target_ref",
+    "key",
+    "kind",
+    "value_json",
+    "body_text",
+    "author_ref",
+    "author_kind",
+    "evidence_refs_json",
+    "status",
+    "visibility",
+    "confidence",
+    "staleness_json",
+    "context_policy_json",
+    "supersedes_json",
+    "created_at_ms",
+    "updated_at_ms",
+)
+_ACTIVE_MESSAGE_ASSERTION_SELECT = """
+    SELECT assertion_id, scope_ref, target_ref, key, kind, value_json, body_text,
+           author_ref, author_kind, evidence_refs_json, status, visibility,
+           confidence, staleness_json, context_policy_json, supersedes_json,
+           created_at_ms, updated_at_ms
+    FROM assertions
+    WHERE target_ref LIKE 'message:%'
+      AND kind IN ('mark', 'annotation')
+      AND COALESCE(status, 'active') != 'deleted'
+    ORDER BY assertion_id
+"""
+
 
 class MessageOwnerScopeBackfillError(RuntimeError):
     """Raised when the ownership backfill cannot proceed safely."""
@@ -60,6 +92,7 @@ class MessageOwnerScopeBackfillRow:
     target_id: str
     kind: str
     scope_ref: str | None
+    assertion_snapshot: dict[str, object]
     indexed_owner_ids: tuple[str, ...]
     disposition: MessageOwnerScopeDisposition
 
@@ -76,6 +109,7 @@ class MessageOwnerScopeBackfillRow:
             "target_id": self.target_id,
             "kind": self.kind,
             "scope_ref": self.scope_ref,
+            "assertion_snapshot": self.assertion_snapshot,
             "indexed_owner_ids": list(self.indexed_owner_ids),
             "disposition": self.disposition.value,
         }
@@ -86,12 +120,28 @@ class MessageOwnerScopeBackfillRow:
             owners = raw["indexed_owner_ids"]
             if not isinstance(owners, list) or not all(isinstance(item, str) for item in owners):
                 raise TypeError("indexed_owner_ids")
+            snapshot_raw = raw["assertion_snapshot"]
+            if not isinstance(snapshot_raw, dict) or set(snapshot_raw) != set(_ACTIVE_MESSAGE_ASSERTION_COLUMNS):
+                raise TypeError("assertion_snapshot")
+            snapshot = _assertion_snapshot(cast(Mapping[str, object], snapshot_raw))
+            assertion_id = _required_text(raw, "assertion_id")
+            target_ref = _required_text(raw, "target_ref")
+            kind = _required_text(raw, "kind")
+            scope_ref = _optional_text(raw, "scope_ref")
+            if (
+                snapshot["assertion_id"] != assertion_id
+                or snapshot["target_ref"] != target_ref
+                or snapshot["kind"] != kind
+                or snapshot["scope_ref"] != scope_ref
+            ):
+                raise TypeError("assertion_snapshot identity")
             return cls(
-                assertion_id=_required_text(raw, "assertion_id"),
-                target_ref=_required_text(raw, "target_ref"),
+                assertion_id=assertion_id,
+                target_ref=target_ref,
                 target_id=_required_text(raw, "target_id"),
-                kind=_required_text(raw, "kind"),
-                scope_ref=_optional_text(raw, "scope_ref"),
+                kind=kind,
+                scope_ref=scope_ref,
+                assertion_snapshot=snapshot,
                 indexed_owner_ids=tuple(cast(str, item) for item in owners),
                 disposition=MessageOwnerScopeDisposition(_required_text(raw, "disposition")),
             )
@@ -190,6 +240,35 @@ def _optional_text(raw: Mapping[str, object], key: str) -> str | None:
     return value
 
 
+def _assertion_snapshot(raw: Mapping[str, object]) -> dict[str, object]:
+    """Return one canonical full durable assertion row, or reject a lossy one."""
+    if set(raw) != set(_ACTIVE_MESSAGE_ASSERTION_COLUMNS):
+        raise TypeError("assertion snapshot columns")
+    snapshot: dict[str, object] = {}
+    for column in _ACTIVE_MESSAGE_ASSERTION_COLUMNS:
+        value = raw[column]
+        if value is not None and (not isinstance(value, (str, int, float)) or isinstance(value, bool)):
+            raise TypeError(f"assertion snapshot {column}")
+        snapshot[column] = value
+    if not isinstance(snapshot["assertion_id"], str) or not snapshot["assertion_id"]:
+        raise TypeError("assertion_id")
+    if not isinstance(snapshot["target_ref"], str) or not snapshot["target_ref"]:
+        raise TypeError("target_ref")
+    if not isinstance(snapshot["kind"], str) or not snapshot["kind"]:
+        raise TypeError("kind")
+    if snapshot["scope_ref"] is not None and not isinstance(snapshot["scope_ref"], str):
+        raise TypeError("scope_ref")
+    return snapshot
+
+
+def _active_message_assertion_snapshots(connection: sqlite3.Connection) -> list[dict[str, object]]:
+    """Read complete active message assertion rows in their durable order."""
+    return [
+        _assertion_snapshot(dict(zip(_ACTIVE_MESSAGE_ASSERTION_COLUMNS, row, strict=True)))
+        for row in connection.execute(_ACTIVE_MESSAGE_ASSERTION_SELECT).fetchall()
+    ]
+
+
 def _code_sha() -> str:
     return VERSION_INFO.commit or "unknown"
 
@@ -216,12 +295,10 @@ def _archive_binding(root: Path) -> tuple[dict[str, object], dict[str, int]]:
     index_path = location.active_index_path
     schema = {
         "user": _schema_version(user_path),
-        "index": _schema_version(index_path),
+        "active_index": _schema_version(index_path),
     }
     if schema["user"] != ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]:
         raise MessageOwnerScopeBackfillError("user.db schema is not current; migrate it before the backfill")
-    if schema["index"] != ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]:
-        raise MessageOwnerScopeBackfillError("active index schema is not current; rebuild compatibility is unsafe")
     return (
         {
             "archive_root": str(root.resolve()),
@@ -241,6 +318,7 @@ def _classify_row(
     target_id: str,
     kind: str,
     scope_ref: str | None,
+    assertion_snapshot: dict[str, object],
     indexed_owner_ids: tuple[str, ...],
 ) -> MessageOwnerScopeBackfillRow:
     scoped_owner: str | None = None
@@ -268,6 +346,7 @@ def _classify_row(
         target_id=target_id,
         kind=kind,
         scope_ref=scope_ref,
+        assertion_snapshot=assertion_snapshot,
         indexed_owner_ids=indexed_owner_ids,
         disposition=disposition,
     )
@@ -298,18 +377,11 @@ def census_message_owner_scope_backfill(archive_root: Path) -> MessageOwnerScope
     user, index = _census_connections(root)
     try:
         try:
-            user_rows = user.execute(
-                """
-                SELECT assertion_id, target_ref, kind, scope_ref
-                FROM assertions
-                WHERE target_ref LIKE 'message:%' AND kind IN ('mark', 'annotation')
-                ORDER BY assertion_id
-                """
-            ).fetchall()
+            user_rows = _active_message_assertion_snapshots(user)
             rows: list[MessageOwnerScopeBackfillRow] = []
-            for assertion_id_raw, target_ref_raw, kind_raw, scope_ref_raw in user_rows:
-                assertion_id = str(assertion_id_raw)
-                target_ref = str(target_ref_raw)
+            for snapshot in user_rows:
+                assertion_id = _required_text(snapshot, "assertion_id")
+                target_ref = _required_text(snapshot, "target_ref")
                 target_id = target_ref[len("message:") :] if target_ref.startswith("message:") else ""
                 owners = tuple(
                     sorted(
@@ -327,8 +399,9 @@ def census_message_owner_scope_backfill(archive_root: Path) -> MessageOwnerScope
                         assertion_id=assertion_id,
                         target_ref=target_ref,
                         target_id=target_id,
-                        kind=str(kind_raw),
-                        scope_ref=str(scope_ref_raw) if scope_ref_raw is not None else None,
+                        kind=_required_text(snapshot, "kind"),
+                        scope_ref=_optional_text(snapshot, "scope_ref"),
+                        assertion_snapshot=snapshot,
                         indexed_owner_ids=owners,
                     )
                 )
@@ -372,7 +445,11 @@ def _write_immutable_json(path: Path, payload: Mapping[str, object], *, label: s
     finally:
         if descriptor != -1:
             os.close(descriptor)
-    directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    _fsync_directory(path.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    directory = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(directory)
     finally:
@@ -429,22 +506,7 @@ def _durable_message_assertion_state(root: Path) -> dict[str, object]:
     conn: sqlite3.Connection | None = None
     try:
         conn = open_readonly_connection(root / "user.db")
-        rows = [
-            {
-                "assertion_id": str(assertion_id),
-                "target_ref": str(target_ref),
-                "kind": str(kind),
-                "scope_ref": None if scope_ref is None else str(scope_ref),
-            }
-            for assertion_id, target_ref, kind, scope_ref in conn.execute(
-                """
-                SELECT assertion_id, target_ref, kind, scope_ref
-                FROM assertions
-                WHERE target_ref LIKE 'message:%' AND kind IN ('mark', 'annotation')
-                ORDER BY assertion_id
-                """
-            )
-        ]
+        rows = _active_message_assertion_snapshots(conn)
     except sqlite3.Error as exc:
         raise MessageOwnerScopeBackfillError("could not read durable message assertion state") from exc
     finally:
@@ -462,6 +524,7 @@ def _expected_after_plan(plan: MessageOwnerScopeBackfillPlan) -> MessageOwnerSco
             target_id=row.target_id,
             kind=row.kind,
             scope_ref=f"session:{row.exact_owner}",
+            assertion_snapshot={**row.assertion_snapshot, "scope_ref": f"session:{row.exact_owner}"},
             indexed_owner_ids=row.indexed_owner_ids,
             disposition=MessageOwnerScopeDisposition.ALREADY_SCOPED,
         )
@@ -503,6 +566,7 @@ def _write_prepared_marker(path: Path, *, plan: MessageOwnerScopeBackfillPlan, b
         "before_counts": plan.counts,
         "expected_after_plan_digest": _expected_after_plan(plan).plan_digest,
         "backup_manifest": dict(backup),
+        "receipt_path": str(path.resolve()),
         "prepared_at_ms": int(time.time() * 1000),
     }
     payload["receipt_sha256"] = _receipt_digest(payload)
@@ -519,6 +583,7 @@ def _final_receipt(
     updated_count: int,
     durable_message_assertion_state: Mapping[str, object],
     recovered_from_prepared: bool = False,
+    recovered_receipt_fragment: Mapping[str, object] | None = None,
 ) -> None:
     payload: dict[str, object] = {
         "format": RECEIPT_FORMAT,
@@ -538,6 +603,9 @@ def _final_receipt(
         "updated_count": updated_count,
         "unresolved_denominator": after_plan.unresolved_denominator,
         "recovered_from_prepared": recovered_from_prepared,
+        "recovered_receipt_fragment": (
+            dict(recovered_receipt_fragment) if recovered_receipt_fragment is not None else None
+        ),
         "completed_at_ms": int(time.time() * 1000),
     }
     payload["receipt_sha256"] = _receipt_digest(payload)
@@ -584,6 +652,7 @@ def _recover_prepared_receipt(
         or raw.get("archive_identity") != plan.archive_identity
         or raw.get("schema_binding") != plan.schema_binding
         or raw.get("backup_manifest") != dict(backup)
+        or raw.get("receipt_path") != str(receipt_path.resolve())
         or raw.get("expected_after_plan_digest") != expected_after.plan_digest
     ):
         raise MessageOwnerScopeBackfillError("prepared message-owner backfill marker does not match this apply")
@@ -592,6 +661,7 @@ def _recover_prepared_receipt(
         raise MessageOwnerScopeBackfillError(
             "prepared message-owner backfill marker does not prove the committed durable state"
         )
+    recovered_receipt_fragment = _preserve_partial_receipt(receipt_path)
     _final_receipt(
         plan=plan,
         after_plan=current,
@@ -600,6 +670,7 @@ def _recover_prepared_receipt(
         updated_count=len(plan.exact_rows),
         durable_message_assertion_state=_durable_message_assertion_state(root),
         recovered_from_prepared=True,
+        recovered_receipt_fragment=recovered_receipt_fragment,
     )
     marker.unlink(missing_ok=True)
     return MessageOwnerScopeBackfillReport(
@@ -611,6 +682,36 @@ def _recover_prepared_receipt(
         backup_manifest=Path(str(backup["path"])),
         receipt_path=receipt_path,
     )
+
+
+def _preserve_partial_receipt(receipt_path: Path) -> dict[str, object] | None:
+    """Quarantine a failed terminal publication without overwriting its evidence."""
+    if not receipt_path.exists():
+        return None
+    try:
+        raw = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raw = None
+    if (
+        isinstance(raw, dict)
+        and raw.get("format") == RECEIPT_FORMAT
+        and raw.get("phase") == "terminal"
+        and raw.get("receipt_sha256") == _receipt_digest(raw)
+    ):
+        raise MessageOwnerScopeBackfillError(
+            "prepared message-owner backfill marker coexists with an immutable terminal receipt"
+        )
+    fragment = receipt_path.with_name(receipt_path.name + ".partial")
+    if fragment.exists():
+        raise MessageOwnerScopeBackfillError(
+            f"prepared message-owner backfill receipt fragment already exists: {fragment}"
+        )
+    try:
+        os.replace(receipt_path, fragment)
+        _fsync_directory(receipt_path.parent)
+    except OSError as exc:
+        raise MessageOwnerScopeBackfillError("could not preserve partial message-owner backfill receipt") from exc
+    return _manifest_identity(fragment)
 
 
 def apply_message_owner_scope_backfill(
@@ -634,7 +735,8 @@ def apply_message_owner_scope_backfill(
         raise MessageOwnerScopeBackfillError(
             "message-owner backfill apply requires a verified user-tier backup manifest"
         )
-    if receipt_path.exists():
+    marker_path = receipt_path.with_name(receipt_path.name + ".prepared")
+    if receipt_path.exists() and not marker_path.exists():
         raise MessageOwnerScopeBackfillError(f"immutable message-owner backfill receipt already exists: {receipt_path}")
     if running_daemon_pid(_offline_config(root)) is not None:
         raise MessageOwnerScopeBackfillError("message-owner backfill requires the daemon to be stopped")
@@ -685,6 +787,7 @@ def apply_message_owner_scope_backfill(
                         SET scope_ref = ?
                         WHERE assertion_id = ? AND scope_ref IS NULL
                           AND target_ref = ? AND kind IN ('mark', 'annotation')
+                          AND COALESCE(status, 'active') != 'deleted'
                         """,
                         (f"session:{owner_id}", row.assertion_id, row.target_ref),
                     )
@@ -753,7 +856,12 @@ def validate_message_owner_scope_backfill_receipt(
     schema = raw.get("schema_binding")
     if not isinstance(schema, dict) or schema.get("user") != _schema_version(root / "user.db"):
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt user schema binding is stale")
-    if candidate_index_path is not None and schema.get("index") != _schema_version(candidate_index_path):
+    if schema.get("active_index") != _schema_version(ArchiveLocation.resolve(root).active_index_path):
+        raise MessageOwnerScopeBackfillError("message-owner backfill receipt active index schema binding is stale")
+    if (
+        candidate_index_path is not None
+        and _schema_version(candidate_index_path) != ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
+    ):
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt candidate index schema is stale")
     durable_state = raw.get("durable_message_assertion_state")
     if not isinstance(durable_state, dict) or durable_state != _durable_message_assertion_state(root):
@@ -775,6 +883,7 @@ def _validate_candidate_message_owners(root: Path, candidate_index_path: Path) -
             SELECT assertion_id, target_ref, scope_ref
             FROM assertions
             WHERE target_ref LIKE 'message:%' AND kind IN ('mark', 'annotation')
+              AND COALESCE(status, 'active') != 'deleted'
             ORDER BY assertion_id
             """
         ).fetchall()
@@ -819,9 +928,11 @@ def validate_message_owner_scope_for_index_replacement(
         raise MessageOwnerScopeBackfillError(
             "message-owner scope backfill is incomplete against the current active index"
         )
-    if current.exact_rows and receipt_path is None:
+    if current.exact_rows:
+        raise MessageOwnerScopeBackfillError("message-owner scope backfill must complete before index replacement")
+    if current.rows and receipt_path is None:
         raise MessageOwnerScopeBackfillError(
-            "message-owner scope backfill receipt is required before index replacement"
+            "message-owner scope backfill complete receipt is required after backfill before index replacement"
         )
     if receipt_path is not None:
         validate_message_owner_scope_backfill_receipt(

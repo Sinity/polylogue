@@ -360,19 +360,27 @@ polylogue ops maintenance message-owner-scope-backfill --apply \
 
 Apply rechecks the plan digest, archive identity, active-index and user schema
 bindings, and authenticated user-tier backup before `BEGIN IMMEDIATE`. The
-receipt is self-hashed and complete only when its unresolved denominator is
-zero; it also fingerprints the current durable message assertions. Missing
-owners remain typed blockers. An index replacement with legacy unscoped rows
-requires a complete receipt; every promoting rebuild route, including the
-daemon's automatic bulk rebuild, takes the same gate. Before promotion, the
-gate proves each durable message assertion has exactly one matching owner in
-the actual candidate index, not merely a matching candidate schema. Apply
-first fsyncs an immutable `.prepared` marker, commits the user-tier transaction
-atomically, and fsyncs the terminal receipt before removing that marker. A
-retry with the same plan, backup, and receipt path can finalize a prepared
-marker only when the current durable state exactly matches the marker's
-expected committed state; all other prepared states fail closed for operator
-recovery. No index or source-tier files are written by this operation.
+active index may be an obsolete derived generation, but its exact schema binding
+remains part of the plan so an intervening active-generation change still
+refuses the write. The receipt is self-hashed and complete only when its
+unresolved denominator is zero; it fingerprints complete active durable message
+assertion rows, excluding soft-deleted assertions. Missing owners remain typed
+blockers.
+
+Every rebuild candidate, including a no-promote rebuild and the daemon's bulk
+rebuild route, takes the same gate before candidate creation, after archive
+ownership acquisition, and before candidate acceptance. Unscoped rows must be
+backfilled first. Once active durable message assertions are scoped, the gate
+requires the complete backfill receipt and proves each assertion has exactly one
+matching owner in the actual current-schema candidate index, not merely a
+matching candidate schema. Apply first fsyncs an immutable `.prepared` marker,
+commits the user-tier transaction atomically, and fsyncs the terminal receipt
+before removing that marker. A retry with the same plan, backup, and receipt
+path can finalize a prepared marker only when the complete current durable state
+exactly matches the marker's expected committed state. If receipt publication
+left a partial file, recovery preserves it as a `.partial` artifact before
+publishing the terminal receipt; all other prepared states fail closed for
+operator recovery. No index or source-tier files are written by this operation.
 
 ### `polylogue ops maintenance preview` — staleness inventory
 
