@@ -152,7 +152,7 @@ class RebuildSafetyResult:
         return tuple(name for name, status in self.stage_statuses().items() if status is OutcomeStatus.ERROR)
 
     def extra_payload(self) -> dict[str, object]:
-        payload = {
+        payload: dict[str, object] = {
             "safety_report": self.safety.format_report(),
             "differential_report": self.differential.format_report(),
         }

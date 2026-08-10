@@ -408,7 +408,10 @@ def _incremental_ingest_and_converge(archive_root: Path, raw_ids: list[str]) -> 
         conn.close()
 
     insights_stage = make_insights_stage(index_db)
-    insights_stage.execute_sessions(session_ids)
+    execute_sessions = insights_stage.execute_sessions
+    if execute_sessions is None:
+        raise RuntimeError("insights convergence stage does not expose session-scoped execution")
+    execute_sessions(session_ids)
 
 
 def run_rebuild_differential() -> RebuildComparisonResult:
