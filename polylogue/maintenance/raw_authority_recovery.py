@@ -15,8 +15,8 @@ import os
 import sqlite3
 import tempfile
 import uuid
-from collections.abc import Mapping
-from contextlib import closing
+from collections.abc import Generator, Mapping
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -492,6 +492,68 @@ def _read_json(path: Path) -> dict[str, object]:
     return {str(key): value for key, value in payload.items()}
 
 
+@contextmanager
+def _durable_receipt_directory(
+    root: Path, receipt_path: Path, *, create: bool
+) -> Generator[tuple[int, str], None, None]:
+    """Open a receipt parent by descriptor without following archive symlinks."""
+
+    candidate = _resolve_receipt_path(root, receipt_path)
+    archive_root = root.expanduser().resolve(strict=False)
+    current_fd = os.open(archive_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in candidate.parent.relative_to(archive_root).parts:
+            try:
+                next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                with suppress(FileExistsError):
+                    os.mkdir(component, mode=0o700, dir_fd=current_fd)
+                next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        yield current_fd, candidate.name
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise RawAuthorityRecoveryError(
+            f"recovery receipt path must remain in the archive-owned durable location: {candidate}"
+        ) from exc
+    finally:
+        os.close(current_fd)
+
+
+def _read_json_at(directory_fd: int, name: str, *, display_path: Path) -> dict[str, object]:
+    try:
+        artifact_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise RawAuthorityRecoveryError(
+            f"recovery artifact is not a regular archive-owned file: {display_path}"
+        ) from exc
+    try:
+        with os.fdopen(artifact_fd, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise RawAuthorityRecoveryError(f"recovery plan or receipt is unreadable: {display_path}") from exc
+    if not isinstance(payload, dict):
+        raise RawAuthorityRecoveryError(f"recovery artifact is not a JSON object: {display_path}")
+    return {str(key): value for key, value in payload.items()}
+
+
+def _read_durable_json(root: Path, path: Path) -> dict[str, object] | None:
+    try:
+        with _durable_receipt_directory(root, path, create=False) as (directory_fd, name):
+            try:
+                return _read_json_at(directory_fd, name, display_path=path)
+            except FileNotFoundError:
+                return None
+    except FileNotFoundError:
+        return None
+
+
 def _int_mapping(payload: object, *, field: str) -> dict[str, int]:
     if not isinstance(payload, dict) or any(not isinstance(value, int) for value in payload.values()):
         raise RawAuthorityRecoveryError(f"raw-authority recovery plan field {field!r} is malformed")
@@ -528,6 +590,55 @@ def _write_immutable(path: Path, payload: dict[str, object], *, digest_field: st
             raise RawAuthorityRecoveryError(f"immutable recovery artifact race changed content: {path}") from None
     finally:
         temporary.unlink(missing_ok=True)
+    return path
+
+
+def _write_durable_immutable(root: Path, path: Path, payload: dict[str, object], *, digest_field: str) -> Path:
+    """Publish a self-hashed receipt without pathname traversal after validation."""
+
+    body = {key: value for key, value in payload.items() if key != digest_field}
+    stamped = {**body, digest_field: _digest(body)}
+    serialized = (json.dumps(stamped, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    with _durable_receipt_directory(root, path, create=True) as (directory_fd, name):
+        try:
+            existing = _read_json_at(directory_fd, name, display_path=path)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if existing != stamped:
+                raise RawAuthorityRecoveryError(
+                    f"immutable recovery artifact already exists with different content: {path}"
+                )
+            return path
+
+        temporary_name = f".{name}.{uuid.uuid4().hex}.tmp"
+        temporary_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            view = memoryview(serialized)
+            while view:
+                view = view[os.write(temporary_fd, view) :]
+            os.fsync(temporary_fd)
+            os.link(
+                temporary_name,
+                name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            os.fsync(directory_fd)
+        except FileExistsError:
+            existing = _read_json_at(directory_fd, name, display_path=path)
+            if existing != stamped:
+                raise RawAuthorityRecoveryError(f"immutable recovery artifact race changed content: {path}") from None
+        finally:
+            os.close(temporary_fd)
+            with suppress(FileNotFoundError):
+                os.unlink(temporary_name, dir_fd=directory_fd)
     return path
 
 
@@ -689,7 +800,8 @@ def _recovery_intent(plan: RawAuthorityRecoveryPlan) -> dict[str, object]:
 
 
 def _write_recovery_intent(plan: RawAuthorityRecoveryPlan) -> Path:
-    return _write_immutable(
+    return _write_durable_immutable(
+        Path(plan.archive_root),
         _intent_path(Path(plan.receipt_path)),
         _recovery_intent(plan),
         digest_field="intent_sha256",
@@ -698,9 +810,9 @@ def _write_recovery_intent(plan: RawAuthorityRecoveryPlan) -> Path:
 
 def _intent_for_plan(plan: RawAuthorityRecoveryPlan) -> dict[str, object] | None:
     path = _intent_path(Path(plan.receipt_path))
-    if not path.is_file():
+    payload = _read_durable_json(Path(plan.archive_root), path)
+    if payload is None:
         return None
-    payload = _read_json(path)
     expected = payload.get("intent_sha256")
     if not isinstance(expected, str) or expected != _digest(
         {key: value for key, value in payload.items() if key != "intent_sha256"}
@@ -752,7 +864,8 @@ def _write_recovery_receipt(
     after_counts: dict[str, int],
     postflight: dict[str, object],
 ) -> Path:
-    return _write_immutable(
+    return _write_durable_immutable(
+        Path(plan.archive_root),
         Path(plan.receipt_path),
         _receipt_payload(plan, before_counts=before_counts, after_counts=after_counts, postflight=postflight),
         digest_field="receipt_sha256",
@@ -969,9 +1082,9 @@ class PruneOrphanedIndexRevisionSeedsActuator(_RecoveryActuator):
 
 def _receipt_for_plan(plan: RawAuthorityRecoveryPlan) -> dict[str, object] | None:
     path = Path(plan.receipt_path)
-    if not path.is_file():
+    payload = _read_durable_json(Path(plan.archive_root), path)
+    if payload is None:
         return None
-    payload = _read_json(path)
     expected = payload.get("receipt_sha256")
     if not isinstance(expected, str) or expected != _digest(
         {key: value for key, value in payload.items() if key != "receipt_sha256"}
@@ -1003,13 +1116,14 @@ def _plan_from_intent(
     operation: RecoveryOperation,
     *,
     operation_id: str,
+    receipt_path: Path | None,
 ) -> RawAuthorityRecoveryPlan:
     root = archive_root.expanduser().resolve(strict=False)
-    receipt_path = _resolve_receipt_path(root, _default_receipt_path(root, operation_id))
-    intent_path = _intent_path(receipt_path)
-    if not intent_path.is_file():
+    selected_receipt_path = _resolve_receipt_path(root, receipt_path or _default_receipt_path(root, operation_id))
+    intent_path = _intent_path(selected_receipt_path)
+    payload = _read_durable_json(root, intent_path)
+    if payload is None:
         raise RawAuthorityRecoveryError(f"no restartable recovery intent exists for operation {operation_id!r}")
-    payload = _read_json(intent_path)
     serialized_plan = payload.get("plan")
     if not isinstance(serialized_plan, dict):
         raise RawAuthorityRecoveryError("existing recovery intent does not contain a complete recovery plan")
@@ -1026,11 +1140,12 @@ def resume_raw_authority_recovery(
     operation: RecoveryOperation | str,
     *,
     operation_id: str,
+    receipt_path: Path | None = None,
 ) -> RawAuthorityRecoveryReport:
     """Resume a durable intent when the external dry-run plan artifact is unavailable."""
 
     selected = RecoveryOperation(operation)
-    plan = _plan_from_intent(archive_root, selected, operation_id=operation_id)
+    plan = _plan_from_intent(archive_root, selected, operation_id=operation_id, receipt_path=receipt_path)
     return apply_raw_authority_recovery(plan)
 
 

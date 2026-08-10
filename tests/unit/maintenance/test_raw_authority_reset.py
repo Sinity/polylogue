@@ -171,20 +171,26 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    receipt_path = tmp_path / ".maintenance-state" / "raw-authority-recovery" / "nested" / "recovery.json"
+    plan = inspect_raw_authority_recovery(
+        tmp_path,
+        RecoveryOperation.RESET_CENSUS,
+        backup_manifest=backup,
+        receipt_path=receipt_path,
+    )
     plan_file = tmp_path / "external-recovery-plan.json"
     write_recovery_plan(plan, plan_file)
 
     from polylogue.maintenance import raw_authority_recovery
 
-    original_write = raw_authority_recovery._write_immutable
+    original_write = raw_authority_recovery._write_durable_immutable
 
-    def fail_final_receipt(path: Path, payload: dict[str, object], *, digest_field: str) -> Path:
+    def fail_final_receipt(root: Path, path: Path, payload: dict[str, object], *, digest_field: str) -> Path:
         if digest_field == "receipt_sha256":
             raise OSError("injected final receipt write failure")
-        return original_write(path, payload, digest_field=digest_field)
+        return original_write(root, path, payload, digest_field=digest_field)
 
-    monkeypatch.setattr(raw_authority_recovery, "_write_immutable", fail_final_receipt)
+    monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", fail_final_receipt)
     with pytest.raises(RawAuthorityRecoveryError, match="injected final receipt write failure"):
         apply_raw_authority_recovery(plan)
 
@@ -195,13 +201,14 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     assert intent_path.is_file()
     assert not receipt_path.exists()
 
-    monkeypatch.setattr(raw_authority_recovery, "_write_immutable", original_write)
+    monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", original_write)
     operation_id = plan.operation_id
     plan_file.unlink()
     recovered = resume_raw_authority_recovery(
         tmp_path,
         RecoveryOperation.RESET_CENSUS,
         operation_id=operation_id,
+        receipt_path=receipt_path,
     )
     assert recovered.status == "already_satisfied"
     assert recovered.receipt_path == receipt_path

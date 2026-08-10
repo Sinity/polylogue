@@ -70,6 +70,7 @@ def raw_authority_recovery_command(
                     env.config.archive_root,
                     selected,
                     operation_id=operation_id,
+                    receipt_path=receipt_file,
                 )
             else:
                 raise click.ClickException("--apply requires --plan-file or --operation-id for an interrupted intent")
