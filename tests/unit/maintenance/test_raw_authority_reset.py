@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 from pathlib import Path
+from typing import Never
 
 import pytest
 
 from polylogue.maintenance.raw_authority_recovery import (
     RawAuthorityRecoveryError,
     RecoveryOperation,
+    _write_recovery_intent,
     apply_raw_authority_recovery,
     inspect_raw_authority_recovery,
     resume_raw_authority_recovery,
@@ -22,6 +25,7 @@ from polylogue.maintenance.raw_authority_reset import (
     prune_orphaned_index_revision_seeds,
     reset_raw_authority_census,
 )
+from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
@@ -248,6 +252,82 @@ def test_recovery_receipt_path_rejects_archive_symlink_escape(tmp_path: Path) ->
         )
 
 
+def test_recovery_fsyncs_each_new_durable_receipt_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production receipt writer durably records every created directory entry."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    receipt_path = tmp_path / ".maintenance-state" / "raw-authority-recovery" / "nested" / "recovery.json"
+    plan = inspect_raw_authority_recovery(
+        tmp_path,
+        RecoveryOperation.RESET_CENSUS,
+        backup_manifest=backup,
+        receipt_path=receipt_path,
+    )
+
+    original_fsync = os.fsync
+    synced_inodes: set[int] = set()
+
+    def record_fsync(fd: int) -> None:
+        synced_inodes.add(os.fstat(fd).st_ino)
+        original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    assert apply_raw_authority_recovery(plan).status == "applied"
+
+    expected = {
+        (tmp_path / ".maintenance-state").stat().st_ino,
+        (tmp_path / ".maintenance-state" / "raw-authority-recovery").stat().st_ino,
+        receipt_path.parent.stat().st_ino,
+    }
+    assert expected <= synced_inodes
+
+
+def test_recovery_receipt_rejects_fifo_before_reading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-regular artifact must not be opened as a receipt stream."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    receipt_path = Path(plan.receipt_path)
+    receipt_path.parent.mkdir(parents=True)
+    os.mkfifo(receipt_path)
+    holder_fd = os.open(receipt_path, os.O_RDWR | os.O_NONBLOCK)
+    os.write(holder_fd, b"{}")
+    try:
+        with pytest.raises(RawAuthorityRecoveryError, match="regular archive-owned file"):
+            apply_raw_authority_recovery(plan)
+    finally:
+        os.close(holder_fd)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
+
+
+def test_uncommitted_recovery_intent_reauthorizes_through_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An intent without committed postflight state is not authorization to mutate."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+
+    _write_recovery_intent(plan)
+
+    def require_authorization(*_args: object, **_kwargs: object) -> Never:
+        raise RuntimeError("executor authorization was required")
+
+    monkeypatch.setattr(OperationExecutor, "authorize", require_authorization)
+    with pytest.raises(RuntimeError, match="executor authorization was required"):
+        apply_raw_authority_recovery(plan)
+
+
 def test_census_reset_dry_run_does_not_mutate_and_apply_requires_backup(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     _seed_ledger(tmp_path / "source.db")
@@ -372,6 +452,39 @@ def test_index_prune_refuses_stale_active_pointer_and_wrong_backup(
         apply_raw_authority_recovery(plan)
     with pytest.raises(RawAuthorityRecoveryError, match="does not match"):
         apply_raw_authority_recovery(plan, backup_manifest=tmp_path / "different.json")
+
+
+def test_index_prune_resume_refuses_changed_retained_seed_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Receipt finalization requires the exact retained target rows from the committed prune."""
+
+    initialize_active_archive_root(tmp_path)
+    active_index = _seed_index_seeds(tmp_path)
+    backup = _backup_authority(tmp_path, monkeypatch, tier="index")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+
+    from polylogue.maintenance import raw_authority_recovery
+
+    original_write = raw_authority_recovery._write_durable_immutable
+
+    def fail_final_receipt(root: Path, path: Path, payload: dict[str, object], *, digest_field: str) -> Path:
+        if digest_field == "receipt_sha256":
+            raise OSError("injected final receipt write failure")
+        return original_write(root, path, payload, digest_field=digest_field)
+
+    monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", fail_final_receipt)
+    with pytest.raises(RawAuthorityRecoveryError, match="injected final receipt write failure"):
+        apply_raw_authority_recovery(plan)
+    monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", original_write)
+
+    with sqlite3.connect(active_index) as conn:
+        conn.execute("UPDATE raw_revision_heads SET session_id = 'changed' WHERE logical_source_key = 'k-r-present'")
+
+    with pytest.raises(RawAuthorityRecoveryError, match="exact committed index seed state"):
+        resume_raw_authority_recovery(
+            tmp_path,
+            RecoveryOperation.PRUNE_INDEX_SEEDS,
+            operation_id=plan.operation_id,
+        )
 
 
 def test_named_compatibility_facade_requires_index_backup(tmp_path: Path) -> None:

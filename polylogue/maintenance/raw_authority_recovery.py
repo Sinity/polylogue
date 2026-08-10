@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat as stat_module
 import tempfile
 import uuid
 from collections.abc import Generator, Mapping
@@ -271,6 +272,32 @@ def _index_candidates(conn: sqlite3.Connection) -> dict[str, tuple[str, ...]]:
     return {"raw_revision_heads": heads, "raw_revision_applications": applications}
 
 
+def _index_seed_digest(conn: sqlite3.Connection, *, excluded_keys: Mapping[str, tuple[str, ...]] | None = None) -> str:
+    """Hash the exact index-seed rows expected after a guarded prune."""
+
+    key_columns = {
+        "raw_revision_heads": "logical_source_key",
+        "raw_revision_applications": "decision_id",
+    }
+    payload: dict[str, object] = {}
+    for table, key_column in key_columns.items():
+        quoted = _quote_identifier(table)
+        columns = [str(row[1]) for row in conn.execute(f"PRAGMA table_info({quoted})")]
+        if not columns:
+            raise RawAuthorityRecoveryError(f"cannot fingerprint missing or malformed table: {table}")
+        excluded = () if excluded_keys is None else excluded_keys.get(table, ())
+        if excluded:
+            placeholders = ", ".join("?" for _ in excluded)
+            rows_query = f"SELECT * FROM {quoted} WHERE {_quote_identifier(key_column)} NOT IN ({placeholders})"
+            rows = conn.execute(rows_query, excluded)
+        else:
+            rows = conn.execute(f"SELECT * FROM {quoted}")
+        values = [[_value_for_digest(value) for value in row] for row in rows]
+        values.sort(key=_canonical_bytes)
+        payload[table] = {"columns": columns, "rows": values}
+    return _digest(payload)
+
+
 def _validate_backup(path: Path | None, *, tier: ArchiveTier, connection: sqlite3.Connection) -> dict[str, object]:
     if path is None:
         raise RawAuthorityRecoveryError(f"{tier.value}-tier backup authority is required for apply")
@@ -341,6 +368,7 @@ class RawAuthorityRecoveryPlan:
     active_generation: dict[str, object]
     before_counts: dict[str, int]
     candidate_keys: dict[str, tuple[str, ...]]
+    post_target_digest: str | None
     protected_digest: str
     backup_authority: dict[str, object] | None
     receipt_path: str
@@ -362,6 +390,7 @@ class RawAuthorityRecoveryPlan:
             "active_generation": self.active_generation,
             "before_counts": self.before_counts,
             "candidate_keys": {key: list(value) for key, value in self.candidate_keys.items()},
+            "post_target_digest": self.post_target_digest,
             "protected_digest": self.protected_digest,
             "backup_authority": self.backup_authority,
             "receipt_path": self.receipt_path,
@@ -400,11 +429,15 @@ class RawAuthorityRecoveryPlan:
             "source_snapshot",
             "active_generation",
             "before_counts",
+            "post_target_digest",
             "protected_digest",
             "receipt_path",
         )
         if any(key not in payload for key in required):
             raise RawAuthorityRecoveryError("raw-authority recovery plan is missing a required field")
+        post_target_digest = payload["post_target_digest"]
+        if post_target_digest is not None and not isinstance(post_target_digest, str):
+            raise RawAuthorityRecoveryError("raw-authority recovery plan post-target digest is malformed")
         return cls(
             operation_id=str(payload["operation_id"]),
             operation=str(payload["operation"]),
@@ -419,6 +452,7 @@ class RawAuthorityRecoveryPlan:
             active_generation=cast(dict[str, object], payload["active_generation"]),
             before_counts=_int_mapping(payload["before_counts"], field="before_counts"),
             candidate_keys=candidates,
+            post_target_digest=post_target_digest,
             protected_digest=str(payload["protected_digest"]),
             backup_authority=(
                 cast(dict[str, object], payload["backup_authority"])
@@ -508,9 +542,16 @@ def _durable_receipt_directory(
             except FileNotFoundError:
                 if not create:
                     raise
-                with suppress(FileExistsError):
+                created = False
+                try:
                     os.mkdir(component, mode=0o700, dir_fd=current_fd)
+                    created = True
+                except FileExistsError:
+                    pass
                 next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current_fd)
+                if created:
+                    os.fsync(current_fd)
+                    os.fsync(next_fd)
             os.close(current_fd)
             current_fd = next_fd
         yield current_fd, candidate.name
@@ -526,7 +567,7 @@ def _durable_receipt_directory(
 
 def _read_json_at(directory_fd: int, name: str, *, display_path: Path) -> dict[str, object]:
     try:
-        artifact_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        artifact_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
     except FileNotFoundError:
         raise
     except OSError as exc:
@@ -534,10 +575,16 @@ def _read_json_at(directory_fd: int, name: str, *, display_path: Path) -> dict[s
             f"recovery artifact is not a regular archive-owned file: {display_path}"
         ) from exc
     try:
+        if not stat_module.S_ISREG(os.fstat(artifact_fd).st_mode):
+            raise RawAuthorityRecoveryError(f"recovery artifact is not a regular archive-owned file: {display_path}")
         with os.fdopen(artifact_fd, "r", encoding="utf-8") as handle:
+            artifact_fd = -1
             payload = json.load(handle)
     except (OSError, ValueError) as exc:
         raise RawAuthorityRecoveryError(f"recovery plan or receipt is unreadable: {display_path}") from exc
+    finally:
+        if artifact_fd >= 0:
+            os.close(artifact_fd)
     if not isinstance(payload, dict):
         raise RawAuthorityRecoveryError(f"recovery artifact is not a JSON object: {display_path}")
     return {str(key): value for key, value in payload.items()}
@@ -678,6 +725,7 @@ def _build_plan(
             _validate_integrity(source, tier="source")
             counts = source_counts
             candidate_keys: dict[str, tuple[str, ...]] = {}
+            post_target_digest: str | None = None
             protected = _protected_digest(source, excluded=_RESET_TABLES)
         else:
             with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index:
@@ -686,6 +734,7 @@ def _build_plan(
                 _validate_integrity(index, tier="active index")
                 candidate_keys = _index_candidates(index)
                 counts = _count_tables(index, _INDEX_TARGETS)
+                post_target_digest = _index_seed_digest(index, excluded_keys=candidate_keys)
                 protected = _protected_digest(index, excluded=_INDEX_TARGETS)
         source_snapshot = source_revision_snapshot(root)
     backup_authority: dict[str, object] | None = None
@@ -711,6 +760,7 @@ def _build_plan(
         "active_generation": _generation_identity(root, location),
         "before_counts": counts,
         "candidate_keys": {key: list(value) for key, value in candidate_keys.items()},
+        "post_target_digest": post_target_digest,
         "protected_digest": protected,
         "backup_authority": backup_authority,
         "receipt_path": str(receipt),
@@ -729,6 +779,7 @@ def _build_plan(
         active_generation=cast(dict[str, object], payload["active_generation"]),
         before_counts=counts,
         candidate_keys=candidate_keys,
+        post_target_digest=post_target_digest,
         protected_digest=protected,
         backup_authority=backup_authority,
         receipt_path=str(receipt),
@@ -891,6 +942,11 @@ def _committed_postflight(plan: RawAuthorityRecoveryPlan) -> tuple[dict[str, int
             expected_after = {key: plan.before_counts[key] - len(plan.candidate_keys[key]) for key in _INDEX_TARGETS}
         if after_counts != expected_after:
             return None
+        if operation is RecoveryOperation.PRUNE_INDEX_SEEDS:
+            if plan.post_target_digest is None:
+                raise RawAuthorityRecoveryError("recovery plan is missing its exact index seed post-target digest")
+            if _index_seed_digest(conn) != plan.post_target_digest:
+                raise RawAuthorityRecoveryError("recovery intent does not match the exact committed index seed state")
         postflight = _postflight(conn, protected_digest=plan.protected_digest, excluded=excluded)
     return after_counts, postflight
 
@@ -979,6 +1035,8 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
                 expected_after = {key: before_counts[key] - len(plan.candidate_keys[key]) for key in _INDEX_TARGETS}
                 if after_counts != expected_after:
                     raise RawAuthorityRecoveryError("index-seed prune postflight changed an unexpected row class")
+                if plan.post_target_digest is None or _index_seed_digest(conn) != plan.post_target_digest:
+                    raise RawAuthorityRecoveryError("index-seed prune postflight does not match the exact target state")
                 postflight = _postflight(conn, protected_digest=plan.protected_digest, excluded=excluded)
                 conn.commit()
             except Exception:
@@ -1194,10 +1252,10 @@ def apply_raw_authority_recovery(
     executor = OperationExecutor()
     try:
         location = ArchiveLocation.resolve(root)
-        # A final receipt may be missing after a process crash or I/O failure,
-        # but the immutable intent was fsynced before the target transaction.
-        # Resume that exact intent under the same offline ownership boundary;
-        # a new PREPARE would correctly look stale after a committed mutation.
+        # A final receipt may be missing after a process crash or I/O failure.
+        # Only exact committed postflight evidence can skip a fresh executor
+        # authorization. An uncommitted intent is evidence of interruption,
+        # not authority to perform the destructive mutation.
         if _intent_for_plan(selected) is not None:
             with OwnedArchiveLocation.acquire(
                 location, owner_id=f"raw-authority-recovery:{selected.operation_id}"
@@ -1205,7 +1263,8 @@ def apply_raw_authority_recovery(
                 current_location = ArchiveLocation.resolve(root)
                 assert_owns_archive_location(owned, current_location)
                 with RebuildLease(root):
-                    return _apply_plan(selected)
+                    if _committed_postflight(selected) is not None:
+                        return _apply_plan(selected)
         prepared = executor.prepare(actuator, args)
         if prepared.context.get("recovery_plan_digest") != selected.plan_digest:
             raise PlanStaleError("recovery plan is stale before lease acquisition")
