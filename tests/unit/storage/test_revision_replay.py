@@ -135,8 +135,8 @@ def _with_fold_attachment(session: ParsedSession) -> ParsedSession:
     )
 
 
-def test_live_revision_binding_records_current_parser_census_receipt(tmp_path: Path) -> None:
-    """The live raw write -> bind route publishes the receipt readiness audits."""
+def test_live_revision_binding_without_parser_evidence_does_not_issue_receipt(tmp_path: Path) -> None:
+    """Binding acquisition metadata cannot self-certify parser authority."""
     initialize_active_archive_root(tmp_path)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -163,7 +163,7 @@ def test_live_revision_binding_records_current_parser_census_receipt(tmp_path: P
             (raw_id,),
         ).fetchone()
 
-    assert receipt == (RAW_AUTHORITY_PARSER_FINGERPRINT, "complete", '["codex-session:live-receipt"]')
+    assert receipt is None
 
 
 def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path) -> None:

@@ -467,35 +467,39 @@ def uncensused_historical_revision_raw_ids(
     """
     if not raw_ids:
         return ()
-    placeholders = ",".join("?" for _ in raw_ids)
     resource_blocked_fingerprint = (
         _resource_blocked_parser_fingerprint(max_payload_bytes) if max_payload_bytes is not None else None
     )
     known_fingerprints = [RAW_AUTHORITY_PARSER_FINGERPRINT, *sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS)]
     known_placeholders = ",".join("?" for _ in known_fingerprints)
     with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT r.raw_id
-            FROM raw_sessions AS r
-            LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
-            WHERE r.raw_id IN ({placeholders})
-              AND NOT COALESCE(
-                  c.parser_fingerprint IN ({known_placeholders})
-                  AND c.status = 'complete'
-                  AND c.detail LIKE 'parser-observed:%',
-                  0
-              )
-              AND NOT COALESCE(
-                  c.parser_fingerprint = ?
-                  AND c.status = 'failed',
-                  0
-              )
-            ORDER BY r.raw_id
-            """,
-            [*raw_ids, *known_fingerprints, resource_blocked_fingerprint],
-        ).fetchall()
-    return tuple(str(row[0]) for row in rows)
+        uncensused: list[str] = []
+        for offset in range(0, len(raw_ids), 500):
+            raw_id_chunk = raw_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in raw_id_chunk)
+            rows = conn.execute(
+                f"""
+                SELECT r.raw_id
+                FROM raw_sessions AS r
+                LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                WHERE r.raw_id IN ({placeholders})
+                  AND NOT COALESCE(
+                      c.parser_fingerprint IN ({known_placeholders})
+                      AND c.status = 'complete'
+                      AND c.detail LIKE 'parser-observed:%',
+                      0
+                  )
+                  AND NOT COALESCE(
+                      c.parser_fingerprint = ?
+                      AND c.status = 'failed',
+                      0
+                  )
+                ORDER BY r.raw_id
+                """,
+                [*raw_id_chunk, *known_fingerprints, resource_blocked_fingerprint],
+            )
+            uncensused.extend(str(row[0]) for row in rows)
+    return tuple(sorted(uncensused))
 
 
 def record_resource_blocked_revision_census(
@@ -669,6 +673,7 @@ def _census_historical_revision_evidence(
                 ),
                 manage_transaction=not batched,
             )
+            record_current_parser_source_census(archive._ensure_source_conn(), raw_id, parser_sessions=sessions)
             state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
             commit_unit()
         elif revision_kind is RawRevisionKind.UNKNOWN:
@@ -683,8 +688,9 @@ def _census_historical_revision_evidence(
                 logical_key = f"{session.source_name.value}:{session.provider_session_id}"
                 state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
             commit_unit()
-        # else: raw_id was already typed by an earlier run; this parse was a
-        # wasted (but harmless, no-op) reparse -- existing retry behavior.
+        else:
+            record_current_parser_source_census(archive._ensure_source_conn(), raw_id, parser_sessions=sessions)
+            commit_unit()
 
     def bind_byte_proven_older_member(raw_id: str, logical_key: str) -> None:
         """Bind an older chain member to the head's learned key without parsing it.
@@ -1204,7 +1210,6 @@ def census_historical_revision_evidence(
             prefetch_cache=prefetch_cache,
         )
         expanded, logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
-    _record_raw_authority_parser_census(archive_root, tuple(expanded))
     return RevisionCensusResult(
         state.scanned,
         state.classified,
@@ -1479,13 +1484,10 @@ def backfill_historical_revision_evidence(
         stage_timings["census"] = time.perf_counter() - census_started
         receipt_started = time.perf_counter()
         censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
-        # The direct backfill entry point must publish the same current-parser
-        # receipt as the census-only entry point before it assigns or applies
-        # any index plan. Commit the source census first so the separate
-        # durable receipt writer observes one complete source snapshot.
+        # ``_census_historical_revision_evidence`` records each receipt at the
+        # point where it still holds that raw's parsed identities. Do not
+        # reconstruct a second receipt from durable bindings here.
         archive.commit()
-        if owned_inactive_generation is None:
-            _record_raw_authority_parser_census(archive_root, tuple(censused_raw_ids))
         stage_timings["census_receipt"] = time.perf_counter() - receipt_started
         membership_candidates = census.membership_candidates
         provisional_full_raw_ids = census.provisional_full_raw_ids

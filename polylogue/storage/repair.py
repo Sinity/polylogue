@@ -4064,11 +4064,12 @@ def _raw_materialization_candidate_ids(
 
         authority_components = ArchiveStore.raw_membership_selection_components_sync(conn, raw_ids)
         expanded_raw_ids = tuple(sorted({raw_id for component in authority_components for raw_id in component}))
-        if expanded_raw_ids:
-            placeholders = ",".join("?" for _ in expanded_raw_ids)
+        for offset in range(0, len(expanded_raw_ids), 500):
+            raw_id_chunk = expanded_raw_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in raw_id_chunk)
             for row in conn.execute(
                 f"SELECT raw_id, blob_size, origin, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
-                expanded_raw_ids,
+                raw_id_chunk,
             ):
                 rid = str(row[0])
                 expanded_blob_bytes[rid] = int(row[1] or 0)
@@ -4228,7 +4229,7 @@ def raw_materialization_pending_census_raw_ids(
     if limit < 1:
         raise ValueError("limit must be positive")
     archive_root = _raw_materialization_archive_root(config)
-    candidates = _raw_materialization_candidate_ids(
+    candidates = _raw_materialization_parser_census_candidates(
         config,
         raw_artifact_id=raw_artifact_id,
         provider=provider,
@@ -4423,19 +4424,42 @@ def raw_materialization_whale_pass_candidate(
     archive_root = _raw_materialization_archive_root(config)
     if not (archive_root / "source.db").exists() or not (archive_root / "index.db").exists():
         return None
-    candidates = _raw_materialization_candidate_ids(config)
-    if not candidates.raw_ids:
+    materialization_candidates = _raw_materialization_candidate_ids(config)
+    census_candidates = _raw_materialization_parser_census_candidates(config)
+    if not materialization_candidates.raw_ids and not census_candidates.raw_ids:
         return None
-    ordered_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
-    for component in ordered_components:
-        total_bytes = sum(_raw_materialization_component_blob_bytes(candidates, member) for member in component)
-        if total_bytes <= ordinary_max_payload_bytes:
+    from polylogue.sources.revision_backfill import _resource_blocked_parser_fingerprint
+
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+        blocked_raw_ids = {
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT raw_id FROM raw_authority_parser_census
+                WHERE parser_fingerprint = ? AND status = 'failed'
+                  AND detail LIKE '%escalation-eligible: stream-safe%'
+                """,
+                (_resource_blocked_parser_fingerprint(ordinary_max_payload_bytes),),
+            )
+        }
+    for candidates, census_only in (
+        (materialization_candidates, False),
+        (census_candidates, True),
+    ):
+        if not candidates.raw_ids:
             continue
-        if total_bytes > whale_max_payload_bytes:
-            continue
-        if not _raw_materialization_component_stream_safe(candidates, component):
-            continue
-        return _raw_materialization_component_seed(candidates, component)
+        ordered_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
+        for component in ordered_components:
+            if census_only and not blocked_raw_ids.intersection(component):
+                continue
+            total_bytes = sum(_raw_materialization_component_blob_bytes(candidates, member) for member in component)
+            if total_bytes <= ordinary_max_payload_bytes:
+                continue
+            if total_bytes > whale_max_payload_bytes:
+                continue
+            if not _raw_materialization_component_stream_safe(candidates, component):
+                continue
+            return _raw_materialization_component_seed(candidates, component)
     return None
 
 

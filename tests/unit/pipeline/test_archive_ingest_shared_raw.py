@@ -259,7 +259,7 @@ async def test_archive_ingest_ordinary_session_records_current_parser_receipt(
     assert receipt == (
         RAW_AUTHORITY_PARSER_FINGERPRINT,
         "complete",
-        '["claude-code:journal-session"]',
+        '["claude-code-session:journal-session"]',
     )
 
 

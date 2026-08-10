@@ -121,6 +121,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionEnvelope,
     RawRevisionKind,
     append_source_revision,
+    canonical_authority_logical_key,
     classify_historical_full_revision_streams,
     durable_authority_logical_keys,
 )
@@ -786,11 +787,6 @@ def bind_raw_revision(
     """Bind acquisition evidence; ``manage_transaction=False`` batches (polylogue-amg1)."""
     conn = store._ensure_source_conn()
     bind_source_raw_revision(conn, raw_id, revision, manage_transaction=manage_transaction)
-    if manage_transaction:
-        with conn:
-            record_current_parser_source_census(conn, raw_id)
-    else:
-        record_current_parser_source_census(conn, raw_id)
 
 
 def release_provisional_full_revisions(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) -> None:
@@ -1833,10 +1829,15 @@ def replace_raw_membership_census(
             """,
             (raw_id, parser_fingerprint, status, len(sessions or []), censused_at_ms, detail),
         )
-        record_current_parser_source_census(conn, raw_id)
+        record_current_parser_source_census(conn, raw_id, parser_sessions=sessions)
 
 
-def record_current_parser_source_census(conn: sqlite3.Connection, raw_id: str) -> None:
+def record_current_parser_source_census(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    *,
+    parser_sessions: Sequence[ParsedSession] | None = None,
+) -> None:
     """Persist one current-parser receipt from the durable admission bindings.
 
     Ordinary admissions have a typed raw logical key; grouped imports instead
@@ -1868,23 +1869,42 @@ def record_current_parser_source_census(conn: sqlite3.Connection, raw_id: str) -
             (raw_id,),
         )
     ]
-    logical_keys = durable_authority_logical_keys(
+    durable_keys = durable_authority_logical_keys(
         raw_logical_key=raw[0],
         revision_kind=raw[1],
         membership_logical_keys=membership_keys,
     )
     typed_non_session = bool(raw[2])
-    complete = logical_keys is not None and (
-        bool(logical_keys)
-        or typed_non_session
-        or (membership_census is not None and str(membership_census[0]) in {"complete", "non_session"})
+    observed_keys = (
+        tuple(
+            sorted(
+                {
+                    canonical_authority_logical_key(f"{session.source_name.value}:{session.provider_session_id}")
+                    for session in parser_sessions
+                }
+            )
+        )
+        if parser_sessions is not None
+        else ()
+        if typed_non_session
+        else None
+    )
+    complete = (
+        durable_keys is not None
+        and observed_keys is not None
+        and observed_keys == durable_keys
+        and (
+            bool(observed_keys)
+            or typed_non_session
+            or (membership_census is not None and str(membership_census[0]) == "non_session")
+        )
     )
     detail = (
         "parser-observed: typed non-session admission established no parser identity"
         if typed_non_session and complete
         else "parser-observed: membership census established durable authority identity"
         if membership_census is not None and complete
-        else "parser-observed: live parser admission established durable authority identity"
+        else "parser-observed: parser identity matches durable authority bindings"
         if complete
         else (
             str(membership_census[1])
@@ -1908,7 +1928,7 @@ def record_current_parser_source_census(conn: sqlite3.Connection, raw_id: str) -
             raw_id,
             RAW_AUTHORITY_PARSER_FINGERPRINT,
             "complete" if complete else "failed",
-            json.dumps(logical_keys or []),
+            json.dumps(list(observed_keys or ())),
             detail,
         ),
     )
@@ -3540,7 +3560,7 @@ def write_raw_and_parsed_result(
         finalize_raw_parse=finalize_raw_parse,
     )
     with source_conn:
-        record_current_parser_source_census(source_conn, raw_id)
+        record_current_parser_source_census(source_conn, raw_id, parser_sessions=[session])
     add_timing("index_parsed_write", t0)
     return result
 
@@ -3663,7 +3683,7 @@ def admit_raw_and_parsed_result(
         finalize_raw_parse=finalize_raw_parse,
     )
     with source_conn:
-        record_current_parser_source_census(source_conn, resolved_raw_id)
+        record_current_parser_source_census(source_conn, resolved_raw_id, parser_sessions=[session])
     add_timing("index_parsed_write", t0)
     return result
 
