@@ -16,7 +16,7 @@ from polylogue.archive.raw_materialization import (
     parsed_non_session_artifact_reason,
     source_path_native_id_candidates,
 )
-from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL, durable_authority_logical_keys
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
 from polylogue.storage.insights.session.status import session_insight_status_sync
@@ -394,34 +394,81 @@ def raw_materialization_readiness_snapshot(
                 blob_size_expression = "COALESCE(r.blob_size, 0)" if "blob_size" in raw_columns else "0"
                 parser_census_rows = conn.execute(
                     f"""
-                    SELECT r.origin, {blob_size_expression}, c.raw_id, c.parser_fingerprint,
-                           c.status, c.logical_keys_json
+                    SELECT r.raw_id, r.origin, {blob_size_expression}, p.raw_id, p.parser_fingerprint,
+                           p.status, p.logical_keys_json, r.logical_source_key, r.revision_kind,
+                           m.logical_source_key,
+                           EXISTS(SELECT 1 FROM source.raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
                     FROM source.raw_sessions AS r
-                    LEFT JOIN source.raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                    LEFT JOIN source.raw_authority_parser_census AS p ON p.raw_id = r.raw_id
+                    LEFT JOIN source.raw_session_memberships AS m ON m.raw_id = r.raw_id
                     WHERE COALESCE(r.validation_status, '') != 'skipped'
-                    """,
-                ).fetchall()
+                    ORDER BY r.raw_id, m.logical_source_key
+                    """
+                )
                 incomplete_origins: Counter[str] = Counter()
                 incomplete_origin_bytes: Counter[str] = Counter()
-                for origin, blob_size, receipt_raw_id, fingerprint, status, logical_keys_json in parser_census_rows:
+                current_raw_id: str | None = None
+                current_row: tuple[object, ...] | None = None
+                membership_keys: list[object] = []
+
+                def assess_current_row() -> None:
+                    nonlocal parser_census_complete_count, parser_census_incomplete_count
+                    nonlocal parser_census_incomplete_blob_bytes, parser_census_missing_receipt_count
+                    nonlocal parser_census_non_complete_receipt_count
+                    assert current_row is not None
+                    (
+                        _raw_id,
+                        origin,
+                        blob_size,
+                        receipt_raw_id,
+                        fingerprint,
+                        status,
+                        logical_keys_json,
+                        typed_key,
+                        revision_kind,
+                        _membership_key,
+                        typed_non_session,
+                    ) = current_row
+                    recorded_keys = parser_census_logical_keys(logical_keys_json)
+                    durable_keys = durable_authority_logical_keys(
+                        raw_logical_key=typed_key,
+                        revision_kind=revision_kind,
+                        membership_logical_keys=membership_keys,
+                    )
                     complete = (
                         receipt_raw_id is not None
                         and str(fingerprint) == RAW_AUTHORITY_PARSER_FINGERPRINT
                         and str(status) == "complete"
-                        and parser_census_logical_keys(logical_keys_json) is not None
+                        and recorded_keys is not None
+                        and durable_keys is not None
+                        and recorded_keys == durable_keys
+                        and (bool(durable_keys) or bool(typed_non_session))
                     )
                     if complete:
                         parser_census_complete_count += 1
-                        continue
-                    parser_census_incomplete_count += 1
-                    parser_census_incomplete_blob_bytes += int(blob_size or 0)
-                    origin_key = str(origin)
-                    incomplete_origins[origin_key] += 1
-                    incomplete_origin_bytes[origin_key] += int(blob_size or 0)
-                    if receipt_raw_id is None:
-                        parser_census_missing_receipt_count += 1
                     else:
-                        parser_census_non_complete_receipt_count += 1
+                        parser_census_incomplete_count += 1
+                        parser_census_incomplete_blob_bytes += int(blob_size or 0)
+                        origin_key = str(origin)
+                        incomplete_origins[origin_key] += 1
+                        incomplete_origin_bytes[origin_key] += int(blob_size or 0)
+                        if receipt_raw_id is None:
+                            parser_census_missing_receipt_count += 1
+                        else:
+                            parser_census_non_complete_receipt_count += 1
+
+                for parser_row in parser_census_rows:
+                    raw_id = str(parser_row[0])
+                    if current_raw_id is not None and raw_id != current_raw_id:
+                        assess_current_row()
+                        membership_keys = []
+                    if raw_id != current_raw_id:
+                        current_raw_id = raw_id
+                        current_row = tuple(parser_row)
+                    if parser_row[9] is not None:
+                        membership_keys.append(parser_row[9])
+                if current_row is not None:
+                    assess_current_row()
                 parser_census_origin_summary = [
                     {"origin": origin, "count": count, "blob_bytes": incomplete_origin_bytes[origin]}
                     for origin, count in sorted(

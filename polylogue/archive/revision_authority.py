@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
 from typing import BinaryIO, Literal
 
-from polylogue.core.enums import PolylogueStrEnum
+from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
+from polylogue.core.sources import origin_from_provider
 
 
 class RawRevisionKind(StrEnum):
@@ -42,6 +43,44 @@ BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision a
 #: this token belongs with that shared contract rather than either storage
 #: projection that consumes it.
 RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v4"
+
+
+def canonical_authority_logical_key(logical_key: str) -> str:
+    """Normalize a provider or public-origin authority key to public origin form."""
+    prefix, separator, native_id = logical_key.partition(":")
+    if not separator or not native_id:
+        raise ValueError(f"invalid logical source key: {logical_key!r}")
+    try:
+        origin = Origin(prefix)
+    except ValueError:
+        try:
+            origin = origin_from_provider(Provider(prefix))
+        except ValueError as exc:
+            raise ValueError(f"unknown logical source key prefix: {prefix!r}") from exc
+    return f"{origin.value}:{native_id}"
+
+
+def durable_authority_logical_keys(
+    *,
+    raw_logical_key: object,
+    revision_kind: object,
+    membership_logical_keys: Iterable[object],
+) -> tuple[str, ...] | None:
+    """Return the canonical durable identity set a parser receipt must prove.
+
+    A ``pending-raw:`` envelope preserves bytes before parsing; it is not a
+    parser identity and must never leak into the durable parser receipt.
+    """
+    values = [str(value) for value in membership_logical_keys if value is not None]
+    if raw_logical_key is not None and str(revision_kind) != RawRevisionKind.UNKNOWN.value:
+        typed_key = str(raw_logical_key)
+        if not typed_key.startswith("pending-raw:"):
+            values.append(typed_key)
+    try:
+        return tuple(sorted({canonical_authority_logical_key(value) for value in values}))
+    except ValueError:
+        return None
+
 
 #: ``raw_membership_census.detail`` marker written when a full-only,
 #: non-prefix-chain cohort is retired from byte-revision governance to

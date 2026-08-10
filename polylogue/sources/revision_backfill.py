@@ -32,6 +32,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
+    durable_authority_logical_keys,
 )
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Origin, Provider
@@ -563,6 +564,24 @@ def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, 
             record_current_parser_source_census(conn, raw_id)
 
 
+def refresh_current_parser_source_census(archive_root: Path) -> int:
+    """Refresh receipts for every non-skipped raw row readiness audits.
+
+    This source-only pass lets daemon repair heal legacy indexed rows without
+    reparsing or rewriting their rebuildable index state.
+    """
+    refreshed = 0
+    with sqlite3.connect(archive_root / "source.db") as conn, conn:
+        cursor = conn.execute(
+            "SELECT raw_id FROM raw_sessions WHERE COALESCE(validation_status, '') != 'skipped' ORDER BY raw_id"
+        )
+        while raw_ids := cursor.fetchmany(500):
+            for (raw_id,) in raw_ids:
+                record_current_parser_source_census(conn, str(raw_id))
+                refreshed += 1
+    return refreshed
+
+
 def _census_historical_revision_evidence(
     archive: ArchiveStore,
     spill: _ParsedSessionSpill,
@@ -907,15 +926,17 @@ def require_current_parser_source_census(
             f"{len(stale_raw_ids)} raw(s) are stale or incomplete (sample: {sample})"
         )
 
-    durable_logical_keys: dict[str, set[str]] = {raw_id: set() for raw_id in recorded_logical_keys}
-    invalid_durable_bindings: set[str] = set()
+    durable_bindings: dict[str, tuple[object, object, list[object], bool]] = {
+        raw_id: (None, RawRevisionKind.UNKNOWN.value, [], False) for raw_id in recorded_logical_keys
+    }
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
         for selection in selections:
             where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             params = () if selection is None else selection
             rows = source_conn.execute(
                 f"""
-                SELECT r.raw_id, r.logical_source_key, r.revision_kind, m.logical_source_key
+                SELECT r.raw_id, r.logical_source_key, r.revision_kind, m.logical_source_key,
+                       EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
                 FROM raw_sessions AS r
                 LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
                 {where}
@@ -923,28 +944,39 @@ def require_current_parser_source_census(
                 """,
                 params,
             )
-            for raw_id_value, typed_key, revision_kind, membership_key in rows:
+            for raw_id_value, typed_key, revision_kind, membership_key, typed_non_session in rows:
                 raw_id = str(raw_id_value)
-                persisted_keys = durable_logical_keys.setdefault(raw_id, set())
-                raw_keys = [
-                    value
-                    for value in (
-                        typed_key if typed_key is not None and revision_kind != RawRevisionKind.UNKNOWN.value else None,
-                        membership_key,
-                    )
-                    if value is not None
-                ]
-                try:
-                    persisted_keys.update(_canonical_authority_logical_key(str(value)) for value in raw_keys)
-                except ValueError:
-                    invalid_durable_bindings.add(raw_id)
+                existing_typed, existing_kind, memberships, existing_non_session = durable_bindings.get(
+                    raw_id, (typed_key, revision_kind, [], bool(typed_non_session))
+                )
+                if membership_key is not None:
+                    memberships.append(membership_key)
+                durable_bindings[raw_id] = (
+                    typed_key if existing_typed is None else existing_typed,
+                    revision_kind if existing_kind == RawRevisionKind.UNKNOWN.value else existing_kind,
+                    memberships,
+                    bool(typed_non_session) or existing_non_session,
+                )
+
+    invalid_durable_bindings: set[str] = set()
+    durable_logical_keys: dict[str, tuple[str, ...]] = {}
+    for raw_id, (typed_key, revision_kind, membership_keys, _typed_non_session) in durable_bindings.items():
+        durable_keys = durable_authority_logical_keys(
+            raw_logical_key=typed_key,
+            revision_kind=revision_kind,
+            membership_logical_keys=membership_keys,
+        )
+        if durable_keys is None:
+            invalid_durable_bindings.add(raw_id)
+        else:
+            durable_logical_keys[raw_id] = durable_keys
 
     authority_binding_drift = sorted(
         invalid_durable_bindings
         | {
             raw_id
             for raw_id, census_keys in recorded_logical_keys.items()
-            if tuple(sorted(durable_logical_keys.get(raw_id, ()))) != census_keys
+            if durable_logical_keys.get(raw_id, ()) != census_keys
         }
     )
     if authority_binding_drift:

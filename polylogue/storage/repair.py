@@ -6197,8 +6197,11 @@ def repair_raw_materialization(
     from polylogue.sources.revision_backfill import (
         RawRevisionReplayResourceBlockedError,
         census_historical_revision_evidence,
+        refresh_current_parser_source_census,
         uncensused_historical_revision_raw_ids,
     )
+
+    refresh_current_parser_source_census(archive_root)
 
     relevant_raw_ids = list(candidates.expanded_raw_ids or tuple(candidates.raw_ids))
     uncensused_raw_ids = set(

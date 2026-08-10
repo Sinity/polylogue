@@ -18,12 +18,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from polylogue.archive.revision_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.archive.revision_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, canonical_authority_logical_key
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
-from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -97,17 +95,10 @@ def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | N
         return None
     normalized: list[str] = []
     for logical_key in raw_keys:
-        prefix, separator, native_id = logical_key.partition(":")
-        if not separator or not native_id:
-            return None
         try:
-            origin = Origin(prefix)
+            normalized.append(canonical_authority_logical_key(logical_key))
         except ValueError:
-            try:
-                origin = origin_from_provider(Provider(prefix))
-            except ValueError:
-                return None
-        normalized.append(f"{origin.value}:{native_id}")
+            return None
     normalized_keys = tuple(sorted(set(normalized)))
     return normalized_keys if len(normalized_keys) == len(raw_keys) else None
 

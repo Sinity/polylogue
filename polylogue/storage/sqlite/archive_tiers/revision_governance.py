@@ -122,6 +122,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
     append_source_revision,
     classify_historical_full_revision_streams,
+    durable_authority_logical_keys,
 )
 from polylogue.archive.revision_replay import (
     ApplicationDecision,
@@ -645,7 +646,7 @@ def admit_raw_artifact_payload(
         blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
     store._blob_publisher.flush()
     origin = origin_from_provider(provider)
-    return admit_raw_observation(
+    result = admit_raw_observation(
         store._ensure_source_conn(),
         origin=origin,
         capture_mode=provider,
@@ -660,6 +661,9 @@ def admit_raw_artifact_payload(
         blob_publication_receipt_id=blob_publication_receipt_id,
         manage_transaction=True,
     )
+    with store._ensure_source_conn():
+        record_current_parser_source_census(store._ensure_source_conn(), result.raw_id)
+    return result
 
 
 def admit_raw_artifact_blob_ref(
@@ -678,7 +682,7 @@ def admit_raw_artifact_blob_ref(
     """Admit a prepublished non-session artifact without a pending envelope."""
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
-    return admit_raw_artifact_blob_observation(
+    result = admit_raw_artifact_blob_observation(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
         capture_mode=provider,
@@ -691,6 +695,9 @@ def admit_raw_artifact_blob_ref(
         classification=classification,
         blob_publication_receipt_id=blob_publication_receipt_id,
     )
+    with store._ensure_source_conn():
+        record_current_parser_source_census(store._ensure_source_conn(), result.raw_id)
+    return result
 
 
 def write_parsed_for_retained_raw(
@@ -777,7 +784,13 @@ def bind_raw_revision(
     store: RawRevisionGovernanceHost, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True
 ) -> None:
     """Bind acquisition evidence; ``manage_transaction=False`` batches (polylogue-amg1)."""
-    bind_source_raw_revision(store._ensure_source_conn(), raw_id, revision, manage_transaction=manage_transaction)
+    conn = store._ensure_source_conn()
+    bind_source_raw_revision(conn, raw_id, revision, manage_transaction=manage_transaction)
+    if manage_transaction:
+        with conn:
+            record_current_parser_source_census(conn, raw_id)
+    else:
+        record_current_parser_source_census(conn, raw_id)
 
 
 def release_provisional_full_revisions(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) -> None:
@@ -1832,7 +1845,11 @@ def record_current_parser_source_census(conn: sqlite3.Connection, raw_id: str) -
     accountable to the same source-tier census that replay promotion reads.
     """
     raw = conn.execute(
-        "SELECT logical_source_key, revision_kind FROM raw_sessions WHERE raw_id = ?",
+        """
+        SELECT logical_source_key, revision_kind,
+               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0)
+        FROM raw_sessions WHERE raw_id = ?
+        """,
         (raw_id,),
     ).fetchone()
     if raw is None:
@@ -1851,13 +1868,21 @@ def record_current_parser_source_census(conn: sqlite3.Connection, raw_id: str) -
             (raw_id,),
         )
     ]
-    typed_key = str(raw[0]) if raw[0] is not None and str(raw[1]) != RawRevisionKind.UNKNOWN.value else None
-    complete = typed_key is not None or (
-        membership_census is not None and str(membership_census[0]) in {"complete", "non_session"}
+    logical_keys = durable_authority_logical_keys(
+        raw_logical_key=raw[0],
+        revision_kind=raw[1],
+        membership_logical_keys=membership_keys,
     )
-    logical_keys = sorted(set(membership_keys) | ({typed_key} if typed_key is not None else set()))
+    typed_non_session = bool(raw[2])
+    complete = logical_keys is not None and (
+        bool(logical_keys)
+        or typed_non_session
+        or (membership_census is not None and str(membership_census[0]) in {"complete", "non_session"})
+    )
     detail = (
-        "current parser established durable authority identity"
+        "typed non-session admission established no parser identity"
+        if typed_non_session and complete
+        else "current parser established durable authority identity"
         if complete
         else (
             str(membership_census[1])
@@ -1881,7 +1906,7 @@ def record_current_parser_source_census(conn: sqlite3.Connection, raw_id: str) -
             raw_id,
             RAW_AUTHORITY_PARSER_FINGERPRINT,
             "complete" if complete else "failed",
-            json.dumps(logical_keys),
+            json.dumps(logical_keys or []),
             detail,
         ),
     )

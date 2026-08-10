@@ -33,6 +33,42 @@ def _config(tmp_path: Path) -> Config:
     return Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "archive.db")
 
 
+def test_raw_materialization_refreshes_receipt_for_legacy_indexed_raw(tmp_path: Path) -> None:
+    """The daemon repair route heals receipt debt even when the raw is already indexed."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="legacy-indexed-receipt",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="legacy receipt")],
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id, _session_id = archive.write_raw_and_parsed(
+            session,
+            payload=b'{"type":"session_meta","payload":{"id":"legacy-indexed-receipt"}}\n',
+            source_path="legacy/codex.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+
+    repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=True)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        receipt = conn.execute(
+            "SELECT parser_fingerprint, status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+
+    assert receipt == (RAW_AUTHORITY_PARSER_FINGERPRINT, "complete")
+
+
 def _complete_bounded_raw_census(config: Config, *, limit: int) -> tuple[repair_mod.RepairResult, list[str]]:
     """Advance census-only passes until a quiescent preview can publish plans."""
     incomplete_census_ids: list[str] = []

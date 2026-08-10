@@ -31,7 +31,7 @@ from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -133,6 +133,70 @@ def _with_fold_attachment(session: ParsedSession) -> ParsedSession:
             ]
         }
     )
+
+
+def test_live_revision_binding_records_current_parser_census_receipt(tmp_path: Path) -> None:
+    """The live raw write -> bind route publishes the receipt readiness audits."""
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"live-receipt"}}\n',
+            source_path="live/codex.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                "codex:live-receipt",
+                RawRevisionKind.FULL,
+                "live-receipt-v1",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        receipt = conn.execute(
+            "SELECT parser_fingerprint, status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+
+    assert receipt == (RAW_AUTHORITY_PARSER_FINGERPRINT, "complete", '["codex-session:live-receipt"]')
+
+
+def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path) -> None:
+    """A parser-derived membership receipt cannot retain its provisional raw key."""
+    initialize_active_archive_root(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="post-parse-receipt",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="receipt proof")],
+    )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"post-parse-receipt"}}\n',
+            source_path="live/pending.jsonl",
+            acquired_at_ms=1,
+            post_parse=True,
+        )
+        archive.replace_raw_membership_census(
+            raw_id,
+            [session],
+            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            censused_at_ms=1,
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        receipt = conn.execute(
+            "SELECT logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+
+    assert receipt is not None
+    assert parser_census_logical_keys(receipt[0]) == ("codex-session:post-parse-receipt",)
 
 
 def test_replay_selects_newest_full_and_exact_contiguous_suffix_independent_of_order() -> None:
