@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import os
 from pathlib import Path
 
@@ -242,6 +243,34 @@ def test_owned_location_rejects_archive_root_replacement_during_acquisition(
     assert swapped is True
     assert not (root / ".archive-ownership.lock").exists()
     assert not (moved_root / ".archive-ownership.lock").exists()
+
+
+def test_owned_location_rejects_lock_path_rebound_after_flock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The acquired flock must still be reachable at the canonical lock path."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    lock_path = root / ".archive-ownership.lock"
+    displaced_lock = root / ".archive-ownership.displaced"
+    replacement_lock = root / ".archive-ownership.replacement"
+    replacement_lock.write_text("foreign owner", encoding="utf-8")
+    real_flock = fcntl.flock
+    rebound = False
+
+    def rebind_after_lock(fd: int, operation: int) -> None:
+        nonlocal rebound
+        real_flock(fd, operation)
+        if not rebound and operation & fcntl.LOCK_EX:
+            lock_path.rename(displaced_lock)
+            replacement_lock.rename(lock_path)
+            rebound = True
+
+    monkeypatch.setattr("polylogue.storage.archive_identity.fcntl.flock", rebind_after_lock)
+
+    with pytest.raises(ArchiveOwnershipError, match="pathname changed"):
+        OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+
+    assert rebound is True
+    assert lock_path.read_text(encoding="utf-8") == "foreign owner"
 
 
 def test_owned_location_reclaims_lock_left_by_dead_process(tmp_path: Path) -> None:

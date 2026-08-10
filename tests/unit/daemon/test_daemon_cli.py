@@ -3478,6 +3478,41 @@ def test_daemon_startup_reconciles_trains_before_schema_probe(tmp_path: Path, mo
     assert not (tmp_path / "daemon.pid").exists()
 
 
+def test_daemon_startup_creates_missing_archive_root_before_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live daemon route must own a first-run root, not require a prior bootstrap."""
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "first-run-archive"
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+
+    def stop_after_ownership(root: Path) -> tuple[Path, ...]:
+        assert root == archive
+        assert archive.is_dir()
+        raise RuntimeError("owned first-run archive")
+
+    monkeypatch.setattr(
+        "polylogue.operations.durable_change_train.reconcile_durable_change_trains_on_startup",
+        stop_after_ownership,
+    )
+
+    with pytest.raises(RuntimeError, match="owned first-run archive"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert (archive / ".archive-ownership.lock").exists()
+
+
 def test_run_daemon_services_checks_archive_identity_before_component_startup(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.storage.archive_identity import ArchiveIdentityConflictError

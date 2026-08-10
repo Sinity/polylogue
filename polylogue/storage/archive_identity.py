@@ -579,7 +579,7 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str, dir_fd: int | None = N
         except OSError as exc:
             raise ArchiveOwnershipError(f"cannot open archive ownership lock: {path}") from exc
     try:
-        _validate_ownership_lock_fd(path, fd)
+        _validate_ownership_lock_fd(path, fd, dir_fd=dir_fd)
     except BaseException:
         os.close(fd)
         raise
@@ -606,7 +606,7 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str, dir_fd: int | None = N
             os.close(fd)
             raise ArchiveOwnershipError(f"archive location already owned: {path}") from exc
     try:
-        _validate_ownership_lock_fd(path, fd)
+        _validate_ownership_lock_fd(path, fd, dir_fd=dir_fd)
     except BaseException:
         os.close(fd)
         raise
@@ -616,8 +616,8 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str, dir_fd: int | None = N
     return fd
 
 
-def _validate_ownership_lock_fd(path: Path, fd: int) -> None:
-    """Require a private lock to remain one unlinked regular inode."""
+def _validate_ownership_lock_fd(path: Path, fd: int, *, dir_fd: int | None) -> None:
+    """Require the canonical lock entry to name the locked private inode."""
     try:
         metadata = os.fstat(fd)
     except OSError as exc:
@@ -626,3 +626,12 @@ def _validate_ownership_lock_fd(path: Path, fd: int) -> None:
         raise ArchiveOwnershipError(f"archive ownership lock is not a regular file: {path}")
     if metadata.st_nlink != 1:
         raise ArchiveOwnershipError(f"archive ownership lock has unexpected link count: {path}")
+    try:
+        if dir_fd is None:
+            path_metadata = os.stat(path, follow_symlinks=False)
+        else:
+            path_metadata = os.stat(path.name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise ArchiveOwnershipError(f"cannot inspect archive ownership lock pathname: {path}") from exc
+    if (path_metadata.st_dev, path_metadata.st_ino) != (metadata.st_dev, metadata.st_ino):
+        raise ArchiveOwnershipError(f"archive ownership lock pathname changed during validation: {path}")
