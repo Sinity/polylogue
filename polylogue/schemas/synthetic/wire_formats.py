@@ -180,9 +180,12 @@ class WireSupportReceipt:
     entries: tuple[WireSupportEntry, ...]
     missing_routes: tuple[str, ...]
     witness_seed: int = 20260805
+    catalog_scope: Literal["registry-default", "explicit"] = "explicit"
 
     def __post_init__(self) -> None:
         validate_wire_support_entry_keys(self.entries, boundary="wire support receipt")
+        if self.catalog_scope not in {"registry-default", "explicit"}:
+            raise ValueError(f"wire support receipt has invalid catalog scope: {self.catalog_scope!r}")
 
     @property
     def supported_count(self) -> int:
@@ -203,6 +206,7 @@ class WireSupportReceipt:
     def to_dict(self) -> dict[str, object]:
         return {
             "catalog_providers": list(self.catalog_providers),
+            "catalog_scope": self.catalog_scope,
             "supported_count": self.supported_count,
             "unsupported_count": self.unsupported_count,
             "validated_supported_count": self.validated_supported_count,
@@ -1451,8 +1455,8 @@ def _parser_artifact_messages_have_artifact_bound_content(
     provider: str,
     payload: JSONValue,
 ) -> bool:
-    """Require each identified parsed message to retain content from its raw node."""
-    raw_texts_by_identity: dict[str, set[str]] = {}
+    """Require every raw text segment to survive on its identified message."""
+    raw_texts_by_identity: dict[str, Counter[str]] = {}
     anonymous_raw_texts: Counter[str] = Counter()
     for node in _parser_artifact_expected_nodes(provider, payload):
         expected_texts = _parser_artifact_node_content_texts(provider, node)
@@ -1462,25 +1466,60 @@ def _parser_artifact_messages_have_artifact_bound_content(
         if identity is None:
             anonymous_raw_texts.update(expected_texts)
         else:
-            raw_texts_by_identity.setdefault(identity, set()).update(expected_texts)
+            raw_texts_by_identity.setdefault(identity, Counter()).update(expected_texts)
 
     observed_anonymous_texts: Counter[str] = Counter()
     for session in sessions:
         for message in session.messages:
-            observed_texts = {
-                _normalise_evidence_text(text)
-                for text in (message.text, *(block.text for block in message.blocks))
-                if isinstance(text, str) and _normalise_evidence_text(text)
-            }
-            if message.provider_message_id in raw_texts_by_identity and (
-                not observed_texts or not observed_texts & raw_texts_by_identity[message.provider_message_id]
+            observed_message_text = tuple(
+                segment
+                for text in (message.text,)
+                if isinstance(text, str)
+                for segment in _parser_artifact_observed_text_segments(text)
+            )
+            observed_block_texts = tuple(
+                segment
+                for block in message.blocks
+                if isinstance(block.text, str)
+                for segment in _parser_artifact_observed_text_segments(block.text)
+            )
+            expected_texts = raw_texts_by_identity.get(message.provider_message_id)
+            if expected_texts is not None and not any(
+                _parser_artifact_text_segments_are_covered(expected_texts, candidate)
+                for candidate in (observed_message_text, observed_block_texts)
             ):
                 return False
-            observed_anonymous_texts.update(observed_texts)
-    return not (anonymous_raw_texts - observed_anonymous_texts)
+            if expected_texts is None:
+                observed_anonymous_texts.update((*observed_message_text, *observed_block_texts))
+    return _parser_artifact_text_segments_are_covered(anonymous_raw_texts, tuple(observed_anonymous_texts.elements()))
 
 
-def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONValue]) -> set[str]:
+def _parser_artifact_text_segments_are_covered(
+    expected: Counter[str],
+    observed: Sequence[str],
+) -> bool:
+    """Check every raw segment, including repeated segments, in parser-owned text."""
+    return all(sum(text.count(segment) for text in observed) >= count for segment, count in expected.items())
+
+
+def _parser_artifact_observed_text_segments(text: str) -> tuple[str, ...]:
+    """Expose text embedded in a parser's structured-text serialization."""
+    normalized = _normalise_evidence_text(text)
+    segments = [normalized] if normalized else []
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return tuple(segments)
+    if isinstance(decoded, (dict, list)):
+        segments.extend(
+            normalized_value
+            for value in _payload_string_values(decoded)
+            if (normalized_value := _normalise_evidence_text(value))
+        )
+    return tuple(segments)
+
+
+def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONValue]) -> tuple[str, ...]:
     """Extract text-bearing message content, excluding structured tool arguments."""
     if provider == "chatgpt":
         message = node.get("message")
@@ -1514,11 +1553,15 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
             values = tuple(
                 text
                 for item in content
-                if isinstance(item, Mapping) and item.get("type") in {"text", "thinking", "tool_result"}
+                if isinstance(item, Mapping)
                 for text in (
-                    item.get("text"),
-                    item.get("thinking"),
-                    *(_payload_string_values(item.get("content")) if item.get("type") == "tool_result" else ()),
+                    (item.get("text"),)
+                    if item.get("type") == "text"
+                    else (item.get("thinking") or item.get("text"),)
+                    if item.get("type") == "thinking"
+                    else _payload_string_values(item.get("content"))
+                    if item.get("type") == "tool_result"
+                    else ()
                 )
                 if isinstance(text, str)
             )
@@ -1526,7 +1569,7 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
             values = ()
     else:
         values = ()
-    return {_normalise_evidence_text(value) for value in values if _normalise_evidence_text(value)}
+    return tuple(_normalise_evidence_text(value) for value in values if _normalise_evidence_text(value))
 
 
 def _parser_artifact_has_complete_message_coverage(
@@ -1857,6 +1900,7 @@ def build_wire_support_receipt(
         entries=tuple(entries),
         missing_routes=tuple(sorted(missing_routes)),
         witness_seed=seed,
+        catalog_scope="registry-default" if providers is None else "explicit",
     )
 
 

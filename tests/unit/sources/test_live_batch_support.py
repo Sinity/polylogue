@@ -2522,6 +2522,7 @@ def test_codex_append_identity_rejects_mismatched_index_owner_before_global_fall
 def test_codex_append_identity_rejects_global_fallback_when_ownership_query_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
@@ -2564,9 +2565,14 @@ def test_codex_append_identity_rejects_global_fallback_when_ownership_query_erro
     def unavailable_ownership_view(*_args: object, **_kwargs: object) -> sqlite3.Connection:
         raise sqlite3.OperationalError("source tier unavailable")
 
+    # The global index fallback must be viable so this assertion proves that an
+    # unavailable ownership view, rather than another sqlite failure, rejects
+    # the append.
+    monkeypatch.setattr(processor, "_archive_has_native_session", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(sqlite3, "connect", unavailable_ownership_view)
 
     assert processor._append_payload_for_provider(path, "codex", b'{"type":"event_msg"}\n') is None
+    assert "source-path ownership view unavailable" in caplog.text
 
 
 def test_latest_raw_fingerprint_ignores_archive_source_row_with_missing_blob(tmp_path: Path) -> None:

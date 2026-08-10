@@ -1064,10 +1064,15 @@ def _validate_current_wire_support_route(
     raw_providers = persisted.get("catalog_providers")
     if not isinstance(raw_providers, list) or not all(isinstance(provider, str) for provider in raw_providers):
         raise ValueError("wire_support_receipt catalog_providers must be a list of strings")
+    catalog_scope = persisted.get("catalog_scope")
+    if catalog_scope not in {"registry-default", "explicit"}:
+        raise ValueError("wire_support_receipt catalog_scope must be registry-default or explicit")
     current = build_wire_support_receipt(
         registry=registry,
         seed=witness_seed,
-        providers=tuple(cast(str, provider) for provider in raw_providers),
+        providers=None
+        if catalog_scope == "registry-default"
+        else tuple(cast(str, provider) for provider in raw_providers),
     )
     rebuilt = current.to_dict()
     if rebuilt != persisted:

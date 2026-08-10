@@ -230,6 +230,77 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
     assert restored.wire_support_receipt == wire_support.to_dict()
 
 
+def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidation(tmp_path: Path) -> None:
+    base_registry = _registry()
+    registry = _RegistryProxy(base_registry)
+    registry.provider_order = ["codex"]
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    providers = tuple(registry.list_providers())
+    package_receipts = [
+        build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
+        for provider in providers
+    ]
+    package_receipt = package_receipts[0]
+    for other in package_receipts[1:]:
+        package_receipt = package_receipt.merged_with(other)
+    wire_support = build_wire_support_receipt(registry=registry)
+    assert wire_support.catalog_scope == "registry-default"
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    path = tmp_path / "all-provider-campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    registry.provider_order = ["codex", "new-unrouted-provider"]
+
+    with pytest.raises(ValueError, match=r"wire-support receipt changed.*catalog_providers.*missing_routes"):
+        read_inferred_corpus_manifest(
+            path,
+            campaign_mode=True,
+            registry=registry,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
+def test_explicit_scope_campaign_does_not_re_census_unselected_provider(tmp_path: Path) -> None:
+    base_registry = _registry()
+    registry = _RegistryProxy(base_registry)
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipt = build_schema_inference_receipt(registry, provider="codex", gate_receipt_digest=gate_digest)
+    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    assert wire_support.catalog_scope == "explicit"
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=("codex",),
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    path = tmp_path / "codex-campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    registry.provider_order = [*base_registry.list_providers(), "new-unrouted-provider"]
+
+    assert (
+        read_inferred_corpus_manifest(
+            path,
+            campaign_mode=True,
+            registry=registry,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+        == manifest
+    )
+
+
 def test_campaign_rejects_a_bound_receipt_with_a_missing_catalog_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -3721,10 +3721,15 @@ class LiveBatchProcessor:
                 conn.execute("DETACH DATABASE source_tier")
             finally:
                 conn.close()
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
             # This query protects an append from adopting another session's
             # native id. An unavailable ownership view is unsafe to treat as
             # unowned, so defer instead of using the global Codex fallback.
+            logger.warning(
+                "live.watcher: source-path ownership view unavailable for %s; refusing Codex identity fallback: %s",
+                path,
+                exc,
+            )
             return True
         return row is not None
 

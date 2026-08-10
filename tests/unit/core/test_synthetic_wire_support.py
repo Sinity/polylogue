@@ -274,6 +274,72 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_ever
     assert not receipt.complete
 
 
+def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+    inserted_segment = False
+    dropped_segment = False
+    segment = "parser-witness-segment-that-must-survive"
+
+    def drop_one_text_segment(
+        provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        nonlocal inserted_segment, dropped_segment
+        if provider == "codex" and fallback_id.endswith(":0") and isinstance(payload, list):
+            for record in payload:
+                if not isinstance(record, dict) or not isinstance(record.get("content"), list):
+                    continue
+                record["content"].append({"type": "input_text", "text": segment})
+                inserted_segment = True
+                break
+        sessions = original_parse_payload(
+            provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if provider != "codex" or not fallback_id.endswith(":0"):
+            return sessions
+        corrupted_sessions: list[ParsedSession] = []
+        for parsed_session in sessions:
+            corrupted_messages: list[ParsedMessage] = []
+            for message in parsed_session.messages:
+                blocks = []
+                for block in message.blocks:
+                    if block.text == segment:
+                        dropped_segment = True
+                        blocks.append(block.model_copy(update={"text": ""}))
+                    else:
+                        blocks.append(block)
+                corrupted_messages.append(
+                    message.model_copy(update={"text": message.text.replace(segment, ""), "blocks": blocks})
+                )
+            corrupted_sessions.append(parsed_session.model_copy(update={"messages": corrupted_messages}))
+        return corrupted_sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", drop_one_text_segment)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("codex",))
+
+    assert inserted_segment
+    assert dropped_segment
+    assert not receipt.complete
+    assert any(
+        witness.validation_error == "artifact message coverage is incomplete"
+        for entry in receipt.entries
+        for witness in entry.parser_witnesses
+        if witness.artifact_kind == "baseline"
+    )
+
+
 @pytest.mark.parametrize("provider", sorted(wire_formats.PROVIDER_WIRE_FORMATS))
 @pytest.mark.parametrize("artifact_index", (0, 1))
 def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_route(
