@@ -1161,6 +1161,57 @@ def test_daemon_reconciles_active_generation_after_both_attestation_checkpoints_
     }
 
 
+def test_offline_retry_reconciles_active_generation_after_both_attestation_checkpoints_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operator retry cannot resume a generation that was already promoted.
+
+    Anti-vacuity: the setup drives the real offline synchronous rebuild through
+    the pointer flip while both post-promotion transaction writes fail. The
+    retry uses that same public offline entry point, not the daemon resolver.
+    Removing its transaction reconciliation leaves the persisted transaction
+    ``ready`` alongside the active generation.
+    """
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+    receipt_path = write_valid_rebuild_receipt(root, tmp_path / "receipt.json")
+    operation_id = "operator-created-post-promotion-failure"
+    store = IndexGenerationStore.for_archive_root(root)
+    store.create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root),
+        operation_id=operation_id,
+    )
+    original_checkpoint = IndexGenerationStore.checkpoint_transaction
+
+    def fail_attestation_checkpoint(self: IndexGenerationStore, transaction: object, **kwargs: object) -> object:
+        if kwargs.get("status") in {"promoted", "promoted-attestation-failed"}:
+            raise OSError("simulated double offline attestation checkpoint failure")
+        return original_checkpoint(self, transaction, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(IndexGenerationStore, "checkpoint_transaction", fail_attestation_checkpoint)
+    request = RebuildIndexRequest(
+        archive_root=root,
+        schema_inference_receipt_path=receipt_path,
+        operation_id=operation_id,
+        promote=True,
+    )
+    with pytest.raises(OSError, match="simulated double offline attestation checkpoint failure"):
+        rebuild_index_from_source_sync(request)
+
+    stranded = store.load_transaction(operation_id)
+    assert stranded.status == "ready"
+    assert store.load(stranded.generation_id).state == "active"
+
+    monkeypatch.undo()
+    with pytest.raises(RuntimeError, match=f"rebuild operation {operation_id} is promoted-attestation-failed"):
+        rebuild_index_from_source_sync(request)
+
+    reconciled = store.load_transaction(operation_id)
+    assert reconciled.status == "promoted-attestation-failed"
+    assert reconciled.generation_id == stranded.generation_id
+    assert store.load(reconciled.generation_id).state == "active"
+
+
 def test_provenance_failure_reconciles_active_generation_before_stale_retirement(tmp_path: Path) -> None:
     """Receipt rejection preserves an already-promoted owned generation's lifecycle fact."""
     root = tmp_path / "archive"
