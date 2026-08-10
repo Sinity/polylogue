@@ -976,7 +976,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 required_capabilities=("archive.raw_authority_recovery",),
                 destructive_class="reset",
                 required_confirmation="confirm_flag",
-                allowed_durabilities=("derived",),
+                allowed_durabilities=("durable",),
                 allowed_recovery=("none",),
             ),
         ),

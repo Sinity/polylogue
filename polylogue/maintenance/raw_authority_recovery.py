@@ -98,6 +98,17 @@ def _digest(payload: object) -> str:
     return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
 
 
+def _recovery_code_sha() -> str:
+    """Return the immutable build identity allowed to authorize recovery."""
+
+    if VERSION_INFO.dirty:
+        raise RawAuthorityRecoveryError("recovery requires a clean build")
+    code_sha = VERSION_INFO.commit
+    if not code_sha:
+        raise RawAuthorityRecoveryError("recovery requires an exact build code SHA")
+    return code_sha
+
+
 def _file_fingerprint(path: Path) -> dict[str, object]:
     try:
         stat = path.stat()
@@ -884,9 +895,7 @@ def _build_plan(
     if not source_db.is_file() or not index_db.is_file():
         raise FileNotFoundError(source_db if not source_db.is_file() else index_db)
     schema_versions = _schema_versions(root, location)
-    code_sha = VERSION_INFO.commit
-    if not code_sha:
-        raise RawAuthorityRecoveryError("recovery requires an exact build code SHA")
+    code_sha = _recovery_code_sha()
     identity = _archive_identity(root, location)
     identity_digest = _digest(identity)
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source:
@@ -997,7 +1006,7 @@ def _same(value: object, expected: object, field: str) -> None:
 def _revalidate_common(plan: RawAuthorityRecoveryPlan, root: Path, location: ArchiveLocation) -> None:
     if str(root.resolve(strict=False)) != plan.archive_root:
         raise RawAuthorityRecoveryError("recovery plan names a different archive root")
-    _same(VERSION_INFO.commit, plan.code_sha, "code SHA")
+    _same(_recovery_code_sha(), plan.code_sha, "code SHA")
     _same(_schema_versions(root, location), plan.schema_versions, "schema versions")
     _same(_archive_identity(root, location), plan.archive_identity, "archive identity")
     _same(_digest(plan.archive_identity), plan.archive_identity_digest, "archive identity digest")

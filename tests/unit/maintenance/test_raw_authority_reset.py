@@ -33,6 +33,7 @@ from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.durable_change_train import write_source_continuity_pending_intent
 from polylogue.storage.sqlite.migration_runner import DurableDatabaseEvidence
+from polylogue.version import VERSION_INFO
 
 
 def _seed_ledger(source_db: Path) -> None:
@@ -170,6 +171,24 @@ def test_census_reset_reproduces_poisoned_ledger_and_preserves_source_authority(
         conn.execute("UPDATE raw_authority_parser_census SET detail = 'changed' WHERE raw_id = 'r-keep'")
     with pytest.raises(RawAuthorityRecoveryError, match="changed"):
         apply_raw_authority_recovery(plan)
+
+
+def test_census_reset_refuses_a_build_dirtied_after_planning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An apply cannot bind a plan after its source build changed."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    monkeypatch.setattr(VERSION_INFO, "dirty", False)
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+
+    monkeypatch.setattr(VERSION_INFO, "dirty", True)
+    with pytest.raises(RawAuthorityRecoveryError, match="clean build"):
+        apply_raw_authority_recovery(plan)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
 
 
 def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails(

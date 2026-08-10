@@ -146,6 +146,7 @@ def test_raw_authority_recovery_specs_declare_their_exact_target_kinds() -> None
     assert [(policy.key, policy.target_kinds) for policy in reset_policy] == [
         ("raw-authority-recovery-source", ("source",))
     ]
+    assert reset_policy[0].allowed_durabilities == ("durable",)
     assert [(policy.key, policy.target_kinds) for policy in prune_policy] == [
         ("raw-authority-recovery-index", ("index",))
     ]
