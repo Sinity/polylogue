@@ -1681,7 +1681,7 @@ def test_insights_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) ->
 def test_archive_insights_execute_ids_preserves_millisecond_sort_key(tmp_path: Path) -> None:
     db_path = tmp_path / "index.db"
     session_id = "codex-session:conv-ms"
-    source_sort_key_ms = 1_779_606_000_953
+    source_sort_key_ms = 1_097_440_214_212
     with open_connection(db_path) as conn:
         _seed_index_session(conn, session_id="conv-ms", text="Message with millisecond sort key")
         conn.execute(
@@ -1700,8 +1700,18 @@ def test_archive_insights_execute_ids_preserves_millisecond_sort_key(tmp_path: P
             "SELECT source_sort_key FROM session_profiles WHERE session_id = ?",
             (session_id,),
         ).fetchone()
+        latency_materialization = conn.execute(
+            """
+            SELECT source_sort_key_ms
+            FROM insight_materialization
+            WHERE session_id = ? AND insight_type = 'latency'
+            """,
+            (session_id,),
+        ).fetchone()
         assert profile is not None
         assert profile["source_sort_key"] == pytest.approx(source_sort_key_ms / 1000.0)
+        assert latency_materialization is not None
+        assert latency_materialization["source_sort_key_ms"] == source_sort_key_ms
         assert stages._archive_stale_session_profile_ids(conn, [session_id]) == []
 
 

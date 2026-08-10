@@ -1452,7 +1452,7 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
     session_id = str(profile.session_id)
     materialized_at_ms = _epoch_ms_or_none(profile.materialized_at) or 0
     source_updated_at_ms = _epoch_ms_or_none(profile.source_updated_at)
-    source_sort_key_ms = int(profile.source_sort_key * 1000) if profile.source_sort_key is not None else None
+    source_sort_key_ms = _source_sort_key_ms(profile.source_sort_key)
     input_high_water_mark_ms = _epoch_ms_or_none(profile.input_high_water_mark)
     # polylogue-f2qv.5: re-derive session_model_usage every time a session's
     # insights are rebuilt (missing-profile backfill, stale-version repair, or
@@ -1477,9 +1477,7 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
         stamp_input_high_water_mark_source = profile.input_high_water_mark_source
         if insight_type == "latency":
             stamp_source_updated_at_ms = _epoch_ms_or_none(latency.source_updated_at)
-            stamp_source_sort_key_ms = (
-                int(latency.source_sort_key * 1000) if latency.source_sort_key is not None else None
-            )
+            stamp_source_sort_key_ms = _source_sort_key_ms(latency.source_sort_key)
             stamp_input_high_water_mark_ms = _epoch_ms_or_none(latency.input_high_water_mark)
             stamp_input_high_water_mark_source = latency.input_high_water_mark_source
         apply_insight_materialization(
@@ -1494,6 +1492,11 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
             input_high_water_mark_source=stamp_input_high_water_mark_source,
             input_row_count=input_row_count,
         )
+
+
+def _source_sort_key_ms(source_sort_key: float | None) -> int | None:
+    """Recover the canonical integer millisecond key from a float-seconds value."""
+    return round(source_sort_key * 1000) if source_sort_key is not None else None
 
 
 def _count_record_bundles(
