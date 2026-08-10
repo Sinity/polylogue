@@ -743,7 +743,7 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             evidence_ref = str(raw["evidence_ref"])
         except (DurableChangeTrainError, KeyError, TypeError, ValueError) as exc:
             raise DurableChangeTrainError(f"source continuity pending intent is malformed: {path}") from exc
-        receipt_phase = _liveness_receipt_phase(receipt)
+        receipt_phase = _source_mutation_receipt_phase(receipt)
         if receipt_phase == "recovered_rolled_back":
             clear_source_continuity_pending_intent(path)
             continue
@@ -798,6 +798,20 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             mark_source_continuity_pending_intent_terminal(path, error=exc)
         else:
             clear_source_continuity_pending_intent(path)
+
+
+def _source_mutation_receipt_phase(receipt_path: Path) -> str:
+    """Classify a committed source-maintenance receipt without guessing its format."""
+
+    try:
+        raw = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return _liveness_receipt_phase(receipt_path)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DurableChangeTrainError(f"source continuity pending receipt is unreadable: {receipt_path}") from exc
+    if isinstance(raw, dict) and raw.get("format") == "polylogue.raw-authority-recovery-receipt.v1":
+        return "committed"
+    return _liveness_receipt_phase(receipt_path)
 
 
 def _liveness_receipt_phase(receipt_path: Path) -> str:
@@ -906,6 +920,71 @@ def _validate_liveness_receipt_bytes(
     ):
         raise DurableChangeTrainError("source mutation receipt candidate digest or count mismatch")
     return header
+
+
+def _validate_raw_authority_reset_receipt(
+    payload: dict[str, object],
+    *,
+    source_path: Path,
+    backup_manifest: Path,
+    operation_id: str,
+) -> dict[str, object]:
+    """Authenticate a self-hashed source reset receipt for continuity refresh."""
+
+    receipt_sha256 = payload.pop("receipt_sha256", None)
+    if receipt_sha256 != _canonical_json_sha256(payload):
+        raise DurableChangeTrainError("source mutation receipt checksum mismatch")
+    authority = payload.get("backup_authority")
+    if not isinstance(authority, dict):
+        raise DurableChangeTrainError("source mutation receipt has no backup authority")
+    backup_digest = hashlib.sha256(backup_manifest.read_bytes()).hexdigest()
+    if (
+        payload.get("format") != "polylogue.raw-authority-recovery-receipt.v1"
+        or payload.get("operation") != "reset_raw_authority_census"
+        or payload.get("operation_id") != operation_id
+        or payload.get("archive_root") != str(source_path.parent)
+        or authority.get("tier") != ArchiveTier.SOURCE.value
+        or authority.get("manifest_path") != str(backup_manifest)
+        or authority.get("manifest_sha256") != backup_digest
+    ):
+        raise DurableChangeTrainError("source mutation receipt does not bind the named raw-authority reset")
+    after_counts = payload.get("after_counts")
+    if not isinstance(after_counts, dict) or any(value != 0 for value in after_counts.values()):
+        raise DurableChangeTrainError("source mutation receipt does not prove the raw-authority ledger reset")
+    return {"backup_manifest_sha256": backup_digest}
+
+
+def _validate_source_mutation_receipt_bytes(
+    receipt_bytes: bytes,
+    *,
+    source_path: Path,
+    backup_manifest: Path,
+    operation_id: str,
+) -> dict[str, object]:
+    """Authenticate the supported durable source-mutation receipt formats."""
+
+    try:
+        raw = json.loads(receipt_bytes)
+    except json.JSONDecodeError:
+        return _validate_liveness_receipt_bytes(
+            receipt_bytes,
+            source_path=source_path,
+            backup_manifest=backup_manifest,
+            operation_id=operation_id,
+        )
+    if isinstance(raw, dict) and raw.get("format") == "polylogue.raw-authority-recovery-receipt.v1":
+        return _validate_raw_authority_reset_receipt(
+            cast(dict[str, object], raw),
+            source_path=source_path,
+            backup_manifest=backup_manifest,
+            operation_id=operation_id,
+        )
+    return _validate_liveness_receipt_bytes(
+        receipt_bytes,
+        source_path=source_path,
+        backup_manifest=backup_manifest,
+        operation_id=operation_id,
+    )
 
 
 def _validate_source_continuity_refresh_receipt(
@@ -1024,7 +1103,7 @@ def _refresh_released_source_train_continuity_locked(
         receipt_bytes = mutation_receipt.read_bytes()
     except OSError as exc:
         raise DurableChangeTrainError("source mutation receipt is not readable") from exc
-    header = _validate_liveness_receipt_bytes(
+    header = _validate_source_mutation_receipt_bytes(
         receipt_bytes,
         source_path=source_path,
         backup_manifest=backup_manifest,

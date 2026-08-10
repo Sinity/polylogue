@@ -21,6 +21,11 @@ from polylogue.cli.commands.maintenance import _rebuild_index as maintenance_reb
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
+from polylogue.maintenance.raw_authority_recovery import (
+    RecoveryOperation,
+    inspect_raw_authority_recovery,
+    write_recovery_plan,
+)
 from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage.blob_gc import read_gc_history
@@ -1910,15 +1915,9 @@ def test_cursor_authority_reconcile_cli_rejects_mixed_or_missing_mode_options(
     assert "requires" in result.output or "accepts only" in result.output
 
 
-@pytest.mark.parametrize(
-    ("option", "value"),
-    (("--apply-plan", "raw-authority-frontier:" + "a" * 64), ("--preview-census", "census"), ("--yes", None)),
-)
 def test_raw_authority_frontier_cli_inspects_without_applying_plans(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
-    option: str,
-    value: str | None,
 ) -> None:
     result = cli_runner.invoke(
         cli,
@@ -1964,6 +1963,16 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
     for removed in ("--apply-plan", "--preview-census", "--yes"):
         assert removed not in frontier_help.output
 
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    (("--apply-plan", "raw-authority-frontier:" + "a" * 64), ("--preview-census", "census"), ("--yes", None)),
+)
+def test_raw_authority_frontier_cli_rejects_removed_apply_options(
+    cli_runner: CliRunner,
+    option: str,
+    value: str | None,
+) -> None:
     rejected = cli_runner.invoke(
         cli,
         [
@@ -1977,6 +1986,35 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
     )
     assert rejected.exit_code == 2
     assert f"No such option {option!r}." in rejected.output
+
+
+def test_raw_authority_recovery_cli_refuses_plan_for_another_operation(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, tmp_path: Path
+) -> None:
+    """The required operation is bound before a destructive plan artifact is consumed."""
+
+    plan = inspect_raw_authority_recovery(cli_workspace["archive_root"], RecoveryOperation.RESET_CENSUS)
+    plan_file = tmp_path / "census-reset.plan.json"
+    write_recovery_plan(plan, plan_file)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-recovery",
+            "--operation",
+            RecoveryOperation.PRUNE_INDEX_SEEDS.value,
+            "--apply",
+            "--plan-file",
+            str(plan_file),
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "plan file declares operation 'reset_raw_authority_census'" in result.output
 
 
 def test_raw_authority_frontier_cli_refuses_durable_census_while_daemon_runs(

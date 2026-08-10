@@ -1,6 +1,6 @@
 """Guarded, receipted recovery for the raw-authority derived state.
 
-This is the only production mutation route for the two break-glass repairs in
+This is the only production mutation route for the two guarded repairs in
 this module.  The storage helpers expose counts for diagnostics, but they do
 not authorize deletion.  A plan is an exact snapshot of one archive and one
 operation.  APPLY rechecks that snapshot while holding both archive ownership
@@ -48,7 +48,13 @@ from polylogue.storage.index_generation import RebuildLease, source_revision_sna
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.durable_change_train import (
+    DurableChangeTrainError,
+    reconcile_durable_change_train_startup,
+    write_source_continuity_pending_intent,
+)
 from polylogue.storage.sqlite.migration_runner import (
+    capture_durable_database_evidence,
     validate_backup_manifest_covers_derived_tier,
     validate_migration_backup_manifest,
 )
@@ -184,7 +190,14 @@ def _archive_identity(root: Path, location: ArchiveLocation) -> dict[str, object
     from polylogue.storage.archive_identity import ArchiveIdentity
 
     identity = ArchiveIdentity.resolve_location(location)
-    return identity.as_dict(unit="raw-authority-recovery")
+    # Plans are deliberately portable across CLI invocations.  The complete
+    # identity includes useful process diagnostics, but those cannot be part
+    # of the durable archive identity because they change at every restart.
+    return {
+        key: value
+        for key, value in identity.as_dict(unit="raw-authority-recovery").items()
+        if key not in {"process_id", "executable", "invocation_id"}
+    }
 
 
 def _generation_identity(root: Path, location: ArchiveLocation) -> dict[str, object]:
@@ -221,8 +234,8 @@ def _validate_ledger(conn: sqlite3.Connection) -> None:
         "raw_authority_blockers": ("expected_json", "observed_json"),
     }.items():
         quoted = _quote_identifier(table)
+        names = [str(item[1]) for item in conn.execute(f"PRAGMA table_info({quoted})")]
         for row in conn.execute(f"SELECT * FROM {quoted}"):
-            names = [str(item[1]) for item in conn.execute(f"PRAGMA table_info({quoted})")]
             values = dict(zip(names, row, strict=True))
             for column in columns:
                 try:
@@ -272,30 +285,59 @@ def _index_candidates(conn: sqlite3.Connection) -> dict[str, tuple[str, ...]]:
     return {"raw_revision_heads": heads, "raw_revision_applications": applications}
 
 
-def _index_seed_digest(conn: sqlite3.Connection, *, excluded_keys: Mapping[str, tuple[str, ...]] | None = None) -> str:
-    """Hash the exact index-seed rows expected after a guarded prune."""
+def _index_seed_rows(
+    conn: sqlite3.Connection, *, excluded_keys: Mapping[str, tuple[str, ...]] | None = None
+) -> dict[str, dict[str, str]]:
+    """Return stable row digests keyed by each index-seed primary key."""
 
     key_columns = {
         "raw_revision_heads": "logical_source_key",
         "raw_revision_applications": "decision_id",
     }
-    payload: dict[str, object] = {}
+    payload: dict[str, dict[str, str]] = {}
     for table, key_column in key_columns.items():
         quoted = _quote_identifier(table)
         columns = [str(row[1]) for row in conn.execute(f"PRAGMA table_info({quoted})")]
         if not columns:
             raise RawAuthorityRecoveryError(f"cannot fingerprint missing or malformed table: {table}")
-        excluded = () if excluded_keys is None else excluded_keys.get(table, ())
-        if excluded:
-            placeholders = ", ".join("?" for _ in excluded)
-            rows_query = f"SELECT * FROM {quoted} WHERE {_quote_identifier(key_column)} NOT IN ({placeholders})"
-            rows = conn.execute(rows_query, excluded)
-        else:
-            rows = conn.execute(f"SELECT * FROM {quoted}")
-        values = [[_value_for_digest(value) for value in row] for row in rows]
-        values.sort(key=_canonical_bytes)
-        payload[table] = {"columns": columns, "rows": values}
-    return _digest(payload)
+        key_index = columns.index(key_column)
+        excluded = set(() if excluded_keys is None else excluded_keys.get(table, ()))
+        row_digests: dict[str, str] = {}
+        for row in conn.execute(f"SELECT * FROM {quoted}"):
+            key = str(row[key_index])
+            if key in excluded:
+                continue
+            if key in row_digests:
+                raise RawAuthorityRecoveryError(f"index seed table has a duplicate primary key: {table}.{key_column}")
+            row_digests[key] = _digest({"columns": columns, "row": [_value_for_digest(value) for value in row]})
+        payload[table] = row_digests
+    return payload
+
+
+def _index_seed_digest(conn: sqlite3.Connection, *, excluded_keys: Mapping[str, tuple[str, ...]] | None = None) -> str:
+    """Hash a bounded, key-addressable index-seed row snapshot."""
+
+    return _digest(_index_seed_rows(conn, excluded_keys=excluded_keys))
+
+
+def _verify_index_seed_post_target(conn: sqlite3.Connection, plan: RawAuthorityRecoveryPlan) -> None:
+    """Require planned retained rows and candidate absence, allowing append-only successors."""
+
+    if plan.post_target_rows is None or plan.post_target_digest is None:
+        raise RawAuthorityRecoveryError("recovery plan is missing its exact index seed post-target state")
+    if _digest(plan.post_target_rows) != plan.post_target_digest:
+        raise RawAuthorityRecoveryError("recovery plan has an invalid exact index seed post-target digest")
+    observed = _index_seed_rows(conn)
+    for table in _INDEX_TARGETS:
+        candidate_keys = set(plan.candidate_keys[table])
+        if candidate_keys & set(observed[table]):
+            raise RawAuthorityRecoveryError("recovery intent still contains a planned orphaned index seed")
+        expected = plan.post_target_rows.get(table)
+        if not isinstance(expected, dict):
+            raise RawAuthorityRecoveryError("recovery plan has malformed index seed post-target rows")
+        retained = {key: observed[table].get(key) for key in expected}
+        if retained != expected:
+            raise RawAuthorityRecoveryError("recovery intent does not match the exact committed index seed state")
 
 
 def _validate_backup(path: Path | None, *, tier: ArchiveTier, connection: sqlite3.Connection) -> dict[str, object]:
@@ -368,6 +410,7 @@ class RawAuthorityRecoveryPlan:
     active_generation: dict[str, object]
     before_counts: dict[str, int]
     candidate_keys: dict[str, tuple[str, ...]]
+    post_target_rows: dict[str, dict[str, str]] | None
     post_target_digest: str | None
     protected_digest: str
     backup_authority: dict[str, object] | None
@@ -390,6 +433,7 @@ class RawAuthorityRecoveryPlan:
             "active_generation": self.active_generation,
             "before_counts": self.before_counts,
             "candidate_keys": {key: list(value) for key, value in self.candidate_keys.items()},
+            "post_target_rows": self.post_target_rows,
             "post_target_digest": self.post_target_digest,
             "protected_digest": self.protected_digest,
             "backup_authority": self.backup_authority,
@@ -429,12 +473,23 @@ class RawAuthorityRecoveryPlan:
             "source_snapshot",
             "active_generation",
             "before_counts",
+            "post_target_rows",
             "post_target_digest",
             "protected_digest",
             "receipt_path",
         )
         if any(key not in payload for key in required):
             raise RawAuthorityRecoveryError("raw-authority recovery plan is missing a required field")
+        post_target_rows = payload["post_target_rows"]
+        if post_target_rows is not None and (
+            not isinstance(post_target_rows, dict)
+            or any(
+                not isinstance(rows, dict)
+                or any(not isinstance(key, str) or not isinstance(value, str) for key, value in rows.items())
+                for rows in post_target_rows.values()
+            )
+        ):
+            raise RawAuthorityRecoveryError("raw-authority recovery plan post-target rows are malformed")
         post_target_digest = payload["post_target_digest"]
         if post_target_digest is not None and not isinstance(post_target_digest, str):
             raise RawAuthorityRecoveryError("raw-authority recovery plan post-target digest is malformed")
@@ -452,6 +507,7 @@ class RawAuthorityRecoveryPlan:
             active_generation=cast(dict[str, object], payload["active_generation"]),
             before_counts=_int_mapping(payload["before_counts"], field="before_counts"),
             candidate_keys=candidates,
+            post_target_rows=cast(dict[str, dict[str, str]] | None, post_target_rows),
             post_target_digest=post_target_digest,
             protected_digest=str(payload["protected_digest"]),
             backup_authority=(
@@ -542,16 +598,14 @@ def _durable_receipt_directory(
             except FileNotFoundError:
                 if not create:
                     raise
-                created = False
-                try:
+                with suppress(FileExistsError):
                     os.mkdir(component, mode=0o700, dir_fd=current_fd)
-                    created = True
-                except FileExistsError:
-                    pass
                 next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current_fd)
-                if created:
-                    os.fsync(current_fd)
-                    os.fsync(next_fd)
+            # A previous process may have created the directory entry but died
+            # before syncing it.  Persist every surviving parent while walking
+            # the descriptor chain, not only entries made by this invocation.
+            os.fsync(current_fd)
+            os.fsync(next_fd)
             os.close(current_fd)
             current_fd = next_fd
         yield current_fd, candidate.name
@@ -725,6 +779,7 @@ def _build_plan(
             _validate_integrity(source, tier="source")
             counts = source_counts
             candidate_keys: dict[str, tuple[str, ...]] = {}
+            post_target_rows: dict[str, dict[str, str]] | None = None
             post_target_digest: str | None = None
             protected = _protected_digest(source, excluded=_RESET_TABLES)
         else:
@@ -734,7 +789,8 @@ def _build_plan(
                 _validate_integrity(index, tier="active index")
                 candidate_keys = _index_candidates(index)
                 counts = _count_tables(index, _INDEX_TARGETS)
-                post_target_digest = _index_seed_digest(index, excluded_keys=candidate_keys)
+                post_target_rows = _index_seed_rows(index, excluded_keys=candidate_keys)
+                post_target_digest = _digest(post_target_rows)
                 protected = _protected_digest(index, excluded=_INDEX_TARGETS)
         source_snapshot = source_revision_snapshot(root)
     backup_authority: dict[str, object] | None = None
@@ -760,6 +816,7 @@ def _build_plan(
         "active_generation": _generation_identity(root, location),
         "before_counts": counts,
         "candidate_keys": {key: list(value) for key, value in candidate_keys.items()},
+        "post_target_rows": post_target_rows,
         "post_target_digest": post_target_digest,
         "protected_digest": protected,
         "backup_authority": backup_authority,
@@ -779,6 +836,7 @@ def _build_plan(
         active_generation=cast(dict[str, object], payload["active_generation"]),
         before_counts=counts,
         candidate_keys=candidate_keys,
+        post_target_rows=post_target_rows,
         post_target_digest=post_target_digest,
         protected_digest=protected,
         backup_authority=backup_authority,
@@ -848,6 +906,39 @@ def _recovery_intent(plan: RawAuthorityRecoveryPlan) -> dict[str, object]:
         "protected_digest": plan.protected_digest,
         "plan": plan.to_dict(),
     }
+
+
+def _write_source_continuity_pending_intent(plan: RawAuthorityRecoveryPlan) -> None:
+    """Persist source-train refresh evidence before the reset can commit."""
+
+    authority = plan.backup_authority
+    if not isinstance(authority, dict):
+        raise RawAuthorityRecoveryError("source recovery plan has no backup authority for continuity refresh")
+    root = Path(plan.archive_root)
+    try:
+        with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as conn:
+            before = capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
+        write_source_continuity_pending_intent(
+            root,
+            mutation_receipt=Path(plan.receipt_path),
+            backup_manifest=Path(str(authority["manifest_path"])),
+            pre_mutation_evidence=before,
+            operation_id=plan.operation_id,
+            evidence_ref=f"proof:raw-authority-recovery:{plan.plan_digest}",
+        )
+    except (DurableChangeTrainError, KeyError, OSError, sqlite3.Error) as exc:
+        raise RawAuthorityRecoveryError(f"could not persist source continuity recovery intent: {exc}") from exc
+
+
+def _refresh_source_train_continuity(plan: RawAuthorityRecoveryPlan) -> None:
+    """Run the established pending-intent recovery after a source receipt exists."""
+
+    if RecoveryOperation(plan.operation) is not RecoveryOperation.RESET_CENSUS:
+        return
+    try:
+        reconcile_durable_change_train_startup(Path(plan.archive_root))
+    except DurableChangeTrainError as exc:
+        raise RawAuthorityRecoveryError(f"source continuity refresh remains incomplete: {exc}") from exc
 
 
 def _write_recovery_intent(plan: RawAuthorityRecoveryPlan) -> Path:
@@ -940,13 +1031,10 @@ def _committed_postflight(plan: RawAuthorityRecoveryPlan) -> tuple[dict[str, int
             conn.execute("ATTACH DATABASE ? AS src", (str(root / "source.db"),))
             after_counts = _count_tables(conn, _INDEX_TARGETS)
             expected_after = {key: plan.before_counts[key] - len(plan.candidate_keys[key]) for key in _INDEX_TARGETS}
-        if after_counts != expected_after:
-            return None
         if operation is RecoveryOperation.PRUNE_INDEX_SEEDS:
-            if plan.post_target_digest is None:
-                raise RawAuthorityRecoveryError("recovery plan is missing its exact index seed post-target digest")
-            if _index_seed_digest(conn) != plan.post_target_digest:
-                raise RawAuthorityRecoveryError("recovery intent does not match the exact committed index seed state")
+            _verify_index_seed_post_target(conn, plan)
+        elif after_counts != expected_after:
+            return None
         postflight = _postflight(conn, protected_digest=plan.protected_digest, excluded=excluded)
     return after_counts, postflight
 
@@ -971,6 +1059,7 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
                 after_counts=after_counts,
                 postflight=postflight,
             )
+            _refresh_source_train_continuity(plan)
             return RawAuthorityRecoveryReport(
                 plan=plan,
                 applied=False,
@@ -980,6 +1069,8 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
                 postflight=postflight,
             )
     _write_recovery_intent(plan)
+    if operation is RecoveryOperation.RESET_CENSUS:
+        _write_source_continuity_pending_intent(plan)
     if operation is RecoveryOperation.RESET_CENSUS:
         with closing(sqlite3.connect(source_db)) as conn:
             conn.row_factory = sqlite3.Row
@@ -1035,8 +1126,7 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
                 expected_after = {key: before_counts[key] - len(plan.candidate_keys[key]) for key in _INDEX_TARGETS}
                 if after_counts != expected_after:
                     raise RawAuthorityRecoveryError("index-seed prune postflight changed an unexpected row class")
-                if plan.post_target_digest is None or _index_seed_digest(conn) != plan.post_target_digest:
-                    raise RawAuthorityRecoveryError("index-seed prune postflight does not match the exact target state")
+                _verify_index_seed_post_target(conn, plan)
                 postflight = _postflight(conn, protected_digest=plan.protected_digest, excluded=excluded)
                 conn.commit()
             except Exception:
@@ -1048,6 +1138,7 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
         after_counts=after_counts,
         postflight=postflight,
     )
+    _refresh_source_train_continuity(plan)
     return RawAuthorityRecoveryReport(
         plan=plan,
         applied=True,
@@ -1083,15 +1174,15 @@ class _RecoveryActuator:
             backup_manifest=args.backup_manifest,
             receipt_path=args.receipt_path,
         )
+        target_ref = (
+            make_target_ref("source", args.operation.value)
+            if args.operation is RecoveryOperation.RESET_CENSUS
+            else make_target_ref("index", args.operation.value)
+        )
         return build_plan(
             operation=self.operation,
             destructive_class=self.destructive_class,
-            target_refs=(
-                make_target_ref(
-                    "source",
-                    args.operation.value,
-                ),
-            ),
+            target_refs=(target_ref,),
             affected_tiers=("source",) if args.operation is RecoveryOperation.RESET_CENSUS else ("index",),
             reversible=False,
             context={"recovery_plan_digest": live.plan_digest, "operation_id": args.operation_id},
@@ -1109,17 +1200,22 @@ class _RecoveryActuator:
         if live.plan_digest != args.expected_plan_digest:
             raise PlanStaleError("raw-authority recovery plan digest changed before apply")
         report = _apply_plan(live)
+        target_ref = (
+            make_target_ref("source", args.operation.value)
+            if args.operation is RecoveryOperation.RESET_CENSUS
+            else make_target_ref("index", args.operation.value)
+        )
+        affected_count = (
+            sum(report.plan.before_counts.values())
+            if args.operation is RecoveryOperation.RESET_CENSUS
+            else sum(len(keys) for keys in report.plan.candidate_keys.values())
+        )
         return MutationReceipt(
             operation=self.operation,
             plan_hash=args.expected_plan_digest,
             status="applied" if report.applied else "already_satisfied",
-            target_refs=(
-                make_target_ref(
-                    "source",
-                    args.operation.value,
-                ),
-            ),
-            affected_count=sum(report.plan.before_counts.values()),
+            target_refs=(target_ref,),
+            affected_count=affected_count if report.applied else 0,
             detail=None,
             receipt_ref=str(report.receipt_path) if report.receipt_path is not None else None,
             applied_at="recovery",
@@ -1224,6 +1320,7 @@ def apply_raw_authority_recovery(
     if existing is not None:
         _require_apply_preconditions(Path(selected.archive_root))
         _validate_existing_receipt(selected, existing)
+        _refresh_source_train_continuity(selected)
         return RawAuthorityRecoveryReport(
             plan=selected,
             applied=False,

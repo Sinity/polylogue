@@ -832,7 +832,7 @@ class OperationExecutor:
         return actuator.apply(plan, args)
 
 
-def make_target_ref(kind: Literal["session", "message", "block", "source"], value: object) -> str:
+def make_target_ref(kind: Literal["session", "message", "block", "source", "index"], value: object) -> str:
     """Return a stable ``kind:value`` target ref, the shared vocabulary for plans/receipts."""
 
     return f"{kind}:{value}"

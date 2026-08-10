@@ -64,7 +64,12 @@ def raw_authority_recovery_command(
         selected = RecoveryOperation(operation)
         if apply_changes:
             if plan_file is not None:
-                report = apply_raw_authority_recovery(plan_file, backup_manifest=backup_manifest)
+                artifact = RawAuthorityRecoveryPlan.from_dict(json.loads(plan_file.read_text(encoding="utf-8")))
+                if artifact.operation != selected.value:
+                    raise click.ClickException(
+                        f"plan file declares operation {artifact.operation!r}, but --operation is {selected.value!r}"
+                    )
+                report = apply_raw_authority_recovery(artifact, backup_manifest=backup_manifest)
             elif operation_id is not None:
                 report = resume_raw_authority_recovery(
                     env.config.archive_root,

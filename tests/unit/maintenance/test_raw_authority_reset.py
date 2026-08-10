@@ -13,8 +13,11 @@ from typing import Never
 import pytest
 
 from polylogue.maintenance.raw_authority_recovery import (
+    PruneOrphanedIndexRevisionSeedsActuator,
     RawAuthorityRecoveryError,
     RecoveryOperation,
+    _index_seed_digest,
+    _RecoveryArgs,
     _write_recovery_intent,
     apply_raw_authority_recovery,
     inspect_raw_authority_recovery,
@@ -27,6 +30,8 @@ from polylogue.maintenance.raw_authority_reset import (
 )
 from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.durable_change_train import write_source_continuity_pending_intent
+from polylogue.storage.sqlite.migration_runner import DurableDatabaseEvidence
 
 
 def _seed_ledger(source_db: Path) -> None:
@@ -221,6 +226,68 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     assert receipt["plan_digest"] == recovered.plan.plan_digest
 
 
+def test_persisted_recovery_plan_ignores_process_scoped_archive_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan written by one CLI process remains authorized in the next one."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan_file = tmp_path / "persisted-recovery-plan.json"
+    write_recovery_plan(plan, plan_file)
+
+    monkeypatch.setattr("polylogue.storage.archive_identity.os.getpid", lambda: 987654)
+    assert apply_raw_authority_recovery(plan_file).status == "applied"
+
+
+def test_census_reset_persists_source_continuity_intent_before_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The durable source-train protocol receives pre-mutation evidence before deletion."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+
+    original_write_pending = write_source_continuity_pending_intent
+    pending_paths: list[Path] = []
+
+    def record_pending(
+        archive_root: Path,
+        *,
+        mutation_receipt: Path,
+        backup_manifest: Path,
+        pre_mutation_evidence: DurableDatabaseEvidence,
+        operation_id: str,
+        evidence_ref: str,
+    ) -> Path:
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
+        pending = original_write_pending(
+            archive_root,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=pre_mutation_evidence,
+            operation_id=operation_id,
+            evidence_ref=evidence_ref,
+        )
+        pending_paths.append(pending)
+        assert pending.is_file()
+        return pending
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.raw_authority_recovery.write_source_continuity_pending_intent", record_pending
+    )
+    assert apply_raw_authority_recovery(plan).status == "applied"
+    assert len(pending_paths) == 1
+    assert not pending_paths[0].exists()
+
+
 def test_recovery_receipt_path_must_be_owned_by_the_archive(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     _seed_ledger(tmp_path / "source.db")
@@ -285,6 +352,32 @@ def test_recovery_fsyncs_each_new_durable_receipt_directory(tmp_path: Path, monk
     assert expected <= synced_inodes
 
 
+def test_recovery_fsyncs_surviving_receipt_parents_after_interrupted_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resumed writer persists parent entries it did not create itself."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    receipt_parent = tmp_path / ".maintenance-state" / "raw-authority-recovery"
+    receipt_parent.mkdir(parents=True)
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+
+    original_fsync = os.fsync
+    synced_inodes: set[int] = set()
+
+    def record_fsync(fd: int) -> None:
+        synced_inodes.add(os.fstat(fd).st_ino)
+        original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    assert apply_raw_authority_recovery(plan).status == "applied"
+    assert (tmp_path / ".maintenance-state").stat().st_ino in synced_inodes
+    assert receipt_parent.stat().st_ino in synced_inodes
+
+
 def test_recovery_receipt_rejects_fifo_before_reading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-regular artifact must not be opened as a receipt stream."""
 
@@ -326,6 +419,8 @@ def test_uncommitted_recovery_intent_reauthorizes_through_executor(
     monkeypatch.setattr(OperationExecutor, "authorize", require_authorization)
     with pytest.raises(RuntimeError, match="executor authorization was required"):
         apply_raw_authority_recovery(plan)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
 
 
 def test_census_reset_dry_run_does_not_mutate_and_apply_requires_backup(tmp_path: Path) -> None:
@@ -437,6 +532,24 @@ def test_index_prune_reproduces_orphan_failure_and_preserves_present_rows(
     assert apply_raw_authority_recovery(plan).status == "already_satisfied"
 
 
+def test_index_seed_digest_avoids_unbounded_sql_parameters(tmp_path: Path) -> None:
+    """Candidate exclusion remains usable below SQLite's configured bind limit."""
+
+    initialize_active_archive_root(tmp_path)
+    active_index = _seed_index_seeds(tmp_path)
+    with sqlite3.connect(active_index) as conn:
+        conn.execute("ATTACH DATABASE ? AS src", (str(tmp_path / "source.db"),))
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 1)
+        digest = _index_seed_digest(
+            conn,
+            excluded_keys={
+                "raw_revision_heads": ("k-r-present", "k-r-gone"),
+                "raw_revision_applications": ("d-r-present", "d-r-gone"),
+            },
+        )
+    assert len(digest) == 64
+
+
 def test_index_prune_refuses_stale_active_pointer_and_wrong_backup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -485,6 +598,75 @@ def test_index_prune_resume_refuses_changed_retained_seed_rows(tmp_path: Path, m
             RecoveryOperation.PRUNE_INDEX_SEEDS,
             operation_id=plan.operation_id,
         )
+
+
+def test_index_prune_resume_accepts_append_only_successor_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Receipt finalization keeps the committed candidate outcome despite later ingest successors."""
+
+    initialize_active_archive_root(tmp_path)
+    active_index = _seed_index_seeds(tmp_path)
+    backup = _backup_authority(tmp_path, monkeypatch, tier="index")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+
+    from polylogue.maintenance import raw_authority_recovery
+
+    original_write = raw_authority_recovery._write_durable_immutable
+
+    def fail_final_receipt(root: Path, path: Path, payload: dict[str, object], *, digest_field: str) -> Path:
+        if digest_field == "receipt_sha256":
+            raise OSError("injected final receipt write failure")
+        return original_write(root, path, payload, digest_field=digest_field)
+
+    monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", fail_final_receipt)
+    with pytest.raises(RawAuthorityRecoveryError, match="injected final receipt write failure"):
+        apply_raw_authority_recovery(plan)
+    monkeypatch.setattr(raw_authority_recovery, "_write_durable_immutable", original_write)
+
+    with sqlite3.connect(active_index) as conn:
+        conn.execute(
+            "INSERT INTO raw_revision_applications "
+            "(decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation, "
+            "decision, detail, decided_at_ms) VALUES "
+            "('d-successor', 'r-successor', 's-successor', 'k-successor', 'sr', 1, 'selected_baseline', 'd', 2)"
+        )
+
+    recovered = resume_raw_authority_recovery(
+        tmp_path,
+        RecoveryOperation.PRUNE_INDEX_SEEDS,
+        operation_id=plan.operation_id,
+    )
+    assert recovered.status == "already_satisfied"
+    with sqlite3.connect(active_index) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_revision_applications WHERE decision_id = 'd-successor'"
+        ).fetchone() == (1,)
+
+
+def test_index_recovery_actuator_reports_index_targets_and_deleted_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The executor receipt describes the active-index mutation it actually performed."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_index_seeds(tmp_path)
+    backup = _backup_authority(tmp_path, monkeypatch, tier="index")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    args = _RecoveryArgs(
+        archive_root=tmp_path,
+        operation=RecoveryOperation.PRUNE_INDEX_SEEDS,
+        operation_id=plan.operation_id,
+        expected_plan_digest=plan.plan_digest,
+        backup_manifest=backup,
+        receipt_path=Path(plan.receipt_path),
+    )
+    actuator = PruneOrphanedIndexRevisionSeedsActuator()
+
+    prepared = actuator.prepare(args)
+    assert prepared.target_refs == ("index:prune_orphaned_index_revision_seeds",)
+    assert prepared.affected_tiers == ("index",)
+    receipt = actuator.apply(prepared, args)
+    assert receipt.target_refs == ("index:prune_orphaned_index_revision_seeds",)
+    assert receipt.affected_count == 2
 
 
 def test_named_compatibility_facade_requires_index_backup(tmp_path: Path) -> None:

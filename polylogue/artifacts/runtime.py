@@ -669,7 +669,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
     ),
     ArtifactNode(
         name="raw_authority_index_seed_recovery_receipt",
-        layer=ArtifactLayer.PROJECTION,
+        layer=ArtifactLayer.DURABLE,
         description="Immutable receipt for a guarded active-index orphan-seed prune.",
         depends_on=("raw_revision_heads", "raw_revision_applications"),
         code_refs=("polylogue.maintenance.raw_authority_recovery",),
