@@ -237,7 +237,7 @@ def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidati
     archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
     providers = tuple(registry.list_providers())
     package_receipts = [
-        build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
+        build_schema_inference_receipt(cast(Any, registry), provider=provider, gate_receipt_digest=gate_digest)
         for provider in providers
     ]
     package_receipt = package_receipts[0]
@@ -246,7 +246,7 @@ def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidati
     wire_support = build_wire_support_receipt(registry=registry)
     assert wire_support.catalog_scope == "registry-default"
     manifest = compile_inferred_corpus_manifest(
-        registry=registry,
+        registry=cast(Any, registry),
         package_receipt=package_receipt.to_payload(),
         wire_support_receipt=wire_support,
         campaign_mode=True,
