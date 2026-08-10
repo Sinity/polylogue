@@ -2,79 +2,3825 @@
   "schema_version": 1,
   "ledger_id": "polylogue-incident-coverage-ledger",
   "target_bead_id": "polylogue-818fy",
-  "graph_fixture_id": "reindex-campaign-graph-426851d0e",
-  "dependency_kinds": ["blocks", "discovered-from", "parent-child", "relates-to", "supersedes"],
+  "graph_fixture_id": "reindex-campaign-graph-6a63a4f71f",
+  "dependency_kinds": [
+    "blocks",
+    "discovered-from",
+    "parent-child",
+    "relates-to",
+    "supersedes"
+  ],
   "fixtures": {
-    "campaign-graph": {"kind": "campaign-graph", "source": "tests/fixtures/reindex_incident_coverage/campaign_graph.json"},
-    "campaign-corpus": {"kind": "real-campaign-corpus", "source": "tests/infra/reindex_campaign.py"},
-    "canary-corpus": {"kind": "canary-selection", "source": "tests/infra/reindex_differential.py"},
-    "vintage-reorder": {"kind": "vintage-reorder", "source": "tests/infra/reindex_campaign.py"},
-    "lifecycle-anchor-drift": {"kind": "lifecycle-anchor-drift", "source": "tests/infra/reindex_campaign.py"},
-    "origin-matrix": {"kind": "origin-matrix", "source": "tests/infra/reindex_campaign.py"},
-    "raw-authority-census": {"kind": "raw-authority-census", "source": "tests/unit/storage/test_raw_authority_ledger.py"},
-    "sidecar-admission": {"kind": "sidecar-admission", "source": "tests/infra/reindex_campaign.py"},
-    "drive-revision": {"kind": "drive-revision", "source": "tests/unit/sources/test_drive_gateway.py"},
-    "lineage-corpus": {"kind": "lineage-corpus", "source": "tests/infra/reindex_campaign.py"},
-    "derived-model": {"kind": "derived-model", "source": "tests/infra/reindex_differential.py"},
-    "title-census": {"kind": "title-census", "source": "tests/unit/maintenance/test_reindex_campaign.py"},
-    "parser-replay": {"kind": "parser-replay", "source": "tests/unit/maintenance/test_reindex_campaign.py"},
-    "excluded-cursor-proof": {"kind": "candidate-live-compatible", "source": "tests/infra/excluded_cursor_live_proof.py"}
+    "campaign-graph": {
+      "kind": "campaign-graph",
+      "source": "tests/fixtures/reindex_incident_coverage/campaign_graph.json",
+      "mutation_ids": [
+        "mutation-a7xr-25",
+        "mutation-polylogue-052vs",
+        "mutation-polylogue-0qfy",
+        "mutation-polylogue-0v4tn",
+        "mutation-polylogue-1fijp",
+        "mutation-polylogue-1xc-8",
+        "mutation-polylogue-2qrx",
+        "mutation-polylogue-2qx",
+        "mutation-polylogue-2qx-3",
+        "mutation-polylogue-2tfug",
+        "mutation-polylogue-3m3de",
+        "mutation-polylogue-4987i",
+        "mutation-polylogue-4v2d3",
+        "mutation-polylogue-5q2u",
+        "mutation-polylogue-6753s",
+        "mutation-polylogue-6bebe",
+        "mutation-polylogue-6k0na",
+        "mutation-polylogue-6krh",
+        "mutation-polylogue-7zp4",
+        "mutation-polylogue-84ake",
+        "mutation-polylogue-8ac0",
+        "mutation-polylogue-9kc0",
+        "mutation-polylogue-9qnzy",
+        "mutation-polylogue-a7gmk",
+        "mutation-polylogue-a7xr-25",
+        "mutation-polylogue-aex0",
+        "mutation-polylogue-amrpx",
+        "mutation-polylogue-b5l-1",
+        "mutation-polylogue-byte-supersession-live-proof",
+        "mutation-polylogue-c831",
+        "mutation-polylogue-canonical-snapshot",
+        "mutation-polylogue-cc4k",
+        "mutation-polylogue-cijx-2",
+        "mutation-polylogue-cursor-authority-live-proof",
+        "mutation-polylogue-cursor-authority-reconcile-implementation",
+        "mutation-polylogue-dcrmm",
+        "mutation-polylogue-ds4b4",
+        "mutation-polylogue-dudtn",
+        "mutation-polylogue-dyica",
+        "mutation-polylogue-e98k",
+        "mutation-polylogue-ehzfn",
+        "mutation-polylogue-eqq02",
+        "mutation-polylogue-es7b",
+        "mutation-polylogue-excluded-cursor-live-proof",
+        "mutation-polylogue-ey4ro",
+        "mutation-polylogue-f47j",
+        "mutation-polylogue-g8v5z",
+        "mutation-polylogue-gxig",
+        "mutation-polylogue-gysk3",
+        "mutation-polylogue-h57ic",
+        "mutation-polylogue-h7y0j",
+        "mutation-polylogue-hjwr",
+        "mutation-polylogue-hook-reconciliation-apply-proof",
+        "mutation-polylogue-i3zo",
+        "mutation-polylogue-in24n",
+        "mutation-polylogue-incident-coverage-ledger",
+        "mutation-polylogue-inygw",
+        "mutation-polylogue-iuyr",
+        "mutation-polylogue-ix5r",
+        "mutation-polylogue-k8wv",
+        "mutation-polylogue-kmqwm",
+        "mutation-polylogue-ksgg",
+        "mutation-polylogue-lb39z",
+        "mutation-polylogue-lkrc",
+        "mutation-polylogue-lr6dx",
+        "mutation-polylogue-lyv4",
+        "mutation-polylogue-mvcbi",
+        "mutation-polylogue-nhbvf",
+        "mutation-polylogue-o8c3m",
+        "mutation-polylogue-ohkfy",
+        "mutation-polylogue-omsw",
+        "mutation-polylogue-pr-scope-contract",
+        "mutation-polylogue-qhk8z",
+        "mutation-polylogue-r9xsj",
+        "mutation-polylogue-raw-dedupe-apply-proof",
+        "mutation-polylogue-reindex-preflight-authorization",
+        "mutation-polylogue-reindex-proof-edge-correction",
+        "mutation-polylogue-reindex-registry-two-plane-subset",
+        "mutation-polylogue-reindex-source-remediation",
+        "mutation-polylogue-rrxe4",
+        "mutation-polylogue-s8s54",
+        "mutation-polylogue-slshy",
+        "mutation-polylogue-stalled-cursor-live-proof",
+        "mutation-polylogue-swqu",
+        "mutation-polylogue-t0m73",
+        "mutation-polylogue-tnqqt",
+        "mutation-polylogue-tu1f",
+        "mutation-polylogue-tw4ar",
+        "mutation-polylogue-uecir",
+        "mutation-polylogue-un60n",
+        "mutation-polylogue-uqwd",
+        "mutation-polylogue-vp2ky",
+        "mutation-polylogue-w6hql",
+        "mutation-polylogue-xeck9",
+        "mutation-polylogue-xselt",
+        "mutation-polylogue-yazae",
+        "mutation-polylogue-yla8",
+        "mutation-polylogue-z22ml",
+        "mutation-polylogue-zm4w8",
+        "mutation-polylogue-zoek0",
+        "mutation-reindex-source-remediation",
+        "mutation-xselt"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.campaign_graph"
+    },
+    "campaign-corpus": {
+      "kind": "real-campaign-corpus",
+      "source": "tests/infra/reindex_campaign.py",
+      "mutation_ids": [
+        "mutation-a7xr-25",
+        "mutation-campaign-corpus"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.campaign_corpus"
+    },
+    "canary-corpus": {
+      "kind": "canary-selection",
+      "source": "tests/infra/reindex_differential.py",
+      "mutation_ids": [
+        "mutation-canary-corpus"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.canary_corpus"
+    },
+    "vintage-reorder": {
+      "kind": "vintage-reorder",
+      "source": "tests/infra/reindex_campaign.py",
+      "mutation_ids": [
+        "mutation-vintage-reorder"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.vintage_reorder"
+    },
+    "lifecycle-anchor-drift": {
+      "kind": "lifecycle-anchor-drift",
+      "source": "tests/infra/reindex_campaign.py",
+      "mutation_ids": [
+        "mutation-lifecycle-anchor-drift"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.lifecycle_anchor_drift"
+    },
+    "origin-matrix": {
+      "kind": "origin-matrix",
+      "source": "tests/infra/reindex_campaign.py",
+      "mutation_ids": [
+        "mutation-origin-matrix"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.origin_matrix"
+    },
+    "raw-authority-census": {
+      "kind": "raw-authority-census",
+      "source": "tests/unit/storage/test_raw_authority_ledger.py",
+      "mutation_ids": [
+        "mutation-raw-authority-census"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.raw_authority_census"
+    },
+    "sidecar-admission": {
+      "kind": "sidecar-admission",
+      "source": "tests/infra/reindex_campaign.py",
+      "mutation_ids": [
+        "mutation-sidecar-admission"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.sidecar_admission"
+    },
+    "drive-revision": {
+      "kind": "drive-revision",
+      "source": "tests/unit/sources/test_drive_gateway.py",
+      "mutation_ids": [
+        "mutation-drive-revision"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.drive_revision"
+    },
+    "lineage-corpus": {
+      "kind": "lineage-corpus",
+      "source": "tests/infra/reindex_campaign.py",
+      "mutation_ids": [
+        "mutation-lineage-corpus"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.lineage_corpus"
+    },
+    "derived-model": {
+      "kind": "derived-model",
+      "source": "tests/infra/reindex_differential.py",
+      "mutation_ids": [
+        "mutation-derived-model"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.derived_model"
+    },
+    "title-census": {
+      "kind": "title-census",
+      "source": "tests/unit/maintenance/test_reindex_campaign.py",
+      "mutation_ids": [
+        "mutation-title-census"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.title_census"
+    },
+    "parser-replay": {
+      "kind": "parser-replay",
+      "source": "tests/unit/maintenance/test_reindex_campaign.py",
+      "mutation_ids": [
+        "mutation-parser-replay"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.parser_replay"
+    },
+    "excluded-cursor-proof": {
+      "kind": "candidate-live-compatible",
+      "source": "tests/infra/excluded_cursor_live_proof.py",
+      "mutation_ids": [
+        "mutation-excluded-cursor-proof"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.excluded_cursor_proof"
+    }
   },
   "checks": {
-    "campaign-coverage": {"kind": "registry", "source": "docs/plans/reindex-incident-coverage.json"},
-    "canary-differ": {"kind": "registry", "source": "tests/unit/maintenance/test_reindex_canary.py"},
-    "content-fidelity": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "cursor-freshness": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "origin-matrix": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "content-hash-stability": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "lineage-differential": {"kind": "registry", "source": "tests/infra/reindex_differential.py"},
-    "topology-status": {"kind": "registry", "source": "tests/unit/storage/test_raw_authority_ledger.py"},
-    "parser-replay": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "convergence": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "raw-authority": {"kind": "registry", "source": "tests/unit/storage/test_raw_authority_ledger.py"},
-    "title-resolution": {"kind": "registry", "source": "tests/unit/maintenance/test_reindex_campaign.py"},
-    "deployment-sync": {"kind": "receipt-gate", "source": "tests/infra/reindex_campaign.py"},
-    "event-projection": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "corpus-fidelity": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "material-origin": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "sidecar-admission": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "derived-convergence": {"kind": "registry", "source": "tests/infra/reindex_differential.py"},
-    "promotion-proof": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "convergence-properties": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "origin-repair": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"},
-    "parser-stamps": {"kind": "registry", "source": "tests/unit/maintenance/test_reindex_campaign.py"},
-    "revision-lineage": {"kind": "registry", "source": "tests/unit/sources/test_drive_gateway.py"},
-    "archive-invariants": {"kind": "registry", "source": "tests/unit/storage/test_raw_authority_ledger.py"},
-    "lifecycle-anchor": {"kind": "registry", "source": "tests/infra/reindex_campaign.py"}
+    "campaign-coverage": {
+      "kind": "registry",
+      "source": "docs/plans/reindex-incident-coverage.json"
+    },
+    "canary-differ": {
+      "kind": "registry",
+      "source": "tests/unit/maintenance/test_reindex_canary.py"
+    },
+    "content-fidelity": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "cursor-freshness": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "origin-matrix": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "content-hash-stability": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "lineage-differential": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_differential.py"
+    },
+    "topology-status": {
+      "kind": "registry",
+      "source": "tests/unit/storage/test_raw_authority_ledger.py"
+    },
+    "parser-replay": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "convergence": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "raw-authority": {
+      "kind": "registry",
+      "source": "tests/unit/storage/test_raw_authority_ledger.py"
+    },
+    "title-resolution": {
+      "kind": "registry",
+      "source": "tests/unit/maintenance/test_reindex_campaign.py"
+    },
+    "deployment-sync": {
+      "kind": "receipt-gate",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "event-projection": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "corpus-fidelity": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "material-origin": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "sidecar-admission": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "derived-convergence": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_differential.py"
+    },
+    "promotion-proof": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "convergence-properties": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "origin-repair": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    },
+    "parser-stamps": {
+      "kind": "registry",
+      "source": "tests/unit/maintenance/test_reindex_campaign.py"
+    },
+    "revision-lineage": {
+      "kind": "registry",
+      "source": "tests/unit/sources/test_drive_gateway.py"
+    },
+    "archive-invariants": {
+      "kind": "registry",
+      "source": "tests/unit/storage/test_raw_authority_ledger.py"
+    },
+    "lifecycle-anchor": {
+      "kind": "registry",
+      "source": "tests/infra/reindex_campaign.py"
+    }
   },
   "snapshots": {
-    "reindex-baseline-2026-08-03": {"kind": "expected-snapshot", "source": "docs/audits/2026-08-04-reindex-forcing-class-audit.md"},
-    "canary-candidate": {"kind": "expected-snapshot", "source": "tests/unit/maintenance/test_reindex_canary.py"},
-    "live-preflight-2026-08-04": {"kind": "expected-snapshot", "source": "docs/evidence/polylogue-xeck9-cursor-authority-census-2026-08-04.md"},
-    "post-reindex-acceptance": {"kind": "expected-snapshot", "source": "docs/plans/reindex-incident-coverage.json"},
-    "derived-model-candidate": {"kind": "expected-snapshot", "source": "tests/infra/reindex_differential.py"}
+    "reindex-baseline-2026-08-03": {
+      "kind": "expected-snapshot",
+      "source": "docs/audits/2026-08-04-reindex-forcing-class-audit.md"
+    },
+    "canary-candidate": {
+      "kind": "expected-snapshot",
+      "source": "tests/unit/maintenance/test_reindex_canary.py"
+    },
+    "live-preflight-2026-08-04": {
+      "kind": "expected-snapshot",
+      "source": "docs/evidence/polylogue-xeck9-cursor-authority-census-2026-08-04.md"
+    },
+    "post-reindex-acceptance": {
+      "kind": "expected-snapshot",
+      "source": "docs/plans/reindex-incident-coverage.json"
+    },
+    "derived-model-candidate": {
+      "kind": "expected-snapshot",
+      "source": "tests/infra/reindex_differential.py"
+    }
   },
   "receipts": {
-    "live-proof-5xxmc": {"kind": "live-proof", "status": "recorded", "owner_bead_id": "polylogue-5xxmc", "source": "tests/infra/reindex_campaign.py"},
-    "live-proof-7zp4": {"kind": "live-proof", "status": "recorded", "owner_bead_id": "polylogue-7zp4", "source": "tests/infra/reindex_campaign.py"},
-    "live-proof-gzgyl": {"kind": "live-proof", "status": "recorded", "owner_bead_id": "polylogue-gzgyl", "source": "tests/infra/reindex_campaign.py"},
-    "live-proof-mvcbi": {"kind": "live-proof", "status": "recorded", "owner_bead_id": "polylogue-mvcbi", "source": "tests/infra/reindex_campaign.py"},
-    "live-proof-qsagp": {"kind": "live-proof", "status": "recorded", "owner_bead_id": "polylogue-qsagp", "source": "tests/infra/reindex_differential.py"},
-    "excluded-cursor-proof-receipt": {"kind": "proof-receipt", "status": "recorded", "owner_bead_id": "polylogue-ix5r", "source": "docs/evidence/polylogue-excluded-cursor-live-proof-2026-08-06.json"}
+    "live-proof-5xxmc": {
+      "kind": "live-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-5xxmc",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "live-proof-7zp4": {
+      "kind": "live-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-7zp4",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "live-proof-gzgyl": {
+      "kind": "live-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-gzgyl",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "live-proof-mvcbi": {
+      "kind": "live-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-mvcbi",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "live-proof-qsagp": {
+      "kind": "live-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-qsagp",
+      "source": "tests/infra/reindex_differential.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "excluded-cursor-proof-receipt": {
+      "kind": "proof-receipt",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-ix5r",
+      "source": "docs/evidence/polylogue-excluded-cursor-live-proof-2026-08-06.json",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-6k0na": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-6k0na",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-xeck9": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-xeck9",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-0qfy": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-0qfy",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-7zp4": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-7zp4",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-gysk3": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-gysk3",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-052vs": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-052vs",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-1xc-8": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-1xc.8",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-2qx-3": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-2qx.3",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-8ac0": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-8ac0",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-9kc0": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-9kc0",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-c831": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-c831",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-cc4k": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-cc4k",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-gxig": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-gxig",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-h57ic": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-h57ic",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-h7y0j": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-h7y0j",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-hjwr": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-hjwr",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-i3zo": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-i3zo",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-kmqwm": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-kmqwm",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-lb39z": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-lb39z",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-lyv4": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-lyv4",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-qhk8z": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-qhk8z",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-swqu": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-swqu",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-z22ml": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-z22ml",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-zoek0": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-zoek0",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-6753s": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-6753s",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-ix5r": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-ix5r",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-nhbvf": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-nhbvf",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-zm4w8": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-zm4w8",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-eqq02": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-eqq02",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-reindex-proof-edge-correction": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-reindex-proof-edge-correction",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-2qrx": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-2qrx",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-dcrmm": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-dcrmm",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-dudtn": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-dudtn",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-mvcbi": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-mvcbi",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-o8c3m": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-o8c3m",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-84ake": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-84ake",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-amrpx": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-amrpx",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-canonical-snapshot": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-canonical-snapshot",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    },
+    "implementation-proof-polylogue-ehzfn": {
+      "kind": "implementation-proof",
+      "status": "recorded",
+      "owner_bead_id": "polylogue-ehzfn",
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
+    }
   },
   "successors": {
-    "polylogue-claude-vintage-live-proof": {"kind": "named-child-bead", "source": "polylogue-claude-vintage-live-proof"},
-    "polylogue-active-leaf-live-proof": {"kind": "named-child-bead", "source": "polylogue-active-leaf-live-proof"},
-    "polylogue-stalled-cursor-live-proof": {"kind": "named-child-bead", "source": "polylogue-stalled-cursor-live-proof"},
-    "polylogue-codex-804-live-proof": {"kind": "named-child-bead", "source": "polylogue-codex-804-live-proof"},
-    "polylogue-byte-supersession-live-proof": {"kind": "named-child-bead", "source": "polylogue-byte-supersession-live-proof"},
-    "polylogue-hook-authority-conflict-proof": {"kind": "named-child-bead", "source": "polylogue-hook-authority-conflict-proof"},
-    "polylogue-excluded-cursor-live-proof": {"kind": "named-child-bead", "source": "polylogue-excluded-cursor-live-proof"},
-    "polylogue-chatgpt-content-live-proof": {"kind": "named-child-bead", "source": "polylogue-chatgpt-content-live-proof"}
+    "polylogue-claude-vintage-live-proof": {
+      "kind": "named-child-bead",
+      "source": "polylogue-claude-vintage-live-proof"
+    },
+    "polylogue-active-leaf-live-proof": {
+      "kind": "named-child-bead",
+      "source": "polylogue-active-leaf-live-proof"
+    },
+    "polylogue-stalled-cursor-live-proof": {
+      "kind": "named-child-bead",
+      "source": "polylogue-stalled-cursor-live-proof"
+    },
+    "polylogue-codex-804-live-proof": {
+      "kind": "named-child-bead",
+      "source": "polylogue-codex-804-live-proof"
+    },
+    "polylogue-byte-supersession-live-proof": {
+      "kind": "named-child-bead",
+      "source": "polylogue-byte-supersession-live-proof"
+    },
+    "polylogue-hook-authority-conflict-proof": {
+      "kind": "named-child-bead",
+      "source": "polylogue-hook-authority-conflict-proof"
+    },
+    "polylogue-excluded-cursor-live-proof": {
+      "kind": "named-child-bead",
+      "source": "polylogue-excluded-cursor-live-proof"
+    },
+    "polylogue-chatgpt-content-live-proof": {
+      "kind": "named-child-bead",
+      "source": "polylogue-chatgpt-content-live-proof"
+    }
   },
   "rows": [
-    {"bead_id": "polylogue-a7xr.25", "bead_status": "open", "incident": {"incident_id": "incident-a7xr-25", "bead_id": "polylogue-a7xr.25", "forcing_class": "event-projection"}, "route": {"kind": "decision", "entrypoint": "reindex-campaign"}, "schedule": {"phase": "preflight", "order": 1}, "expected_snapshot": {"snapshot_id": "derived-model-candidate", "state": "blocking"}, "registry_checks": ["event-projection"], "red_mutation": {"fixture_id": "campaign-corpus", "mutation_id": "mutation-a7xr-25"}, "receipts": [], "residual_successor": null},
-    {"bead_id": "polylogue-reindex-source-remediation", "bead_status": "open", "incident": {"incident_id": "incident-reindex-source-remediation", "bead_id": "polylogue-reindex-source-remediation", "forcing_class": "deployment"}, "route": {"kind": "operation", "entrypoint": "reindex-campaign"}, "schedule": {"phase": "preflight", "order": 2}, "expected_snapshot": {"snapshot_id": "live-preflight-2026-08-04", "state": "blocking"}, "registry_checks": ["campaign-coverage"], "red_mutation": {"fixture_id": "campaign-graph", "mutation_id": "mutation-reindex-source-remediation"}, "receipts": [], "residual_successor": null},
-    {"bead_id": "polylogue-xselt", "bead_status": "open", "incident": {"incident_id": "incident-xselt", "bead_id": "polylogue-xselt", "forcing_class": "parser-stamps"}, "route": {"kind": "registry", "entrypoint": "reindex-final-proof"}, "schedule": {"phase": "promotion", "order": 3}, "expected_snapshot": {"snapshot_id": "post-reindex-acceptance", "state": "blocking"}, "registry_checks": ["parser-stamps", "promotion-proof"], "red_mutation": {"fixture_id": "campaign-graph", "mutation_id": "mutation-xselt"}, "receipts": [], "residual_successor": null}
-  ]
+    {
+      "bead_id": "polylogue-a7xr.25",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-a7xr-25",
+        "bead_id": "polylogue-a7xr.25",
+        "forcing_class": "event-projection"
+      },
+      "route": {
+        "kind": "decision",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "preflight",
+        "order": 1
+      },
+      "expected_snapshot": {
+        "snapshot_id": "derived-model-candidate",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "event-projection"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-corpus",
+        "mutation_id": "mutation-a7xr-25"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-reindex-source-remediation",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-reindex-source-remediation",
+        "bead_id": "polylogue-reindex-source-remediation",
+        "forcing_class": "deployment"
+      },
+      "route": {
+        "kind": "operation",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "preflight",
+        "order": 2
+      },
+      "expected_snapshot": {
+        "snapshot_id": "live-preflight-2026-08-04",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-reindex-source-remediation"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-xselt",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-xselt",
+        "bead_id": "polylogue-xselt",
+        "forcing_class": "parser-stamps"
+      },
+      "route": {
+        "kind": "registry",
+        "entrypoint": "reindex-final-proof"
+      },
+      "schedule": {
+        "phase": "promotion",
+        "order": 3
+      },
+      "expected_snapshot": {
+        "snapshot_id": "post-reindex-acceptance",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "parser-stamps",
+        "promotion-proof"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-xselt"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-6k0na",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-6k0na",
+        "bead_id": "polylogue-6k0na",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 4
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-6k0na"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-6k0na"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-a7gmk",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-a7gmk",
+        "bead_id": "polylogue-a7gmk",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 5
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-a7gmk"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-byte-supersession-live-proof",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-byte-supersession-live-proof",
+        "bead_id": "polylogue-byte-supersession-live-proof",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 6
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-byte-supersession-live-proof"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-cursor-authority-live-proof",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-cursor-authority-live-proof",
+        "bead_id": "polylogue-cursor-authority-live-proof",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 7
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-cursor-authority-live-proof"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-cursor-authority-reconcile-implementation",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-cursor-authority-reconcile-implementation",
+        "bead_id": "polylogue-cursor-authority-reconcile-implementation",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 8
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-cursor-authority-reconcile-implementation"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-dyica",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-dyica",
+        "bead_id": "polylogue-dyica",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 9
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-dyica"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-excluded-cursor-live-proof",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-excluded-cursor-live-proof",
+        "bead_id": "polylogue-excluded-cursor-live-proof",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 10
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-excluded-cursor-live-proof"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-hook-reconciliation-apply-proof",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-hook-reconciliation-apply-proof",
+        "bead_id": "polylogue-hook-reconciliation-apply-proof",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 11
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-hook-reconciliation-apply-proof"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-raw-dedupe-apply-proof",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-raw-dedupe-apply-proof",
+        "bead_id": "polylogue-raw-dedupe-apply-proof",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 12
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-raw-dedupe-apply-proof"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-reindex-preflight-authorization",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-reindex-preflight-authorization",
+        "bead_id": "polylogue-reindex-preflight-authorization",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 13
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-reindex-preflight-authorization"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-s8s54",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-s8s54",
+        "bead_id": "polylogue-s8s54",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 14
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-s8s54"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-stalled-cursor-live-proof",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-stalled-cursor-live-proof",
+        "bead_id": "polylogue-stalled-cursor-live-proof",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 15
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-stalled-cursor-live-proof"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-uecir",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-uecir",
+        "bead_id": "polylogue-uecir",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 16
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-uecir"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-xeck9",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-xeck9",
+        "bead_id": "polylogue-xeck9",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 17
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-xeck9"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-xeck9"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-0qfy",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-0qfy",
+        "bead_id": "polylogue-0qfy",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 18
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-0qfy"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-0qfy"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-7zp4",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-7zp4",
+        "bead_id": "polylogue-7zp4",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 19
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-7zp4"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-7zp4"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-gysk3",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-gysk3",
+        "bead_id": "polylogue-gysk3",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 20
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-gysk3"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-gysk3"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-slshy",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-slshy",
+        "bead_id": "polylogue-slshy",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 21
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-slshy"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-uqwd",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-uqwd",
+        "bead_id": "polylogue-uqwd",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 22
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-uqwd"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-052vs",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-052vs",
+        "bead_id": "polylogue-052vs",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 23
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-052vs"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-052vs"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-1xc.8",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-1xc-8",
+        "bead_id": "polylogue-1xc.8",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 24
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-1xc-8"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-1xc-8"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-2qx.3",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-2qx-3",
+        "bead_id": "polylogue-2qx.3",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 25
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-2qx-3"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-2qx-3"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-2tfug",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-2tfug",
+        "bead_id": "polylogue-2tfug",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 26
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-2tfug"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-5q2u",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-5q2u",
+        "bead_id": "polylogue-5q2u",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 27
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-5q2u"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-6bebe",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-6bebe",
+        "bead_id": "polylogue-6bebe",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 28
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-6bebe"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-6krh",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-6krh",
+        "bead_id": "polylogue-6krh",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 29
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-6krh"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-8ac0",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-8ac0",
+        "bead_id": "polylogue-8ac0",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 30
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-8ac0"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-8ac0"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-9kc0",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-9kc0",
+        "bead_id": "polylogue-9kc0",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 31
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-9kc0"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-9kc0"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-9qnzy",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-9qnzy",
+        "bead_id": "polylogue-9qnzy",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 32
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-9qnzy"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-aex0",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-aex0",
+        "bead_id": "polylogue-aex0",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 33
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-aex0"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-b5l.1",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-b5l-1",
+        "bead_id": "polylogue-b5l.1",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 34
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-b5l-1"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-c831",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-c831",
+        "bead_id": "polylogue-c831",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 35
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-c831"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-c831"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-cc4k",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-cc4k",
+        "bead_id": "polylogue-cc4k",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 36
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-cc4k"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-cc4k"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-cijx.2",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-cijx-2",
+        "bead_id": "polylogue-cijx.2",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 37
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-cijx-2"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-ds4b4",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-ds4b4",
+        "bead_id": "polylogue-ds4b4",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 38
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-ds4b4"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-e98k",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-e98k",
+        "bead_id": "polylogue-e98k",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 39
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-e98k"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-es7b",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-es7b",
+        "bead_id": "polylogue-es7b",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 40
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-es7b"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-f47j",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-f47j",
+        "bead_id": "polylogue-f47j",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 41
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-f47j"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-gxig",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-gxig",
+        "bead_id": "polylogue-gxig",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 42
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-gxig"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-gxig"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-h57ic",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-h57ic",
+        "bead_id": "polylogue-h57ic",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 43
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-h57ic"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-h57ic"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-h7y0j",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-h7y0j",
+        "bead_id": "polylogue-h7y0j",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 44
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-h7y0j"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-h7y0j"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-hjwr",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-hjwr",
+        "bead_id": "polylogue-hjwr",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 45
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-hjwr"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-hjwr"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-i3zo",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-i3zo",
+        "bead_id": "polylogue-i3zo",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 46
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-i3zo"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-i3zo"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-iuyr",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-iuyr",
+        "bead_id": "polylogue-iuyr",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 47
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-iuyr"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-k8wv",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-k8wv",
+        "bead_id": "polylogue-k8wv",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 48
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-k8wv"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-kmqwm",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-kmqwm",
+        "bead_id": "polylogue-kmqwm",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 49
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-kmqwm"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-kmqwm"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-ksgg",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-ksgg",
+        "bead_id": "polylogue-ksgg",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 50
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-ksgg"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-lb39z",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-lb39z",
+        "bead_id": "polylogue-lb39z",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 51
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-lb39z"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-lb39z"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-lkrc",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-lkrc",
+        "bead_id": "polylogue-lkrc",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 52
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-lkrc"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-lyv4",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-lyv4",
+        "bead_id": "polylogue-lyv4",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 53
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-lyv4"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-lyv4"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-qhk8z",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-qhk8z",
+        "bead_id": "polylogue-qhk8z",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 54
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-qhk8z"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-qhk8z"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-swqu",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-swqu",
+        "bead_id": "polylogue-swqu",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 55
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-swqu"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-swqu"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-tnqqt",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-tnqqt",
+        "bead_id": "polylogue-tnqqt",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 56
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-tnqqt"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-tu1f",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-tu1f",
+        "bead_id": "polylogue-tu1f",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 57
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-tu1f"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-tw4ar",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-tw4ar",
+        "bead_id": "polylogue-tw4ar",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 58
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-tw4ar"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-vp2ky",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-vp2ky",
+        "bead_id": "polylogue-vp2ky",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 59
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-vp2ky"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-w6hql",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-w6hql",
+        "bead_id": "polylogue-w6hql",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 60
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-w6hql"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-yla8",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-yla8",
+        "bead_id": "polylogue-yla8",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 61
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-yla8"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-z22ml",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-z22ml",
+        "bead_id": "polylogue-z22ml",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 62
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-z22ml"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-z22ml"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-zoek0",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-zoek0",
+        "bead_id": "polylogue-zoek0",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 63
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-zoek0"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-zoek0"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-6753s",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-6753s",
+        "bead_id": "polylogue-6753s",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 64
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-6753s"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-6753s"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-ix5r",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-ix5r",
+        "bead_id": "polylogue-ix5r",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 65
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-ix5r"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-ix5r"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-nhbvf",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-nhbvf",
+        "bead_id": "polylogue-nhbvf",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 66
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-nhbvf"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-nhbvf"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-zm4w8",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-zm4w8",
+        "bead_id": "polylogue-zm4w8",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 67
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-zm4w8"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-zm4w8"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-eqq02",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-eqq02",
+        "bead_id": "polylogue-eqq02",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 68
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-eqq02"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-eqq02"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-incident-coverage-ledger",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-incident-coverage-ledger",
+        "bead_id": "polylogue-incident-coverage-ledger",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 69
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-incident-coverage-ledger"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-pr-scope-contract",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-pr-scope-contract",
+        "bead_id": "polylogue-pr-scope-contract",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 70
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-pr-scope-contract"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-reindex-proof-edge-correction",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-reindex-proof-edge-correction",
+        "bead_id": "polylogue-reindex-proof-edge-correction",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 71
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-reindex-proof-edge-correction"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-reindex-proof-edge-correction"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-2qrx",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-2qrx",
+        "bead_id": "polylogue-2qrx",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 72
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-2qrx"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-2qrx"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-1fijp",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-1fijp",
+        "bead_id": "polylogue-1fijp",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 73
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-1fijp"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-dcrmm",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-dcrmm",
+        "bead_id": "polylogue-dcrmm",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 74
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-dcrmm"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-dcrmm"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-dudtn",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-dudtn",
+        "bead_id": "polylogue-dudtn",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 75
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-dudtn"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-dudtn"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-3m3de",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-3m3de",
+        "bead_id": "polylogue-3m3de",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 76
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-3m3de"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-4987i",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-4987i",
+        "bead_id": "polylogue-4987i",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 77
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-4987i"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-mvcbi",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-mvcbi",
+        "bead_id": "polylogue-mvcbi",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 78
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-mvcbi"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-mvcbi"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-o8c3m",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-o8c3m",
+        "bead_id": "polylogue-o8c3m",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 79
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-o8c3m"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-o8c3m"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-omsw",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-omsw",
+        "bead_id": "polylogue-omsw",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 80
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-omsw"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-r9xsj",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-r9xsj",
+        "bead_id": "polylogue-r9xsj",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 81
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-r9xsj"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-lr6dx",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-lr6dx",
+        "bead_id": "polylogue-lr6dx",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 82
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-lr6dx"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-ey4ro",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-ey4ro",
+        "bead_id": "polylogue-ey4ro",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 83
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-ey4ro"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-ohkfy",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-ohkfy",
+        "bead_id": "polylogue-ohkfy",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 84
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-ohkfy"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-t0m73",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-t0m73",
+        "bead_id": "polylogue-t0m73",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 85
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-t0m73"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-inygw",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-inygw",
+        "bead_id": "polylogue-inygw",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 86
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-inygw"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-0v4tn",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-0v4tn",
+        "bead_id": "polylogue-0v4tn",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 87
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-0v4tn"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-84ake",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-84ake",
+        "bead_id": "polylogue-84ake",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 88
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-84ake"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-84ake"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-2qx",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-2qx",
+        "bead_id": "polylogue-2qx",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 89
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-2qx"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-rrxe4",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-rrxe4",
+        "bead_id": "polylogue-rrxe4",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 90
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-rrxe4"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-yazae",
+      "bead_status": "in_progress",
+      "incident": {
+        "incident_id": "incident-polylogue-yazae",
+        "bead_id": "polylogue-yazae",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 91
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-yazae"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-in24n",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-in24n",
+        "bead_id": "polylogue-in24n",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 92
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-in24n"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-reindex-registry-two-plane-subset",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-reindex-registry-two-plane-subset",
+        "bead_id": "polylogue-reindex-registry-two-plane-subset",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 93
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-reindex-registry-two-plane-subset"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-4v2d3",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-4v2d3",
+        "bead_id": "polylogue-4v2d3",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 94
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-4v2d3"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-amrpx",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-amrpx",
+        "bead_id": "polylogue-amrpx",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 95
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-amrpx"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-amrpx"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-canonical-snapshot",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-canonical-snapshot",
+        "bead_id": "polylogue-canonical-snapshot",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 96
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-canonical-snapshot"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-canonical-snapshot"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-ehzfn",
+      "bead_status": "closed",
+      "incident": {
+        "incident_id": "incident-polylogue-ehzfn",
+        "bead_id": "polylogue-ehzfn",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 97
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-ehzfn"
+      },
+      "receipts": [
+        "implementation-proof-polylogue-ehzfn"
+      ],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-un60n",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-un60n",
+        "bead_id": "polylogue-un60n",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 98
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-un60n"
+      },
+      "receipts": [],
+      "residual_successor": null
+    },
+    {
+      "bead_id": "polylogue-g8v5z",
+      "bead_status": "open",
+      "incident": {
+        "incident_id": "incident-polylogue-g8v5z",
+        "bead_id": "polylogue-g8v5z",
+        "forcing_class": "transitive-blocker"
+      },
+      "route": {
+        "kind": "campaign",
+        "entrypoint": "reindex-campaign"
+      },
+      "schedule": {
+        "phase": "transitive-forcing-closure",
+        "order": 99
+      },
+      "expected_snapshot": {
+        "snapshot_id": "reindex-baseline-2026-08-03",
+        "state": "blocking"
+      },
+      "registry_checks": [
+        "campaign-coverage"
+      ],
+      "red_mutation": {
+        "fixture_id": "campaign-graph",
+        "mutation_id": "mutation-polylogue-g8v5z"
+      },
+      "receipts": [],
+      "residual_successor": null
+    }
+  ],
+  "routes": {
+    "reindex-campaign": {
+      "kind": "campaign-route",
+      "source": "devtools/incident_coverage_ledger.py",
+      "registry": "ROUTE_REGISTRY"
+    },
+    "reindex-final-proof": {
+      "kind": "final-proof-route",
+      "source": "devtools/incident_coverage_ledger.py",
+      "registry": "ROUTE_REGISTRY"
+    }
+  }
 }

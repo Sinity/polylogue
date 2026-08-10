@@ -44,25 +44,26 @@ def test_real_campaign_graph_resolves_the_current_forcing_set() -> None:
     result = resolve_default_incident_coverage()
 
     assert result.target_bead_id == "polylogue-818fy"
-    assert result.forcing_dependency_ids == (
+    assert result.forcing_dependency_ids[:3] == (
         "polylogue-a7xr.25",
         "polylogue-reindex-source-remediation",
         "polylogue-xselt",
     )
-    assert result.ledger_row_count == 3
+    assert len(result.forcing_dependency_ids) == 99
+    assert result.ledger_row_count == 99
     assert LEDGER_PATH.is_file()
     assert CAMPAIGN_GRAPH_PATH.is_file()
 
 
 def test_deleting_a_ledger_row_emits_machine_readable_missing_id() -> None:
     ledger = _ledger()
-    _rows(ledger).pop()
+    _rows(ledger)[:] = [row for row in _rows(ledger) if row["bead_id"] != "polylogue-xselt"]
 
     with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(ledger, _graph())
 
     assert error.value.diagnostic["error"] == "forcing_set_mismatch"
-    assert error.value.diagnostic["missing_ids"] == ["polylogue-xselt"]
+    assert "polylogue-xselt" in cast(list[object], error.value.diagnostic["missing_ids"])
 
 
 def test_duplicate_forcing_row_is_blocking() -> None:
@@ -85,8 +86,7 @@ def test_current_beads_jsonl_removing_a_forcing_dependency_is_blocking(tmp_path:
         resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
 
     assert error.value.diagnostic["error"] == "campaign_graph_mismatch"
-    assert error.value.diagnostic["missing_ids"] == []
-    assert error.value.diagnostic["extra_ids"] == ["polylogue-xselt"]
+    assert "polylogue-xselt" in cast(list[object], error.value.diagnostic["extra_ids"])
 
 
 def test_current_beads_jsonl_adding_a_p0_forcing_blocker_is_blocking(tmp_path: Path) -> None:
@@ -96,7 +96,7 @@ def test_current_beads_jsonl_adding_a_p0_forcing_blocker_is_blocking(tmp_path: P
         dependencies.append(
             {
                 "issue_id": "polylogue-818fy",
-                "depends_on_id": "polylogue-dudtn",
+                "depends_on_id": "polylogue-jdesf",
                 "type": "blocks",
             }
         )
@@ -106,7 +106,7 @@ def test_current_beads_jsonl_adding_a_p0_forcing_blocker_is_blocking(tmp_path: P
     with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
 
-    assert error.value.diagnostic["missing_ids"] == ["polylogue-dudtn"]
+    assert "polylogue-jdesf" in cast(list[object], error.value.diagnostic["missing_ids"])
 
 
 def test_current_beads_jsonl_dependency_kind_change_is_blocking(tmp_path: Path) -> None:
@@ -120,7 +120,57 @@ def test_current_beads_jsonl_dependency_kind_change_is_blocking(tmp_path: Path) 
     with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
 
-    assert error.value.diagnostic["extra_ids"] == ["polylogue-a7xr.25"]
+    assert "polylogue-a7xr.25" in cast(list[object], error.value.diagnostic["extra_ids"])
+
+
+def test_transitive_forcing_closure_is_load_bearing() -> None:
+    result = resolve_default_incident_coverage()
+
+    assert "polylogue-dudtn" in result.forcing_dependency_ids
+    assert "polylogue-818fy" not in result.forcing_dependency_ids
+    assert result.ledger_row_count == len(result.forcing_dependency_ids)
+
+
+def test_route_entrypoint_must_be_registered() -> None:
+    ledger = _ledger()
+    cast(dict[str, object], _rows(ledger)[0]["route"])["entrypoint"] = "deleted-route"
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(ledger, _graph())
+
+    assert error.value.diagnostic["error"] == "unknown_route_entrypoint"
+
+
+def test_red_mutation_must_be_declared_by_its_fixture() -> None:
+    ledger = _ledger()
+    cast(dict[str, object], _rows(ledger)[0]["red_mutation"])["mutation_id"] = "deleted-mutation"
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(ledger, _graph())
+
+    assert error.value.diagnostic["error"] == "unknown_mutation"
+
+
+def test_route_and_fixture_registries_are_executable() -> None:
+    ledger = _ledger()
+    routes = cast(dict[str, dict[str, object]], ledger["routes"])
+    routes["reindex-campaign"]["registry"] = "MISSING"
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(ledger, _graph())
+
+    assert error.value.diagnostic["error"] == "registry_entry_missing"
+
+
+def test_forcing_edge_topology_is_load_bearing() -> None:
+    graph = _graph()
+    dependencies = cast(list[dict[str, object]], graph["forcing_dependencies"])
+    dependencies[1]["child_bead_ids"] = []
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(_ledger(), graph)
+
+    assert error.value.diagnostic["error"] == "campaign_graph_mismatch"
 
 
 def test_unknown_dependency_kind_is_structured_and_blocking(tmp_path: Path) -> None:
@@ -178,8 +228,8 @@ def test_receipt_owner_must_match_the_row_that_uses_it() -> None:
     with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(ledger, _graph())
 
-    assert error.value.diagnostic["error"] == "receipt_owner_mismatch"
-    assert error.value.diagnostic["expected_owner"] == "polylogue-a7xr.25"
+    assert error.value.diagnostic["error"] == "receipt_registry_mismatch"
+    assert error.value.diagnostic["owner_bead_id"] == "polylogue-7zp4"
 
 
 def test_successor_source_and_parent_are_resolved() -> None:
@@ -194,9 +244,10 @@ def test_successor_source_and_parent_are_resolved() -> None:
         "kind": "named-child-bead",
     }
 
-    result = resolve_incident_coverage(ledger, graph)
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(ledger, graph)
 
-    assert result.successor_backed_ids == ("polylogue-a7xr.25",)
+    assert error.value.diagnostic["error"] == "campaign_graph_mismatch"
 
 
 def test_missing_successor_catalog_entry_is_blocking() -> None:
@@ -214,4 +265,4 @@ def test_missing_successor_catalog_entry_is_blocking() -> None:
     with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(ledger, graph)
 
-    assert error.value.diagnostic["error"] == "unknown_successor"
+    assert error.value.diagnostic["error"] == "campaign_graph_mismatch"

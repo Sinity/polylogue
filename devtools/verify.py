@@ -3133,7 +3133,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.quick or args.commit:
         verification_scope = VerificationScope.NON_TEST
-        release_baseline_allowed: bool | None = None
+        # Non-test verification is intentionally not release authority, but it
+        # is still a typed verification receipt.  ``None`` made merge-gate
+        # treat an explicit quick receipt as malformed instead of as a valid
+        # non-release gate.
+        release_baseline_allowed: bool | None = False
     elif full_pytest or args.seed_testmon:
         narrow_terminal = bool(args.skip_slow)
         authorized_narrow_terminal = args.terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value

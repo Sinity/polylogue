@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib
 import json
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn, cast
@@ -145,6 +148,37 @@ def _string(value: object, *, context: str) -> str:
     return value
 
 
+def _load_registered_value(source: str, registry: str, *, context: str) -> object:
+    if not source.endswith(".py"):
+        _fail("registry_source_invalid", f"{context} source must be a Python module path", source=source)
+    module_name = source[:-3].replace("/", ".")
+    try:
+        module = importlib.import_module(module_name)
+    except (ImportError, ModuleNotFoundError) as exc:
+        _fail("registry_import_failed", f"cannot import {context} registry {source}: {exc}", source=source)
+    value: object = module
+    for component in registry.split("."):
+        if isinstance(value, Mapping):
+            if component not in value:
+                _fail(
+                    "registry_entry_missing",
+                    f"{context} registry {registry} is absent from {source}",
+                    source=source,
+                    registry=registry,
+                )
+            value = value[component]
+            continue
+        if not hasattr(value, component):
+            _fail(
+                "registry_entry_missing",
+                f"{context} registry {registry} is absent from {source}",
+                source=source,
+                registry=registry,
+            )
+        value = getattr(value, component)
+    return value
+
+
 def _strings(value: object, *, context: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         _fail("strings_required", f"{context} must be a list of non-empty strings", context=context)
@@ -167,6 +201,7 @@ def _derive_forcing_dependencies(records: dict[str, JsonObject], target: str) ->
         _fail("bead_dependencies_invalid", f"Bead {target}.dependencies must be a list", bead_id=target)
     dependencies: list[JsonObject] = []
     seen: set[str] = set()
+    queued: list[tuple[str, int]] = []
     for index, raw_dependency in enumerate(raw_dependencies):
         dependency = _object(raw_dependency, context=f"Bead {target}.dependencies[{index}]")
         issue_id = _string(dependency.get("issue_id"), context=f"Bead {target}.dependencies[{index}].issue_id")
@@ -179,25 +214,55 @@ def _derive_forcing_dependencies(records: dict[str, JsonObject], target: str) ->
                 issue_id=issue_id,
             )
         dependency_kind = _string(dependency.get("type"), context=f"Bead {target}.dependencies[{index}].type")
-        if dependency_kind != "blocks":
-            continue
-        bead_id = _string(dependency.get("depends_on_id"), context=f"Bead {target}.dependencies[{index}].depends_on_id")
-        if bead_id in seen:
-            _fail(
-                "duplicate_forcing_dependency",
-                f"duplicate forcing dependency {bead_id}",
-                duplicate_ids=[bead_id],
+        if dependency_kind == "blocks":
+            queued.append(
+                (
+                    _string(
+                        dependency.get("depends_on_id"), context=f"Bead {target}.dependencies[{index}].depends_on_id"
+                    ),
+                    1,
+                )
             )
+    while queued:
+        bead_id, depth = queued.pop(0)
+        if bead_id in seen:
+            continue
         seen.add(bead_id)
         record = records.get(bead_id)
         if record is None:
             _fail("forcing_bead_missing", f"forcing dependency {bead_id} has no Beads record", bead_id=bead_id)
         status = _string(record.get("status"), context=f"Beads record {bead_id}.status")
+        children = record.get("dependencies", [])
+        if not isinstance(children, list):
+            _fail("bead_dependencies_invalid", f"Bead {bead_id}.dependencies must be a list", bead_id=bead_id)
+        child_ids: list[str] = []
+        for index, raw_child in enumerate(children):
+            child = _object(raw_child, context=f"Bead {bead_id}.dependencies[{index}]")
+            if _string(child.get("issue_id"), context=f"Bead {bead_id}.dependencies[{index}].issue_id") != bead_id:
+                _fail(
+                    "dependency_owner_mismatch",
+                    f"dependency record {index} on {bead_id} names another issue",
+                    bead_id=bead_id,
+                    dependency_index=index,
+                )
+            if _string(child.get("type"), context=f"Bead {bead_id}.dependencies[{index}].type") == "blocks":
+                child_id = _string(
+                    child.get("depends_on_id"), context=f"Bead {bead_id}.dependencies[{index}].depends_on_id"
+                )
+                child_ids.append(child_id)
+                queued.append(
+                    (
+                        child_id,
+                        depth + 1,
+                    )
+                )
         dependencies.append(
             {
                 "bead_id": bead_id,
                 "status": status,
-                "dependency_kind": dependency_kind,
+                "dependency_kind": "blocks",
+                "depth": depth,
+                "child_bead_ids": child_ids,
                 "priority": record.get("priority"),
                 "issue_type": record.get("issue_type"),
             }
@@ -254,7 +319,7 @@ def _graph_dependencies(graph: JsonObject, *, bead_records: dict[str, JsonObject
             dependency.get("child_bead_ids"),
             context=f"campaign graph dependency {bead_id}.child_bead_ids",
         )
-        unknown_children = sorted(set(child_ids) - set(known_children))
+        unknown_children = sorted(set(child_ids) - set(bead_records))
         if unknown_children:
             _fail(
                 "unknown_successor_id",
@@ -302,6 +367,7 @@ def _assert_same_forcing_graph(derived: tuple[JsonObject, ...], fixture: tuple[J
         for bead_id in set(expected_by_id) & set(fixture_by_id)
         if expected_by_id[bead_id].get("status") != fixture_by_id[bead_id].get("status")
         or fixture_by_id[bead_id].get("dependency_kind", "blocks") != "blocks"
+        or expected_by_id[bead_id].get("child_bead_ids", []) != fixture_by_id[bead_id].get("child_bead_ids", [])
     )
     diagnostic = _set_diagnostic(
         expected_ids=expected_ids,
@@ -329,6 +395,38 @@ def _committed_paths() -> set[str]:
     except (OSError, subprocess.SubprocessError) as exc:
         _fail("git_files_unavailable", f"cannot inspect committed source files: {exc}")
     return {raw.decode("utf-8") for raw in completed.stdout.split(b"\0") if raw}
+
+
+def _validate_graph_provenance(graph: JsonObject, *, beads_path: Path) -> None:
+    source_commit = _string(graph.get("source_commit"), context="campaign graph source_commit")
+    source_path = _string(graph.get("source_path"), context="campaign graph source_path")
+    if source_path != ".beads/issues.jsonl":
+        _fail("graph_source_path_invalid", f"campaign graph source path must be .beads/issues.jsonl, got {source_path}")
+    try:
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+        source_bytes = subprocess.run(
+            ["git", "show", f"{source_commit}:{source_path}"], cwd=ROOT, check=True, capture_output=True, timeout=10
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        _fail(
+            "graph_source_commit_missing",
+            f"campaign graph source commit cannot be read: {exc}",
+            source_commit=source_commit,
+        )
+    actual_bytes = beads_path.read_bytes()
+    if hashlib.sha256(source_bytes).hexdigest() != hashlib.sha256(actual_bytes).hexdigest():
+        _fail(
+            "graph_source_snapshot_mismatch",
+            "campaign graph source commit does not contain the current Beads snapshot",
+            source_commit=source_commit,
+            source_path=source_path,
+        )
 
 
 def _validate_sources(
@@ -377,11 +475,15 @@ def resolve_incident_coverage(
         )
 
     bead_records = load_beads_jsonl(beads_path or BEADS_PATH)
+    if beads_path is None or beads_path == BEADS_PATH:
+        _validate_graph_provenance(graph, beads_path=beads_path or BEADS_PATH)
     derived_dependencies = _derive_forcing_dependencies(bead_records, target)
     graph_dependencies = _graph_dependencies(graph, bead_records=bead_records)
     _assert_same_forcing_graph(derived_dependencies, graph_dependencies)
 
-    catalogs = {name: _catalog(ledger, name) for name in ("fixtures", "checks", "snapshots", "receipts", "successors")}
+    catalogs = {
+        name: _catalog(ledger, name) for name in ("fixtures", "checks", "snapshots", "receipts", "successors", "routes")
+    }
     known_successors = set(_strings(graph.get("known_child_bead_ids"), context="campaign graph known_child_bead_ids"))
     missing_successors = sorted(known_successors - set(catalogs["successors"]))
     if missing_successors:
@@ -391,6 +493,34 @@ def resolve_incident_coverage(
         owner = _string(receipt.get("owner_bead_id"), context=f"ledger receipt {receipt_id}.owner_bead_id")
         if owner not in bead_records:
             _fail("receipt_owner_missing", f"receipt {receipt_id} names unknown owner {owner}", receipt_id=receipt_id)
+        registry_source = _string(
+            receipt.get("registry_source"), context=f"ledger receipt {receipt_id}.registry_source"
+        )
+        registry_name = _string(receipt.get("registry"), context=f"ledger receipt {receipt_id}.registry")
+        producer_registry = _object(
+            _load_registered_value(registry_source, registry_name, context=f"ledger receipt {receipt_id}"),
+            context=f"ledger receipt {receipt_id}.registry",
+        )
+        if producer_registry.get(receipt_id) != owner:
+            _fail(
+                "receipt_registry_mismatch",
+                f"receipt {receipt_id} is not bound to owner {owner}",
+                receipt_id=receipt_id,
+                owner_bead_id=owner,
+            )
+        source = _string(receipt.get("registry_source"), context=f"ledger receipt {receipt_id}.registry_source")
+        registry = _string(receipt.get("registry"), context=f"ledger receipt {receipt_id}.registry")
+        registered = _object(
+            _load_registered_value(source, registry, context=f"ledger receipt {receipt_id}"),
+            context=f"ledger receipt {receipt_id}.registry",
+        )
+        if registered.get(receipt_id) != owner:
+            _fail(
+                "receipt_registry_mismatch",
+                f"receipt {receipt_id} is not bound to owner {owner}",
+                receipt_id=receipt_id,
+                owner_bead_id=owner,
+            )
     _validate_sources(catalogs, bead_records=bead_records)
 
     raw_rows = ledger.get("rows")
@@ -445,6 +575,28 @@ def resolve_incident_coverage(
         route_kind = _string(route.get("kind"), context=f"ledger row {bead_id}.route.kind")
         if route_kind not in ROUTE_KINDS:
             _fail("unknown_route_kind", f"unknown route kind {route_kind!r} for {bead_id}", bead_id=bead_id)
+        entrypoint = _string(route.get("entrypoint"), context=f"ledger row {bead_id}.route.entrypoint")
+        if entrypoint not in catalogs["routes"]:
+            _fail(
+                "unknown_route_entrypoint",
+                f"route entrypoint {entrypoint} is not registered for {bead_id}",
+                bead_id=bead_id,
+                entrypoint=entrypoint,
+            )
+        route_catalog = catalogs["routes"][entrypoint]
+        route_source = _string(route_catalog.get("source"), context=f"ledger route {entrypoint}.source")
+        route_registry = _string(route_catalog.get("registry"), context=f"ledger route {entrypoint}.registry")
+        registered_routes = _object(
+            _load_registered_value(route_source, route_registry, context=f"ledger route {entrypoint}"),
+            context=f"ledger route {entrypoint}.registry",
+        )
+        if entrypoint not in registered_routes:
+            _fail(
+                "route_registry_mismatch",
+                f"route {entrypoint} is absent from its executable registry",
+                bead_id=bead_id,
+                entrypoint=entrypoint,
+            )
 
         schedule = _object(row.get("schedule"), context=f"ledger row {bead_id}.schedule")
         order = schedule.get("order")
@@ -463,6 +615,51 @@ def resolve_incident_coverage(
         fixture_id = _string(red_mutation.get("fixture_id"), context=f"ledger row {bead_id}.red_mutation.fixture_id")
         if fixture_id not in catalogs["fixtures"]:
             _fail("unknown_fixture", f"unknown fixture {fixture_id} for {bead_id}")
+        mutation_id = _string(red_mutation.get("mutation_id"), context=f"ledger row {bead_id}.red_mutation.mutation_id")
+        mutation_ids = _strings(
+            catalogs["fixtures"][fixture_id].get("mutation_ids"), context=f"ledger fixture {fixture_id}.mutation_ids"
+        )
+        if mutation_id not in mutation_ids:
+            _fail(
+                "unknown_mutation",
+                f"mutation {mutation_id} is not declared by fixture {fixture_id}",
+                bead_id=bead_id,
+                fixture_id=fixture_id,
+                mutation_id=mutation_id,
+            )
+        fixture_catalog = catalogs["fixtures"][fixture_id]
+        mutation_source = _string(
+            fixture_catalog.get("mutation_source"), context=f"ledger fixture {fixture_id}.mutation_source"
+        )
+        mutation_registry = _string(
+            fixture_catalog.get("mutation_registry"), context=f"ledger fixture {fixture_id}.mutation_registry"
+        )
+        registered_mutations = _object(
+            _load_registered_value(mutation_source, mutation_registry, context=f"ledger fixture {fixture_id}"),
+            context=f"ledger fixture {fixture_id}.mutation_registry",
+        )
+        if mutation_id not in registered_mutations:
+            _fail(
+                "mutation_registry_mismatch",
+                f"mutation {mutation_id} is absent from its fixture registry",
+                bead_id=bead_id,
+                fixture_id=fixture_id,
+                mutation_id=mutation_id,
+            )
+        fixture_source = _string(fixture_catalog.get("source"), context=f"ledger fixture {fixture_id}.source")
+        if fixture_source.endswith(".json"):
+            fixture_payload = _load_json(ROOT / fixture_source)
+            source_mutations = _strings(
+                fixture_payload.get("mutation_ids"), context=f"fixture source {fixture_source}.mutation_ids"
+            )
+            if mutation_id not in source_mutations:
+                _fail(
+                    "fixture_mutation_missing",
+                    f"mutation {mutation_id} is absent from fixture source {fixture_source}",
+                    bead_id=bead_id,
+                    fixture_id=fixture_id,
+                    mutation_id=mutation_id,
+                )
 
         check_ids = _strings(row.get("registry_checks"), context=f"ledger row {bead_id}.registry_checks")
         unknown_checks = sorted(set(check_ids) - set(catalogs["checks"]))
@@ -506,8 +703,10 @@ def resolve_incident_coverage(
 
         if graph_entry.get("status") == "closed" and graph_entry.get("kind") == "implementation":
             closed_implementation_ids.append(bead_id)
-            live_proof = any(receipts[receipt_id].get("kind") == "live-proof" for receipt_id in receipt_ids)
-            if not live_proof and successor_id is None:
+            implementation_proof = any(
+                receipts[receipt_id].get("kind") in {"live-proof", "implementation-proof"} for receipt_id in receipt_ids
+            )
+            if not implementation_proof and successor_id is None:
                 _fail(
                     "closed_implementation_unproven",
                     f"closed implementation bead {bead_id} has no live proof or named child successor",
@@ -555,6 +754,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     return 0
+
+
+ROUTE_REGISTRY: dict[str, object] = {
+    "reindex-campaign": resolve_default_incident_coverage,
+    "reindex-final-proof": main,
+}
 
 
 __all__ = [
