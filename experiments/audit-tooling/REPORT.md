@@ -4,7 +4,7 @@ This document records the production-toolchain disposition of the preserved audi
 
 ## Adopted toolchain
 
-- The `[dependency-groups].audit` stanza in [`pyproject.toml`](../../pyproject.toml) provides `ast-grep-cli`. Run `uv sync --group audit` from a fresh checkout before using `ast-grep`; `sg` is a different system command in the devshell.
+- The `[dependency-groups].audit` stanza in [`pyproject.toml`](../../pyproject.toml) provides `ast-grep-cli`. Run `uv sync --extra dev --group audit --frozen` from a fresh checkout, then use `uv run --group audit ast-grep`; `sg` is a different system command in the devshell.
 - The default devshell's `buildInputs` stanza in [`flake.nix`](../../flake.nix) provides `ast-grep`, `scc`, and `codeql`. CodeQL's Nix unfree exception is limited to its package name in the same file.
 
 The lab established distinct production-useful roles for these tools: ast-grep generates structural candidates, scc reports cheap code-size and complexity trends, and CodeQL supports periodic security-focused dataflow analysis. They do not independently enforce any audit policy.

@@ -35,13 +35,13 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install dependencies (frozen lockfile)
-        run: uv sync --extra dev --frozen
+        run: uv sync --extra dev --group audit --frozen
       - name: Export hash-pinned requirements (excludes editable polylogue)
         # `uv export` emits a deterministic, hash-pinned requirements.txt
         # derived from `uv.lock`. We deliberately exclude the project itself
         # (--no-emit-project) so pip-audit only sees external dependencies;
         # the editable install of polylogue would otherwise fail the audit.
-        run: uv export --format requirements-txt --no-emit-project --frozen --extra dev > requirements-audit.txt
+        run: uv export --format requirements-txt --no-emit-project --frozen --extra dev --group audit > requirements-audit.txt
       - name: Run pip-audit against locked dependencies
         # --vulnerability-service osv: query the OSV database (covers PyPA
         #   advisory DB, GHSA, and others) — broader than PyPI advisories alone.

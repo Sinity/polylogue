@@ -33,7 +33,8 @@ devtools render all
 The `audit` dependency group supplies `ast-grep` for local structural candidate generation:
 
 ```bash
-uv sync --group audit
+uv sync --extra dev --group audit --frozen
+uv run --group audit ast-grep --version
 ```
 
 The project devshell also provides `scc` for code-size and complexity summaries and `codeql` for periodic security-focused analysis. These tools are advisory until a separately scoped audit policy adopts a specific rule or query.
