@@ -189,10 +189,18 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
     generation directory, so both must fail closed against a foreign/rotated
     archive location before touching disk, not just the eventual write pass.
     """
+    from polylogue.maintenance.message_owner_scope_backfill import (
+        MessageOwnerScopeBackfillError,
+        validate_message_owner_scope_for_index_replacement,
+    )
     from polylogue.maintenance.rebuild_index import require_rebuild_schema_currency
 
     require_rebuild_schema_currency(root)
     _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+    try:
+        validate_message_owner_scope_for_index_replacement(root, receipt_path=None)
+    except MessageOwnerScopeBackfillError as exc:
+        raise RuntimeError(f"daemon bulk rebuild message-owner scope gate failed: {exc}") from exc
     # This must precede transaction resolution, because retiring a terminal
     # transaction and creating its replacement also creates generation state.
     # It must also precede the caller's page selection for a resumed
@@ -211,6 +219,10 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
         # after ownership acquisition so receipt expiry, source revision, or
         # external-corpus drift cannot reach generation bookkeeping.
         _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+        try:
+            validate_message_owner_scope_for_index_replacement(root, receipt_path=None)
+        except MessageOwnerScopeBackfillError as exc:
+            raise RuntimeError(f"daemon bulk rebuild message-owner scope gate failed: {exc}") from exc
         store = IndexGenerationStore(location, repair_anchor=False)
         transaction: IndexRebuildTransaction | None
         try:

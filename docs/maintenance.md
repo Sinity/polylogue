@@ -361,14 +361,18 @@ polylogue ops maintenance message-owner-scope-backfill --apply \
 Apply rechecks the plan digest, archive identity, active-index and user schema
 bindings, and authenticated user-tier backup before `BEGIN IMMEDIATE`. The
 receipt is self-hashed and complete only when its unresolved denominator is
-zero; missing owners remain typed blockers. Pass a complete receipt to
-`maintenance rebuild-index` with
-`--message-owner-scope-backfill-receipt` so candidate acceptance consumes the
-pre-reindex proof before replacing the active index. Apply first fsyncs an
-immutable `.prepared` marker, commits the user-tier transaction atomically, and
-fsyncs the terminal receipt before removing that marker; a failed transaction
-rolls back all scope updates and leaves the marker for operator recovery. No
-index or source-tier files are written by this operation.
+zero; it also fingerprints the current durable message assertions. Missing
+owners remain typed blockers. An index replacement with legacy unscoped rows
+requires a complete receipt; every promoting rebuild route, including the
+daemon's automatic bulk rebuild, takes the same gate. Before promotion, the
+gate proves each durable message assertion has exactly one matching owner in
+the actual candidate index, not merely a matching candidate schema. Apply
+first fsyncs an immutable `.prepared` marker, commits the user-tier transaction
+atomically, and fsyncs the terminal receipt before removing that marker. A
+retry with the same plan, backup, and receipt path can finalize a prepared
+marker only when the current durable state exactly matches the marker's
+expected committed state; all other prepared states fail closed for operator
+recovery. No index or source-tier files are written by this operation.
 
 ### `polylogue ops maintenance preview` — staleness inventory
 

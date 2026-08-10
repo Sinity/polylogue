@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
+from polylogue.daemon import bulk_rebuild
 from polylogue.maintenance.message_owner_scope_backfill import (
     MessageOwnerScopeBackfillError,
     apply_message_owner_scope_backfill,
@@ -273,6 +274,71 @@ def test_transaction_rolls_back_and_leaves_recovery_marker_on_mid_apply_failure(
     assert receipt.with_name(receipt.name + ".prepared").exists()
 
 
+def test_post_commit_receipt_failure_recovers_only_the_prepared_exact_state(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+
+    with monkeypatch.context() as post_commit_failure:
+        post_commit_failure.setattr(
+            "polylogue.maintenance.message_owner_scope_backfill._final_receipt",
+            lambda **_kwargs: (_ for _ in ()).throw(OSError("simulated receipt fsync failure")),
+        )
+        with pytest.raises(OSError, match="receipt fsync"):
+            apply_message_owner_scope_backfill(
+                root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+            )
+
+    assert receipt.with_name(receipt.name + ".prepared").exists()
+    recovered = apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+
+    assert recovered.terminal_state == "committed"
+    assert recovered.updated_count == 4
+    assert receipt.exists()
+    assert not receipt.with_name(receipt.name + ".prepared").exists()
+
+
+def test_complete_receipt_rejects_current_durable_scope_drift(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, message_rows = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute(
+            "UPDATE assertions SET scope_ref = 'session:wrong-owner' WHERE target_ref = ? AND kind = 'mark'",
+            (f"message:{message_rows[0][0]}",),
+        )
+        conn.commit()
+
+    with pytest.raises(MessageOwnerScopeBackfillError, match="durable message assertion state is stale"):
+        validate_message_owner_scope_backfill_receipt(root, receipt, candidate_index_path=root / "index.db")
+
+
+def test_daemon_bulk_rebuild_refuses_legacy_message_owner_scopes_before_candidate_creation(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _seed_opaque_archive(workspace_env)
+    monkeypatch.setattr(bulk_rebuild, "_validate_rebuild_provenance_receipt", lambda _root, _receipt: None)
+
+    with pytest.raises(RuntimeError, match="message-owner scope backfill"):
+        bulk_rebuild.resolve_or_start_daemon_bulk_rebuild_transaction(root)
+
+    assert not (root / ".index-generations").exists()
+    assert not (root / ".index-rebuild-transactions").exists()
+
+
 def test_complete_receipt_is_consumable_after_index_rows_are_deleted(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -288,6 +354,8 @@ def test_complete_receipt_is_consumable_after_index_rows_are_deleted(
     with sqlite3.connect(root / "index.db") as conn:
         conn.execute("DELETE FROM messages")
         conn.commit()
+    with pytest.raises(MessageOwnerScopeBackfillError, match="candidate index does not own"):
+        validate_message_owner_scope_backfill_receipt(root, receipt, candidate_index_path=root / "index.db")
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         marks = archive.list_marks()
         annotations = archive.list_annotations()
