@@ -8,7 +8,7 @@ import os
 import shutil
 import sqlite3
 from pathlib import Path
-from typing import Never
+from typing import Literal, Never
 
 import pytest
 
@@ -286,9 +286,11 @@ def test_census_reset_persists_source_continuity_intent_before_commit(
         pre_mutation_evidence: DurableDatabaseEvidence,
         operation_id: str,
         evidence_ref: str,
+        mutation_kind: Literal["blob_ref_liveness", "raw_authority_recovery"],
     ) -> Path:
         with sqlite3.connect(tmp_path / "source.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
+        assert mutation_kind == "raw_authority_recovery"
         pending = original_write_pending(
             archive_root,
             mutation_receipt=mutation_receipt,
@@ -296,6 +298,7 @@ def test_census_reset_persists_source_continuity_intent_before_commit(
             pre_mutation_evidence=pre_mutation_evidence,
             operation_id=operation_id,
             evidence_ref=evidence_ref,
+            mutation_kind=mutation_kind,
         )
         pending_paths.append(pending)
         assert pending.is_file()
