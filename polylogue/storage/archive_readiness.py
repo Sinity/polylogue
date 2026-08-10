@@ -22,7 +22,7 @@ from polylogue.logging import get_logger
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
-from polylogue.storage.raw_authority import raw_authority_detail_query_handle
+from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_detail_query_handle
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -218,7 +218,7 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     if readiness.get("debt_classifier_error"):
         return False
     parser_census = readiness.get("raw_authority_parser_census")
-    if isinstance(parser_census, Mapping) and not bool(parser_census.get("available", False)):
+    if not isinstance(parser_census, Mapping) or parser_census.get("available") is not True:
         return False
     frontier = readiness.get("raw_authority_frontier")
     if not isinstance(frontier, Mapping) or frontier.get("lifecycle_status") != "completed":
@@ -388,49 +388,46 @@ def raw_materialization_readiness_snapshot(
             parser_census_non_complete_receipt_count = 0
             parser_census_origin_summary: list[dict[str, object]] = []
             if _table_columns(conn, "source", "raw_authority_parser_census"):
-                from polylogue.storage.raw_authority import (
-                    RAW_AUTHORITY_PARSER_FINGERPRINT,
-                    SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
-                )
+                from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 
                 parser_census_available = True
-                known_fingerprints = [RAW_AUTHORITY_PARSER_FINGERPRINT, *sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS)]
-                fingerprint_placeholders = ",".join("?" for _ in known_fingerprints)
                 blob_size_expression = "COALESCE(r.blob_size, 0)" if "blob_size" in raw_columns else "0"
-                census_rows = conn.execute(
+                parser_census_rows = conn.execute(
                     f"""
-                    WITH parser_census AS (
-                        SELECT r.raw_id, r.origin, {blob_size_expression} AS blob_size,
-                            CASE WHEN c.status = 'complete' AND c.parser_fingerprint IN ({fingerprint_placeholders}) THEN 1 ELSE 0 END AS is_complete,
-                            CASE WHEN c.raw_id IS NULL THEN 1 ELSE 0 END AS is_missing_receipt
-                        FROM source.raw_sessions AS r
-                        LEFT JOIN source.raw_authority_parser_census AS c ON c.raw_id = r.raw_id
-                        WHERE COALESCE(r.validation_status, '') != 'skipped'
-                    )
-                    SELECT COALESCE(SUM(is_complete), 0), COALESCE(SUM(CASE WHEN is_complete = 0 THEN 1 ELSE 0 END), 0),
-                        COALESCE(SUM(CASE WHEN is_complete = 0 THEN blob_size ELSE 0 END), 0), COALESCE(SUM(is_missing_receipt), 0),
-                        COALESCE(SUM(CASE WHEN is_complete = 0 AND is_missing_receipt = 0 THEN 1 ELSE 0 END), 0)
-                    FROM parser_census
-                    """,
-                    known_fingerprints,
-                ).fetchone()
-                parser_census_complete_count = int(census_rows[0] or 0)
-                parser_census_incomplete_count = int(census_rows[1] or 0)
-                parser_census_incomplete_blob_bytes = int(census_rows[2] or 0)
-                parser_census_missing_receipt_count = int(census_rows[3] or 0)
-                parser_census_non_complete_receipt_count = int(census_rows[4] or 0)
-                parser_census_origin_summary = [
-                    {"origin": str(origin), "count": int(count or 0), "blob_bytes": int(blob_bytes or 0)}
-                    for origin, count, blob_bytes in conn.execute(
-                        f"""
-                    SELECT r.origin, COUNT(*), COALESCE(SUM({blob_size_expression}), 0)
-                    FROM source.raw_sessions AS r LEFT JOIN source.raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                    SELECT r.origin, {blob_size_expression}, c.raw_id, c.parser_fingerprint,
+                           c.status, c.logical_keys_json
+                    FROM source.raw_sessions AS r
+                    LEFT JOIN source.raw_authority_parser_census AS c ON c.raw_id = r.raw_id
                     WHERE COALESCE(r.validation_status, '') != 'skipped'
-                      AND NOT COALESCE(c.status = 'complete' AND c.parser_fingerprint IN ({fingerprint_placeholders}), 0)
-                    GROUP BY r.origin ORDER BY 3 DESC, 2 DESC, r.origin LIMIT 16
                     """,
-                        known_fingerprints,
+                ).fetchall()
+                incomplete_origins: Counter[str] = Counter()
+                incomplete_origin_bytes: Counter[str] = Counter()
+                for origin, blob_size, receipt_raw_id, fingerprint, status, logical_keys_json in parser_census_rows:
+                    complete = (
+                        receipt_raw_id is not None
+                        and str(fingerprint) == RAW_AUTHORITY_PARSER_FINGERPRINT
+                        and str(status) == "complete"
+                        and parser_census_logical_keys(logical_keys_json) is not None
                     )
+                    if complete:
+                        parser_census_complete_count += 1
+                        continue
+                    parser_census_incomplete_count += 1
+                    parser_census_incomplete_blob_bytes += int(blob_size or 0)
+                    origin_key = str(origin)
+                    incomplete_origins[origin_key] += 1
+                    incomplete_origin_bytes[origin_key] += int(blob_size or 0)
+                    if receipt_raw_id is None:
+                        parser_census_missing_receipt_count += 1
+                    else:
+                        parser_census_non_complete_receipt_count += 1
+                parser_census_origin_summary = [
+                    {"origin": origin, "count": count, "blob_bytes": incomplete_origin_bytes[origin]}
+                    for origin, count in sorted(
+                        incomplete_origins.items(),
+                        key=lambda item: (-incomplete_origin_bytes[item[0]], -item[1], item[0]),
+                    )[:16]
                 ]
             if _table_columns(conn, "source", "raw_authority_censuses"):
                 authority_pending_census_count = int(
@@ -1205,11 +1202,20 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
         expected = count(expected_key, count(actual_key))
         return [blocker] if count(actual_key) != expected else []
 
+    parser_census = counts.get("raw_authority_parser_census")
+    parser_census_available = isinstance(parser_census, Mapping) and parser_census.get("available") is True
+    parser_census_incomplete_count = count("raw_authority_parser_census_incomplete_count")
     raw_blockers: list[str] = []
     raw_ready: bool | None
     if not source_check_available:
         raw_ready = None
         raw_blockers.append("source_tier_unavailable")
+    elif not parser_census_available:
+        raw_ready = False
+        raw_blockers.append("parser_census_unavailable")
+    elif parser_census_incomplete_count:
+        raw_ready = False
+        raw_blockers.append("parser_census_incomplete")
     elif count("missing_raw_session_count"):
         raw_ready = False
         raw_blockers.append("missing_source_raw_sessions")
@@ -1278,6 +1284,8 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
                 "missing_raw_session_samples": list(counts.get("missing_raw_session_samples") or []),
                 "lost_source_evidence_count": count("lost_source_evidence_count"),
                 "lost_source_evidence_samples": list(counts.get("lost_source_evidence_samples") or []),
+                "parser_census": dict(parser_census) if isinstance(parser_census, Mapping) else None,
+                "parser_census_incomplete_count": parser_census_incomplete_count,
             },
         ),
         "search": surface(
@@ -1395,6 +1403,16 @@ def archive_readiness_status(root: Path) -> dict[str, Any]:
                             or _safe_list(counts.get("lost_source_evidence_samples")),
                         }
                     )
+                parser_projection = raw_materialization_readiness_snapshot(root, classify_gaps=False)
+                parser_census = parser_projection.get("raw_authority_parser_census")
+                counts.update(
+                    {
+                        "raw_authority_parser_census": parser_census,
+                        "raw_authority_parser_census_incomplete_count": _safe_int(
+                            parser_projection.get("raw_authority_parser_census_incomplete_count")
+                        ),
+                    }
+                )
             finally:
                 if source_conn is not None:
                     source_conn.close()

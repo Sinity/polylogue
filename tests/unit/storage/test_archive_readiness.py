@@ -10,6 +10,7 @@ import pytest
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.storage.archive_readiness import (
     CLAUDE_WORKFLOW_STAGE_NAME,
+    archive_readiness_status,
     claude_workflow_materialization_status,
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
@@ -40,8 +41,93 @@ def test_raw_materialization_readiness_requires_completed_frontier_census() -> N
     )
     assert (
         raw_materialization_ready({**counters_green, "raw_authority_frontier": {"lifecycle_status": "completed"}})
+        is False
+    )
+    assert (
+        raw_materialization_ready(
+            {
+                **counters_green,
+                "raw_authority_frontier": {"lifecycle_status": "completed"},
+                "raw_authority_parser_census": {"available": "yes"},
+            }
+        )
+        is False
+    )
+    assert (
+        raw_materialization_ready(
+            {
+                **counters_green,
+                "raw_authority_frontier": {"lifecycle_status": "completed"},
+                "raw_authority_parser_census": {"available": True},
+            }
+        )
         is True
     )
+
+
+def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path: Path) -> None:
+    """Readiness shares the promotion gate's parser-receipt validation."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"malformed-census"}}\n',
+            source_path="codex/malformed-census.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_authority_parser_census (
+                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+            ) VALUES (?, ?, 'complete', '["codex-session:duplicate", "codex-session:duplicate"]', '', 1)
+            """,
+            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        )
+        conn.commit()
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+    parser_census = cast(Mapping[str, object], snapshot["raw_authority_parser_census"])
+
+    assert parser_census["complete_count"] == 0
+    assert parser_census["incomplete_count"] == 1
+    assert parser_census["non_complete_receipt_count"] == 1
+
+
+def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> None:
+    """Exact readiness consumes source parser debt from its real SQLite projection."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"exact-readiness"}}\n',
+            source_path="codex/exact-readiness.jsonl",
+            acquired_at_ms=1,
+        )
+
+    blocked = archive_readiness_status(tmp_path)
+    assert blocked["surfaces"]["raw_artifacts"]["ready"] is False
+    assert "parser_census_incomplete" in blocked["surfaces"]["raw_artifacts"]["blockers"]
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_authority_parser_census (
+                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+            ) VALUES (?, ?, 'complete', '[]', '', 1)
+            """,
+            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        )
+        conn.commit()
+
+    ready = archive_readiness_status(tmp_path)
+    assert ready["surfaces"]["raw_artifacts"]["ready"] is True
 
 
 def test_raw_materialization_readiness_rejects_unresolved_authority_blockers() -> None:

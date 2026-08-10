@@ -50,6 +50,7 @@ from polylogue.pipeline.services import archive_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -221,6 +222,45 @@ async def test_archive_ingest_session_shaped_workflow_journal_reaches_parser_ide
         assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_ordinary_session_records_current_parser_receipt(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """The ordinary importer must emit source-tier parser authority evidence.
+
+    This exercises ``parse_sources_archive``'s normal ``write_pair`` ->
+    ``admit_raw_and_parsed_result`` route, rather than inserting a receipt in
+    test setup. Removing that admission receipt makes the final query return
+    no row and leaves archive readiness permanently blocked.
+    """
+    archive_root = workspace_env["archive_root"]
+    journal = _write_session_shaped_workflow_journal(tmp_path / "sessions")
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=journal)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        receipt = conn.execute(
+            """
+            SELECT c.parser_fingerprint, c.status, c.logical_keys_json
+            FROM raw_sessions AS r
+            JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+            WHERE r.source_path = ?
+            """,
+            (str(journal),),
+        ).fetchone()
+
+    assert receipt == (
+        RAW_AUTHORITY_PARSER_FINGERPRINT,
+        "complete",
+        '["claude-code:journal-session"]',
+    )
 
 
 @pytest.mark.asyncio

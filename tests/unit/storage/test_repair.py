@@ -4378,6 +4378,33 @@ def test_raw_materialization_ordinary_pass_census_detail_distinguishes_escalatio
     assert "escalation-blocked: non-stream-safe" in non_stream_safe_detail
 
 
+def test_non_stream_safe_envelope_terminal_never_reports_deferred_success(tmp_path: Path) -> None:
+    """A durable terminal envelope outcome remains failed on the next real pass."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=json.dumps({"mapping": {}, "title": "manual-only-envelope"}).encode(),
+            source_path="chatgpt-export/manual-only-envelope.json",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET blob_size = 501 WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+
+    first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_id=raw_id, max_payload_bytes=500)
+    second = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_id=raw_id, max_payload_bytes=500)
+
+    assert first.success is False
+    # Removing the terminal/deferred distinction from the envelope query makes
+    # this second real maintenance pass take the all-deferred success branch.
+    assert second.success is False
+
+
 def test_raw_materialization_whale_pass_converges_blocked_component_to_resolved_head(tmp_path: Path) -> None:
     """The escalation-tier whale pass (raw_artifact_id-scoped, widened
     envelope) must converge a component the ordinary envelope permanently

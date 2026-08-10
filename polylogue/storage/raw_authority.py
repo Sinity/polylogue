@@ -20,7 +20,9 @@ from pathlib import Path
 
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -75,6 +77,41 @@ RAW_AUTHORITY_CENSUS_PLAN_RETENTION = 8
 #: the observed ~97 censuses/day.
 RAW_AUTHORITY_CENSUS_HEADER_RETENTION = 256
 logger = get_logger(__name__)
+
+
+def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | None:
+    """Validate and normalize the durable logical-key receipt payload.
+
+    The parser census writer records a sorted, duplicate-free JSON list.  A
+    few legacy membership rows carry provider prefixes, so normalize those to
+    public origins here while preserving the receipt's ordering invariant.
+    ``None`` means the receipt cannot establish parser authority.
+    """
+    try:
+        decoded = json.loads(str(logical_keys_json))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(decoded, list) or not all(isinstance(value, str) for value in decoded):
+        return None
+    raw_keys = tuple(decoded)
+    if raw_keys != tuple(sorted(set(raw_keys))):
+        return None
+    normalized: list[str] = []
+    for logical_key in raw_keys:
+        prefix, separator, native_id = logical_key.partition(":")
+        if not separator or not native_id:
+            return None
+        try:
+            origin = Origin(prefix)
+        except ValueError:
+            try:
+                origin = origin_from_provider(Provider(prefix))
+            except ValueError:
+                return None
+        normalized.append(f"{origin.value}:{native_id}")
+    normalized_keys = tuple(sorted(set(normalized)))
+    return normalized_keys if len(normalized_keys) == len(raw_keys) else None
+
 
 _RESET_LEDGER_TABLES_CHILD_FIRST = (
     "raw_authority_blockers",
@@ -786,7 +823,7 @@ def raw_replay_plan_deferred_for_envelope(archive_root: Path, *, max_payload_byt
                 FROM raw_authority_census_plans AS cp
                 JOIN raw_authority_censuses AS c ON c.census_id = cp.census_id
                 WHERE cp.selected = 1
-                  AND cp.outcome_status IN ('deferred', 'terminal')
+                  AND cp.outcome_status = 'deferred'
                   AND cp.reason = ?
                   AND c.lifecycle_status IN ('completed', 'interrupted')
                 """,
@@ -2352,6 +2389,7 @@ __all__ = [
     "raw_authority_detail_query_handle",
     "raw_replay_plan_last_attempts",
     "raw_replay_plan_deferred_for_envelope",
+    "parser_census_logical_keys",
     "recover_interrupted_raw_authority_censuses",
     "read_raw_authority_census",
     "read_raw_authority_detail",

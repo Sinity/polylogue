@@ -97,6 +97,7 @@ question makes it impossible to pass the wrong answer.)
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -142,6 +143,7 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
 from polylogue.storage.raw.models import RawSessionStateUpdate
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     BrowserCapturePrecedence,
     browser_capture_precedence,
@@ -1818,6 +1820,71 @@ def replace_raw_membership_census(
             """,
             (raw_id, parser_fingerprint, status, len(sessions or []), censused_at_ms, detail),
         )
+        record_current_parser_source_census(conn, raw_id)
+
+
+def record_current_parser_source_census(conn: sqlite3.Connection, raw_id: str) -> None:
+    """Persist one current-parser receipt from the durable admission bindings.
+
+    Ordinary admissions have a typed raw logical key; grouped imports instead
+    establish their keys through ``raw_session_memberships``.  Reading both
+    through this writer-owned route makes every successful parser admission
+    accountable to the same source-tier census that replay promotion reads.
+    """
+    raw = conn.execute(
+        "SELECT logical_source_key, revision_kind FROM raw_sessions WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    if raw is None:
+        raise RuntimeError(f"parser census raw is missing: {raw_id}")
+    membership_census = conn.execute(
+        """
+        SELECT status, detail FROM raw_membership_census
+        WHERE raw_id = ? AND parser_fingerprint = ?
+        """,
+        (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+    ).fetchone()
+    membership_keys = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
+            (raw_id,),
+        )
+    ]
+    typed_key = str(raw[0]) if raw[0] is not None and str(raw[1]) != RawRevisionKind.UNKNOWN.value else None
+    complete = typed_key is not None or (
+        membership_census is not None and str(membership_census[0]) in {"complete", "non_session"}
+    )
+    logical_keys = sorted(set(membership_keys) | ({typed_key} if typed_key is not None else set()))
+    detail = (
+        "current parser established durable authority identity"
+        if complete
+        else (
+            str(membership_census[1])
+            if membership_census is not None
+            else "current parser produced no durable authority identity"
+        )
+    )
+    conn.execute(
+        """
+        INSERT INTO raw_authority_parser_census (
+            raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+        ) VALUES (?, ?, ?, ?, ?, 0)
+        ON CONFLICT(raw_id) DO UPDATE SET
+            parser_fingerprint = excluded.parser_fingerprint,
+            status = excluded.status,
+            logical_keys_json = excluded.logical_keys_json,
+            detail = excluded.detail,
+            censused_at_ms = excluded.censused_at_ms
+        """,
+        (
+            raw_id,
+            RAW_AUTHORITY_PARSER_FINGERPRINT,
+            "complete" if complete else "failed",
+            json.dumps(logical_keys),
+            detail,
+        ),
+    )
 
 
 def convertible_full_revision_raw_ids(store: RawRevisionGovernanceHost, logical_source_key: str) -> tuple[str, ...]:
@@ -3445,6 +3512,8 @@ def write_raw_and_parsed_result(
         preacquired_attachment_blobs=preacquired_attachments,
         finalize_raw_parse=finalize_raw_parse,
     )
+    with source_conn:
+        record_current_parser_source_census(source_conn, raw_id)
     add_timing("index_parsed_write", t0)
     return result
 
@@ -3566,6 +3635,8 @@ def admit_raw_and_parsed_result(
         preacquired_attachment_blobs=preacquired_attachments,
         finalize_raw_parse=finalize_raw_parse,
     )
+    with source_conn:
+        record_current_parser_source_census(source_conn, resolved_raw_id)
     add_timing("index_parsed_write", t0)
     return result
 

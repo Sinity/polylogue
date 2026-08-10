@@ -6252,6 +6252,7 @@ def repair_raw_materialization(
                     tuple(sorted(uncensused_raw_ids.intersection(component))),
                     max_payload_bytes=max_payload_bytes,
                     total_payload_bytes=exc.total_bytes,
+                    stream_safe=_raw_materialization_component_stream_safe(candidates, component),
                 )
             except Exception:
                 logger.exception("raw authority census failed for component containing %s", seed)
@@ -6942,6 +6943,7 @@ def repair_raw_materialization(
         and remaining.byte_authority_pending == 0
         and conservation_error_count == 0
         and no_progress_outcome_count == 0
+        and not any(outcome.status is RawReplayPlanStatus.TERMINAL for outcome in plan_outcomes)
         and not any(outcome.status is RawReplayPlanStatus.REJECTED_STALE for outcome in plan_outcomes)
         and (
             raw_artifact_id is None

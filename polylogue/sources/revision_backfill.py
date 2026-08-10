@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import pickle
 import sqlite3
@@ -58,9 +57,13 @@ from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.raw_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
+    parser_census_logical_keys,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.revision_governance import FrozenSourceRemediationRequiredError
+from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+    FrozenSourceRemediationRequiredError,
+    record_current_parser_source_census,
+)
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -557,69 +560,7 @@ def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, 
         return
     with sqlite3.connect(archive_root / "source.db") as conn, conn:
         for raw_id in raw_ids:
-            raw = conn.execute(
-                """
-                SELECT logical_source_key, revision_kind
-                FROM raw_sessions WHERE raw_id = ?
-                """,
-                (raw_id,),
-            ).fetchone()
-            membership_census = conn.execute(
-                """
-                SELECT status, detail FROM raw_membership_census
-                WHERE raw_id = ? AND parser_fingerprint = ?
-                """,
-                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
-            ).fetchone()
-            membership_keys = [
-                str(row[0])
-                for row in conn.execute(
-                    """
-                    SELECT logical_source_key FROM raw_session_memberships
-                    WHERE raw_id = ? ORDER BY logical_source_key
-                    """,
-                    (raw_id,),
-                )
-            ]
-            typed_key = (
-                str(raw[0])
-                if raw is not None and raw[0] is not None and str(raw[1]) != RawRevisionKind.UNKNOWN.value
-                else None
-            )
-            complete = typed_key is not None or (
-                membership_census is not None and str(membership_census[0]) in {"complete", "non_session"}
-            )
-            logical_keys = sorted(set(membership_keys) | ({typed_key} if typed_key is not None else set()))
-            detail = (
-                "current parser established durable authority identity"
-                if complete
-                else (
-                    str(membership_census[1])
-                    if membership_census is not None
-                    else "current parser produced no durable authority identity"
-                )
-            )
-            conn.execute(
-                """
-                INSERT INTO raw_authority_parser_census (
-                    raw_id, parser_fingerprint, status, logical_keys_json,
-                    detail, censused_at_ms
-                ) VALUES (?, ?, ?, ?, ?, 0)
-                ON CONFLICT(raw_id) DO UPDATE SET
-                    parser_fingerprint = excluded.parser_fingerprint,
-                    status = excluded.status,
-                    logical_keys_json = excluded.logical_keys_json,
-                    detail = excluded.detail,
-                    censused_at_ms = excluded.censused_at_ms
-                """,
-                (
-                    raw_id,
-                    RAW_AUTHORITY_PARSER_FINGERPRINT,
-                    "complete" if complete else "failed",
-                    json.dumps(logical_keys),
-                    detail,
-                ),
-            )
+            record_current_parser_source_census(conn, raw_id)
 
 
 def _census_historical_revision_evidence(
@@ -954,23 +895,8 @@ def require_current_parser_source_census(
                 if fingerprint != RAW_AUTHORITY_PARSER_FINGERPRINT or status != "complete":
                     stale_raw_ids.append(raw_id)
                     continue
-                try:
-                    decoded_keys = json.loads(str(logical_keys_json))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    stale_raw_ids.append(raw_id)
-                    continue
-                if not isinstance(decoded_keys, list) or not all(isinstance(value, str) for value in decoded_keys):
-                    stale_raw_ids.append(raw_id)
-                    continue
-                if tuple(decoded_keys) != tuple(sorted(set(decoded_keys))):
-                    stale_raw_ids.append(raw_id)
-                    continue
-                try:
-                    normalized_keys = tuple(sorted({_canonical_authority_logical_key(value) for value in decoded_keys}))
-                except ValueError:
-                    stale_raw_ids.append(raw_id)
-                    continue
-                if len(normalized_keys) != len(decoded_keys):
+                normalized_keys = parser_census_logical_keys(logical_keys_json)
+                if normalized_keys is None:
                     stale_raw_ids.append(raw_id)
                     continue
                 recorded_logical_keys[raw_id] = normalized_keys
