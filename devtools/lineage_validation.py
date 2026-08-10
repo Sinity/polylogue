@@ -35,7 +35,9 @@ _EFFECTIVE_UNRESOLVED_LINK_PREDICATE = """
         SELECT 1
         FROM session_links resolved
         WHERE resolved.src_session_id = l.src_session_id
+          AND resolved.inheritance = 'prefix-sharing'
           AND resolved.resolved_dst_session_id IS NOT NULL
+          AND resolved.branch_point_message_id IS NOT NULL
           AND COALESCE(NULLIF(TRIM(resolved.status), ''), 'unresolved') != 'quarantined'
     )
 """

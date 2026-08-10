@@ -360,6 +360,30 @@ def test_lineage_validation_treats_only_alternate_unresolved_edges_as_not_applic
     assert report["verdict"]["external_counts_citable"] is True
 
 
+def test_lineage_validation_samples_unresolved_edge_when_resolved_edge_does_not_compose(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_links
+                (src_session_id, dst_origin, dst_native_id, link_type, status,
+                 resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
+            VALUES ('fresh', 'claude-code-session', 'missing-parent', 'subagent', NULL,
+                    NULL, 'parent-tool-use-id', '{}', NULL, 'spawned-fresh')
+            """
+        )
+        conn.commit()
+
+    report = lineage_validation.build_report(_args(archive_root))
+
+    sample = report["lineage"]["topology"]["unresolved_read_sample"]
+    assert sample["effective_unresolved_count"] == 1
+    assert sample["sampled"] == 1
+    assert sample["status"] == "safe"
+    assert sample["rows"][0]["session_id"] == "fresh"
+
+
 def test_lineage_validation_proves_writer_candidate_and_snapshot_identity(tmp_path: Path) -> None:
     archive_root = tmp_path / "candidate"
     db = _make_writer_candidate(archive_root)
