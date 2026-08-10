@@ -13,7 +13,7 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Final
@@ -294,8 +294,15 @@ def acquire_codex_revision_chain(
     archive_root: Path,
     fixture: CodexRevisionChainFixture,
     source_path: Path,
+    *,
+    revision_observer: Callable[[int, Path], None] | None = None,
 ) -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
-    """Acquire all snapshots through ``AcquisitionService`` with one live path."""
+    """Acquire all snapshots through ``AcquisitionService`` with one live path.
+
+    ``revision_observer`` runs after each wire snapshot is written and before
+    acquisition reads it.  It is a proof hook for callers that need to inspect
+    every revision without moving acquisition or replay into the fixture.
+    """
     from polylogue.config import Source
     from polylogue.pipeline.services.acquisition import AcquisitionService
     from polylogue.storage.sqlite import SQLiteBackend
@@ -308,6 +315,8 @@ def acquire_codex_revision_chain(
             sizes: list[int] = []
             sha256s: list[str] = []
             for revision, size, sha256 in fixture.iter_revisions(source_path):
+                if revision_observer is not None:
+                    revision_observer(revision, source_path)
                 result = await service.acquire_sources([Source(name="codex", path=source_path)])
                 if result.errors:
                     raise AssertionError(
