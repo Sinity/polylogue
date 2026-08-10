@@ -254,15 +254,22 @@ def _render_queue_health(payload: AssertionCandidateQueueHealthPayload, output_f
             f"route={payload.judgment_scheduler_receipt_retry_route or 'none'}; "
             f"batch={payload.judgment_scheduler_receipt_batch_limit or 'none'}"
         )
-        click.echo(
-            "  receipt counts: "
-            f"considered={payload.judgment_scheduler_receipt_considered or 0}, "
-            f"accepted={payload.judgment_scheduler_receipt_accepted or 0}, "
-            f"rejected={payload.judgment_scheduler_receipt_rejected or 0}, "
-            f"escalated={payload.judgment_scheduler_receipt_escalated or 0}, "
-            f"idempotent={payload.judgment_scheduler_receipt_idempotent or 0}, "
-            f"failed={payload.judgment_scheduler_receipt_failed or 0}"
+        counter_values = (
+            payload.judgment_scheduler_receipt_considered,
+            payload.judgment_scheduler_receipt_accepted,
+            payload.judgment_scheduler_receipt_rejected,
+            payload.judgment_scheduler_receipt_escalated,
+            payload.judgment_scheduler_receipt_idempotent,
+            payload.judgment_scheduler_receipt_failed,
         )
+        if any(value is not None for value in counter_values):
+            rendered_counters = tuple("unknown" if value is None else str(value) for value in counter_values)
+            click.echo(
+                "  receipt counts: "
+                f"considered={rendered_counters[0]}, accepted={rendered_counters[1]}, "
+                f"rejected={rendered_counters[2]}, escalated={rendered_counters[3]}, "
+                f"idempotent={rendered_counters[4]}, failed={rendered_counters[5]}"
+            )
         if payload.judgment_scheduler_receipt_persistence_degraded is not None:
             click.echo(
                 "  receipt persistence: "
