@@ -29,6 +29,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab probe pipeline",
     "lab probe turso",
     "lab projections",
+    "lab run",
     "lab smoke",
     "lab schema audit",
     "lab schema commit",
@@ -2148,6 +2149,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.query_memory_budget",
         use_when="Assert memory budgets around a concrete query or archive-facing command.",
         examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
+    ),
+    CommandSpec(
+        "lab run",
+        "verification lab",
+        "Run a named archive verification scenario.",
+        "devtools.lab_scenario",
+        entrypoint="run_main",
+        use_when="Run a scenario such as rebuild-safety through the direct lab command path.",
+        examples=(
+            "devtools lab run rebuild-safety",
+            "devtools lab run rebuild-safety --report-dir .cache/rebuild-safety-report --json",
+        ),
     ),
     CommandSpec(
         "lab smoke",

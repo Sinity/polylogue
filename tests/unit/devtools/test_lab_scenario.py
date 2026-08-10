@@ -39,6 +39,7 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
     archive = next(entry for entry in payload["scenarios"] if entry["name"] == "archive-smoke")
     visual = next(entry for entry in payload["scenarios"] if entry["name"] == "reader-visual-smoke")
     storage = next(entry for entry in payload["scenarios"] if entry["name"] == "storage-correctness")
+    rebuild = next(entry for entry in payload["scenarios"] if entry["name"] == "rebuild-safety")
     assert archive == {
         "name": "archive-smoke",
         "kind": "cli-smoke",
@@ -54,6 +55,11 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
         "scope_adjudication": storage["scope_adjudication"],
     }
     assert "blob_gc" in storage["scope_adjudication"]
+    assert rebuild == {
+        "name": "rebuild-safety",
+        "kind": "derived-tier-differential",
+        "checks": ["rebuild-safety", "rebuild-differential"],
+    }
 
 
 def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) -> None:
