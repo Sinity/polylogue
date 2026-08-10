@@ -507,6 +507,15 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
             operation_id=_EMPTY_LIVENESS_DIGEST,
             evidence_ref="proof:mutation-1",
         )
+    with pytest.raises(DurableSourceContinuitySemanticError, match="source-tier pre-mutation evidence"):
+        refresh_released_source_train_continuity(
+            tmp_path,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=backup_manifest,
+            pre_mutation_evidence=replace(before, tier=ArchiveTier.USER),
+            operation_id=_EMPTY_LIVENESS_DIGEST,
+            evidence_ref="proof:mutation-wrong-tier",
+        )
     operator_cwd = tmp_path / "operator-cwd"
     operator_cwd.mkdir()
     monkeypatch.chdir(tmp_path)
