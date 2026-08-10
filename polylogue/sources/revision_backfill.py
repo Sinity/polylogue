@@ -611,7 +611,14 @@ def _census_historical_revision_evidence(
     def commit_unit() -> None:
         nonlocal pending_commits
         pending_commits += 1
-        if batch_size is not None and pending_commits >= batch_size:
+        if batch_size is None:
+            # ``bind_raw_revision(manage_transaction=True)`` commits its
+            # revision write before the parser receipt is recorded below.
+            # Commit again at the unit boundary so that trailing receipt is
+            # durable before this archive wrapper closes.
+            archive.commit()
+            pending_commits = 0
+        elif pending_commits >= batch_size:
             archive.commit()
             pending_commits = 0
 

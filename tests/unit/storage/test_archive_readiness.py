@@ -270,13 +270,18 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
 def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> None:
     """Exact readiness consumes source parser debt from its real SQLite projection."""
     from polylogue.core.enums import Provider
+    from polylogue.sources.revision_backfill import census_historical_revision_evidence
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"exact-readiness"}}\n',
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"exact-readiness"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+                b'"content":[{"type":"input_text","text":"exact readiness"}]}}\n'
+            ),
             source_path="codex/exact-readiness.jsonl",
             acquired_at_ms=1,
         )
@@ -285,16 +290,16 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
     assert blocked["surfaces"]["raw_artifacts"]["ready"] is False
     assert "parser_census_incomplete" in blocked["surfaces"]["raw_artifacts"]["blockers"]
 
+    census = census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    assert census.scanned == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_authority_parser_census (
-                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
-            ) VALUES (?, ?, 'complete', '[]', '', 1)
-            """,
-            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
-        )
-        conn.commit()
+        receipt = conn.execute(
+            "SELECT status, logical_keys_json, detail FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    assert receipt is not None
+    assert receipt[0] == "complete"
+    assert receipt[1] == '["codex-session:exact-readiness"]'
+    assert str(receipt[2]).startswith("parser-observed:")
 
     ready = archive_readiness_status(tmp_path)
     assert ready["surfaces"]["raw_artifacts"]["ready"] is True

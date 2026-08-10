@@ -177,6 +177,7 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     parser_census_incomplete_count = int(payload.get("raw_authority_parser_census_incomplete_count") or 0)
     parser_census_incomplete_blob_bytes = int(payload.get("raw_authority_parser_census_incomplete_blob_bytes") or 0)
     parser_census = payload.get("raw_authority_parser_census")
+    parser_census_present = "raw_authority_parser_census" in payload
     parser_census_available = isinstance(parser_census, Mapping) and parser_census.get("available") is True
     raw_artifact_count = int(payload.get("raw_artifact_count") or 0)
     materialized_raw_artifact_count = int(payload.get("materialized_raw_artifact_count") or 0)
@@ -185,7 +186,7 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     if not available:
         state = CapabilityReadinessState.UNKNOWN
         summary = "unknown"
-    elif not parser_census_available:
+    elif parser_census_present and not parser_census_available:
         state = CapabilityReadinessState.UNKNOWN
         summary = "source parser census unavailable"
     elif parser_census_incomplete_count > 0:
