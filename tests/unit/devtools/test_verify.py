@@ -1673,6 +1673,27 @@ def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     assert metadata["basetemp_cleanup"] == str(cleaned)
 
 
+def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+
+    class UncappedPolicy:
+        workers = 12
+
+        def to_dict(self) -> dict[str, int]:
+            return {"workers": self.workers}
+
+    with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, UncappedPolicy())),
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, metadata = _run("pytest seed-testmon", ["pytest", "--testmon", "-n", "4"])
+
+    assert rc == 0
+    assert metadata["pytest_runtime_policy"] == {"workers": 12}
+    assert metadata["workload_receipt"]["spec"]["concurrency"] == 4
+
+
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_ROOT", "/stale/main")
     monkeypatch.setenv("POLYLOGUE_REPO_ROOT", "/stale/main")

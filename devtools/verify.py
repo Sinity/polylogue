@@ -1694,7 +1694,7 @@ def _run(
             last_resource_sample=last_resource_row,
             tmpfs_budget_mb=pytest_tmpfs_budget_mb,
             basetemp_cleanup=basetemp_cleanup,
-            concurrency=runtime_policy.workers if runtime_policy is not None else 1,
+            concurrency=_pytest_command_concurrency(cmd),
         )
         metadata["workload_receipt"] = workload_receipt
         if artifacts is not None:
@@ -2059,6 +2059,18 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     if maximum is not None:
         workers = min(workers, maximum)
     return ["-n", str(workers)]
+
+
+def _pytest_command_concurrency(cmd: Sequence[str]) -> int:
+    """Return the worker count actually requested by the final pytest command."""
+    for index in range(len(cmd) - 2, -1, -1):
+        if cmd[index] != "-n":
+            continue
+        try:
+            return max(1, int(cmd[index + 1]))
+        except ValueError:
+            return 1
+    return 1
 
 
 _BROAD_TESTMON_CHANGED_PATHS = {
