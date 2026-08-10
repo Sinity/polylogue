@@ -121,7 +121,7 @@ def test_polylogued_status_json_reports_daemon_components(
             ],
         )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     payload = loads(result.output)
     assert isinstance(payload, dict)
     live = cast(JSONDocument, payload["live"])
@@ -139,7 +139,7 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
     with patch("polylogue.daemon.status.default_sources", return_value=sources):
         result = CliRunner().invoke(main, ["status"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "Polylogue daemon" in result.output
     assert "Live sources: 1/1 available" in result.output
     assert f"exists: {tmp_path} (available)" in result.output
@@ -303,7 +303,7 @@ def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None
     ):
         result = CliRunner().invoke(main, ["status"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "Storage: archive_file_set (source, index); missing embeddings, user, ops" in result.output
 
 
@@ -4226,9 +4226,11 @@ def test_bulk_rebuild_routing_resumable_transaction_drives_pass_even_below_thres
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: True
-    )
+
+    async def resumable_transaction_in_flight() -> bool:
+        return True
+
+    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", resumable_transaction_in_flight)
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fake_run_pass)
 
     counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
@@ -4253,9 +4255,11 @@ def test_bulk_rebuild_routing_pass_failure_never_propagates(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: True
-    )
+
+    async def resumable_transaction_in_flight() -> bool:
+        return True
+
+    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", resumable_transaction_in_flight)
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fail_run_pass)
 
     counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
@@ -4271,18 +4275,32 @@ def test_daemon_bulk_rebuild_transaction_in_flight_delegates(
     from polylogue.daemon import cli as daemon_cli
 
     seen_roots: list[Path] = []
+    validated_receipts: list[tuple[Path, Path]] = []
+    receipt_path = tmp_path / "schema-inference-receipt.json"
 
     def fake_has_resumable(root: Path) -> bool:
         seen_roots.append(root)
         return True
 
+    def validate_receipt(root: Path, receipt: Path) -> dict[str, object]:
+        validated_receipts.append((root, receipt))
+        return {}
+
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.maintenance.schema_inference_gate.resolve_schema_inference_receipt_reference",
+        lambda _root: receipt_path,
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.schema_inference_gate.validate_schema_inference_receipt", validate_receipt
+    )
     monkeypatch.setattr(
         "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fake_has_resumable
     )
 
     assert asyncio.run(daemon_cli._daemon_bulk_rebuild_transaction_in_flight()) is True
     assert seen_roots == [tmp_path]
+    assert validated_receipts == [(tmp_path, receipt_path)]
 
 
 def test_periodic_raw_materialization_convergence_suppresses_trickle_while_bulk_rebuild_in_flight(

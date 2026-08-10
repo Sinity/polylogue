@@ -33,6 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitAction, ArchiveInitPlan
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
@@ -2178,9 +2179,7 @@ def test_rebuild_index_preflight_reports_durable_schema_currency(
 ) -> None:
     root = cli_workspace["archive_root"]
     with sqlite3.connect(root / "source.db") as conn:
-        conn.execute("DROP INDEX idx_raw_failure_disposition_receipts_disposed_at")
-        conn.execute("DROP TABLE raw_failure_disposition_receipts")
-        conn.execute("PRAGMA user_version = 28")
+        conn.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION - 1}")
 
     result = cli_runner.invoke(
         cli,
@@ -2194,8 +2193,8 @@ def test_rebuild_index_preflight_reports_durable_schema_currency(
     assert payload["status"] == "blocked"
     assert [tier["tier"] for tier in payload["tiers"]] == ["audit", "source", "user"]
     assert payload["blocking_tiers"][0]["tier"] == "source"
-    assert payload["blocking_tiers"][0]["actual_user_version"] == 28
-    assert payload["blocking_tiers"][0]["expected_user_version"] == 29
+    assert payload["blocking_tiers"][0]["actual_user_version"] == SOURCE_SCHEMA_VERSION - 1
+    assert payload["blocking_tiers"][0]["expected_user_version"] == SOURCE_SCHEMA_VERSION
     assert "migrate or deploy before rebuilding" in result.stderr
 
 

@@ -31,6 +31,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
@@ -72,18 +73,11 @@ def _init_nonempty_source(root: Path) -> None:
 
 
 def test_rebuild_rejects_source_schema_behind_runtime_before_candidate_creation(tmp_path: Path) -> None:
-    """A real v28 source tier must not reach the v29 rebuild package.
-
-    The test builds ordinary file-backed archive tiers, removes exactly v29's
-    additive objects, and supplies a valid rebuild receipt. The production
-    rebuild route used to accept this archive and return ``empty-source``.
-    """
+    """A source tier behind the runtime must not reach the rebuild package."""
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     with sqlite3.connect(root / "source.db") as conn:
-        conn.execute("DROP INDEX idx_raw_failure_disposition_receipts_disposed_at")
-        conn.execute("DROP TABLE raw_failure_disposition_receipts")
-        conn.execute("PRAGMA user_version = 28")
+        conn.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION - 1}")
     receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-receipt.json")
 
     with pytest.raises(RebuildSchemaCurrencyError) as exc_info:
@@ -97,8 +91,8 @@ def test_rebuild_rejects_source_schema_behind_runtime_before_candidate_creation(
         {
             "tier": "source",
             "path": str(root / "source.db"),
-            "actual_user_version": 28,
-            "expected_user_version": 29,
+            "actual_user_version": SOURCE_SCHEMA_VERSION - 1,
+            "expected_user_version": SOURCE_SCHEMA_VERSION,
             "status": "mismatch",
         }
     ]
