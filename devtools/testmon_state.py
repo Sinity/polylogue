@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import importlib.metadata
 import json
+import os
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -66,6 +68,8 @@ class TestmonIdentity:
     lab: bool
     git_tree: str | None = None
     terminal_authorization: str | None = None
+    dependency_environment: str = ""
+    pytest_harness: str = ""
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> TestmonIdentity:
@@ -81,6 +85,16 @@ class TestmonIdentity:
             raise ValueError("identity.worktree_fingerprint must be a non-empty string")
         if not isinstance(python, str) or not python:
             raise ValueError("identity.python must be a non-empty string")
+        dependency_environment = value.get("dependency_environment")
+        pytest_harness = value.get("pytest_harness")
+        if dependency_environment is None:
+            dependency_environment = ""
+        if pytest_harness is None:
+            pytest_harness = ""
+        if not isinstance(dependency_environment, str):
+            raise ValueError("identity.dependency_environment must be a string")
+        if not isinstance(pytest_harness, str):
+            raise ValueError("identity.pytest_harness must be a string")
         if not isinstance(value.get("skip_slow"), bool) or not isinstance(value.get("lab"), bool):
             raise ValueError("identity selection flags must be booleans")
         terminal_authorization = value.get("terminal_authorization")
@@ -96,6 +110,8 @@ class TestmonIdentity:
             value["lab"],
             git_tree,
             terminal_authorization,
+            dependency_environment,
+            pytest_harness,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -107,7 +123,89 @@ class TestmonIdentity:
             "lab": self.lab,
             "git_tree": self.git_tree,
             "terminal_authorization": self.terminal_authorization,
+            "dependency_environment": self.dependency_environment,
+            "pytest_harness": self.pytest_harness,
         }
+
+
+def _fingerprint_files(checkout_root: Path, relative_paths: Sequence[str]) -> str:
+    """Hash named checkout inputs, preserving absent inputs as typed state."""
+    digest = hashlib.sha256()
+    for relative_path in relative_paths:
+        digest.update(relative_path.encode())
+        digest.update(b"\0")
+        try:
+            contents = (checkout_root / relative_path).read_bytes()
+        except OSError:
+            digest.update(b"missing")
+        else:
+            digest.update(contents)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _installed_distributions() -> tuple[tuple[str, str], ...] | None:
+    """Return the active environment's normalized installed distributions."""
+    try:
+        distributions = []
+        for distribution in importlib.metadata.distributions():
+            name = distribution.metadata.get("Name")
+            version = distribution.version
+            if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
+                return None
+            distributions.append((name.casefold(), version))
+    except (OSError, TypeError, ValueError, importlib.metadata.PackageNotFoundError):
+        return None
+    return tuple(sorted(distributions))
+
+
+def testmon_runtime_identity(checkout_root: Path) -> tuple[str, str] | None:
+    """Identify the lock, installed dependencies, and pytest execution harness.
+
+    A testmon graph is reusable only under this exact dependency environment.
+    The application lock catches declared changes; installed distributions and
+    pytest-specific configuration catch a stale or differently provisioned
+    virtual environment even when ``sys.version`` is unchanged.
+    """
+    distributions = _installed_distributions()
+    if distributions is None:
+        return None
+    normalized_root = checkout_root.resolve()
+    dependency_payload = {
+        "lock_inputs": _fingerprint_files(normalized_root, ("uv.lock", "pyproject.toml")),
+        "distributions": distributions,
+    }
+    harness_payload = {
+        "configuration": _fingerprint_files(
+            normalized_root,
+            ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg", "tests/conftest.py"),
+        ),
+        "environment": {
+            key: os.environ.get(key) for key in ("PYTEST_ADDOPTS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_PLUGINS")
+        },
+        "pytest_distributions": tuple(
+            item for item in distributions if item[0] in {"pytest", "pytest-testmon", "pytest-xdist", "pluggy"}
+        ),
+    }
+    return (
+        hashlib.sha256(json.dumps(dependency_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        hashlib.sha256(json.dumps(harness_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+    )
+
+
+def _identity_matches_runtime(identity: TestmonIdentity, *, checkout_root: Path, protocol_version: int) -> bool:
+    """Keep pre-binding protocol receipts parseable but never reusable today."""
+    if protocol_version < 5:
+        return True
+    runtime_identity = testmon_runtime_identity(checkout_root)
+    return (
+        runtime_identity is not None
+        and (
+            identity.dependency_environment,
+            identity.pytest_harness,
+        )
+        == runtime_identity
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,8 +562,10 @@ def attempt_is_checkout_bound(
     if attempt.get("expected_digest") != expected_digest:
         return False
     try:
-        TestmonIdentity.from_mapping(identity)
+        typed_identity = TestmonIdentity.from_mapping(identity)
     except ValueError:
+        return False
+    if not _identity_matches_runtime(typed_identity, checkout_root=checkout_root, protocol_version=protocol_version):
         return False
     omitted = selection.get("selected_nodeids_omitted")
     selected_count = selection.get("selected_count")
@@ -673,6 +773,10 @@ def validate_stamp(
             and stamp.identity.terminal_authorization != TerminalAuthorization.NARROW_TERMINAL.value
         ):
             return None
+        if not _identity_matches_runtime(
+            stamp.identity, checkout_root=checkout_root, protocol_version=protocol_version
+        ):
+            return None
         if Path(stamp.binding.checkout_root).resolve() != checkout_root.resolve():
             return None
         if file_fingerprint(data_path) != stamp.testmon_data:
@@ -781,6 +885,8 @@ def stamp_from_attempt(
         typed_identity = TestmonIdentity.from_mapping(identity)
     except ValueError:
         return None
+    if not _identity_matches_runtime(typed_identity, checkout_root=checkout_root, protocol_version=protocol_version):
+        return None
     baseline = (
         BaselineStatus.GREEN
         if attempt.get("status") == "complete"
@@ -860,5 +966,6 @@ __all__ = [
     "refresh_stamp",
     "seed_marker_is_checkout_bound",
     "stamp_from_attempt",
+    "testmon_runtime_identity",
     "validate_stamp",
 ]

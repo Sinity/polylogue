@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+import devtools.testmon_state as testmon_state
 from devtools.testmon_state import (
     BaselineStatus,
     GraphStatus,
@@ -149,6 +150,31 @@ def test_incomplete_attempt_fails_closed(tmp_path: Path) -> None:
     assert completed is not None
     assert completed.baseline_status is BaselineStatus.GREEN
     assert completed.release_baseline_allowed
+
+
+def test_reusable_attempt_rejects_a_changed_dependency_or_pytest_harness(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Reusable graphs belong to the environment that captured them."""
+    data = tmp_path / "testmondata"
+    _write_graph(data)
+    attempt = _attempt(data)
+    identity = attempt["identity"]
+    assert isinstance(identity, dict)
+    identity["dependency_environment"] = "dependency-environment"
+    identity["pytest_harness"] = "pytest-harness"
+    attempt["protocol_version"] = 5
+    monkeypatch.setattr(
+        testmon_state,
+        "testmon_runtime_identity",
+        lambda _root: ("dependency-environment", "pytest-harness"),
+        raising=False,
+    )
+
+    assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=5) is not None
+
+    identity["dependency_environment"] = "different-environment"
+    assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=5) is None
 
 
 def test_green_skipped_slow_attempt_without_typed_terminal_authority_is_selection_only(tmp_path: Path) -> None:

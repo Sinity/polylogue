@@ -93,6 +93,13 @@ def _pytest_marker_expr(command: list[str]) -> str:
     return command[marker_indexes[-1] + 1]
 
 
+def _testmon_runtime_identity_fields(checkout_root: Path = ROOT) -> dict[str, str]:
+    runtime_identity = verify.testmon_runtime_identity(checkout_root)
+    assert runtime_identity is not None
+    dependency_environment, pytest_harness = runtime_identity
+    return {"dependency_environment": dependency_environment, "pytest_harness": pytest_harness}
+
+
 def _write_real_testmon_state(nodeids: tuple[str, ...] = ("tests/test_a.py::test_one",)) -> Path:
     TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(TESTMON_DATA) as conn:
@@ -113,7 +120,16 @@ def _write_real_testmon_state(nodeids: tuple[str, ...] = ("tests/test_a.py::test
         True,
         0,
         GraphInspection(GraphStatus.COMPLETE, len(nodeids), len(nodeids), (), 0, 0, None, ()),
-        _TestmonIdentity("current-head", "covered", "python", True, False, None, "narrow-terminal"),
+        _TestmonIdentity(
+            "current-head",
+            "covered",
+            "python",
+            True,
+            False,
+            None,
+            "narrow-terminal",
+            **_testmon_runtime_identity_fields(),
+        ),
         _TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())),
         file_fingerprint(TESTMON_DATA),
         "seed",
@@ -696,6 +712,7 @@ def test_resumed_seed_does_not_reuse_an_unexecuted_database_row(tmp_path: Path) 
                 "python": "python",
                 "skip_slow": False,
                 "lab": False,
+                **_testmon_runtime_identity_fields(Path.cwd()),
             },
             "resume": True,
             "expected_nodeids": expected,
@@ -869,6 +886,7 @@ def test_seed_receipt_classifies_every_node_terminal_outcome(
                 "python": "python",
                 "skip_slow": False,
                 "lab": False,
+                **_testmon_runtime_identity_fields(Path.cwd()),
             },
             "resume": False,
             "expected_nodeids": [],
@@ -1033,6 +1051,7 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
                 "python": "python",
                 "skip_slow": False,
                 "lab": False,
+                **_testmon_runtime_identity_fields(Path.cwd()),
             },
             "resume": False,
             "expected_nodeids": [],
@@ -1062,6 +1081,7 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
                 "skip_slow": True,
                 "lab": False,
                 "terminal_authorization": "narrow-terminal",
+                **_testmon_runtime_identity_fields(Path.cwd()),
             },
             "resume": False,
             "expected_nodeids": [],
@@ -1087,6 +1107,7 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
                 "python": "python",
                 "skip_slow": False,
                 "lab": False,
+                **_testmon_runtime_identity_fields(Path.cwd()),
             },
             "resume": False,
             "expected_nodeids": [],
@@ -1182,6 +1203,7 @@ def test_resumed_seed_persists_full_selection_before_stamp_publication(
             "skip_slow": False,
             "lab": False,
             "terminal_authorization": None,
+            **_testmon_runtime_identity_fields(Path.cwd()),
         },
         "resume": True,
         "expected_nodeids": expected,

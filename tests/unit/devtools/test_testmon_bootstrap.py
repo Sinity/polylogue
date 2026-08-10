@@ -577,12 +577,12 @@ def test_markerless_complete_bootstrap_passes_guard_and_verify_preflight(
         polylogue_import_path=package / "__init__.py",
         python_executable=lane / ".venv" / "bin" / "python",
     )
-    assert fingerprint.clean
+    assert not fingerprint.clean
     monkeypatch.setattr(verify, "ROOT", lane)
     monkeypatch.setattr(verify, "TESTMON_DATA", local_data)
     monkeypatch.setattr(verify, "TESTMON_SEED_STAMP", local_stamp)
     monkeypatch.setattr(verify, "TESTMON_SEED_ATTEMPT", local_attempt)
-    assert verify._testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is None
+    assert verify._testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is not None
     assert json.loads(local_attempt.read_text())["release_baseline_allowed"] is False
 
 

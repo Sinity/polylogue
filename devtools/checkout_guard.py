@@ -132,7 +132,7 @@ class CheckoutEnvironmentFingerprint:
 _TESTMON_STATE_DIR = Path(".cache/testmon")
 _TESTMON_STATE_MARKER = _TESTMON_STATE_DIR / "seed.json"
 _TESTMON_SEED_ATTEMPT = _TESTMON_STATE_DIR / "seed-attempt.json"
-_TESTMON_SEED_PROTOCOL_VERSION = 4
+_TESTMON_SEED_PROTOCOL_VERSION = 5
 _VERIFY_STATE_DIR = Path(".cache/verify")
 _VERIFY_STATE_MARKER = _VERIFY_STATE_DIR / "current-run.json"
 

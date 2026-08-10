@@ -68,6 +68,7 @@ from devtools.testmon_state import (
     inspect_testmon_database,
     refresh_stamp,
     stamp_from_attempt,
+    testmon_runtime_identity,
     validate_stamp,
 )
 from devtools.verify_runs import (
@@ -212,7 +213,7 @@ TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
 TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
-TESTMON_SEED_PROTOCOL_VERSION = 4
+TESTMON_SEED_PROTOCOL_VERSION = 5
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -2258,6 +2259,10 @@ def _testmon_seed_identity(
     lab: bool,
     terminal_authorization: str | None = None,
 ) -> dict[str, Any]:
+    runtime_identity = testmon_runtime_identity(ROOT)
+    if runtime_identity is None:
+        raise RuntimeError("could not identify the active dependency environment and pytest harness")
+    dependency_environment, pytest_harness = runtime_identity
     return {
         "git_head": git_head,
         "git_tree": git_tree,
@@ -2266,6 +2271,8 @@ def _testmon_seed_identity(
         "skip_slow": skip_slow,
         "lab": lab,
         "terminal_authorization": terminal_authorization,
+        "dependency_environment": dependency_environment,
+        "pytest_harness": pytest_harness,
     }
 
 
@@ -2378,7 +2385,16 @@ def _testmon_seed_resume_contract(identity: Mapping[str, Any]) -> dict[str, Any]
     """Return inputs that change which corpus a seed promises to cover."""
     return {
         key: identity.get(key)
-        for key in ("git_tree", "worktree_fingerprint", "python", "skip_slow", "lab", "terminal_authorization")
+        for key in (
+            "git_tree",
+            "worktree_fingerprint",
+            "python",
+            "skip_slow",
+            "lab",
+            "terminal_authorization",
+            "dependency_environment",
+            "pytest_harness",
+        )
     }
 
 
@@ -2896,13 +2912,22 @@ def main(argv: list[str] | None = None) -> int:
     resume_testmon_seed = False
     prepared_seed_attempt: dict[str, Any] | None = None
     if args.seed_testmon:
-        seed_identity = _testmon_seed_identity(
-            git_head=head,
-            git_tree=_git_committed_tree(),
-            skip_slow=bool(args.skip_slow),
-            lab=bool(args.lab),
-            terminal_authorization=args.terminal_authorization,
-        )
+        try:
+            seed_identity = _testmon_seed_identity(
+                git_head=head,
+                git_tree=_git_committed_tree(),
+                skip_slow=bool(args.skip_slow),
+                lab=bool(args.lab),
+                terminal_authorization=args.terminal_authorization,
+            )
+        except RuntimeError as exc:
+            sys.stderr.write(f"verify: {exc}\n")
+            verify_run.finish(
+                exit_code=125,
+                duration_s=time.monotonic() - t0,
+                diagnosis="testmon_environment_identity_unavailable",
+            )
+            return 125
         resume_testmon_seed = _testmon_seed_can_resume(seed_identity)
         prepared_seed_attempt = _prepare_testmon_seed_attempt(
             identity=seed_identity,
