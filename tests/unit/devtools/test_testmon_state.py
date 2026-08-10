@@ -177,6 +177,21 @@ def test_reusable_attempt_rejects_a_changed_dependency_or_pytest_harness(
     assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=5) is None
 
 
+def test_runtime_identity_includes_test_behavior_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(testmon_state, "_installed_distributions", lambda: (("pytest", "9"),))
+    monkeypatch.setenv("HYPOTHESIS_PROFILE", "ci")
+    monkeypatch.setenv("POLYLOGUE_CI", "1")
+    first = testmon_state.testmon_runtime_identity(tmp_path)
+
+    monkeypatch.setenv("HYPOTHESIS_PROFILE", "default")
+    second = testmon_state.testmon_runtime_identity(tmp_path)
+
+    assert first is not None
+    assert second is not None
+    assert first[0] == second[0]
+    assert first[1] != second[1]
+
+
 def test_green_skipped_slow_attempt_without_typed_terminal_authority_is_selection_only(tmp_path: Path) -> None:
     data = tmp_path / "testmondata"
     _write_graph(data)

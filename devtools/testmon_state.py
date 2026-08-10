@@ -184,7 +184,14 @@ def testmon_runtime_identity(checkout_root: Path) -> tuple[str, str] | None:
             ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg", "tests/conftest.py"),
         ),
         "environment": {
-            key: os.environ.get(key) for key in ("PYTEST_ADDOPTS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_PLUGINS")
+            key: os.environ.get(key)
+            for key in (
+                "PYTEST_ADDOPTS",
+                "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+                "PYTEST_PLUGINS",
+                "HYPOTHESIS_PROFILE",
+                "POLYLOGUE_CI",
+            )
         },
         "pytest_distributions": tuple(
             item for item in distributions if item[0] in {"pytest", "pytest-testmon", "pytest-xdist", "pluggy"}
