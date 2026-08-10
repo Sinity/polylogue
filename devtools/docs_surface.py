@@ -425,6 +425,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "Bead Readiness Audit",
+        "plans/bead-readiness-audit-implementation-cluster.md",
+        "Execution-readiness audit for the implementation-cluster Beads and their verification boundaries.",
+        "design",
+    ),
+    _entry(
         "Analysis Rigor",
         "design/analysis-rigor.md",
         "Rigor mechanisms for agent claims: population validity and comparative judgment.",
