@@ -90,6 +90,9 @@ class _CallGraph:
     def __init__(self, modules: Iterable[_ParsedModule]) -> None:
         self.nodes: dict[str, _FunctionNode] = {}
         self.edges: dict[str, frozenset[str]] = {}
+        self.add_modules(modules)
+
+    def add_modules(self, modules: Iterable[_ParsedModule]) -> None:
         parsed = tuple(modules)
         for module in parsed:
             self._index_functions(module)
@@ -108,25 +111,36 @@ class _CallGraph:
                         self.nodes[qualified_name] = _FunctionNode(qualified_name, member, module.name)
 
     def _index_edges(self, module: _ParsedModule) -> None:
-        module_imports = _imports_from_nodes(module.tree.body, module.name)
+        module_imports = _imports_from_nodes(
+            module.tree.body, module.name, is_package=module.path.name == "__init__.py"
+        )
         local_functions = {
             name: f"{module.name}.{name}"
             for name in (
                 node.name for node in module.tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             )
         }
+        local_classes = {
+            node.name: f"{module.name}.{node.name}" for node in module.tree.body if isinstance(node, ast.ClassDef)
+        }
         for function in tuple(node for node in self.nodes.values() if node.module == module.name):
-            bindings = {**module_imports, **local_functions, **_imports_from_nodes(function.node.body, module.name)}
+            bindings = {
+                **module_imports,
+                **local_functions,
+                **local_classes,
+                **_imports_from_nodes(function.node.body, module.name, is_package=module.path.name == "__init__.py"),
+            }
+            shadowed = _shadowed_names(function.node)
+            for name in shadowed:
+                bindings.pop(name, None)
+            qualified_parts = function.qualified_name.split(".")
+            if len(qualified_parts) >= 3:
+                bindings["self"] = ".".join(qualified_parts[:-1])
             targets: set[str] = set()
-            for call in ast.walk(function.node):
-                if not isinstance(call, ast.Call):
-                    continue
-                references = [call.func, *call.args, *(keyword.value for keyword in call.keywords)]
-                for reference in references:
-                    for expression in ast.walk(reference):
-                        target = _resolve_call_target(expression, bindings, self.nodes)
-                        if target is not None:
-                            targets.add(target)
+            for call in _calls_in_function(function.node):
+                target = _resolve_call_target(call.func, bindings, self.nodes)
+                if target is not None:
+                    targets.add(target)
             self.edges[function.qualified_name] = frozenset(targets)
 
     def reachable_from(self, root: str) -> frozenset[str]:
@@ -168,21 +182,24 @@ def _parse_modules(source_root: Path, roots: Iterable[Path]) -> tuple[_ParsedMod
     return tuple(modules)
 
 
-def _resolve_relative_module(module: str, imported: str | None, level: int) -> str:
+def _resolve_relative_module(module: str, imported: str | None, level: int, *, is_package: bool = False) -> str:
     if level == 0:
         return imported or ""
-    base = module.split(".")[:-level]
+    parts = module.split(".")
+    base = parts[: len(parts) - level + 1] if is_package else parts[:-level]
     return ".".join((*base, *(imported.split(".") if imported else ())))
 
 
-def _imports_from_nodes(nodes: Iterable[ast.AST], module: str) -> dict[str, str]:
+def _imports_from_nodes(nodes: Iterable[ast.AST], module: str, *, is_package: bool = False) -> dict[str, str]:
     bindings: dict[str, str] = {}
     for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                bindings[alias.asname or alias.name.split(".")[0]] = alias.name
+                bindings[alias.asname or alias.name.split(".")[0]] = (
+                    alias.name if alias.asname else alias.name.split(".")[0]
+                )
         elif isinstance(node, ast.ImportFrom):
-            imported_module = _resolve_relative_module(module, node.module, node.level)
+            imported_module = _resolve_relative_module(module, node.module, node.level, is_package=is_package)
             for alias in node.names:
                 if alias.name == "*":
                     continue
@@ -201,6 +218,12 @@ def _attribute_parts(node: ast.AST) -> tuple[str, ...] | None:
 
 
 def _resolve_call_target(function: ast.AST, bindings: dict[str, str], nodes: dict[str, _FunctionNode]) -> str | None:
+    if isinstance(function, ast.Attribute) and isinstance(function.value, ast.Call):
+        constructor = _resolve_call_target(function.value.func, bindings, nodes)
+        if constructor is not None:
+            candidate = f"{constructor}.{function.attr}"
+            if candidate in nodes:
+                return candidate
     parts = _attribute_parts(function)
     if parts is None or not parts:
         return None
@@ -210,10 +233,8 @@ def _resolve_call_target(function: ast.AST, bindings: dict[str, str], nodes: dic
     target = ".".join((bound, *parts[1:]))
     if target in nodes:
         return target
-    if bound in nodes and len(parts) == 2:
-        method = f"{bound}.{parts[1]}"
-        if method in nodes:
-            return method
+    if bound in nodes or any(name.startswith(f"{bound}.") for name in nodes):
+        return bound
     return None
 
 
@@ -223,11 +244,91 @@ def _test_function_name(spec: ProductionSeamSpec, source_root: Path) -> str:
     return f"{_module_name(absolute_path, source_root)}.{spec.test_function}"
 
 
+def _shadowed_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    names = {argument.arg for argument in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)}
+    if function.args.vararg is not None:
+        names.add(function.args.vararg.arg)
+    if function.args.kwarg is not None:
+        names.add(function.args.kwarg.arg)
+
+    class ShadowScanner(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is function:
+                self.generic_visit(node)
+            else:
+                names.add(node.name)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if node is function:
+                self.generic_visit(node)
+            else:
+                names.add(node.name)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            names.add(node.name)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+
+    scanner = ShadowScanner()
+    scanner.visit(function)
+    return names
+
+
+class _CallScanner(ast.NodeVisitor):
+    def __init__(self, root: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.root = root
+        self.calls: list[ast.Call] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if node is self.root:
+            self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if node is self.root:
+            self.generic_visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self.calls.append(node)
+        self.generic_visit(node)
+
+
+def _calls_in_function(function: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[ast.Call, ...]:
+    scanner = _CallScanner(function)
+    scanner.visit(function)
+    return tuple(scanner.calls)
+
+
 @lru_cache(maxsize=8)
+def _production_modules(source_root: Path, signature: tuple[tuple[str, int, int], ...]) -> tuple[_ParsedModule, ...]:
+    del signature
+    production_root = source_root / "polylogue"
+    return _parse_modules(source_root, (production_root if production_root.is_dir() else source_root,))
+
+
+def _source_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
+    return tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in _source_files((root,)))
+
+
 def _call_graph(source_root: Path, test_path: Path) -> _CallGraph:
     production_root = source_root / "polylogue"
-    graph_roots = (production_root if production_root.is_dir() else source_root, test_path)
-    return _CallGraph(_parse_modules(source_root, graph_roots))
+    production_modules = _production_modules(source_root, _source_signature(production_root))
+    production_graph = _CallGraph(production_modules)
+    graph = _CallGraph(())
+    graph.nodes = dict(production_graph.nodes)
+    graph.edges = dict(production_graph.edges)
+    graph.add_modules(_parse_modules(source_root, (test_path,)))
+    return graph
 
 
 def check_production_seam(spec: ProductionSeamSpec, *, source_root: Path) -> ProductionReachabilityReport:
