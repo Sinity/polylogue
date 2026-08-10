@@ -149,9 +149,12 @@ def _installed_distributions() -> tuple[tuple[str, str], ...] | None:
     try:
         distributions = []
         for distribution in importlib.metadata.distributions():
-            name = distribution.metadata.get("Name")
+            try:
+                name = distribution.metadata["Name"]
+            except KeyError:
+                return None
             version = distribution.version
-            if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
+            if not name or not version:
                 return None
             distributions.append((name.casefold(), version))
     except (OSError, TypeError, ValueError, importlib.metadata.PackageNotFoundError):

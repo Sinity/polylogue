@@ -29,6 +29,9 @@ from devtools.testmon_state import (
 from devtools.testmon_state import (
     TestmonSeedStamp as _TestmonSeedStamp,
 )
+from devtools.testmon_state import (
+    testmon_runtime_identity as _testmon_runtime_identity,
+)
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
@@ -94,7 +97,7 @@ def _pytest_marker_expr(command: list[str]) -> str:
 
 
 def _testmon_runtime_identity_fields(checkout_root: Path = ROOT) -> dict[str, str]:
-    runtime_identity = verify.testmon_runtime_identity(checkout_root)
+    runtime_identity = _testmon_runtime_identity(checkout_root)
     assert runtime_identity is not None
     dependency_environment, pytest_harness = runtime_identity
     return {"dependency_environment": dependency_environment, "pytest_harness": pytest_harness}
