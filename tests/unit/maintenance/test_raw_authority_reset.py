@@ -160,6 +160,57 @@ def test_census_reset_reproduces_poisoned_ledger_and_preserves_source_authority(
         apply_raw_authority_recovery(plan)
 
 
+def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A committed reset must leave restartable evidence before finalization."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+
+    from polylogue.maintenance import raw_authority_recovery
+
+    original_write = raw_authority_recovery._write_immutable
+
+    def fail_final_receipt(path: Path, payload: dict[str, object], *, digest_field: str) -> Path:
+        if digest_field == "receipt_sha256":
+            raise OSError("injected final receipt write failure")
+        return original_write(path, payload, digest_field=digest_field)
+
+    monkeypatch.setattr(raw_authority_recovery, "_write_immutable", fail_final_receipt)
+    with pytest.raises(RawAuthorityRecoveryError, match="injected final receipt write failure"):
+        apply_raw_authority_recovery(plan)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (0,)
+    receipt_path = Path(plan.receipt_path)
+    intent_path = receipt_path.with_name(f"{receipt_path.name}.intent.json")
+    assert intent_path.is_file()
+    assert not receipt_path.exists()
+
+    monkeypatch.setattr(raw_authority_recovery, "_write_immutable", original_write)
+    recovered = apply_raw_authority_recovery(plan)
+    assert recovered.status == "already_satisfied"
+    assert recovered.receipt_path == receipt_path
+    assert receipt_path.is_file()
+
+
+def test_recovery_receipt_path_must_be_owned_by_the_archive(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+
+    with pytest.raises(RawAuthorityRecoveryError, match="archive-owned durable location"):
+        inspect_raw_authority_recovery(
+            tmp_path,
+            RecoveryOperation.RESET_CENSUS,
+            receipt_path=tmp_path.parent / "arbitrary-recovery-receipt.json",
+        )
+
+
 def test_census_reset_dry_run_does_not_mutate_and_apply_requires_backup(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     _seed_ledger(tmp_path / "source.db")

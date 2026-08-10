@@ -826,7 +826,7 @@ polylogue ops maintenance raw-authority-recovery \
   --output-format json
 ```
 
-Apply refuses a running daemon, stale plan or active pointer, changed tier bytes or schema versions, malformed ledger, unexpected candidate set, mismatched backup authority, or changed unrelated rows. It acquires archive ownership and the rebuild lease before revalidation, runs one failure-atomic transaction, and writes a self-hashed immutable receipt. It does not invoke the broad index reset or reparse path.
+Apply is explicitly an offline operator-maintenance route, not a daemon-writer route. It refuses a running daemon, stale plan or active pointer, changed tier bytes or schema versions, malformed ledger, unexpected candidate set, mismatched backup authority, or changed unrelated rows. It acquires archive ownership and the rebuild lease before revalidation. Before the SQLite mutation it persists an fsynced immutable intent under `<archive-root>/.maintenance-state/raw-authority-recovery/`; a restart finalizes that intent into the self-hashed receipt if the mutation committed. Receipt destinations are restricted to that archive-owned durable location. It does not invoke the broad index reset or reparse path.
 
 ### Measuring Codex UUID-title coverage
 

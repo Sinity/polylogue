@@ -61,6 +61,7 @@ class RecoveryOperation(StrEnum):
 
 PLAN_FORMAT = "polylogue.raw-authority-recovery-plan.v1"
 RECEIPT_FORMAT = "polylogue.raw-authority-recovery-receipt.v1"
+INTENT_FORMAT = "polylogue.raw-authority-recovery-intent.v1"
 RECOVERY_DIRNAME = "raw-authority-recovery"
 _RESET_TABLES = (
     "raw_authority_blockers",
@@ -455,6 +456,26 @@ def _default_receipt_path(root: Path, operation_id: str) -> Path:
     return root / ".maintenance-state" / RECOVERY_DIRNAME / f"{operation_id}.receipt.json"
 
 
+def _resolve_receipt_path(root: Path, receipt_path: Path) -> Path:
+    """Keep recovery evidence inside the archive's durable maintenance state."""
+
+    receipts_root = (root / ".maintenance-state" / RECOVERY_DIRNAME).resolve(strict=False)
+    candidate = receipt_path.expanduser().resolve(strict=False)
+    try:
+        candidate.relative_to(receipts_root)
+    except ValueError as exc:
+        raise RawAuthorityRecoveryError(
+            f"recovery receipt path must be inside the archive-owned durable location {receipts_root}"
+        ) from exc
+    if candidate.suffix != ".json":
+        raise RawAuthorityRecoveryError("recovery receipt path must end in .json")
+    return candidate
+
+
+def _intent_path(receipt_path: Path) -> Path:
+    return receipt_path.with_name(f"{receipt_path.name}.intent.json")
+
+
 def _read_json(path: Path) -> dict[str, object]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -490,6 +511,11 @@ def _write_immutable(path: Path, payload: dict[str, object], *, digest_field: st
         with temporary.open("rb") as handle:
             os.fsync(handle.fileno())
         os.link(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except FileExistsError:
         existing = _read_json(path)
         if existing != stamped:
@@ -552,7 +578,7 @@ def _build_plan(
             sqlite3.connect(f"file:{source_db if target is ArchiveTier.SOURCE else index_db}?mode=ro", uri=True)
         ) as conn:
             backup_authority = _validate_backup(backup_manifest, tier=target, connection=conn)
-    receipt = receipt_path or _default_receipt_path(root, operation_id)
+    receipt = _resolve_receipt_path(root, receipt_path or _default_receipt_path(root, operation_id))
     payload: dict[str, object] = {
         "format": PLAN_FORMAT,
         "operation_id": operation_id,
@@ -570,7 +596,7 @@ def _build_plan(
         "candidate_keys": {key: list(value) for key, value in candidate_keys.items()},
         "protected_digest": protected,
         "backup_authority": backup_authority,
-        "receipt_path": str(receipt.resolve(strict=False)),
+        "receipt_path": str(receipt),
     }
     return RawAuthorityRecoveryPlan(
         operation_id=operation_id,
@@ -588,7 +614,7 @@ def _build_plan(
         candidate_keys=candidate_keys,
         protected_digest=protected,
         backup_authority=backup_authority,
-        receipt_path=str(receipt.resolve(strict=False)),
+        receipt_path=str(receipt),
         plan_digest=_digest(payload),
     )
 
@@ -641,15 +667,143 @@ def _revalidate_common(plan: RawAuthorityRecoveryPlan, root: Path, location: Arc
     _same(source_revision_snapshot(root), plan.source_snapshot, "source snapshot")
 
 
+def _recovery_intent(plan: RawAuthorityRecoveryPlan) -> dict[str, object]:
+    return {
+        "format": INTENT_FORMAT,
+        "operation_id": plan.operation_id,
+        "operation": plan.operation,
+        "archive_root": plan.archive_root,
+        "plan_digest": plan.plan_digest,
+        "receipt_path": plan.receipt_path,
+        "before_counts": plan.before_counts,
+        "candidate_keys": {key: list(value) for key, value in plan.candidate_keys.items()},
+        "protected_digest": plan.protected_digest,
+    }
+
+
+def _write_recovery_intent(plan: RawAuthorityRecoveryPlan) -> Path:
+    return _write_immutable(
+        _intent_path(Path(plan.receipt_path)),
+        _recovery_intent(plan),
+        digest_field="intent_sha256",
+    )
+
+
+def _intent_for_plan(plan: RawAuthorityRecoveryPlan) -> dict[str, object] | None:
+    path = _intent_path(Path(plan.receipt_path))
+    if not path.is_file():
+        return None
+    payload = _read_json(path)
+    expected = payload.get("intent_sha256")
+    if not isinstance(expected, str) or expected != _digest(
+        {key: value for key, value in payload.items() if key != "intent_sha256"}
+    ):
+        raise RawAuthorityRecoveryError("existing recovery intent has an invalid self-hash")
+    if payload != {**_recovery_intent(plan), "intent_sha256": expected}:
+        raise RawAuthorityRecoveryError("existing recovery intent belongs to another operation or plan")
+    return payload
+
+
+def _receipt_payload(
+    plan: RawAuthorityRecoveryPlan,
+    *,
+    before_counts: dict[str, int],
+    after_counts: dict[str, int],
+    postflight: dict[str, object],
+) -> dict[str, object]:
+    root = Path(plan.archive_root)
+    return {
+        "format": RECEIPT_FORMAT,
+        "operation_id": plan.operation_id,
+        "operation": plan.operation,
+        "archive_root": plan.archive_root,
+        "plan_digest": plan.plan_digest,
+        "code_sha": plan.code_sha,
+        "archive_identity": plan.archive_identity,
+        "schema_versions": plan.schema_versions,
+        "active_generation": plan.active_generation,
+        "source_snapshot_before": plan.source_snapshot,
+        "source_snapshot_after": source_revision_snapshot(root),
+        "source_fingerprint_before": plan.source_fingerprint,
+        "index_fingerprint_before": plan.index_fingerprint,
+        "source_fingerprint_after": _file_fingerprint(root / "source.db"),
+        "index_fingerprint_after": _file_fingerprint(ArchiveLocation.resolve(root).active_index_path),
+        "before_counts": before_counts,
+        "after_counts": after_counts,
+        "candidate_keys": {key: list(value) for key, value in plan.candidate_keys.items()},
+        "backup_authority": plan.backup_authority,
+        "protected_digest_before": plan.protected_digest,
+        "protected_digest_after": postflight["protected_digest"],
+        "postflight": postflight,
+    }
+
+
+def _write_recovery_receipt(
+    plan: RawAuthorityRecoveryPlan,
+    *,
+    before_counts: dict[str, int],
+    after_counts: dict[str, int],
+    postflight: dict[str, object],
+) -> Path:
+    return _write_immutable(
+        Path(plan.receipt_path),
+        _receipt_payload(plan, before_counts=before_counts, after_counts=after_counts, postflight=postflight),
+        digest_field="receipt_sha256",
+    )
+
+
+def _committed_postflight(plan: RawAuthorityRecoveryPlan) -> tuple[dict[str, int], dict[str, object]] | None:
+    """Return postflight evidence only when an intent's exact mutation committed."""
+
+    root = Path(plan.archive_root)
+    location = ArchiveLocation.resolve(root)
+    operation = RecoveryOperation(plan.operation)
+    excluded = _RESET_TABLES if operation is RecoveryOperation.RESET_CENSUS else _INDEX_TARGETS
+    database = root / "source.db" if operation is RecoveryOperation.RESET_CENSUS else location.active_index_path
+    with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        if operation is RecoveryOperation.RESET_CENSUS:
+            after_counts = _count_tables(conn, _RESET_TABLES)
+            expected_after = dict.fromkeys(_RESET_TABLES, 0)
+        else:
+            conn.execute("ATTACH DATABASE ? AS src", (str(root / "source.db"),))
+            after_counts = _count_tables(conn, _INDEX_TARGETS)
+            expected_after = {key: plan.before_counts[key] - len(plan.candidate_keys[key]) for key in _INDEX_TARGETS}
+        if after_counts != expected_after:
+            return None
+        postflight = _postflight(conn, protected_digest=plan.protected_digest, excluded=excluded)
+    return after_counts, postflight
+
+
 def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
     root = Path(plan.archive_root)
     _require_apply_preconditions(root)
+    _resolve_receipt_path(root, Path(plan.receipt_path))
     location = ArchiveLocation.resolve(root)
     operation = RecoveryOperation(plan.operation)
     source_db = root / "source.db"
     index_db = location.active_index_path
     excluded = _RESET_TABLES if operation is RecoveryOperation.RESET_CENSUS else _INDEX_TARGETS
     before_counts = dict(plan.before_counts)
+    if _intent_for_plan(plan) is not None:
+        committed = _committed_postflight(plan)
+        if committed is not None:
+            after_counts, postflight = committed
+            receipt_path = _write_recovery_receipt(
+                plan,
+                before_counts=before_counts,
+                after_counts=after_counts,
+                postflight=postflight,
+            )
+            return RawAuthorityRecoveryReport(
+                plan=plan,
+                applied=False,
+                status="already_satisfied",
+                receipt_path=receipt_path,
+                after_counts=after_counts,
+                postflight=postflight,
+            )
+    _write_recovery_intent(plan)
     if operation is RecoveryOperation.RESET_CENSUS:
         with closing(sqlite3.connect(source_db)) as conn:
             conn.row_factory = sqlite3.Row
@@ -710,31 +864,12 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
             except Exception:
                 conn.rollback()
                 raise
-    receipt_payload: dict[str, object] = {
-        "format": RECEIPT_FORMAT,
-        "operation_id": plan.operation_id,
-        "operation": plan.operation,
-        "archive_root": plan.archive_root,
-        "plan_digest": plan.plan_digest,
-        "code_sha": plan.code_sha,
-        "archive_identity": plan.archive_identity,
-        "schema_versions": plan.schema_versions,
-        "active_generation": plan.active_generation,
-        "source_snapshot_before": plan.source_snapshot,
-        "source_snapshot_after": source_revision_snapshot(root),
-        "source_fingerprint_before": plan.source_fingerprint,
-        "index_fingerprint_before": plan.index_fingerprint,
-        "source_fingerprint_after": _file_fingerprint(root / "source.db"),
-        "index_fingerprint_after": _file_fingerprint(ArchiveLocation.resolve(root).active_index_path),
-        "before_counts": before_counts,
-        "after_counts": after_counts,
-        "candidate_keys": {key: list(value) for key, value in plan.candidate_keys.items()},
-        "backup_authority": plan.backup_authority,
-        "protected_digest_before": plan.protected_digest,
-        "protected_digest_after": postflight["protected_digest"],
-        "postflight": postflight,
-    }
-    receipt_path = _write_immutable(Path(plan.receipt_path), receipt_payload, digest_field="receipt_sha256")
+    receipt_path = _write_recovery_receipt(
+        plan,
+        before_counts=before_counts,
+        after_counts=after_counts,
+        postflight=postflight,
+    )
     return RawAuthorityRecoveryReport(
         plan=plan,
         applied=True,
@@ -799,7 +934,7 @@ class _RecoveryActuator:
         return MutationReceipt(
             operation=self.operation,
             plan_hash=args.expected_plan_digest,
-            status="applied",
+            status="applied" if report.applied else "already_satisfied",
             target_refs=(
                 make_target_ref(
                     "source",
@@ -863,6 +998,7 @@ def apply_raw_authority_recovery(
 ) -> RawAuthorityRecoveryReport:
     """Apply one exact plan through the named actuator lifecycle."""
     selected = _load_plan(plan) if isinstance(plan, Path) else plan
+    _resolve_receipt_path(Path(selected.archive_root), Path(selected.receipt_path))
     if backup_manifest is not None and (
         selected.backup_authority is None
         or str(backup_manifest.resolve(strict=False)) != selected.backup_authority.get("manifest_path")
@@ -900,6 +1036,18 @@ def apply_raw_authority_recovery(
     executor = OperationExecutor()
     try:
         location = ArchiveLocation.resolve(root)
+        # A final receipt may be missing after a process crash or I/O failure,
+        # but the immutable intent was fsynced before the target transaction.
+        # Resume that exact intent under the same offline ownership boundary;
+        # a new PREPARE would correctly look stale after a committed mutation.
+        if _intent_for_plan(selected) is not None:
+            with OwnedArchiveLocation.acquire(
+                location, owner_id=f"raw-authority-recovery:{selected.operation_id}"
+            ) as owned:
+                current_location = ArchiveLocation.resolve(root)
+                assert_owns_archive_location(owned, current_location)
+                with RebuildLease(root):
+                    return _apply_plan(selected)
         prepared = executor.prepare(actuator, args)
         if prepared.context.get("recovery_plan_digest") != selected.plan_digest:
             raise PlanStaleError("recovery plan is stale before lease acquisition")

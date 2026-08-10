@@ -950,7 +950,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         kind=OperationKind.MAINTENANCE,
         description=(
             "Last-resort reset of poisoned raw-authority census bookkeeping. The route is dry-run first, "
-            "requires an exact source-tier backup-attested plan and stopped-daemon maintenance ownership, "
+            "requires an exact source-tier backup-attested plan and explicit offline operator-maintenance ownership "
+            "with the daemon stopped, "
             "and never touches parser census, accepted raws, or blobs."
         ),
         consumes=("raw_authority_census_ledger",),
@@ -974,7 +975,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Remove only active-index raw revision seed rows whose source raws are absent. The route binds "
             "the exact active generation, source snapshot, recoverable index backup, and stopped-daemon "
-            "maintenance ownership; it never performs a broad index reset."
+            "offline operator-maintenance ownership; it never performs a broad index reset."
         ),
         consumes=("raw_revision_heads", "raw_revision_applications", "raw_sessions"),
         produces=("raw_authority_index_seed_recovery_receipt",),

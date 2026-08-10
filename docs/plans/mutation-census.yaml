@@ -176,6 +176,7 @@ rows:
   - operation: mutate-reset-raw-authority-census
     spec_name: mutate-reset-raw-authority-census
     status: executor-routed
+    execution_owner: offline-operator-maintenance
     actuator: polylogue.maintenance.raw_authority_recovery.ResetRawAuthorityCensusActuator
     surfaces: [cli]
     adapters:
@@ -184,6 +185,7 @@ rows:
   - operation: mutate-prune-orphaned-index-revision-seeds
     spec_name: mutate-prune-orphaned-index-revision-seeds
     status: executor-routed
+    execution_owner: offline-operator-maintenance
     actuator: polylogue.maintenance.raw_authority_recovery.PruneOrphanedIndexRevisionSeedsActuator
     surfaces: [cli]
     adapters:

@@ -42,7 +42,7 @@ from polylogue.maintenance.raw_authority_recovery import (
     "--receipt-file",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
-    help="Immutable receipt destination bound into the dry-run plan.",
+    help="Immutable receipt destination under the archive-owned maintenance-state directory.",
 )
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 @click.pass_obj
