@@ -162,7 +162,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         started = time.monotonic()
         rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
-        run.finish(exit_code=rc, duration_s=time.monotonic() - started, diagnosis=metadata.get("diagnosis"))
+        run.finish(
+            exit_code=rc,
+            duration_s=time.monotonic() - started,
+            diagnosis=metadata.get("diagnosis"),
+            verification_scope="affected",
+            release_baseline_allowed=False,
+        )
     sys.stderr.write(
         f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
         f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} containment={PYTEST_CONTAINMENT_PATH} "

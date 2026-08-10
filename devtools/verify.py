@@ -1959,6 +1959,19 @@ def build_verify_steps(
         steps.append(
             ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
         )
+        steps.append(("lab policy acceptance-contracts", _devtools_cmd("lab policy acceptance-contracts")))
+        steps.append(
+            (
+                "lab policy acceptance-contract-reconcile",
+                _devtools_cmd("lab policy acceptance-contract-reconcile"),
+            )
+        )
+        steps.append(
+            (
+                "lab policy acceptance-contract-apply",
+                _devtools_cmd("lab policy acceptance-contract-apply"),
+            )
+        )
         # backlog-hygiene and bead-graph are corpus-wide backlog-debt scans
         # (findings scale with the total count of open Beads issues, not
         # with this change's diff) -- they stay --lab-only/scheduled rather

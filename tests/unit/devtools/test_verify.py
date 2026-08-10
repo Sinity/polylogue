@@ -596,6 +596,21 @@ def test_two_interrupted_resumes_flatten_all_carried_outcomes(tmp_path: Path) ->
         monkeypatch.undo()
 
 
+def test_focused_run_can_record_typed_affected_scope(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+
+    payload = run.finish(
+        exit_code=0,
+        duration_s=0.1,
+        verification_scope="affected",
+        release_baseline_allowed=False,
+    )
+
+    assert payload["verification_scope"] == "affected"
+    assert payload["release_baseline_allowed"] is False
+    assert json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text()) == payload
+
+
 def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     TESTMON_DATA.parent.mkdir(parents=True)
