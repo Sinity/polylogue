@@ -968,10 +968,15 @@ def test_index_recovery_actuator_receipt_retains_authorized_plan_identity(
 
 def test_index_prune_requires_index_backup(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
-    _seed_index_seeds(tmp_path)
+    active_index = _seed_index_seeds(tmp_path)
+    archive_index = tmp_path / "index.db"
+    before_active = active_index.read_bytes()
+    before_archive = archive_index.read_bytes()
     plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS)
     with pytest.raises(RawAuthorityRecoveryError, match="backup authority"):
         apply_raw_authority_recovery(plan)
+    assert active_index.read_bytes() == before_active
+    assert archive_index.read_bytes() == before_archive
 
 
 def test_storage_compatibility_helpers_refuse_direct_mutation(tmp_path: Path) -> None:
