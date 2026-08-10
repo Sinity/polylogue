@@ -2182,8 +2182,10 @@ def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[
 
     assert rc == 1
     assert calls == [label for label, _command in build_verify_steps(quick=True, lab=False, skip_slow=False)]
-    payload = capsys.readouterr().out
-    assert '"exit_code": 1' in payload
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["exit_code"] == 1
+    assert payload["verification_scope"] == "non-test"
+    assert payload["release_baseline_allowed"] is False
 
 
 def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]) -> None:
