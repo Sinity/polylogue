@@ -560,6 +560,9 @@ class CanaryDifferenceReview:
     def __post_init__(self) -> None:
         kind = self.authority_kind
         authority_id = self.authority_id
+        has_explicit_authority = kind is not None or authority_id is not None
+        if (kind is None) != (authority_id is None):
+            raise UnclassifiedCanaryDiffError("canary review authority must provide both kind and id")
         if kind is None or authority_id is None:
             prefix, separator, value = self.reference.partition(":")
             if separator and prefix in {item.value for item in CanaryAuthorityKind}:
@@ -575,6 +578,9 @@ class CanaryDifferenceReview:
                 authority_id = self.reference
         if not str(authority_id).strip() or any(character.isspace() for character in str(authority_id)):
             raise UnclassifiedCanaryDiffError("canary review authority must have a structured non-empty id")
+        canonical_reference = f"{kind.value}:{authority_id}"
+        if has_explicit_authority and self.reference != canonical_reference:
+            raise UnclassifiedCanaryDiffError("canary review reference disagrees with its structured authority")
         if self.classification is DifferenceClassification.EXPECTED and kind not in {
             CanaryAuthorityKind.BEAD,
             CanaryAuthorityKind.DELTA,
@@ -584,7 +590,7 @@ class CanaryDifferenceReview:
             raise UnclassifiedCanaryDiffError("unexpected canary differences require a structured successor id")
         object.__setattr__(self, "authority_kind", kind)
         object.__setattr__(self, "authority_id", str(authority_id))
-        object.__setattr__(self, "reference", f"{kind.value}:{authority_id}")
+        object.__setattr__(self, "reference", canonical_reference)
 
     @classmethod
     def for_difference(

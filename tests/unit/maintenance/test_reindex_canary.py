@@ -38,6 +38,7 @@ from polylogue.maintenance.reindex_canary import (
     UnclassifiedCanaryDiffError,
     compare_reindex_generations,
     load_canary_report,
+    load_canary_review_manifest,
     run_reindex_canary,
     select_canary_sessions,
     write_canary_report,
@@ -1417,6 +1418,34 @@ def test_review_authority_kind_is_bound_to_classification() -> None:
             reference="bead:polylogue-0x7nh",
             rationale="wrong authority kind",
         )
+
+
+def test_review_manifest_rejects_reference_that_disagrees_with_authority(tmp_path: Path) -> None:
+    """The CLI manifest parser must not silently rewrite an audit authority."""
+
+    manifest = tmp_path / "reviews.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        "table": "blocks",
+                        "operation": "changed",
+                        "identity": {"block_id": "block"},
+                        "changed_columns": ["text"],
+                        "classification": "expected",
+                        "reference": "bead:claimed-authority",
+                        "authority": {"kind": "bead", "id": "different-authority"},
+                        "rationale": "contradictory manifest audit fields",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="reference disagrees"):
+        load_canary_review_manifest(manifest)
 
 
 def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) -> None:
