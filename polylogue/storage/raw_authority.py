@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from polylogue.archive.revision_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, canonical_authority_logical_key
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
@@ -25,8 +26,6 @@ from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
-
-RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v4"
 
 #: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
 #: whose classification semantics are known to have been superseded by a
@@ -75,6 +74,34 @@ RAW_AUTHORITY_CENSUS_PLAN_RETENTION = 8
 #: the observed ~97 censuses/day.
 RAW_AUTHORITY_CENSUS_HEADER_RETENTION = 256
 logger = get_logger(__name__)
+
+
+def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | None:
+    """Validate and normalize the durable logical-key receipt payload.
+
+    The parser census writer records a sorted, duplicate-free JSON list.  A
+    few legacy membership rows carry provider prefixes, so normalize those to
+    public origins here while preserving the receipt's ordering invariant.
+    ``None`` means the receipt cannot establish parser authority.
+    """
+    try:
+        decoded = json.loads(str(logical_keys_json))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(decoded, list) or not all(isinstance(value, str) for value in decoded):
+        return None
+    raw_keys = tuple(decoded)
+    if raw_keys != tuple(sorted(set(raw_keys))):
+        return None
+    normalized: list[str] = []
+    for logical_key in raw_keys:
+        try:
+            normalized.append(canonical_authority_logical_key(logical_key))
+        except ValueError:
+            return None
+    normalized_keys = tuple(sorted(set(normalized)))
+    return normalized_keys if len(normalized_keys) == len(raw_keys) else None
+
 
 _RESET_LEDGER_TABLES_CHILD_FIRST = (
     "raw_authority_blockers",
@@ -753,6 +780,14 @@ def raw_replay_plan_last_attempts(archive_root: Path) -> dict[str, int]:
         }
 
 
+RAW_REPLAY_RESOURCE_ENVELOPE_REASON_PREFIX = "resource-envelope:"
+
+
+def raw_replay_resource_envelope_reason(max_payload_bytes: int) -> str:
+    """Return the canonical reason for a plan blocked by one exact envelope."""
+    return f"{RAW_REPLAY_RESOURCE_ENVELOPE_REASON_PREFIX}{max_payload_bytes}"
+
+
 def raw_replay_plan_deferred_for_envelope(archive_root: Path, *, max_payload_bytes: int) -> set[str]:
     """Return unchanged plans already deferred for this exact resource envelope.
 
@@ -763,7 +798,7 @@ def raw_replay_plan_deferred_for_envelope(archive_root: Path, *, max_payload_byt
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return set()
-    reason = f"resource-envelope:{max_payload_bytes}"
+    reason = raw_replay_resource_envelope_reason(max_payload_bytes)
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_census_plans'"
@@ -2344,6 +2379,7 @@ __all__ = [
     "raw_authority_detail_query_handle",
     "raw_replay_plan_last_attempts",
     "raw_replay_plan_deferred_for_envelope",
+    "parser_census_logical_keys",
     "recover_interrupted_raw_authority_censuses",
     "read_raw_authority_census",
     "read_raw_authority_detail",

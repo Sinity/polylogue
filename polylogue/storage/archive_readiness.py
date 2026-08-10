@@ -10,19 +10,19 @@ from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from polylogue.archive.raw_materialization import (
     parsed_non_session_artifact_reason,
     source_path_native_id_candidates,
 )
-from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL, durable_authority_logical_keys
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
-from polylogue.storage.raw_authority import raw_authority_detail_query_handle
+from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_detail_query_handle
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -217,6 +217,9 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     # required the classifier cannot be claimed when the classifier failed.
     if readiness.get("debt_classifier_error"):
         return False
+    parser_census = readiness.get("raw_authority_parser_census")
+    if not isinstance(parser_census, Mapping) or parser_census.get("available") is not True:
+        return False
     frontier = readiness.get("raw_authority_frontier")
     if not isinstance(frontier, Mapping) or frontier.get("lifecycle_status") != "completed":
         return False
@@ -234,6 +237,7 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
         "raw_authority_frontier_blocking_count",
         "raw_authority_blocker_count",
         "raw_authority_pending_census_count",
+        "raw_authority_parser_census_incomplete_count",
     )
     return all(_read_int(readiness, key) == 0 for key in blocking_keys)
 
@@ -376,6 +380,110 @@ def raw_materialization_readiness_snapshot(
             authority_frontier_blocking_count = 0
             authority_frontier_remediation_refs: list[dict[str, object]] = []
             authority_pending_census_count = 0
+            parser_census_available = False
+            parser_census_complete_count = 0
+            parser_census_incomplete_count = 0
+            parser_census_incomplete_blob_bytes = 0
+            parser_census_missing_receipt_count = 0
+            parser_census_non_complete_receipt_count = 0
+            parser_census_origin_summary: list[dict[str, object]] = []
+            if _table_columns(conn, "source", "raw_authority_parser_census"):
+                from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+
+                parser_census_available = True
+                blob_size_expression = "COALESCE(r.blob_size, 0)" if "blob_size" in raw_columns else "0"
+                parser_census_rows = conn.execute(
+                    f"""
+                    SELECT r.raw_id, r.origin, {blob_size_expression}, p.raw_id, p.parser_fingerprint,
+                           p.status, p.logical_keys_json, r.logical_source_key, r.revision_kind,
+                           m.logical_source_key,
+                           EXISTS(SELECT 1 FROM source.raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
+                           EXISTS(
+                               SELECT 1 FROM source.raw_membership_census AS mc
+                               WHERE mc.raw_id = r.raw_id
+                                 AND mc.parser_fingerprint = ?
+                                 AND mc.status = 'non_session'
+                           )
+                    FROM source.raw_sessions AS r
+                    LEFT JOIN source.raw_authority_parser_census AS p ON p.raw_id = r.raw_id
+                    LEFT JOIN source.raw_session_memberships AS m ON m.raw_id = r.raw_id
+                    ORDER BY r.raw_id, m.logical_source_key
+                    """,
+                    (RAW_AUTHORITY_PARSER_FINGERPRINT,),
+                )
+                incomplete_origins: Counter[str] = Counter()
+                incomplete_origin_bytes: Counter[str] = Counter()
+                current_raw_id: str | None = None
+                current_row: tuple[object, ...] | None = None
+                membership_keys: list[object] = []
+
+                def assess_current_row() -> None:
+                    nonlocal parser_census_complete_count, parser_census_incomplete_count
+                    nonlocal parser_census_incomplete_blob_bytes, parser_census_missing_receipt_count
+                    nonlocal parser_census_non_complete_receipt_count
+                    assert current_row is not None
+                    (
+                        _raw_id,
+                        origin,
+                        blob_size,
+                        receipt_raw_id,
+                        fingerprint,
+                        status,
+                        logical_keys_json,
+                        typed_key,
+                        revision_kind,
+                        _membership_key,
+                        typed_non_session,
+                        parser_confirmed_non_session,
+                    ) = current_row
+                    recorded_keys = parser_census_logical_keys(logical_keys_json)
+                    durable_keys = durable_authority_logical_keys(
+                        raw_logical_key=typed_key,
+                        revision_kind=revision_kind,
+                        membership_logical_keys=membership_keys,
+                    )
+                    blob_size_value = cast(int | None, blob_size)
+                    complete = (
+                        receipt_raw_id is not None
+                        and str(fingerprint) == RAW_AUTHORITY_PARSER_FINGERPRINT
+                        and str(status) == "complete"
+                        and recorded_keys is not None
+                        and durable_keys is not None
+                        and recorded_keys == durable_keys
+                        and (bool(durable_keys) or bool(typed_non_session) or bool(parser_confirmed_non_session))
+                    )
+                    if complete:
+                        parser_census_complete_count += 1
+                    else:
+                        parser_census_incomplete_count += 1
+                        parser_census_incomplete_blob_bytes += int(blob_size_value or 0)
+                        origin_key = str(origin)
+                        incomplete_origins[origin_key] += 1
+                        incomplete_origin_bytes[origin_key] += int(blob_size_value or 0)
+                        if receipt_raw_id is None:
+                            parser_census_missing_receipt_count += 1
+                        else:
+                            parser_census_non_complete_receipt_count += 1
+
+                for parser_row in parser_census_rows:
+                    raw_id = str(parser_row[0])
+                    if current_raw_id is not None and raw_id != current_raw_id:
+                        assess_current_row()
+                        membership_keys = []
+                    if raw_id != current_raw_id:
+                        current_raw_id = raw_id
+                        current_row = tuple(parser_row)
+                    if parser_row[9] is not None:
+                        membership_keys.append(parser_row[9])
+                if current_row is not None:
+                    assess_current_row()
+                parser_census_origin_summary = [
+                    {"origin": origin, "count": count, "blob_bytes": incomplete_origin_bytes[origin]}
+                    for origin, count in sorted(
+                        incomplete_origins.items(),
+                        key=lambda item: (-incomplete_origin_bytes[item[0]], -item[1], item[0]),
+                    )[:16]
+                ]
             if _table_columns(conn, "source", "raw_authority_censuses"):
                 authority_pending_census_count = int(
                     conn.execute(
@@ -567,9 +675,21 @@ def raw_materialization_readiness_snapshot(
         "raw_authority_frontier_remediation_refs": authority_frontier_remediation_refs,
         "raw_authority_blocker_count": authority_blocker_count,
         "raw_authority_pending_census_count": authority_pending_census_count,
+        "raw_authority_parser_census": {
+            "available": parser_census_available,
+            "complete_count": parser_census_complete_count,
+            "incomplete_count": parser_census_incomplete_count,
+            "incomplete_blob_bytes": parser_census_incomplete_blob_bytes,
+            "missing_receipt_count": parser_census_missing_receipt_count,
+            "non_complete_receipt_count": parser_census_non_complete_receipt_count,
+            "incomplete_origin_summary": parser_census_origin_summary,
+        },
+        "raw_authority_parser_census_incomplete_count": parser_census_incomplete_count,
+        "raw_authority_parser_census_incomplete_blob_bytes": parser_census_incomplete_blob_bytes,
         "raw_authority_ledger_counts": {
             "unresolved_blockers": authority_blocker_count,
             "pending_censuses": authority_pending_census_count,
+            "parser_census_incomplete": parser_census_incomplete_count,
         },
     }
 
@@ -1137,11 +1257,20 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
         expected = count(expected_key, count(actual_key))
         return [blocker] if count(actual_key) != expected else []
 
+    parser_census = counts.get("raw_authority_parser_census")
+    parser_census_available = isinstance(parser_census, Mapping) and parser_census.get("available") is True
+    parser_census_incomplete_count = count("raw_authority_parser_census_incomplete_count")
     raw_blockers: list[str] = []
     raw_ready: bool | None
     if not source_check_available:
         raw_ready = None
         raw_blockers.append("source_tier_unavailable")
+    elif not parser_census_available:
+        raw_ready = False
+        raw_blockers.append("parser_census_unavailable")
+    elif parser_census_incomplete_count:
+        raw_ready = False
+        raw_blockers.append("parser_census_incomplete")
     elif count("missing_raw_session_count"):
         raw_ready = False
         raw_blockers.append("missing_source_raw_sessions")
@@ -1210,6 +1339,8 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
                 "missing_raw_session_samples": list(counts.get("missing_raw_session_samples") or []),
                 "lost_source_evidence_count": count("lost_source_evidence_count"),
                 "lost_source_evidence_samples": list(counts.get("lost_source_evidence_samples") or []),
+                "parser_census": dict(parser_census) if isinstance(parser_census, Mapping) else None,
+                "parser_census_incomplete_count": parser_census_incomplete_count,
             },
         ),
         "search": surface(
@@ -1327,6 +1458,16 @@ def archive_readiness_status(root: Path) -> dict[str, Any]:
                             or _safe_list(counts.get("lost_source_evidence_samples")),
                         }
                     )
+                parser_projection = raw_materialization_readiness_snapshot(root, classify_gaps=False)
+                parser_census = parser_projection.get("raw_authority_parser_census")
+                counts.update(
+                    {
+                        "raw_authority_parser_census": parser_census,
+                        "raw_authority_parser_census_incomplete_count": _safe_int(
+                            parser_projection.get("raw_authority_parser_census_incomplete_count")
+                        ),
+                    }
+                )
             finally:
                 if source_conn is not None:
                     source_conn.close()

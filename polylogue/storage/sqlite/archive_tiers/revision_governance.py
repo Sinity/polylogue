@@ -97,6 +97,7 @@ question makes it impossible to pass the wrong answer.)
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -113,13 +114,16 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
+    RAW_AUTHORITY_PARSER_FINGERPRINT,
     RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
     append_source_revision,
+    canonical_authority_logical_key,
     classify_historical_full_revision_streams,
+    durable_authority_logical_keys,
 )
 from polylogue.archive.revision_replay import (
     ApplicationDecision,
@@ -643,7 +647,7 @@ def admit_raw_artifact_payload(
         blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
     store._blob_publisher.flush()
     origin = origin_from_provider(provider)
-    return admit_raw_observation(
+    result = admit_raw_observation(
         store._ensure_source_conn(),
         origin=origin,
         capture_mode=provider,
@@ -658,6 +662,9 @@ def admit_raw_artifact_payload(
         blob_publication_receipt_id=blob_publication_receipt_id,
         manage_transaction=True,
     )
+    with store._ensure_source_conn():
+        record_current_parser_source_census(store._ensure_source_conn(), result.raw_id)
+    return result
 
 
 def admit_raw_artifact_blob_ref(
@@ -676,7 +683,7 @@ def admit_raw_artifact_blob_ref(
     """Admit a prepublished non-session artifact without a pending envelope."""
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
-    return admit_raw_artifact_blob_observation(
+    result = admit_raw_artifact_blob_observation(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
         capture_mode=provider,
@@ -689,6 +696,9 @@ def admit_raw_artifact_blob_ref(
         classification=classification,
         blob_publication_receipt_id=blob_publication_receipt_id,
     )
+    with store._ensure_source_conn():
+        record_current_parser_source_census(store._ensure_source_conn(), result.raw_id)
+    return result
 
 
 def write_parsed_for_retained_raw(
@@ -1818,6 +1828,109 @@ def replace_raw_membership_census(
             """,
             (raw_id, parser_fingerprint, status, len(sessions or []), censused_at_ms, detail),
         )
+        record_current_parser_source_census(conn, raw_id, parser_sessions=sessions)
+
+
+def record_current_parser_source_census(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    *,
+    parser_sessions: Sequence[ParsedSession] | None = None,
+) -> None:
+    """Persist one current-parser receipt from parsed identities.
+
+    Ordinary admissions have a typed raw logical key; grouped imports instead
+    establish their keys through ``raw_session_memberships``. The parsed
+    identities must match that durable authority before this writer records a
+    complete receipt for replay promotion.
+    """
+    raw = conn.execute(
+        """
+        SELECT logical_source_key, revision_kind,
+               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0)
+        FROM raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    if raw is None:
+        raise RuntimeError(f"parser census raw is missing: {raw_id}")
+    membership_census = conn.execute(
+        """
+        SELECT status, detail FROM raw_membership_census
+        WHERE raw_id = ? AND parser_fingerprint = ?
+        """,
+        (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+    ).fetchone()
+    membership_keys = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
+            (raw_id,),
+        )
+    ]
+    durable_keys = durable_authority_logical_keys(
+        raw_logical_key=raw[0],
+        revision_kind=raw[1],
+        membership_logical_keys=membership_keys,
+    )
+    typed_non_session = bool(raw[2])
+    observed_keys = (
+        tuple(
+            sorted(
+                {
+                    canonical_authority_logical_key(f"{session.source_name.value}:{session.provider_session_id}")
+                    for session in parser_sessions
+                }
+            )
+        )
+        if parser_sessions is not None
+        else ()
+        if typed_non_session
+        else None
+    )
+    complete = (
+        durable_keys is not None
+        and observed_keys is not None
+        and observed_keys == durable_keys
+        and (
+            bool(observed_keys)
+            or typed_non_session
+            or (membership_census is not None and str(membership_census[0]) == "non_session")
+        )
+    )
+    detail = (
+        "parser-observed: typed non-session admission established no parser identity"
+        if typed_non_session and complete
+        else "parser-observed: membership census established durable authority identity"
+        if membership_census is not None and complete
+        else "parser-observed: parser identity matches durable authority bindings"
+        if complete
+        else (
+            str(membership_census[1])
+            if membership_census is not None
+            else "current parser produced no durable authority identity"
+        )
+    )
+    conn.execute(
+        """
+        INSERT INTO raw_authority_parser_census (
+            raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+        ) VALUES (?, ?, ?, ?, ?, 0)
+        ON CONFLICT(raw_id) DO UPDATE SET
+            parser_fingerprint = excluded.parser_fingerprint,
+            status = excluded.status,
+            logical_keys_json = excluded.logical_keys_json,
+            detail = excluded.detail,
+            censused_at_ms = excluded.censused_at_ms
+        """,
+        (
+            raw_id,
+            RAW_AUTHORITY_PARSER_FINGERPRINT,
+            "complete" if complete else "failed",
+            json.dumps(list(observed_keys or ())),
+            detail,
+        ),
+    )
 
 
 def convertible_full_revision_raw_ids(store: RawRevisionGovernanceHost, logical_source_key: str) -> tuple[str, ...]:
@@ -3445,6 +3558,8 @@ def write_raw_and_parsed_result(
         preacquired_attachment_blobs=preacquired_attachments,
         finalize_raw_parse=finalize_raw_parse,
     )
+    with source_conn:
+        record_current_parser_source_census(source_conn, raw_id, parser_sessions=[session])
     add_timing("index_parsed_write", t0)
     return result
 
@@ -3566,6 +3681,8 @@ def admit_raw_and_parsed_result(
         preacquired_attachment_blobs=preacquired_attachments,
         finalize_raw_parse=finalize_raw_parse,
     )
+    with source_conn:
+        record_current_parser_source_census(source_conn, resolved_raw_id, parser_sessions=[session])
     add_timing("index_parsed_write", t0)
     return result
 

@@ -3,13 +3,14 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.storage.archive_readiness import (
     CLAUDE_WORKFLOW_STAGE_NAME,
+    archive_readiness_status,
     claude_workflow_materialization_status,
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
@@ -40,8 +41,268 @@ def test_raw_materialization_readiness_requires_completed_frontier_census() -> N
     )
     assert (
         raw_materialization_ready({**counters_green, "raw_authority_frontier": {"lifecycle_status": "completed"}})
+        is False
+    )
+    assert (
+        raw_materialization_ready(
+            {
+                **counters_green,
+                "raw_authority_frontier": {"lifecycle_status": "completed"},
+                "raw_authority_parser_census": {"available": "yes"},
+            }
+        )
+        is False
+    )
+    assert (
+        raw_materialization_ready(
+            {
+                **counters_green,
+                "raw_authority_frontier": {"lifecycle_status": "completed"},
+                "raw_authority_parser_census": {"available": True},
+            }
+        )
         is True
     )
+
+
+def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path: Path) -> None:
+    """Readiness shares the promotion gate's parser-receipt validation."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"malformed-census"}}\n',
+            source_path="codex/malformed-census.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_authority_parser_census (
+                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+            ) VALUES (?, ?, 'complete', '["codex-session:duplicate", "codex-session:duplicate"]', '', 1)
+            """,
+            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        )
+        conn.commit()
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+    parser_census = cast(Mapping[str, object], snapshot["raw_authority_parser_census"])
+
+    assert parser_census["complete_count"] == 0
+    assert parser_census["incomplete_count"] == 1
+    assert parser_census["non_complete_receipt_count"] == 1
+
+
+def test_raw_materialization_snapshot_rejects_receipt_key_drift_from_durable_binding(tmp_path: Path) -> None:
+    """Readiness and frozen promotion reject the same mismatched receipt evidence."""
+    from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"durable-binding"}}\n',
+            source_path="codex/durable-binding.jsonl",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope("codex:durable-binding", RawRevisionKind.FULL, "v1", 0),
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_authority_parser_census (
+                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+            ) VALUES (?, ?, 'complete', '["codex-session:wrong-binding"]', '', 1)
+            """,
+            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        )
+        conn.commit()
+
+    parser_census = cast(
+        Mapping[str, object], raw_materialization_readiness_snapshot(tmp_path)["raw_authority_parser_census"]
+    )
+
+    assert parser_census["complete_count"] == 0
+    assert parser_census["incomplete_count"] == 1
+
+
+def test_raw_materialization_snapshot_audits_validation_skipped_raws(tmp_path: Path) -> None:
+    """Skipped schema validation does not exempt a raw from parser authority."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"skipped-census"}}\n',
+            source_path="codex/skipped-census.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET validation_status = 'skipped' WHERE raw_id = ?", (raw_id,))
+        conn.execute("DELETE FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+
+    parser_census = cast(
+        Mapping[str, object], raw_materialization_readiness_snapshot(tmp_path)["raw_authority_parser_census"]
+    )
+
+    assert parser_census["complete_count"] == 0
+    assert parser_census["incomplete_count"] == 1
+    assert parser_census["missing_receipt_count"] == 1
+
+
+def test_raw_materialization_snapshot_accepts_parser_confirmed_empty_non_session(tmp_path: Path) -> None:
+    """A real parser census may authoritatively establish no sessions."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"empty-census"}}\n',
+            source_path="codex/empty-census.jsonl",
+            acquired_at_ms=1,
+            post_parse=True,
+        )
+        archive.replace_raw_membership_census(
+            raw_id,
+            [],
+            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            censused_at_ms=1,
+        )
+
+    parser_census = cast(
+        Mapping[str, object], raw_materialization_readiness_snapshot(tmp_path)["raw_authority_parser_census"]
+    )
+
+    assert parser_census["complete_count"] == 1
+    assert parser_census["incomplete_count"] == 0
+
+
+def test_raw_materialization_snapshot_streams_parser_census_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bounded status projection iterates the real SQLite census cursor."""
+    from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"stream-census"}}\n',
+            source_path="codex/stream-census.jsonl",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope("codex:stream-census", RawRevisionKind.FULL, "v1", 0),
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_authority_parser_census (
+                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+            ) VALUES (?, ?, 'complete', '["codex:stream-census"]', '', 1)
+            """,
+            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        )
+        conn.commit()
+
+    import polylogue.storage.archive_readiness as readiness_mod
+
+    readiness_sqlite = cast(Any, readiness_mod).sqlite3
+    original_connect = readiness_sqlite.connect
+
+    class GuardedCursor:
+        def __init__(self, cursor: sqlite3.Cursor, *, census_query: bool) -> None:
+            self._cursor = cursor
+            self._census_query = census_query
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            if self._census_query:
+                raise AssertionError("parser census readiness must not materialize its cursor")
+            return self._cursor.fetchall()
+
+        def __iter__(self) -> GuardedCursor:
+            return self
+
+        def __next__(self) -> tuple[object, ...]:
+            return next(self._cursor)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._cursor, name)
+
+    class GuardedConnection:
+        _connection: sqlite3.Connection
+
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            object.__setattr__(self, "_connection", connection)
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor | GuardedCursor:
+            cursor = self._connection.execute(sql, cast(Any, parameters))
+            if "raw_authority_parser_census AS c" in sql:
+                return GuardedCursor(cursor, census_query=True)
+            return cursor
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._connection, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            setattr(self._connection, name, value)
+
+    def guarded_connect(*args: object, **kwargs: object) -> GuardedConnection:
+        return GuardedConnection(original_connect(*args, **kwargs))
+
+    monkeypatch.setattr(readiness_sqlite, "connect", guarded_connect)
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=False)
+
+    assert cast(Mapping[str, object], snapshot["raw_authority_parser_census"])["complete_count"] == 1
+
+
+def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> None:
+    """Exact readiness consumes source parser debt from its real SQLite projection."""
+    from polylogue.core.enums import Provider
+    from polylogue.sources.revision_backfill import census_historical_revision_evidence
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"exact-readiness"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+                b'"content":[{"type":"input_text","text":"exact readiness"}]}}\n'
+            ),
+            source_path="codex/exact-readiness.jsonl",
+            acquired_at_ms=1,
+        )
+
+    blocked = archive_readiness_status(tmp_path)
+    assert blocked["surfaces"]["raw_artifacts"]["ready"] is False
+    assert "parser_census_incomplete" in blocked["surfaces"]["raw_artifacts"]["blockers"]
+
+    census = census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    assert census.scanned == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        receipt = conn.execute(
+            "SELECT status, logical_keys_json, detail FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    assert receipt is not None
+    assert receipt[0] == "complete"
+    assert receipt[1] == '["codex-session:exact-readiness"]'
+    assert str(receipt[2]).startswith("parser-observed:")
+
+    ready = archive_readiness_status(tmp_path)
+    assert ready["surfaces"]["raw_artifacts"]["ready"] is True
 
 
 def test_raw_materialization_readiness_rejects_unresolved_authority_blockers() -> None:

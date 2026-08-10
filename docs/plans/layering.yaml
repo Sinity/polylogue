@@ -36,11 +36,13 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints:
-        [admit_raw_and_parsed_result, apply_raw_membership_classification, apply_raw_revision_replay,
+        [admit_raw_and_parsed_result, admit_raw_artifact_blob_ref, admit_raw_artifact_payload,
+        apply_raw_membership_classification, apply_raw_revision_replay,
         classify_raw_revision_cohort_for_frozen_candidate,
         classify_raw_revision_cohort_for_live_watch, classify_raw_revision_cohort_for_rebuild_repair,
         finalize_raw_parse_state,
         mark_raw_parse_failed,
+        record_current_parser_source_census,
         release_provisional_full_revisions, replace_raw_membership_census,
         write_parsed_for_retained_raw, write_parsed_for_retained_raw_result, write_raw_and_parsed,
         write_raw_and_parsed_result, write_raw_blob_and_parsed, write_raw_blob_and_parsed_result]

@@ -1359,13 +1359,37 @@ def test_census_batching_reduces_commit_count(tmp_path: Path) -> None:
     batched_flags, batched_explicit_commits = _manage_transaction_flags(batched_root, commit_batch_size=4)
 
     assert len(unbatched_flags) == len(batched_flags) == 9
-    # Unbatched: every write self-commits immediately (manage_transaction=True).
+    # Unbatched: revision writes self-commit, then each unit explicitly
+    # commits its following parser receipt before the archive wrapper closes.
     assert all(unbatched_flags)
-    assert unbatched_explicit_commits == 0
+    assert unbatched_explicit_commits == 9
     # Batched (size 4, 9 raws): writes defer (manage_transaction=False) and
     # the loop drives exactly ceil(9/4) = 3 explicit batch-boundary commits.
     assert not any(batched_flags)
     assert batched_explicit_commits == 3
+
+
+def test_unbatched_census_persists_parser_observed_receipt_before_close(tmp_path: Path) -> None:
+    """Default per-raw census commits its receipt after the revision bind.
+
+    This drives the public census wrapper, then opens a fresh source.db
+    connection after its ArchiveStore has closed. Removing the unbatched
+    unit-boundary commit leaves the parser receipt uncommitted and this query
+    finds no row.
+    """
+    root = tmp_path / "archive"
+    raw_id = build_independent_raw_corpus(root, raw_count=1, avg_payload_bytes=1_000)[0]
+
+    census = census_historical_revision_evidence(root, selected_raw_ids=[raw_id])
+
+    assert census.scanned == 1
+    with sqlite3.connect(root / "source.db") as conn:
+        receipt = conn.execute(
+            "SELECT status, detail FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    assert receipt is not None
+    assert receipt[0] == "complete"
+    assert str(receipt[1]).startswith("parser-observed:")
 
 
 def test_census_batch_crash_loses_at_most_one_batch_and_resumes_cleanly(

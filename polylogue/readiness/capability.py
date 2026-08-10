@@ -174,6 +174,11 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     unchecked = int(payload.get("unchecked") or 0)
     affected_unchecked = int(payload.get("affected_unchecked") or 0)
     lost_source_evidence_count = int(payload.get("lost_source_evidence_count") or 0)
+    parser_census_incomplete_count = int(payload.get("raw_authority_parser_census_incomplete_count") or 0)
+    parser_census_incomplete_blob_bytes = int(payload.get("raw_authority_parser_census_incomplete_blob_bytes") or 0)
+    parser_census = payload.get("raw_authority_parser_census")
+    parser_census_present = "raw_authority_parser_census" in payload
+    parser_census_available = isinstance(parser_census, Mapping) and parser_census.get("available") is True
     raw_artifact_count = int(payload.get("raw_artifact_count") or 0)
     materialized_raw_artifact_count = int(payload.get("materialized_raw_artifact_count") or 0)
     archive_session_count = int(payload.get("archive_session_count") or 0)
@@ -181,6 +186,12 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     if not available:
         state = CapabilityReadinessState.UNKNOWN
         summary = "unknown"
+    elif parser_census_present and not parser_census_available:
+        state = CapabilityReadinessState.UNKNOWN
+        summary = "source parser census unavailable"
+    elif parser_census_incomplete_count > 0:
+        state = CapabilityReadinessState.BLOCKED
+        summary = "source parser census incomplete"
     elif lost_source_evidence_count > 0:
         state = CapabilityReadinessState.BLOCKED
         summary = "source evidence missing"
@@ -237,6 +248,8 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
             "unchecked": unchecked,
             "affected_unchecked": affected_unchecked,
             "lost_source_evidence_count": lost_source_evidence_count,
+            "parser_census_incomplete_count": parser_census_incomplete_count,
+            "parser_census_incomplete_blob_bytes": parser_census_incomplete_blob_bytes,
             "raw_artifact_count": raw_artifact_count,
             "materialized_raw_artifact_count": materialized_raw_artifact_count,
             "archive_session_count": archive_session_count,
@@ -247,6 +260,7 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
             "category_counts": dict(payload.get("category_counts") or {}),
             "source_family_counts": dict(payload.get("source_family_counts") or {}),
             "lost_source_evidence_samples": list(payload.get("lost_source_evidence_samples") or []),
+            "raw_authority_parser_census": dict(parser_census) if isinstance(parser_census, Mapping) else None,
         },
         repair_hint=(
             None

@@ -296,6 +296,40 @@ def test_raw_materialization_readiness_maps_lost_source_evidence_to_blocked() ->
     assert component.metadata["lost_source_evidence_samples"] == [sample]
 
 
+def test_raw_materialization_capability_exposes_parser_census_evidence() -> None:
+    census = {
+        "available": True,
+        "missing_receipt_count": 2,
+        "non_complete_receipt_count": 1,
+        "incomplete_origin_summary": [{"origin": "codex-session", "count": 3, "blob_bytes": 99}],
+    }
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "raw_authority_parser_census": census,
+            "raw_authority_parser_census_incomplete_count": 3,
+            "raw_authority_parser_census_incomplete_blob_bytes": 99,
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.BLOCKED
+    assert component.counts["parser_census_incomplete_count"] == 3
+    assert component.counts["parser_census_incomplete_blob_bytes"] == 99
+    assert component.metadata["raw_authority_parser_census"] == census
+
+
+def test_raw_materialization_capability_treats_unavailable_parser_census_as_unknown() -> None:
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "raw_authority_parser_census": {"available": False},
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.UNKNOWN
+    assert component.summary == "source parser census unavailable"
+
+
 def test_raw_frontier_integrity_maps_healthy_to_ready() -> None:
     component = component_from_raw_frontier_integrity(
         {
