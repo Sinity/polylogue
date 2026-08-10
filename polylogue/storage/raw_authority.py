@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from polylogue.archive.revision_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.enums import Origin, Provider
@@ -27,8 +28,6 @@ from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
-
-RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v4"
 
 #: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
 #: whose classification semantics are known to have been superseded by a

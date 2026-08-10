@@ -114,6 +114,7 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
+    RAW_AUTHORITY_PARSER_FINGERPRINT,
     RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
@@ -143,7 +144,6 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
 from polylogue.storage.raw.models import RawSessionStateUpdate
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     BrowserCapturePrecedence,
     browser_capture_precedence,

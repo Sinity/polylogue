@@ -37,6 +37,12 @@ class RawRevisionAuthority(PolylogueStrEnum):
 
 BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision authority"
 
+#: Current parser semantics for source-tier membership and parser receipts.
+#: Both admission writers and replay readers depend on revision authority, so
+#: this token belongs with that shared contract rather than either storage
+#: projection that consumes it.
+RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v4"
+
 #: ``raw_membership_census.detail`` marker written when a full-only,
 #: non-prefix-chain cohort is retired from byte-revision governance to
 #: membership governance (``ArchiveStore.replace_raw_membership_census``,
