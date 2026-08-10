@@ -1570,6 +1570,7 @@ def _archive_assertion_candidate_queue_health(
         judgment_automation_receipt_freshness_window_ms,
     )
     from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
+    from polylogue.storage.sqlite.archive_tiers.ops_write import _read_latest_judgment_scheduler_receipt
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ASSERTION_CANDIDATE_JUDGMENT_KINDS,
         ASSERTION_CANDIDATE_REVIEW_STATUSES,
@@ -1733,9 +1734,19 @@ def _archive_assertion_candidate_queue_health(
                             scheduler_state = "fresh"
                         else:
                             scheduler_state = "stale"
-                if ops_conn.execute(
+                typed_receipt = _read_latest_judgment_scheduler_receipt(ops_conn)
+                if typed_receipt is not None:
+                    judgment_scheduler_receipt_status = cast(
+                        Literal["completed", "parked", "failed"], typed_receipt.status
+                    )
+                    judgment_scheduler_receipt_at_ms = typed_receipt.observed_at_ms
+                    judgment_scheduler_receipt_reason = typed_receipt.reason
+                elif ops_conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daemon_events'"
                 ).fetchone():
+                    # Compatibility for ops.db files created before the typed
+                    # receipt table. Once a typed row exists it is authoritative,
+                    # even if a newer legacy event is malformed or stale.
                     receipt_row = ops_conn.execute(
                         """
                         SELECT ts_ms, payload_json

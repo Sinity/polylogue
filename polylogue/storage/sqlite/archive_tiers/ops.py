@@ -215,6 +215,30 @@ CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, operation_id, id DESC);
 
+-- Judgment automation receipts are the typed authority for scheduler health.
+-- Keep the legacy daemon_events row as a compatibility/event-stream record,
+-- but do not require queue-health readers to decode its JSON payload.
+CREATE TABLE IF NOT EXISTS judgment_scheduler_receipts (
+    operation_id                    TEXT PRIMARY KEY,
+    observed_at_ms                  INTEGER NOT NULL,
+    status                          TEXT NOT NULL CHECK(status IN ('completed', 'parked', 'failed')),
+    reason                          TEXT NOT NULL,
+    retryable                       INTEGER NOT NULL CHECK(retryable IN (0, 1)),
+    retry_route                     TEXT NOT NULL,
+    batch_limit                     INTEGER NOT NULL CHECK(batch_limit > 0),
+    considered                      INTEGER NOT NULL DEFAULT 0 CHECK(considered >= 0),
+    accepted                        INTEGER NOT NULL DEFAULT 0 CHECK(accepted >= 0),
+    rejected                        INTEGER NOT NULL DEFAULT 0 CHECK(rejected >= 0),
+    escalated                       INTEGER NOT NULL DEFAULT 0 CHECK(escalated >= 0),
+    idempotent                      INTEGER NOT NULL DEFAULT 0 CHECK(idempotent >= 0),
+    failed                          INTEGER NOT NULL DEFAULT 0 CHECK(failed >= 0),
+    receipt_persistence_degraded    INTEGER NOT NULL DEFAULT 0 CHECK(receipt_persistence_degraded IN (0, 1)),
+    receipt_persistence_recovered   INTEGER NOT NULL DEFAULT 0 CHECK(receipt_persistence_recovered IN (0, 1))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_judgment_scheduler_receipts_observed
+ON judgment_scheduler_receipts(observed_at_ms DESC, operation_id);
+
 CREATE TABLE IF NOT EXISTS daemon_lifecycle (
     run_id               TEXT PRIMARY KEY,
     started_at_ms        INTEGER NOT NULL,

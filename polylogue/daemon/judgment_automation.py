@@ -346,14 +346,22 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
     if not user_db.exists():
         return 0
     from polylogue.daemon.events import get_latest_daemon_event
+    from polylogue.storage.sqlite.archive_tiers.ops_write import _read_latest_judgment_scheduler_receipt
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ack_judgment_automation_receipt_outbox,
         list_judgment_automation_receipt_outbox,
     )
-    from polylogue.storage.sqlite.connection_profile import open_connection
+    from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 
     conn = open_connection(user_db)
     conn.row_factory = sqlite3.Row
+    ops_conn: sqlite3.Connection | None = None
+    ops_db = root / "ops.db"
+    if ops_db.exists():
+        try:
+            ops_conn = open_readonly_connection(ops_db)
+        except sqlite3.Error:
+            logger.warning("judgment_automation: typed receipt recovery probe could not open ops.db", exc_info=True)
     acknowledged = 0
     try:
         for marker in list_judgment_automation_receipt_outbox(
@@ -366,6 +374,20 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
             if not isinstance(operation_id, str) or not operation_id or not isinstance(receipt, dict):
                 logger.error("judgment_automation: malformed receipt outbox marker %s", marker.assertion_id)
                 continue
+            if ops_conn is not None:
+                try:
+                    typed_receipt = _read_latest_judgment_scheduler_receipt(ops_conn, operation_id=operation_id)
+                except (sqlite3.Error, ValueError) as exc:
+                    logger.warning(
+                        "judgment_automation: typed receipt recovery probe failed for marker %s: %s",
+                        marker.assertion_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    typed_receipt = None
+                if typed_receipt is not None:
+                    acknowledged += int(ack_judgment_automation_receipt_outbox(conn, marker, now_ms=now_ms))
+                    continue
             latest = get_latest_daemon_event(
                 JUDGMENT_AUTOMATION_STAGE,
                 operation_id=operation_id,
@@ -415,6 +437,8 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
             conn.commit()
     finally:
         conn.close()
+        if ops_conn is not None:
+            ops_conn.close()
     return acknowledged
 
 

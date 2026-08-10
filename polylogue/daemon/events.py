@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -12,6 +14,10 @@ from typing import TYPE_CHECKING, cast
 
 from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.ops_write import (
+    ArchiveJudgmentSchedulerReceipt,
+    record_judgment_scheduler_receipt,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
@@ -121,6 +127,34 @@ def emit_daemon_event(
     """Emit a daemon event to the event ledger."""
     conn = _ensure_events_db() if archive_root_path is None else _ensure_events_db(archive_root_path / "ops.db")
     try:
+        if kind == "judgment-automation":
+            receipt_payload = payload or {}
+            typed_operation_id = operation_id or f"judgment-automation:{uuid.uuid4().hex}"
+            counters = {
+                name: receipt_payload.get(name, 0)
+                for name in ("considered", "accepted", "rejected", "escalated", "idempotent", "failed")
+            }
+            with suppress(ValueError):
+                record_judgment_scheduler_receipt(
+                    conn,
+                    ArchiveJudgmentSchedulerReceipt(
+                        operation_id=typed_operation_id,
+                        observed_at_ms=current_epoch_ms() if observed_at_ms is None else observed_at_ms,
+                        status=str(receipt_payload.get("status", "")),
+                        reason=str(receipt_payload.get("reason", "")),
+                        retryable=receipt_payload.get("retryable", False),  # type: ignore[arg-type]
+                        retry_route=str(receipt_payload.get("retry_route", "")),
+                        batch_limit=receipt_payload.get("batch_limit", 0),  # type: ignore[arg-type]
+                        considered=counters["considered"],  # type: ignore[arg-type]
+                        accepted=counters["accepted"],  # type: ignore[arg-type]
+                        rejected=counters["rejected"],  # type: ignore[arg-type]
+                        escalated=counters["escalated"],  # type: ignore[arg-type]
+                        idempotent=counters["idempotent"],  # type: ignore[arg-type]
+                        failed=counters["failed"],  # type: ignore[arg-type]
+                        receipt_persistence_degraded=receipt_payload.get("receipt_persistence_degraded", False),  # type: ignore[arg-type]
+                        receipt_persistence_recovered=receipt_payload.get("receipt_persistence_recovered", False),  # type: ignore[arg-type]
+                    ),
+                )
         conn.execute(
             "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
             (

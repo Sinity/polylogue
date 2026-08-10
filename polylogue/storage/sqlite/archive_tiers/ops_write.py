@@ -112,6 +112,163 @@ class ArchiveDaemonLifecycle:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveJudgmentSchedulerReceipt:
+    """Typed scheduler receipt persisted in the disposable ops tier."""
+
+    operation_id: str
+    observed_at_ms: int
+    status: str
+    reason: str
+    retryable: bool
+    retry_route: str
+    batch_limit: int
+    considered: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    escalated: int = 0
+    idempotent: int = 0
+    failed: int = 0
+    receipt_persistence_degraded: bool = False
+    receipt_persistence_recovered: bool = False
+
+
+_JUDGMENT_SCHEDULER_RECEIPT_STATUSES = frozenset(("completed", "parked", "failed"))
+_JUDGMENT_SCHEDULER_RECEIPT_COUNTERS = (
+    "considered",
+    "accepted",
+    "rejected",
+    "escalated",
+    "idempotent",
+    "failed",
+)
+
+
+def _is_exact_bool(value: object) -> bool:
+    return type(value) is bool
+
+
+def _validate_judgment_scheduler_receipt(receipt: ArchiveJudgmentSchedulerReceipt) -> None:
+    if not receipt.operation_id:
+        raise ValueError("judgment scheduler receipt operation_id must not be empty")
+    if receipt.status not in _JUDGMENT_SCHEDULER_RECEIPT_STATUSES:
+        raise ValueError(f"unknown judgment scheduler receipt status: {receipt.status}")
+    if not receipt.reason:
+        raise ValueError("judgment scheduler receipt reason must not be empty")
+    if not _is_exact_bool(receipt.retryable) or not _is_exact_bool(receipt.receipt_persistence_degraded):
+        raise ValueError("judgment scheduler receipt boolean fields must be bool")
+    if not _is_exact_bool(receipt.receipt_persistence_recovered):
+        raise ValueError("judgment scheduler receipt boolean fields must be bool")
+    if not receipt.retry_route:
+        raise ValueError("judgment scheduler receipt retry_route must not be empty")
+    if type(receipt.observed_at_ms) is not int:
+        raise ValueError("judgment scheduler receipt observed_at_ms must be an integer")
+    if type(receipt.batch_limit) is not int or receipt.batch_limit <= 0:
+        raise ValueError("judgment scheduler receipt batch_limit must be positive")
+    counters = tuple(getattr(receipt, name) for name in _JUDGMENT_SCHEDULER_RECEIPT_COUNTERS)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counters):
+        raise ValueError("judgment scheduler receipt counters must be non-negative integers")
+    if receipt.considered != sum(counters[1:]):
+        raise ValueError("judgment scheduler receipt counters do not sum to considered")
+
+
+def record_judgment_scheduler_receipt(
+    conn: sqlite3.Connection,
+    receipt: ArchiveJudgmentSchedulerReceipt,
+) -> None:
+    """Upsert one operation-owned scheduler receipt without JSON decoding."""
+
+    _validate_judgment_scheduler_receipt(receipt)
+    conn.execute(
+        """
+        INSERT INTO judgment_scheduler_receipts (
+            operation_id, observed_at_ms, status, reason, retryable, retry_route,
+            batch_limit, considered, accepted, rejected, escalated, idempotent,
+            failed, receipt_persistence_degraded, receipt_persistence_recovered
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(operation_id) DO UPDATE SET
+            observed_at_ms = excluded.observed_at_ms,
+            status = excluded.status,
+            reason = excluded.reason,
+            retryable = excluded.retryable,
+            retry_route = excluded.retry_route,
+            batch_limit = excluded.batch_limit,
+            considered = excluded.considered,
+            accepted = excluded.accepted,
+            rejected = excluded.rejected,
+            escalated = excluded.escalated,
+            idempotent = excluded.idempotent,
+            failed = excluded.failed,
+            receipt_persistence_degraded = excluded.receipt_persistence_degraded,
+            receipt_persistence_recovered = excluded.receipt_persistence_recovered
+        """,
+        (
+            receipt.operation_id,
+            receipt.observed_at_ms,
+            receipt.status,
+            receipt.reason,
+            int(receipt.retryable),
+            receipt.retry_route,
+            receipt.batch_limit,
+            receipt.considered,
+            receipt.accepted,
+            receipt.rejected,
+            receipt.escalated,
+            receipt.idempotent,
+            receipt.failed,
+            int(receipt.receipt_persistence_degraded),
+            int(receipt.receipt_persistence_recovered),
+        ),
+    )
+
+
+def _read_latest_judgment_scheduler_receipt(
+    conn: sqlite3.Connection,
+    *,
+    operation_id: str | None = None,
+) -> ArchiveJudgmentSchedulerReceipt | None:
+    """Read the newest typed scheduler receipt, optionally for one operation."""
+
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'judgment_scheduler_receipts'"
+    ).fetchone()
+    if table is None:
+        return None
+    query = """
+        SELECT operation_id, observed_at_ms, status, reason, retryable, retry_route,
+               batch_limit, considered, accepted, rejected, escalated, idempotent,
+               failed, receipt_persistence_degraded, receipt_persistence_recovered
+        FROM judgment_scheduler_receipts
+    """
+    params: tuple[object, ...] = ()
+    if operation_id is not None:
+        query += " WHERE operation_id = ?"
+        params = (operation_id,)
+    query += " ORDER BY rowid DESC LIMIT 1"
+    row = conn.execute(query, params).fetchone()
+    if row is None:
+        return None
+    receipt = ArchiveJudgmentSchedulerReceipt(
+        operation_id=str(row[0]),
+        observed_at_ms=int(row[1]),
+        status=str(row[2]),
+        reason=str(row[3]),
+        retryable=bool(row[4]),
+        retry_route=str(row[5]),
+        batch_limit=int(row[6]),
+        considered=int(row[7]),
+        accepted=int(row[8]),
+        rejected=int(row[9]),
+        escalated=int(row[10]),
+        idempotent=int(row[11]),
+        failed=int(row[12]),
+        receipt_persistence_degraded=bool(row[13]),
+        receipt_persistence_recovered=bool(row[14]),
+    )
+    _validate_judgment_scheduler_receipt(receipt)
+    return receipt
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveMcpCallLogEntry:
     """Compact read-back row for one durable MCP tool call-log entry."""
 
@@ -1591,6 +1748,7 @@ def _json_loads(raw_json: str | None) -> dict[str, object]:
 __all__ = [
     "ArchiveCursorLagSample",
     "ArchiveDaemonLifecycle",
+    "ArchiveJudgmentSchedulerReceipt",
     "ArchiveDaemonStageEvent",
     "ArchiveEmbeddingCatchupRun",
     "ArchiveFtsDriftSample",
@@ -1622,6 +1780,7 @@ __all__ = [
     "record_daemon_lifecycle_start",
     "record_daemon_lifecycle_stop",
     "record_daemon_stage_event",
+    "record_judgment_scheduler_receipt",
     "record_fts_drift_sample",
     "record_ingest_attempt",
     "record_route_observation",
