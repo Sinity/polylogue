@@ -11,9 +11,13 @@
       nixpkgs,
     }:
     let
+      lib = nixpkgs.lib;
       system = "x86_64-linux";
       pkgs = import nixpkgs {
         inherit system;
+        # CodeQL is unfree in nixpkgs. Keep the exception scoped to the one
+        # devshell tool instead of enabling all unfree packages.
+        config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "codeql" ];
         # See the long comment above `mkNoCheckOverride`/`freeThreadedNoCheckOverlay`
         # below (polylogue-xikl): this MUST be a top-level `pkgs` overlay, not a
         # locally-scoped `.pkgs.overrideScope` on a `let`-bound variable --
@@ -354,6 +358,9 @@
           devtoolsCli
           pkgs.git
           pkgs.ruff
+          pkgs.ast-grep
+          pkgs.scc
+          pkgs.codeql
         ];
 
         shellHook = ''
