@@ -730,6 +730,9 @@ class RebuildIndexRequest:
     archive_root: Path
     only_missing: bool = False
     raw_ids: tuple[str, ...] = ()
+    # The canary's compared denominator. This is evidence-only: raw IDs remain
+    # the replay selection, while session IDs bind the later comparison scope.
+    selected_session_ids: tuple[str, ...] = ()
     max_blob_mb: float | None = None
     promote: bool = True
     candidate_acceptance_checks: tuple[str, ...] | None = None
@@ -995,6 +998,7 @@ def rebuild_selection_evidence(
     generation_owner_id: str,
     candidate_index: Path,
     source_snapshot: str,
+    selected_session_ids: list[str] | tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Commit the requested and production-expanded replay closure.
 
@@ -1013,6 +1017,7 @@ def rebuild_selection_evidence(
         "candidate_index_path": str(candidate_index.resolve()),
         "candidate_owner_id": generation_owner_id,
         "raw_ids": sorted(raw_ids),
+        "selected_session_ids": sorted(selected_session_ids),
         "replay_closure": replay_closure,
         "source_snapshot": source_snapshot,
     }
@@ -1020,6 +1025,8 @@ def rebuild_selection_evidence(
     return {
         "algorithm": "sha256-canonical-json-v1",
         "raw_id_count": len(raw_ids),
+        "selected_session_count": len(selected_session_ids),
+        "selected_session_ids": sorted(selected_session_ids),
         "raw_ids_sha256": sha256(encoded).hexdigest(),
         **{key: value for key, value in canonical.items() if key != "raw_ids"},
     }
@@ -1107,9 +1114,14 @@ def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tu
                 ).fetchall()
             )
         raw_rows.sort(key=lambda row: str(row[0]))
-        from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+        from polylogue.sources.origin_specs import (
+            lowering_fingerprint,
+            parser_fingerprint_for_origin,
+            replay_routing_fingerprint,
+        )
 
         lowering = lowering_fingerprint()
+        replay_routing = replay_routing_fingerprint()
         parser_fingerprints: dict[str, str] = {}
         for row in raw_rows:
             origin = str(row[1])
@@ -1140,6 +1152,7 @@ def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tu
                 "revision_authority_evidence": None if row[19] is None else str(row[19]),
                 "parser_fingerprint": parser_fingerprints[str(row[1])],
                 "lowering_fingerprint": lowering,
+                "replay_routing_fingerprint": replay_routing,
             }
             for row in raw_rows
         ]
@@ -1218,6 +1231,12 @@ def validate_rebuild_index_request(request: RebuildIndexRequest) -> None:
     """Reject selection and transaction combinations that cannot be promoted safely."""
     if request.raw_ids and request.only_missing:
         raise ValueError("--raw-id cannot be combined with --only-missing")
+    if request.selected_session_ids and not request.raw_ids:
+        raise ValueError("selected session evidence requires an explicit raw-id selection")
+    if len(set(request.selected_session_ids)) != len(request.selected_session_ids) or not all(
+        request.selected_session_ids
+    ):
+        raise ValueError("selected session evidence must contain unique non-empty ids")
     if (request.raw_ids or request.only_missing) and request.promote:
         raise ValueError("partial rebuild selections require --no-promote and can never replace the active index")
     if request.promote and request.candidate_acceptance_checks is not None:
@@ -1666,6 +1685,7 @@ async def _rebuild_index_from_source_owned(
                 generation_owner_id=generation.owner_id,
                 candidate_index=Path(generation.index_path),
                 source_snapshot=generation.source_snapshot,
+                selected_session_ids=request.selected_session_ids,
             )
         except BaseException as exc:
             if transaction is None:
@@ -2027,6 +2047,7 @@ async def _rebuild_index_from_source_owned(
                 generation_owner_id=generation.owner_id,
                 candidate_index=Path(generation.index_path),
                 source_snapshot=generation.source_snapshot,
+                selected_session_ids=request.selected_session_ids,
             )
             if rebuild_source_evidence_snapshot(root) != generation.source_snapshot:
                 if transaction is not None and transaction_created_here:

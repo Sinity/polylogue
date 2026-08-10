@@ -461,47 +461,59 @@ async def run_daemon_bulk_rebuild_pass(
     )
 
 
-async def run_daemon_canary_rebuild_pass(
-    *,
-    archive_root: Path,
-    raw_ids: tuple[str, ...],
-    schema_inference_receipt_path: Path,
-    candidate_acceptance_checks: tuple[str, ...],
-) -> RebuildIndexReceipt:
-    """Build one canary generation under the daemon's sole writer gate."""
-    from polylogue.daemon.write_coordinator import daemon_write_coordinator
-    from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-
-    request = RebuildIndexRequest(
-        archive_root=Path(archive_root),
-        raw_ids=raw_ids,
-        promote=False,
-        candidate_acceptance_checks=candidate_acceptance_checks,
-        schema_inference_receipt_path=Path(schema_inference_receipt_path),
-    )
-    return await daemon_write_coordinator().run_sync(
-        "maintenance.reindex_canary",
-        rebuild_index_from_source_sync,
-        request,
-    )
-
-
 def run_daemon_canary_rebuild(
     *,
     archive_root: Path,
     raw_ids: tuple[str, ...],
+    selected_session_ids: tuple[str, ...],
+    index_schema_version: int,
     schema_inference_receipt_path: Path,
     candidate_acceptance_checks: tuple[str, ...],
-) -> RebuildIndexReceipt:
-    """Synchronous bridge for CLI maintenance code to the daemon route."""
-    return asyncio.run(
-        run_daemon_canary_rebuild_pass(
-            archive_root=archive_root,
-            raw_ids=raw_ids,
-            schema_inference_receipt_path=schema_inference_receipt_path,
-            candidate_acceptance_checks=candidate_acceptance_checks,
-        )
+    message_owner_scope_backfill_receipt_path: Path | None = None,
+) -> dict[str, object]:
+    """Run the canary only through the running daemon's writer-owned HTTP route."""
+
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.client import DaemonClient
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.version import POLYLOGUE_VERSION
+
+    root = Path(archive_root).resolve()
+    config = load_polylogue_config()
+    client = DaemonClient(
+        daemon_socket_path(root),
+        timeout_s=600.0,
+        auth_token=resolve_api_auth_token(config.api_auth_token, allow_no_auth=config.api_allow_no_auth),
     )
+    if (
+        client.probe(
+            archive_root=str(root),
+            index_schema_version=index_schema_version,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        is None
+    ):
+        raise RuntimeError("reindex canary requires a matching running daemon writer")
+    receipt = client.request_json(
+        "POST",
+        "/api/maintenance/rebuild-index",
+        {
+            "raw_ids": list(raw_ids),
+            "selected_session_ids": list(selected_session_ids),
+            "promote": False,
+            "candidate_acceptance_checks": list(candidate_acceptance_checks),
+            "schema_inference_receipt_path": str(schema_inference_receipt_path),
+            "message_owner_scope_backfill_receipt_path": (
+                str(message_owner_scope_backfill_receipt_path.resolve())
+                if message_owner_scope_backfill_receipt_path is not None
+                else None
+            ),
+        },
+    )
+    if receipt is None:
+        raise RuntimeError("daemon rejected or did not complete the reindex canary rebuild")
+    return receipt
 
 
 __all__ = [
@@ -510,6 +522,5 @@ __all__ = [
     "has_resumable_daemon_bulk_rebuild_transaction",
     "resolve_or_start_daemon_bulk_rebuild_transaction",
     "run_daemon_canary_rebuild",
-    "run_daemon_canary_rebuild_pass",
     "run_daemon_bulk_rebuild_pass",
 ]

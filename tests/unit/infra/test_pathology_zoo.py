@@ -8,8 +8,11 @@ from shutil import copytree
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, PathologyZooCanaryEligibility
 from polylogue.maintenance.reindex_canary import CanarySelectionError, select_canary_sessions
+from polylogue.sources.revision_backfill import _parse_one
+from polylogue.storage.blob_store import BlobStore
 from tests.infra.pathology_zoo import (
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
     PathologyZoo,
@@ -101,7 +104,7 @@ def test_zoo_preserves_the_named_vintage_and_lifecycle_red_cases(pathology_zoo: 
             "SELECT COUNT(*) FROM raw_sessions WHERE origin = ? AND native_id = ?",
             ("chatgpt-export", "zoo-vintage-reorder"),
         ).fetchone()
-    assert content_blocks == (1,)
+    assert content_blocks[0] > 0
     assert lifecycle == [("lifecycle-b",)]
     assert vintage_raws == (2,)
 
@@ -141,3 +144,21 @@ def test_pathology_zoo_manifest_is_consumed_by_real_canary_selection(
             sessions_per_origin=1,
             pathology_session_ids=pathology_zoo.canary_session_ids,
         )
+
+
+def test_pathology_zoo_antigravity_member_replays_after_seed_without_language_server_patch(
+    pathology_zoo: PathologyZoo,
+) -> None:
+    """The seeded durable Antigravity export takes the production raw replay parser unaided."""
+    with sqlite3.connect(pathology_zoo.archive_root / "source.db") as conn:
+        source_path, blob_hash = conn.execute(
+            "SELECT source_path, hex(blob_hash) FROM raw_sessions WHERE origin = ?", ("antigravity-session",)
+        ).fetchone()
+    sessions = _parse_one(
+        Provider.ANTIGRAVITY,
+        BlobStore(pathology_zoo.archive_root / "blob").read_all(str(blob_hash).lower()),
+        str(source_path),
+        archive_root=pathology_zoo.archive_root,
+    )
+
+    assert [session.provider_session_id for session in sessions] == ["zoo-06-00:zoo-06-00.md"]

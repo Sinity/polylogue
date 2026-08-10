@@ -5,7 +5,7 @@ import shutil
 import sqlite3
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, cast
 
 import pytest
 from click import Command
@@ -39,6 +39,33 @@ from polylogue.storage.index_generation import IndexGenerationStore, RebuildLeas
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+
+
+@pytest.fixture(autouse=True)
+def _run_cli_canary_tests_through_real_rebuild_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI report tests exercise the real rebuild service while transport is tested separately."""
+
+    def rebuild_for_canary(
+        *,
+        archive_root: Path,
+        raw_ids: tuple[str, ...],
+        selected_session_ids: tuple[str, ...],
+        index_schema_version: int,
+        schema_inference_receipt_path: Path,
+        candidate_acceptance_checks: tuple[str, ...],
+    ) -> object:
+        return rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=archive_root,
+                raw_ids=raw_ids,
+                selected_session_ids=selected_session_ids,
+                promote=False,
+                candidate_acceptance_checks=candidate_acceptance_checks,
+                schema_inference_receipt_path=schema_inference_receipt_path,
+            )
+        )
+
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", rebuild_for_canary)
 
 
 def _schema_receipt_path(root: Path) -> Path:
@@ -277,8 +304,8 @@ def _write_reviewed_real_canary_report(
                         "identity": difference["identity"],
                         "changed_columns": difference["changed_columns"],
                         "classification": "expected",
-                        "reference": "bead:polylogue-review",
-                        "authority": {"kind": "bead", "id": "polylogue-review"},
+                        "reference": "bead:polylogue-0x7nh",
+                        "authority": {"kind": "bead", "id": "polylogue-0x7nh"},
                         "rationale": "reviewed real canary difference",
                     }
                     for difference in differences
@@ -526,8 +553,8 @@ def test_cli_consumes_valid_reviewed_real_report(tmp_path: Path, monkeypatch: py
                         "identity": difference["identity"],
                         "changed_columns": difference["changed_columns"],
                         "classification": "expected",
-                        "reference": "bead:polylogue-review",
-                        "authority": {"kind": "bead", "id": "polylogue-review"},
+                        "reference": "bead:polylogue-0x7nh",
+                        "authority": {"kind": "bead", "id": "polylogue-0x7nh"},
                         "rationale": "reviewed real canary difference",
                     }
                     for difference in differences
@@ -659,8 +686,8 @@ def test_cli_consumes_reviewed_report_after_parsed_state_mutation(
                         "identity": difference["identity"],
                         "changed_columns": difference["changed_columns"],
                         "classification": "expected",
-                        "reference": "bead:polylogue-review",
-                        "authority": {"kind": "bead", "id": "polylogue-review"},
+                        "reference": "bead:polylogue-0x7nh",
+                        "authority": {"kind": "bead", "id": "polylogue-0x7nh"},
                         "rationale": "reviewed real canary difference",
                     }
                     for difference in differences
@@ -1057,6 +1084,7 @@ def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> Ca
                 generation_owner_id="owner-sample",
                 candidate_index=comparison.candidate_index,
                 source_snapshot="snapshot",
+                selected_session_ids=selection.selected_session_ids,
             ),
             "source_evidence_after": "0" * 64,
         },
@@ -1099,6 +1127,7 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
                 generation_owner_id="owner",
                 candidate_index=result.comparison.candidate_index,
                 source_snapshot="snapshot",
+                selected_session_ids=result.selection.selected_session_ids,
             ),
             "source_evidence_after": "0" * 64,
         },
@@ -1336,7 +1365,7 @@ def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
     review = CanaryDifferenceReview.for_difference(
         difference,
         classification=DifferenceClassification.EXPECTED,
-        reference="polylogue-review",
+        reference="polylogue-0x7nh",
         rationale="reviewed materializer change",
     )
     captured: dict[str, object] = {}
@@ -1408,7 +1437,7 @@ def test_reindex_canary_cli_rejects_manifest_with_wrong_changed_columns(
         identity=difference.identity,
         changed_columns=("different_column",),
         classification=DifferenceClassification.EXPECTED,
-        reference="polylogue-review",
+        reference="polylogue-0x7nh",
         rationale="wrong signature",
     )
     review_path.write_text(json.dumps({"reviews": [review.to_dict()]}), encoding="utf-8")
@@ -1726,8 +1755,8 @@ def test_reindex_canary_cli_rejects_manifest_with_mismatched_changed_columns_fro
             "identity": difference["identity"],
             "changed_columns": difference["changed_columns"],
             "classification": "expected",
-            "reference": "bead:polylogue-review",
-            "authority": {"kind": "bead", "id": "polylogue-review"},
+            "reference": "bead:polylogue-0x7nh",
+            "authority": {"kind": "bead", "id": "polylogue-0x7nh"},
             "rationale": "reviewed materializer change",
         }
         for difference in differences
@@ -1795,6 +1824,7 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
             generation_owner_id="owner",
             candidate_index=candidate_index,
             source_snapshot="snapshot",
+            selected_session_ids=selection.selected_session_ids,
         )
 
         def to_dict(self) -> dict[str, object]:
@@ -1807,7 +1837,7 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
                 "selection_evidence": self.selection_evidence,
             }
 
-    def fake_rebuild(request: object) -> Receipt:
+    def fake_rebuild(**request: object) -> Receipt:
         captured["request"] = request
         return Receipt()
 
@@ -1826,7 +1856,7 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
     )
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", fake_rebuild)
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_authoritative_rebuild_receipt", lambda *args, **kwargs: None
@@ -1841,11 +1871,10 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
         no_promote=True,
     )
 
-    request = captured["request"]
-    assert isinstance(request, RebuildIndexRequest)
-    assert request.raw_ids == selection.selected_raw_ids
-    assert request.promote is False
-    assert request.message_owner_scope_backfill_receipt_path == owner_receipt
+    request = cast(dict[str, object], captured["request"])
+    assert request["raw_ids"] == selection.selected_raw_ids
+    assert request["selected_session_ids"] == selection.selected_session_ids
+    assert request["message_owner_scope_backfill_receipt_path"] == owner_receipt
     assert captured["compare"] == (current_index, candidate_index, selection.selected_session_ids)
     assert result.rebuild_receipt == {
         "archive_root": Receipt.archive_root,

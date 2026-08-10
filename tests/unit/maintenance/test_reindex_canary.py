@@ -15,13 +15,14 @@ import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.maintenance import reindex_canary as reindex_canary_module
 from polylogue.maintenance.rebuild_index import (
+    RebuildIndexReceipt,
     RebuildIndexRequest,
     rebuild_index_from_source_sync,
     rebuild_selection_evidence,
@@ -265,9 +266,45 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
             generation_owner_id="owner",
             candidate_index=comparison.candidate_index,
             source_snapshot="snapshot",
+            selected_session_ids=selection.selected_session_ids,
         ),
         "source_evidence_after": "0" * 64,
     }
+
+
+def _offline_canary_rebuild(
+    *,
+    archive_root: Path,
+    raw_ids: tuple[str, ...],
+    selected_session_ids: tuple[str, ...],
+    index_schema_version: int,
+    schema_inference_receipt_path: Path,
+    candidate_acceptance_checks: tuple[str, ...],
+) -> RebuildIndexReceipt:
+    """Exercise canary post-rebuild guards with the real rebuild service.
+
+    Daemon transport itself is covered separately against the production UDS
+    endpoint. These tests mutate production rebuild output after that route.
+    """
+    return rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=archive_root,
+            raw_ids=raw_ids,
+            selected_session_ids=selected_session_ids,
+            promote=False,
+            candidate_acceptance_checks=candidate_acceptance_checks,
+            schema_inference_receipt_path=schema_inference_receipt_path,
+        )
+    )
+
+
+@pytest.fixture(autouse=True)
+def _run_canary_postflight_tests_through_real_rebuild_service(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Keep post-rebuild guards local; daemon transport has its own route test."""
+    if request.node.name != "test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_daemon_route":
+        monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", _offline_canary_rebuild)
 
 
 def test_equal_real_generations_ignore_only_materialization_metadata(tmp_path: Path) -> None:
@@ -507,8 +544,8 @@ def test_differ_does_not_omit_session_links_from_the_canonical_relation_frame(tm
     assert "session_links" in report.compared_tables
 
 
-def test_differ_includes_parent_incident_session_link_when_parent_is_selected(tmp_path: Path) -> None:
-    """Parent-side incident edges remain in scope for a parent-selected canary."""
+def test_differ_excludes_child_session_link_when_only_its_destination_is_selected(tmp_path: Path) -> None:
+    """A selected destination cannot pull an unselected child edge into the canary."""
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
     _seed_index(current, sessions=("parent", "alpha"))
@@ -518,14 +555,7 @@ def test_differ_includes_parent_incident_session_link_when_parent_is_selected(tm
 
     report = compare_reindex_generations(current, candidate, session_ids=("codex-session:parent",))
 
-    link_delta = next(item for item in report.differences if item.table == "session_links")
-    assert link_delta.operation is DifferenceOperation.CHANGED
-    assert link_delta.identity == (
-        ("src_session_id", "codex-session:alpha"),
-        ("dst_origin", "codex-session"),
-        ("dst_native_id", "parent"),
-        ("link_type", "resume"),
-    )
+    assert report.differences == ()
 
 
 def test_selected_sessions_bound_the_canary_to_a_real_subset(tmp_path: Path) -> None:
@@ -575,6 +605,75 @@ def test_parser_fingerprint_binding_fails_closed_when_evidence_changes() -> None
             expected_parser_fingerprints=expected,
             expected_lowering_fingerprint="lower-v1",
         )
+
+
+def test_rebuild_selection_evidence_binds_compared_sessions_and_production_replay_routing(tmp_path: Path) -> None:
+    """The actual rebuild receipt binds both the replay and comparison denominator."""
+    root = tmp_path / "archive"
+    raw_id = _prepare_candidate_ready_archive(root)
+    from polylogue.sources.origin_specs import replay_routing_fingerprint
+
+    evidence = rebuild_selection_evidence(
+        (raw_id,),
+        archive_root=root,
+        generation_id="generation",
+        generation_owner_id="owner",
+        candidate_index=root / "index.db",
+        source_snapshot="snapshot",
+        selected_session_ids=("claude-ai-export:fresh",),
+    )
+
+    assert evidence["selected_session_ids"] == ["claude-ai-export:fresh"]
+    assert evidence["selected_session_count"] == 1
+    closure = cast(dict[str, object], evidence["replay_closure"])
+    raw_evidence = cast(list[dict[str, object]], closure["raw_session_evidence"])
+    assert raw_evidence[0]["replay_routing_fingerprint"] == replay_routing_fingerprint()
+
+
+def test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_daemon_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The canary transport is the real daemon UDS route, not a local writer bridge."""
+    from polylogue.daemon import bulk_rebuild
+
+    calls: dict[str, object] = {}
+
+    class Client:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            calls["init"] = (args, kwargs)
+
+        def probe(self, **kwargs: object) -> dict[str, object]:
+            calls["probe"] = kwargs
+            return {"ok": True}
+
+        def request_json(self, method: str, path: str, body: dict[str, object]) -> dict[str, object]:
+            calls["request"] = (method, path, body)
+            return {"status": "replayed"}
+
+    monkeypatch.setattr("polylogue.daemon.client.DaemonClient", Client)
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *args, **kwargs: "token")
+
+    receipt = bulk_rebuild.run_daemon_canary_rebuild(
+        archive_root=tmp_path,
+        raw_ids=("raw-1",),
+        selected_session_ids=("codex-session:one",),
+        index_schema_version=42,
+        schema_inference_receipt_path=tmp_path / "schema.json",
+        candidate_acceptance_checks=("pathology-zoo-invariants",),
+    )
+
+    assert receipt == {"status": "replayed"}
+    assert calls["request"] == (
+        "POST",
+        "/api/maintenance/rebuild-index",
+        {
+            "raw_ids": ["raw-1"],
+            "selected_session_ids": ["codex-session:one"],
+            "promote": False,
+            "candidate_acceptance_checks": ["pathology-zoo-invariants"],
+            "schema_inference_receipt_path": str(tmp_path / "schema.json"),
+        },
+    )
 
 
 def test_canary_comparison_is_read_only(tmp_path: Path) -> None:
@@ -665,19 +764,19 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
         def to_dict(self) -> dict[str, object]:
             return {"status": "replayed"}
 
-    def fake_rebuild(request: object) -> Receipt:
+    def fake_rebuild(**request: object) -> Receipt:
         nonlocal captured_receipt_path
-        captured["raw_ids"] = tuple(request.raw_ids)  # type: ignore[attr-defined]
-        captured["acceptance_checks"] = tuple(request.candidate_acceptance_checks)  # type: ignore[attr-defined]
-        captured["promote"] = request.promote  # type: ignore[attr-defined]
-        captured_receipt_path = request.schema_inference_receipt_path  # type: ignore[attr-defined]
+        captured["raw_ids"] = tuple(cast(tuple[str, ...], request["raw_ids"]))
+        captured["acceptance_checks"] = tuple(cast(tuple[str, ...], request["candidate_acceptance_checks"]))
+        captured["promote"] = False
+        captured_receipt_path = cast(Path, request["schema_inference_receipt_path"])
         return Receipt()
 
     def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
         captured["session_ids"] = session_ids
         return _empty_comparison(current_index, candidate_index, session_ids)
 
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", fake_rebuild)
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
     )
@@ -726,7 +825,7 @@ def test_selector_refuses_empty_automatic_selection_before_daemon_rebuild(
         rebuild_called = True
         raise AssertionError("empty canary selection must not reach the rebuild engine")
 
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", unexpected_rebuild)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", unexpected_rebuild)
 
     with pytest.raises(CanarySelectionError, match="zero sessions|zero raw ids|full-source replay"):
         run_reindex_canary(
@@ -957,6 +1056,7 @@ def test_run_reindex_canary_rejects_external_evidence_mutation_after_replay(
         return replay
 
     monkeypatch.setattr(rebuild_replay, "rebuild_index_from_source", mutate_source_after_replay)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", _offline_canary_rebuild)
 
     with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
         run_reindex_canary(root, schema_inference_receipt_path=receipt_path, sessions_per_origin=1, no_promote=True)
@@ -977,14 +1077,28 @@ def test_run_reindex_canary_rejects_active_index_rotation_after_replay(
     rotated_index.parent.mkdir(parents=True)
     shutil.copy2(current_index, rotated_index)
     receipt_path = _write_candidate_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
-    rebuild = rebuild_index_from_source_sync
 
-    def rebuild_then_rotate(request: RebuildIndexRequest) -> object:
-        result = rebuild(request)
+    def rebuild_then_rotate(
+        *,
+        archive_root: Path,
+        raw_ids: tuple[str, ...],
+        selected_session_ids: tuple[str, ...],
+        index_schema_version: int,
+        schema_inference_receipt_path: Path,
+        candidate_acceptance_checks: tuple[str, ...],
+    ) -> RebuildIndexReceipt:
+        result = _offline_canary_rebuild(
+            archive_root=archive_root,
+            raw_ids=raw_ids,
+            selected_session_ids=selected_session_ids,
+            index_schema_version=index_schema_version,
+            schema_inference_receipt_path=schema_inference_receipt_path,
+            candidate_acceptance_checks=candidate_acceptance_checks,
+        )
         (root / ".index-active-pointer").write_text(str(rotated_index), encoding="utf-8")
         return result
 
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", rebuild_then_rotate)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", rebuild_then_rotate)
 
     with pytest.raises(CanarySelectionError, match="active index changed during rebuild"):
         run_reindex_canary(root, schema_inference_receipt_path=receipt_path, sessions_per_origin=1, no_promote=True)
@@ -1040,9 +1154,9 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
         def to_dict(self) -> dict[str, object]:
             return {"status": "replayed"}
 
-    def fake_rebuild(request: object) -> Receipt:
-        captured["raw_ids"] = tuple(request.raw_ids)  # type: ignore[attr-defined]
-        captured["acceptance_checks"] = tuple(request.candidate_acceptance_checks)  # type: ignore[attr-defined]
+    def fake_rebuild(**request: object) -> Receipt:
+        captured["raw_ids"] = tuple(cast(tuple[str, ...], request["raw_ids"]))
+        captured["acceptance_checks"] = tuple(cast(tuple[str, ...], request["candidate_acceptance_checks"]))
         return Receipt()
 
     def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
@@ -1052,7 +1166,7 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
     )
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", fake_rebuild)
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
     )
@@ -1104,14 +1218,14 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
 
     captured: dict[str, object] = {}
 
-    def fake_rebuild(request: object) -> Receipt:
-        captured["promote"] = request.promote  # type: ignore[attr-defined]
+    def fake_rebuild(**request: object) -> Receipt:
+        captured["promote"] = False
         return Receipt()
 
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
     )
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", fake_rebuild)
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
     )
@@ -1161,7 +1275,7 @@ def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, m
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
     )
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", lambda request: Receipt())
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", lambda **kwargs: Receipt())
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary._validate_selection_evidence", lambda *args, **kwargs: None
     )
@@ -1183,7 +1297,7 @@ def test_run_reindex_canary_refuses_the_configured_live_archive_root(
         raise AssertionError("live archive canary must refuse before rebuild")
 
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", _unexpected_rebuild)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", _unexpected_rebuild)
 
     with pytest.raises(CanarySelectionError, match="refuses the configured live archive root"):
         run_reindex_canary(tmp_path, schema_inference_receipt_path=_receipt_path(tmp_path), no_promote=True)
@@ -1224,6 +1338,7 @@ def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
 
     monkeypatch.setattr(rebuild_index, "_repopulate_bulk_build_derived_state", corrupt_candidate_after_replay)
     monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", unexpected_insight_repair)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", _offline_canary_rebuild)
 
     with pytest.raises(
         RuntimeError,
@@ -1258,18 +1373,22 @@ def test_real_daemon_canary_candidate_mutation_reaches_report_writer_red_twin(
     )
     active_index = ArchiveLocation.resolve(root).active_index_path
     active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
-    real_rebuild = bulk_rebuild.run_daemon_canary_rebuild
+    real_rebuild = _offline_canary_rebuild
 
     def build_then_mutate(
         *,
         archive_root: Path,
         raw_ids: tuple[str, ...],
+        selected_session_ids: tuple[str, ...],
+        index_schema_version: int,
         schema_inference_receipt_path: Path,
         candidate_acceptance_checks: tuple[str, ...],
     ) -> Any:
         receipt = real_rebuild(
             archive_root=archive_root,
             raw_ids=raw_ids,
+            selected_session_ids=selected_session_ids,
+            index_schema_version=index_schema_version,
             schema_inference_receipt_path=schema_inference_receipt_path,
             candidate_acceptance_checks=candidate_acceptance_checks,
         )
@@ -1319,7 +1438,7 @@ def test_run_reindex_canary_refuses_foreign_input_index_before_rebuild(
     def fail_if_rebuild_runs(*args: object, **kwargs: object) -> object:
         raise AssertionError("candidate rebuild was invoked with a foreign input index")
 
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fail_if_rebuild_runs)
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", fail_if_rebuild_runs)
 
     with pytest.raises(CanarySelectionError, match="configured archive active generation"):
         run_reindex_canary(
@@ -1378,7 +1497,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert durable.unclassified_count == 0
     assert report_path.exists()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 7
+    assert payload["schema_version"] == 8
     comparison_payload = payload["comparison"]
     assert isinstance(comparison_payload, dict)
     summary = comparison_payload["summary"]
@@ -1448,6 +1567,32 @@ def test_review_manifest_rejects_reference_that_disagrees_with_authority(tmp_pat
         load_canary_review_manifest(manifest)
 
 
+def test_review_manifest_rejects_unregistered_expected_bead_authority(tmp_path: Path) -> None:
+    manifest = tmp_path / "reviews.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        "table": "blocks",
+                        "operation": "changed",
+                        "identity": {"block_id": "block"},
+                        "changed_columns": ["text"],
+                        "classification": "expected",
+                        "reference": "bead:not-a-real-issue",
+                        "authority": {"kind": "bead", "id": "not-a-real-issue"},
+                        "rationale": "this must resolve through the committed tracker registry",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="not open in the registry"):
+        load_canary_review_manifest(manifest)
+
+
 def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) -> None:
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
@@ -1485,6 +1630,42 @@ def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) ->
     report_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(UnclassifiedCanaryDiffError, match="review coverage is incomplete"):
+        load_canary_report(report_path)
+
+
+def test_loading_canary_report_rejects_difference_rationale_that_contradicts_review_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+    comparison = compare_reindex_generations(current, candidate, session_ids=selection.selected_session_ids)
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="successor:polylogue-follow-up",
+            rationale="the structured review owns this disposition",
+        )
+        for difference in comparison.differences
+    )
+    write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=reviews,
+    )
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["comparison"]["differences"][0]["rationale"] = "bead:unrelated: forged authority text"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(reindex_canary_module, "_validate_archive_provenance", lambda *args, **kwargs: None)
+    monkeypatch.setattr(reindex_canary_module, "_validate_authoritative_rebuild_receipt", lambda *args, **kwargs: None)
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="rationale disagrees"):
         load_canary_report(report_path)
 
 

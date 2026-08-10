@@ -5306,8 +5306,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
         raw_ids_value = body.get("raw_ids", [])
+        selected_session_ids = body.get("selected_session_ids", [])
+        candidate_acceptance_checks = body.get("candidate_acceptance_checks")
         if not isinstance(raw_ids_value, list) or not all(
             isinstance(raw_id, str) and raw_id for raw_id in raw_ids_value
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if not isinstance(selected_session_ids, list) or not all(
+            isinstance(session_id, str) and session_id for session_id in selected_session_ids
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if candidate_acceptance_checks is not None and (
+            not isinstance(candidate_acceptance_checks, list)
+            or not all(isinstance(check, str) and check for check in candidate_acceptance_checks)
         ):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
@@ -5367,8 +5380,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             archive_root=archive_root(),
             only_missing=only_missing,
             raw_ids=tuple(raw_ids_value),
+            selected_session_ids=tuple(selected_session_ids),
             max_blob_mb=float(max_blob_mb) if max_blob_mb is not None else None,
             promote=promote,
+            candidate_acceptance_checks=(
+                tuple(candidate_acceptance_checks) if candidate_acceptance_checks is not None else None
+            ),
             operation_id=operation_id,
             schema_inference_receipt_path=(
                 Path(schema_inference_receipt_path) if schema_inference_receipt_path is not None else None
