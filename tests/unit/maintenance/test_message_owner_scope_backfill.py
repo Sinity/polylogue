@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from click.testing import CliRunner
 
+import polylogue.cli.commands.maintenance._message_owner_scope_backfill as owner_backfill_cli
 import polylogue.maintenance.message_owner_scope_backfill as owner_backfill_module
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
@@ -801,3 +803,88 @@ def test_prepared_recovery_accepts_a_valid_terminal_receipt_left_after_publicati
 
     assert recovered.terminal_state == "committed"
     assert not receipt.with_name(receipt.name + ".prepared").exists()
+
+
+def test_rebuild_after_index_reset_admits_an_archive_without_message_assertions(tmp_path: Path) -> None:
+    """The direct rebuild route does not need a deleted derived index to prove no owners.
+
+    Anti-vacuity: this removes the active file from a real initialized archive,
+    then invokes ``rebuild_index_from_source_sync`` with production receipt
+    validation. Restoring the unconditional active-index census rejects before
+    the empty-source rebuild receipt is returned.
+    """
+
+    root = tmp_path / "reset-index-archive"
+    initialize_active_archive_root(root)
+    schema_receipt = write_valid_rebuild_receipt(root, tmp_path / "schema-receipt.json")
+    (root / "index.db").unlink()
+
+    rebuilt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, promote=False, schema_inference_receipt_path=schema_receipt)
+    )
+
+    assert rebuilt.status == "empty-source"
+
+
+def test_completed_owner_receipt_admits_reset_index_before_candidate_creation(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reset derived tier does not invalidate completed durable owner evidence.
+
+    Anti-vacuity: this applies a real backfill, removes the active index, and
+    enters the production replacement gate with its completed receipt. The old
+    census rejects the absent index before it can validate that durable state.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+    (root / "index.db").unlink()
+
+    validate_message_owner_scope_for_index_replacement(root, receipt_path=receipt)
+
+
+def test_backfill_cli_rejects_an_in_archive_receipt_before_mutating_user_state(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI rejects an unusable receipt destination before calling apply.
+
+    Anti-vacuity: this invokes the Click command with an actual immutable plan
+    and a backup validator that would otherwise let the production apply commit
+    user.db. Removing the receipt-location validation makes the mark scopes
+    change and writes the in-archive receipt.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan = census_message_owner_scope_backfill(root)
+    plan_path = tmp_path / "owner-plan.json"
+    write_message_owner_scope_backfill_plan(plan, plan_path)
+    backup = tmp_path / "backup-manifest.json"
+    backup.write_text("backup", encoding="utf-8")
+    in_archive_receipt = root / "owner-receipt.json"
+    _allow_backup(monkeypatch)
+    monkeypatch.setattr(owner_backfill_cli, "archive_root", lambda: root)
+
+    result = CliRunner().invoke(
+        owner_backfill_cli.message_owner_scope_backfill_command,
+        [
+            "--apply",
+            "--plan-file",
+            str(plan_path),
+            "--backup-manifest",
+            str(backup),
+            "--receipt-file",
+            str(in_archive_receipt),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "outside the archive root" in result.output
+    assert not in_archive_receipt.exists()
+    with sqlite3.connect(root / "user.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM assertions WHERE scope_ref IS NULL").fetchone() == (4,)

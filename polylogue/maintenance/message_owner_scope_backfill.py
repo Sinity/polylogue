@@ -528,6 +528,28 @@ def _durable_message_assertion_state(root: Path) -> dict[str, object]:
     return {"row_count": len(rows), "rows_digest": hash_payload({"rows": rows})}
 
 
+def _has_active_message_assertions(root: Path) -> bool:
+    """Return whether the durable tier needs an index owner relation at all."""
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = open_readonly_connection(root / "user.db")
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM assertions
+            WHERE target_ref LIKE 'message:%' AND kind IN ('mark', 'annotation')
+              AND COALESCE(status, 'active') != 'deleted'
+            LIMIT 1
+            """
+        ).fetchone()
+    except sqlite3.Error as exc:
+        raise MessageOwnerScopeBackfillError("could not inspect durable message assertions") from exc
+    finally:
+        if conn is not None:
+            conn.close()
+    return row is not None
+
+
 def _expected_after_plan(plan: MessageOwnerScopeBackfillPlan) -> MessageOwnerScopeBackfillPlan:
     """Derive the only durable state a prepared marker can safely recover."""
     rows = tuple(
@@ -820,6 +842,7 @@ def apply_message_owner_scope_backfill(
         raise MessageOwnerScopeBackfillError(
             "message-owner backfill apply requires a verified user-tier backup manifest"
         )
+    receipt_path = resolve_message_owner_scope_backfill_receipt_reference(root, receipt_path)
     marker_path = receipt_path.with_name(receipt_path.name + ".prepared")
     if receipt_path.exists() and not marker_path.exists():
         raise MessageOwnerScopeBackfillError(f"immutable message-owner backfill receipt already exists: {receipt_path}")
@@ -945,7 +968,8 @@ def validate_message_owner_scope_backfill_receipt(
     schema = raw.get("schema_binding")
     if not isinstance(schema, dict) or schema.get("user") != _schema_version(root / "user.db"):
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt user schema binding is stale")
-    if schema.get("active_index") != _schema_version(ArchiveLocation.resolve(root).active_index_path):
+    active_index_path = ArchiveLocation.resolve(root).active_index_path
+    if active_index_path.exists() and schema.get("active_index") != _schema_version(active_index_path):
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt active index schema binding is stale")
     if (
         candidate_index_path is not None
@@ -1089,6 +1113,19 @@ def validate_message_owner_scope_for_index_replacement(
 ) -> None:
     """Gate promotion on backfilled durable owners and the actual candidate."""
     root = archive_root.resolve()
+    active_index_path = ArchiveLocation.resolve(root).active_index_path
+    if not active_index_path.exists():
+        if _has_active_message_assertions(root):
+            if receipt_path is None:
+                raise MessageOwnerScopeBackfillError(
+                    "message-owner scope backfill complete receipt is required after index reset"
+                )
+            validate_message_owner_scope_backfill_receipt(
+                root,
+                receipt_path,
+                candidate_index_path=candidate_index_path,
+            )
+        return
     current = census_message_owner_scope_backfill(root)
     if current.unresolved_denominator:
         raise MessageOwnerScopeBackfillError(
