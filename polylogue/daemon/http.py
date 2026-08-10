@@ -5385,11 +5385,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             rebuild_index_from_source_sync,
             validate_rebuild_index_request,
         )
-
-        if canary:
-            from polylogue.maintenance.archive_verification import REINDEX_CANARY_ACCEPTANCE_CHECKS
-
-            candidate_acceptance_checks = list(REINDEX_CANARY_ACCEPTANCE_CHECKS)
         from polylogue.paths import archive_root
 
         request = RebuildIndexRequest(
@@ -5399,6 +5394,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             selected_session_ids=tuple(selected_session_ids),
             max_blob_mb=float(max_blob_mb) if max_blob_mb is not None else None,
             promote=promote,
+            canary=canary,
             candidate_acceptance_checks=(
                 tuple(candidate_acceptance_checks) if candidate_acceptance_checks is not None else None
             ),
@@ -5500,20 +5496,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not isinstance(report_path, str) or not report_path:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
-        from polylogue.maintenance.reindex_canary import approve_canary_report_under_daemon_ownership
+        from polylogue.maintenance.reindex_canary import (
+            UnclassifiedCanaryDiffError,
+            approve_canary_report_under_daemon_ownership,
+        )
         from polylogue.paths import archive_root
 
         bridge = getattr(self.server, "write_bridge", None)
         if bridge is None:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
             return
-        payload = cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
-            "http.maintenance.consume-canary-report",
-            None,
-            approve_canary_report_under_daemon_ownership,
-            Path(report_path),
-            archive_root=archive_root(),
-        )
+        try:
+            payload = cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
+                "http.maintenance.consume-canary-report",
+                None,
+                approve_canary_report_under_daemon_ownership,
+                Path(report_path),
+                archive_root=archive_root(),
+            )
+        except UnclassifiedCanaryDiffError as exc:
+            self._send_error(HTTPStatus.UNPROCESSABLE_ENTITY, "canary_report_invalid", str(exc))
+            return
         self._send_json(HTTPStatus.OK, payload)
 
     @daemon_safe_handler

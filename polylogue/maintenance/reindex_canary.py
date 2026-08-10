@@ -363,7 +363,6 @@ def run_reindex_canary(
                 "input index is not the configured archive active generation; "
                 "explicit canary input index must be inside or bound to the selected archive root"
             )
-    from polylogue.maintenance.archive_verification import REINDEX_CANARY_ACCEPTANCE_CHECKS
     from polylogue.maintenance.pathology_zoo import pathology_zoo_is_present, pathology_zoo_session_ids
 
     automatic_pathology_ids = (
@@ -386,7 +385,6 @@ def run_reindex_canary(
         raw_ids=selection.selected_raw_ids,
         selected_session_ids=selection.selected_session_ids,
         index_schema_version=INDEX_SCHEMA_VERSION,
-        candidate_acceptance_checks=REINDEX_CANARY_ACCEPTANCE_CHECKS,
         schema_inference_receipt_path=schema_inference_receipt_path,
         message_owner_scope_backfill_receipt_path=message_owner_scope_backfill_receipt_path,
     )
@@ -901,9 +899,42 @@ def _validate_selection_evidence(
         expected_replay_routing_fingerprint=expected_replay_routing_fingerprint,
         expected_materializer_fingerprint=expected_materializer_fingerprint,
     )
+    _validate_canary_acceptance_evidence(receipt)
     _validate_live_replay_routing_fingerprint(expected_replay_routing_fingerprint)
     _validate_live_materializer_fingerprint(expected_materializer_fingerprint)
     _validate_live_parser_and_lowering_fingerprints(expected_parser_fingerprints, expected_lowering_fingerprint)
+
+
+def _validate_canary_acceptance_evidence(receipt: dict[str, object]) -> None:
+    """Require the running daemon's full canonical canary-profile attestation."""
+
+    from polylogue.maintenance.archive_verification import (
+        REINDEX_CANARY_ACCEPTANCE_CHECKS,
+        REINDEX_CANARY_ACCEPTANCE_PROFILE,
+    )
+
+    acceptance = receipt.get("canary_acceptance")
+    if not isinstance(acceptance, dict):
+        raise UnclassifiedCanaryDiffError("canary report has no daemon acceptance-profile attestation")
+    if acceptance.get("profile") != REINDEX_CANARY_ACCEPTANCE_PROFILE:
+        raise UnclassifiedCanaryDiffError("canary report acceptance profile does not match the running daemon")
+    results = acceptance.get("results")
+    if not isinstance(results, list):
+        raise UnclassifiedCanaryDiffError("canary report acceptance attestation has no per-check results")
+    expected_names = list(REINDEX_CANARY_ACCEPTANCE_CHECKS)
+    actual_names: list[str] = []
+    for result in results:
+        if not isinstance(result, dict):
+            raise UnclassifiedCanaryDiffError("canary report acceptance attestation has invalid per-check results")
+        name = result.get("name")
+        status = result.get("status")
+        if not isinstance(name, str) or not isinstance(status, str):
+            raise UnclassifiedCanaryDiffError("canary report acceptance attestation has invalid per-check results")
+        actual_names.append(name)
+        if status != "ok":
+            raise UnclassifiedCanaryDiffError(f"canary report acceptance check {name} is not ok")
+    if actual_names != expected_names:
+        raise UnclassifiedCanaryDiffError("canary report acceptance attestation does not match the running profile")
 
 
 def _validate_live_replay_routing_fingerprint(expected: str | None) -> None:

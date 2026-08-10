@@ -244,6 +244,11 @@ def _empty_comparison(current: Path, candidate: Path, session_ids: tuple[str, ..
 
 
 def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -> dict[str, object]:
+    from polylogue.maintenance.archive_verification import (
+        REINDEX_CANARY_ACCEPTANCE_CHECKS,
+        REINDEX_CANARY_ACCEPTANCE_PROFILE,
+    )
+
     generation = {
         "generation_id": "gen-canary",
         "owner_id": "owner",
@@ -269,6 +274,13 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
             selected_session_ids=selection.selected_session_ids,
         ),
         "source_evidence_after": "0" * 64,
+        "canary_acceptance": {
+            "profile": REINDEX_CANARY_ACCEPTANCE_PROFILE,
+            "results": [
+                {"name": name, "status": "ok", "summary": "fixture acceptance", "count": 0}
+                for name in REINDEX_CANARY_ACCEPTANCE_CHECKS
+            ],
+        },
     }
 
 
@@ -279,7 +291,6 @@ def _offline_canary_rebuild(
     selected_session_ids: tuple[str, ...],
     index_schema_version: int,
     schema_inference_receipt_path: Path,
-    candidate_acceptance_checks: tuple[str, ...],
 ) -> RebuildIndexReceipt:
     """Exercise canary post-rebuild guards with the real rebuild service.
 
@@ -292,7 +303,7 @@ def _offline_canary_rebuild(
             raw_ids=raw_ids,
             selected_session_ids=selected_session_ids,
             promote=False,
-            candidate_acceptance_checks=candidate_acceptance_checks,
+            canary=True,
             schema_inference_receipt_path=schema_inference_receipt_path,
         )
     )
@@ -658,8 +669,8 @@ def test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_da
             calls["probe"] = kwargs
             return {"ok": True}
 
-        def request_json(self, method: str, path: str, body: dict[str, object]) -> dict[str, object]:
-            calls["request"] = (method, path, body)
+        def request_json(self, method: str, path: str, body: dict[str, object], **kwargs: object) -> dict[str, object]:
+            calls["request"] = (method, path, body, kwargs)
             return {"status": "replayed"}
 
     monkeypatch.setattr("polylogue.daemon_client.DaemonClient", Client)
@@ -671,7 +682,6 @@ def test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_da
         selected_session_ids=("codex-session:one",),
         index_schema_version=42,
         schema_inference_receipt_path=tmp_path / "schema.json",
-        candidate_acceptance_checks=("pathology-zoo-invariants",),
     )
 
     assert receipt == {"status": "replayed"}
@@ -685,6 +695,7 @@ def test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_da
             "canary": True,
             "schema_inference_receipt_path": str(tmp_path / "schema.json"),
         },
+        {},
     )
     _socket_path, client_options = cast(tuple[object, dict[str, object]], calls["init"])
     assert client_options["timeout_s"] is None
@@ -702,8 +713,8 @@ def test_daemon_canary_report_consumption_posts_to_the_writer_owned_route(
         def __init__(self, *args: object, **kwargs: object) -> None:
             calls["init"] = (args, kwargs)
 
-        def request_json(self, method: str, path: str, body: dict[str, object]) -> dict[str, object]:
-            calls["request"] = (method, path, body)
+        def request_json(self, method: str, path: str, body: dict[str, object], **kwargs: object) -> dict[str, object]:
+            calls["request"] = (method, path, body, kwargs)
             return {"review_status": "reviewed"}
 
     monkeypatch.setattr("polylogue.daemon_client.DaemonClient", Client)
@@ -717,9 +728,35 @@ def test_daemon_canary_report_consumption_posts_to_the_writer_owned_route(
         "POST",
         "/api/maintenance/consume-canary-report",
         {"report_path": str(report_path.resolve())},
+        {"raise_for_status": True},
     )
     _socket_path, client_options = cast(tuple[object, dict[str, object]], calls["init"])
     assert client_options["timeout_s"] is None
+
+
+def test_daemon_canary_report_consumption_preserves_typed_validation_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The maintenance adapter retains the daemon's actionable 4xx detail for the CLI."""
+    from polylogue.daemon import bulk_rebuild
+    from polylogue.daemon_client import DaemonResponseError
+
+    class Client:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def request_json(self, *args: object, **kwargs: object) -> None:
+            raise DaemonResponseError(
+                status=422,
+                code="canary_report_invalid",
+                detail="receipt is missing the canonical acceptance profile",
+            )
+
+    monkeypatch.setattr("polylogue.daemon_client.DaemonClient", Client)
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *args, **kwargs: "token")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="missing the canonical acceptance profile"):
+        bulk_rebuild.consume_daemon_canary_report(archive_root=tmp_path, report_path=tmp_path / "report.json")
 
 
 def test_canary_cleanup_dispatches_dictionary_receipts_to_the_daemon(
@@ -908,7 +945,7 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     def fake_rebuild(**request: object) -> Receipt:
         nonlocal captured_receipt_path
         captured["raw_ids"] = tuple(cast(tuple[str, ...], request["raw_ids"]))
-        captured["acceptance_checks"] = tuple(cast(tuple[str, ...], request["candidate_acceptance_checks"]))
+        captured["has_client_profile"] = "candidate_acceptance_checks" in request
         captured["promote"] = False
         captured_receipt_path = cast(Path, request["schema_inference_receipt_path"])
         return Receipt()
@@ -945,7 +982,7 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     assert isinstance(captured_raw_ids, tuple)
     assert set(pathology_session_ids) <= set(captured_session_ids)
     assert len(captured_raw_ids) == len(pathology_session_ids)
-    assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
+    assert captured["has_client_profile"] is False
     assert captured["promote"] is False
     assert captured_receipt_path == receipt_path
 
@@ -1113,6 +1150,15 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     assert source_snapshot == evidence_before == rebuild_source_evidence_snapshot(root)
     assert receipt["receipt_schema_version"] == 4
     assert receipt["source_evidence_after"] == rebuild_source_evidence_snapshot(root)
+    canary_acceptance = receipt["canary_acceptance"]
+    assert isinstance(canary_acceptance, dict)
+    assert canary_acceptance["profile"] == "reindex-canary-v1"
+    results = canary_acceptance["results"]
+    assert isinstance(results, list)
+    assert all(isinstance(result, dict) for result in results)
+    assert [(result["name"], result["status"]) for result in cast(list[dict[str, object]], results)] == [
+        ("pathology-zoo-invariants", "ok")
+    ]
     assert hashlib.sha256(external_index.read_bytes()).hexdigest() == active_digest
     assert json.loads((candidate_path.parent / "generation.json").read_text(encoding="utf-8")) == generation
 
@@ -1226,7 +1272,6 @@ def test_run_reindex_canary_rejects_active_index_rotation_after_replay(
         selected_session_ids: tuple[str, ...],
         index_schema_version: int,
         schema_inference_receipt_path: Path,
-        candidate_acceptance_checks: tuple[str, ...],
     ) -> RebuildIndexReceipt:
         result = _offline_canary_rebuild(
             archive_root=archive_root,
@@ -1234,7 +1279,6 @@ def test_run_reindex_canary_rejects_active_index_rotation_after_replay(
             selected_session_ids=selected_session_ids,
             index_schema_version=index_schema_version,
             schema_inference_receipt_path=schema_inference_receipt_path,
-            candidate_acceptance_checks=candidate_acceptance_checks,
         )
         (root / ".index-active-pointer").write_text(str(rotated_index), encoding="utf-8")
         return result
@@ -1289,7 +1333,7 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
         sample_session_ids=(),
         origin_counts=(("codex-session", 1),),
     )
-    captured: dict[str, tuple[str, ...]] = {}
+    captured: dict[str, object] = {}
 
     class Receipt:
         def to_dict(self) -> dict[str, object]:
@@ -1297,7 +1341,7 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
 
     def fake_rebuild(**request: object) -> Receipt:
         captured["raw_ids"] = tuple(cast(tuple[str, ...], request["raw_ids"]))
-        captured["acceptance_checks"] = tuple(cast(tuple[str, ...], request["candidate_acceptance_checks"]))
+        captured["has_client_profile"] = "candidate_acceptance_checks" in request
         return Receipt()
 
     def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
@@ -1325,7 +1369,7 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
 
     assert result.selection.pathology_session_ids == ()
     assert captured["raw_ids"] == ("raw-alpha",)
-    assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
+    assert captured["has_client_profile"] is False
 
 
 def test_run_reindex_canary_compares_its_own_inactive_generation(
@@ -1523,7 +1567,6 @@ def test_real_daemon_canary_candidate_mutation_reaches_report_writer_red_twin(
         selected_session_ids: tuple[str, ...],
         index_schema_version: int,
         schema_inference_receipt_path: Path,
-        candidate_acceptance_checks: tuple[str, ...],
     ) -> Any:
         receipt = real_rebuild(
             archive_root=archive_root,
@@ -1531,7 +1574,6 @@ def test_real_daemon_canary_candidate_mutation_reaches_report_writer_red_twin(
             selected_session_ids=selected_session_ids,
             index_schema_version=index_schema_version,
             schema_inference_receipt_path=schema_inference_receipt_path,
-            candidate_acceptance_checks=candidate_acceptance_checks,
         )
         generation = receipt.generation
         candidate = Path(str(generation["index_path"]))
@@ -1943,6 +1985,71 @@ def test_loading_canary_report_rejects_ambiguous_prior_evidence_schema(
         payload[field] = value
     else:
         payload["rebuild_receipt"][field] = value
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match=message):
+        load_canary_report(report_path)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        (
+            "profile",
+            "acceptance profile does not match",
+        ),
+        (
+            "results",
+            "acceptance attestation does not match",
+        ),
+        (
+            "status",
+            "acceptance check pathology-zoo-invariants is not ok",
+        ),
+    ),
+)
+def test_loading_canary_report_revalidates_canonical_acceptance_attestation(
+    tmp_path: Path, mutation: str, message: str
+) -> None:
+    """Consumption rejects a receipt that omits or changes daemon-owned acceptance evidence."""
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    comparison = compare_reindex_generations(current, candidate)
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="polylogue-ox2iz",
+            rationale="the canary has no reviewed expected delta for this row",
+        )
+        for difference in comparison.differences
+    )
+    receipt = _rebuild_receipt(selection, comparison)
+    write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=receipt,
+        reviews=reviews,
+    )
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    persisted_receipt = payload["rebuild_receipt"]
+    assert isinstance(persisted_receipt, dict)
+    persisted_acceptance = persisted_receipt["canary_acceptance"]
+    assert isinstance(persisted_acceptance, dict)
+    if mutation == "profile":
+        persisted_acceptance["profile"] = "reindex-canary-v0"
+    elif mutation == "results":
+        persisted_acceptance["results"] = []
+    else:
+        results = persisted_acceptance["results"]
+        assert isinstance(results, list)
+        assert isinstance(results[0], dict)
+        results[0]["status"] = "warning"
     report_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(UnclassifiedCanaryDiffError, match=message):

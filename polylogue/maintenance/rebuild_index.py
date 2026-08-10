@@ -754,6 +754,8 @@ class RebuildIndexRequest:
     selected_session_ids: tuple[str, ...] = ()
     max_blob_mb: float | None = None
     promote: bool = True
+    # A daemon-owned mode, not a client-selected list of candidate checks.
+    canary: bool = False
     candidate_acceptance_checks: tuple[str, ...] | None = None
     operation_id: str | None = None
     schema_inference_receipt_path: Path | None = None
@@ -975,6 +977,9 @@ class RebuildIndexReceipt:
     # consumption can reject source drift without treating parser or
     # governance state as part of the canary's identity.
     source_evidence_after: str | None = None
+    # Present for daemon-selected canary candidates. It binds the canonical
+    # profile identity to every executed check result.
+    canary_acceptance: dict[str, object] | None = None
     #: Wall-clock seconds per rebuild stage for THIS pass.
     #:
     #: Three full rebuilds ran without this, so the only cost breakdown
@@ -1003,6 +1008,7 @@ class RebuildIndexReceipt:
             "operation": self.operation,
             "selection_evidence": self.selection_evidence,
             "source_evidence_after": self.source_evidence_after,
+            "canary_acceptance": self.canary_acceptance,
             "timings_s": self.timings_s,
             "consumed_evidence": self.consumed_evidence,
             **self.replay,
@@ -1263,6 +1269,10 @@ def validate_rebuild_index_request(request: RebuildIndexRequest) -> None:
         raise ValueError("partial rebuild selections require --no-promote and can never replace the active index")
     if request.promote and request.candidate_acceptance_checks is not None:
         raise ValueError("caller-supplied candidate acceptance profiles require --no-promote")
+    if request.canary and request.promote:
+        raise ValueError("canary rebuilds require --no-promote")
+    if request.canary and request.candidate_acceptance_checks is not None:
+        raise ValueError("canary acceptance profile is daemon-owned")
     if request.max_blob_mb is not None and request.max_blob_mb <= 0:
         raise ValueError("max blob size must be positive")
     if request.max_blob_mb is not None and not request.raw_ids and not request.only_missing:
@@ -1556,6 +1566,8 @@ async def _rebuild_index_from_source_owned(
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
         REINDEX_ACCEPTANCE_CHECKS,
+        REINDEX_CANARY_ACCEPTANCE_CHECKS,
+        REINDEX_CANARY_ACCEPTANCE_PROFILE,
         REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
         passes_strict_acceptance,
         strict_acceptance_failures,
@@ -2117,6 +2129,15 @@ async def _rebuild_index_from_source_owned(
             # generation, so cross-tier checks are excluded; see
             # REINDEX_ACCEPTANCE_CHECKS' docstring). This subsumed the older
             # fts-parity-only gate.
+            candidate_acceptance_checks = (
+                REINDEX_CANARY_ACCEPTANCE_CHECKS
+                if request.canary
+                else (
+                    request.candidate_acceptance_checks
+                    if request.candidate_acceptance_checks is not None
+                    else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
+                )
+            )
             acceptance_reports = (
                 verify_archive(generation_root, checks=REINDEX_ACCEPTANCE_CHECKS),
                 # polylogue-f1vg: an inactive generation has only index.db, so
@@ -2124,11 +2145,7 @@ async def _rebuild_index_from_source_owned(
                 # source tier at the archive root before promotion.
                 verify_archive(
                     root,
-                    checks=(
-                        request.candidate_acceptance_checks
-                        if request.candidate_acceptance_checks is not None
-                        else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
-                    ),
+                    checks=candidate_acceptance_checks,
                     index_path_override=Path(generation.index_path),
                 ),
             )
@@ -2148,9 +2165,7 @@ async def _rebuild_index_from_source_owned(
             )
             acceptance_requirements = (
                 REINDEX_ACCEPTANCE_CHECKS,
-                request.candidate_acceptance_checks
-                if request.candidate_acceptance_checks is not None
-                else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+                candidate_acceptance_checks,
             )
             acceptance_failures = tuple(
                 failure
@@ -2163,6 +2178,22 @@ async def _rebuild_index_from_source_owned(
                 raise RuntimeError(
                     f"reindex acceptance gate failed for generation {generation.generation_id}: {failing}"
                 )
+            canary_acceptance: dict[str, object] | None = None
+            if request.canary:
+                canary_results: list[dict[str, object]] = [
+                    {
+                        "name": check.name,
+                        "status": check.status.value,
+                        "summary": check.summary,
+                        "count": check.count,
+                    }
+                    for check in acceptance_reports[1].checks
+                    if check.name in REINDEX_CANARY_ACCEPTANCE_CHECKS
+                ]
+                canary_acceptance = {
+                    "profile": REINDEX_CANARY_ACCEPTANCE_PROFILE,
+                    "results": canary_results,
+                }
             # Derived insight materialization assumes a coherent lineage graph.
             # Reject a structurally invalid inactive candidate before invoking
             # it, so the acceptance receipt names the actual bad invariant
@@ -2346,6 +2377,7 @@ async def _rebuild_index_from_source_owned(
             ),
             selection_evidence=selection_evidence,
             source_evidence_after=source_evidence_after,
+            canary_acceptance=canary_acceptance,
             timings_s=_receipt_timings(
                 selection_s=selection_elapsed_s,
                 replay=replay,

@@ -52,7 +52,6 @@ def _run_cli_canary_tests_through_real_rebuild_service(monkeypatch: pytest.Monke
         selected_session_ids: tuple[str, ...],
         index_schema_version: int,
         schema_inference_receipt_path: Path,
-        candidate_acceptance_checks: tuple[str, ...],
     ) -> object:
         return rebuild_index_from_source_sync(
             RebuildIndexRequest(
@@ -60,7 +59,7 @@ def _run_cli_canary_tests_through_real_rebuild_service(monkeypatch: pytest.Monke
                 raw_ids=raw_ids,
                 selected_session_ids=selected_session_ids,
                 promote=False,
-                candidate_acceptance_checks=candidate_acceptance_checks,
+                canary=True,
                 schema_inference_receipt_path=schema_inference_receipt_path,
             )
         )

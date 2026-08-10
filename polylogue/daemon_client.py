@@ -10,6 +10,16 @@ from time import perf_counter
 from typing import Any
 
 
+class DaemonResponseError(RuntimeError):
+    """A daemon response with a typed non-success HTTP envelope."""
+
+    def __init__(self, *, status: int, code: str | None, detail: str | None) -> None:
+        self.status = status
+        self.code = code
+        self.detail = detail or code or f"daemon returned HTTP {status}"
+        super().__init__(self.detail)
+
+
 class _UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, socket_path: Path, timeout: float | None) -> None:
         super().__init__("localhost", timeout=timeout)
@@ -30,7 +40,14 @@ class DaemonClient:
         self.auth_token = auth_token
         self.last_elapsed_ms: int | None = None
 
-    def request_json(self, method: str, path: str, body: dict[str, object] | None = None) -> dict[str, Any] | None:
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, object] | None = None,
+        *,
+        raise_for_status: bool = False,
+    ) -> dict[str, Any] | None:
         if not self.socket_path.exists():
             return None
         connection = _UnixHTTPConnection(self.socket_path, self.timeout_s)
@@ -42,10 +59,19 @@ class DaemonClient:
                 headers["Authorization"] = f"Bearer {self.auth_token}"
             connection.request(method, path, body=raw, headers=headers)
             response = connection.getresponse()
-            if response.status != 200:
-                return None
             payload = json.loads(response.read().decode())
             self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
+            if response.status != 200:
+                if raise_for_status:
+                    envelope = payload if isinstance(payload, dict) else {}
+                    code = envelope.get("error")
+                    detail = envelope.get("detail")
+                    raise DaemonResponseError(
+                        status=response.status,
+                        code=code if isinstance(code, str) else None,
+                        detail=detail if isinstance(detail, str) else None,
+                    )
+                return None
             return payload if isinstance(payload, dict) else None
         except (OSError, TimeoutError, ValueError, http.client.HTTPException):
             return None
@@ -68,4 +94,4 @@ class DaemonClient:
         return health
 
 
-__all__ = ["DaemonClient"]
+__all__ = ["DaemonClient", "DaemonResponseError"]

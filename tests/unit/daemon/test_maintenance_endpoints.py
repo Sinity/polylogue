@@ -246,6 +246,50 @@ class TestMaintenanceAPIRoutes:
         approve.assert_called_once_with(Path(tmp_path / "report.json"), archive_root=tmp_path)
         send.assert_called_once_with(HTTPStatus.OK, {"review_status": "reviewed"})
 
+    def test_consume_canary_report_returns_typed_validation_detail(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """The production route makes invalid report evidence an actionable 422."""
+        from polylogue.maintenance.reindex_canary import UnclassifiedCanaryDiffError
+
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+        handler = _make_handler(
+            "/api/maintenance/consume-canary-report",
+            body={"report_path": str(tmp_path / "report.json")},
+        )
+
+        class Bridge:
+            def run_sync_with_timeout(self, _actor, _timeout, function, *args, **kwargs):  # type: ignore[no-untyped-def]
+                return function(*args, **kwargs)
+
+        handler.server.write_bridge = cast("DaemonWriteThreadBridge", Bridge())
+        with patch(
+            "polylogue.maintenance.reindex_canary.approve_canary_report_under_daemon_ownership",
+            side_effect=UnclassifiedCanaryDiffError("receipt is missing the canonical acceptance profile"),
+        ):
+            with patch.object(handler, "_send_error") as send_error:
+                handler._handle_consume_canary_report()
+
+        send_error.assert_called_once_with(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "canary_report_invalid",
+            "receipt is missing the canonical acceptance profile",
+        )
+
+    def test_rebuild_index_canary_rejects_client_selected_acceptance_checks(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """Canary mode selects its profile in the daemon, never from request JSON."""
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+        handler = _make_handler(
+            "/api/maintenance/rebuild-index",
+            body={
+                "promote": False,
+                "canary": True,
+                "candidate_acceptance_checks": ["pathology-zoo-invariants"],
+            },
+        )
+        with patch.object(handler, "_send_error") as send_error:
+            handler._handle_rebuild_index()
+
+        send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "invalid_request")
+
     def test_discard_candidate_runs_through_the_daemon_writer_bridge(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
         handler = _make_handler(
