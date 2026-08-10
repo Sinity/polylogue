@@ -4170,11 +4170,12 @@ def _raw_materialization_parser_census_candidates(
         expanded_blob_bytes: dict[str, int] = {}
         expanded_origins: dict[str, str] = {}
         expanded_source_paths: dict[str, str] = {}
-        if expanded_raw_ids:
-            placeholders = ",".join("?" for _ in expanded_raw_ids)
+        for offset in range(0, len(expanded_raw_ids), 500):
+            raw_id_chunk = expanded_raw_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in raw_id_chunk)
             for row in conn.execute(
                 f"SELECT raw_id, blob_size, origin, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
-                expanded_raw_ids,
+                raw_id_chunk,
             ):
                 raw_id = str(row[0])
                 expanded_blob_bytes[raw_id] = int(row[1] or 0)
@@ -4262,24 +4263,26 @@ def raw_materialization_readonly_descriptors(
     if not raw_ids:
         return {}
     archive_root = Path(archive_root)
-    placeholders = ",".join("?" for _ in raw_ids)
     result: dict[str, tuple[Provider, str, str, RawRevisionKind, int]] = {}
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, blob_size
-            FROM raw_sessions WHERE raw_id IN ({placeholders})
-            """,
-            raw_ids,
-        ).fetchall()
-    for row in rows:
-        result[str(row[0])] = (
-            provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[2]),
-            str(row[3]),
-            str(row[4]),
-            RawRevisionKind(str(row[5])),
-            int(row[6]),
-        )
+        for offset in range(0, len(raw_ids), 500):
+            raw_id_chunk = raw_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in raw_id_chunk)
+            rows = conn.execute(
+                f"""
+                SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, blob_size
+                FROM raw_sessions WHERE raw_id IN ({placeholders})
+                """,
+                raw_id_chunk,
+            ).fetchall()
+            for row in rows:
+                result[str(row[0])] = (
+                    provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[2]),
+                    str(row[3]),
+                    str(row[4]),
+                    RawRevisionKind(str(row[5])),
+                    int(row[6]),
+                )
     return result
 
 
