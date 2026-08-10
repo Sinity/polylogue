@@ -688,6 +688,75 @@ def test_startup_consumes_an_already_recovered_rollback_intent(tmp_path: Path) -
     assert not pending_path.exists()
 
 
+def test_startup_skips_unfinalized_raw_authority_receipt_and_recovers_other_intents(tmp_path: Path) -> None:
+    """A crash before receipt publication leaves the raw recovery intent resumable."""
+
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        before = migration_runner.capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    missing_pending = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=tmp_path / "raw-authority-receipt.json",
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="raw-authority-recovery",
+        evidence_ref="proof:raw-authority-recovery",
+    )
+    rolled_back_receipt = tmp_path / "rolled-back.jsonl"
+    rolled_back_receipt.write_text('{"phase": "recovered_rolled_back"}\n', encoding="utf-8")
+    rolled_back_pending = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=rolled_back_receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="other-recovery",
+        evidence_ref="proof:other-recovery",
+    )
+
+    durable_change_train_module._recover_pending_source_continuity_intents(tmp_path)
+
+    assert missing_pending.exists()
+    assert not rolled_back_pending.exists()
+
+
+@pytest.mark.parametrize("after_counts", ({}, {"raw_authority_censuses": False}))
+def test_raw_authority_reset_receipt_requires_nonempty_integer_zero_counts(
+    tmp_path: Path, after_counts: dict[str, object]
+) -> None:
+    """A self-hashed reset receipt must prove each ledger table reached zero."""
+
+    source_path = tmp_path / "source.db"
+    _create_current_database(source_path)
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    payload: dict[str, object] = {
+        "format": "polylogue.raw-authority-recovery-receipt.v1",
+        "operation": "reset_raw_authority_census",
+        "operation_id": "raw-authority-reset",
+        "archive_root": str(tmp_path),
+        "backup_authority": {
+            "tier": ArchiveTier.SOURCE.value,
+            "manifest_path": str(backup_manifest),
+            "manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
+        },
+        "after_counts": after_counts,
+    }
+    payload["receipt_sha256"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+    with pytest.raises(DurableChangeTrainError, match="does not prove"):
+        durable_change_train_module._validate_source_mutation_receipt_bytes(
+            json.dumps(payload).encode("utf-8"),
+            source_path=source_path,
+            backup_manifest=backup_manifest,
+            operation_id="raw-authority-reset",
+        )
+
+
 def test_postcondition_recovery_rejects_remaining_orphans(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)

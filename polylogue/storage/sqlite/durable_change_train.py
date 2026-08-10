@@ -744,6 +744,8 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
         except (DurableChangeTrainError, KeyError, TypeError, ValueError) as exc:
             raise DurableChangeTrainError(f"source continuity pending intent is malformed: {path}") from exc
         receipt_phase = _source_mutation_receipt_phase(receipt)
+        if receipt_phase == "not_yet_finalized":
+            continue
         if receipt_phase == "recovered_rolled_back":
             clear_source_continuity_pending_intent(path)
             continue
@@ -805,6 +807,8 @@ def _source_mutation_receipt_phase(receipt_path: Path) -> str:
 
     try:
         raw = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "not_yet_finalized"
     except json.JSONDecodeError:
         return _liveness_receipt_phase(receipt_path)
     except (OSError, UnicodeDecodeError) as exc:
@@ -949,7 +953,11 @@ def _validate_raw_authority_reset_receipt(
     ):
         raise DurableChangeTrainError("source mutation receipt does not bind the named raw-authority reset")
     after_counts = payload.get("after_counts")
-    if not isinstance(after_counts, dict) or any(value != 0 for value in after_counts.values()):
+    if (
+        not isinstance(after_counts, dict)
+        or not after_counts
+        or any(not isinstance(value, int) or isinstance(value, bool) or value != 0 for value in after_counts.values())
+    ):
         raise DurableChangeTrainError("source mutation receipt does not prove the raw-authority ledger reset")
     return {"backup_manifest_sha256": backup_digest}
 

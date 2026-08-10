@@ -969,6 +969,17 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
         executor_status="executor-routed",
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="raw-authority-recovery-source",
+                target_kinds=("source",),
+                required_capabilities=("archive.raw_authority_recovery",),
+                destructive_class="reset",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("derived",),
+                allowed_recovery=("none",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-prune-orphaned-index-revision-seeds",
@@ -993,6 +1004,17 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
         executor_status="executor-routed",
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="raw-authority-recovery-index",
+                target_kinds=("index",),
+                required_capabilities=("archive.raw_authority_recovery",),
+                destructive_class="reset",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("derived",),
+                allowed_recovery=("none",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-save-saved-view",

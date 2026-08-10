@@ -1023,7 +1023,13 @@ def _recovery_intent(plan: RawAuthorityRecoveryPlan) -> dict[str, object]:
 
 
 def _write_source_continuity_pending_intent(plan: RawAuthorityRecoveryPlan) -> Path:
-    """Persist source-train refresh evidence before the reset can commit."""
+    """Persist source-train refresh evidence before the reset can commit.
+
+    The pending intent names the future recovery receipt before the SQLite
+    transaction commits. If a crash occurs in that interval, startup leaves
+    the pending intent in place as ``not_yet_finalized`` so the matching
+    durable raw-authority intent can still resume and publish the receipt.
+    """
 
     authority = plan.backup_authority
     if not isinstance(authority, dict):
