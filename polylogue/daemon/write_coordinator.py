@@ -545,7 +545,7 @@ class DaemonWriteThreadBridge:
     def run_sync_with_timeout(
         self,
         actor: str,
-        timeout: float,
+        timeout: float | None,
         function: Callable[P, T],
         /,
         *args: P.args,
@@ -560,6 +560,10 @@ class DaemonWriteThreadBridge:
         ``urlopen(..., timeout=600)``) -- so that call site needs its own,
         longer wait here rather than being silently killed by the bridge's
         default gate at 30s while the rebuild is still replaying.
+        A None timeout preserves daemon ownership until the operation returns
+        its receipt. This is necessary for no-promote canaries: abandoning a
+        completed inactive candidate after a caller-side timeout would lose
+        the only authority capable of discarding it safely.
         """
         future = asyncio.run_coroutine_threadsafe(
             self._coordinator.run_sync(actor, function, *args, **kwargs), self._loop

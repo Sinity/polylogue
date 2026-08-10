@@ -104,7 +104,6 @@ def reindex_canary_command(
     from polylogue.maintenance.reindex_canary import (
         CanaryRunResult,
         UnclassifiedCanaryDiffError,
-        approve_canary_report,
         load_canary_report,
         load_canary_review_manifest,
         run_reindex_canary,
@@ -117,7 +116,9 @@ def reindex_canary_command(
         if not report_path.is_file():
             raise click.BadParameter("report file does not exist", param_hint="--report")
         try:
-            payload = approve_canary_report(report_path, archive_root=archive_root)
+            from polylogue.daemon.bulk_rebuild import consume_daemon_canary_report
+
+            payload = consume_daemon_canary_report(archive_root=archive_root, report_path=report_path)
         except UnclassifiedCanaryDiffError as exc:
             raise click.ClickException(str(exc)) from exc
         except (OSError, RuntimeError, ValueError) as exc:
@@ -153,15 +154,18 @@ def reindex_canary_command(
             reviews=reviews,
             allow_unreviewed=review_manifest is None,
         )
-        load_canary_report(report_path, archive_root=archive_root)
-        if result.comparison.differences and review_manifest is None:
-            identities = [dict(item.identity) for item in result.comparison.differences]
-            raise UnclassifiedCanaryDiffError(
-                "unreviewed canary report written to "
-                + str(report_path)
-                + "; observed identities="
-                + json.dumps(identities, sort_keys=True)
+        if durable.review_status != "reviewed":
+            if output_format == "json":
+                click.echo(json.dumps(durable.to_dict(), indent=2, sort_keys=True))
+            else:
+                click.echo(f"Selected:     {len(result.selection.selected_raw_ids):,} raw row(s)")
+                click.echo(f"Compared:     {len(result.comparison.differences):,} difference(s)")
+                click.echo("Classified:   False (unreviewed discovery report)")
+                click.echo(f"Report:       {report_path}")
+            raise click.ClickException(
+                "canary differences were persisted unreviewed; add --review-manifest before consuming"
             )
+        load_canary_report(report_path, archive_root=archive_root)
     except UnclassifiedCanaryDiffError as exc:
         raise click.ClickException(str(exc)) from exc
     except (OSError, RuntimeError, ValueError) as exc:

@@ -260,6 +260,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "Reindex Canary Differ Implementation, 2026-08-09",
+        "evidence/polylogue-0x7nh-reindex-canary-differ-implementation-2026-08-09.md",
+        "Implementation packet, supersession proof, anti-vacuity evidence, and the remaining first-production-report gate.",
+        "evidence",
+    ),
+    _entry(
         "Proof Artifacts",
         "proof-artifacts.md",
         "Claim-to-proof map for public-facing demo and evidence claims.",

@@ -381,6 +381,25 @@ def _discard_generation_after_provenance_failure(
     return errors
 
 
+def discard_inactive_rebuild_candidate(archive_root: Path, generation_id: str, generation_owner_id: str) -> None:
+    """Discard exactly one daemon-owned inactive generation.
+
+    The caller supplies both immutable generation identity fields. The daemon
+    invokes this under its writer coordinator after client-side canary
+    validation fails; CLI processes never perform this lifecycle mutation.
+    """
+
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    store = IndexGenerationStore(ArchiveLocation.resolve(archive_root), repair_anchor=False)
+    candidate = store.load(generation_id)
+    if candidate.owner_id != generation_owner_id or candidate.state != "inactive":
+        raise RuntimeError(f"canary candidate {generation_id} is not an owned inactive generation")
+    if not store.discard_if_inactive(candidate):
+        raise RuntimeError(f"canary candidate {generation_id} was not discarded")
+
+
 def _discard_transaction_after_provenance_failure(
     generation_store: IndexGenerationStore,
     transaction: IndexRebuildTransaction,
@@ -730,8 +749,13 @@ class RebuildIndexRequest:
     archive_root: Path
     only_missing: bool = False
     raw_ids: tuple[str, ...] = ()
+    # The canary's compared denominator. This is evidence-only: raw IDs remain
+    # the replay selection, while session IDs bind the later comparison scope.
+    selected_session_ids: tuple[str, ...] = ()
     max_blob_mb: float | None = None
     promote: bool = True
+    # A daemon-owned mode, not a client-selected list of candidate checks.
+    canary: bool = False
     candidate_acceptance_checks: tuple[str, ...] | None = None
     operation_id: str | None = None
     schema_inference_receipt_path: Path | None = None
@@ -953,6 +977,9 @@ class RebuildIndexReceipt:
     # consumption can reject source drift without treating parser or
     # governance state as part of the canary's identity.
     source_evidence_after: str | None = None
+    # Present for daemon-selected canary candidates. It binds the canonical
+    # profile identity to every executed check result.
+    canary_acceptance: dict[str, object] | None = None
     #: Wall-clock seconds per rebuild stage for THIS pass.
     #:
     #: Three full rebuilds ran without this, so the only cost breakdown
@@ -981,6 +1008,7 @@ class RebuildIndexReceipt:
             "operation": self.operation,
             "selection_evidence": self.selection_evidence,
             "source_evidence_after": self.source_evidence_after,
+            "canary_acceptance": self.canary_acceptance,
             "timings_s": self.timings_s,
             "consumed_evidence": self.consumed_evidence,
             **self.replay,
@@ -995,6 +1023,7 @@ def rebuild_selection_evidence(
     generation_owner_id: str,
     candidate_index: Path,
     source_snapshot: str,
+    selected_session_ids: list[str] | tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Commit the requested and production-expanded replay closure.
 
@@ -1013,6 +1042,7 @@ def rebuild_selection_evidence(
         "candidate_index_path": str(candidate_index.resolve()),
         "candidate_owner_id": generation_owner_id,
         "raw_ids": sorted(raw_ids),
+        "selected_session_ids": sorted(selected_session_ids),
         "replay_closure": replay_closure,
         "source_snapshot": source_snapshot,
     }
@@ -1020,6 +1050,8 @@ def rebuild_selection_evidence(
     return {
         "algorithm": "sha256-canonical-json-v1",
         "raw_id_count": len(raw_ids),
+        "selected_session_count": len(selected_session_ids),
+        "selected_session_ids": sorted(selected_session_ids),
         "raw_ids_sha256": sha256(encoded).hexdigest(),
         **{key: value for key, value in canonical.items() if key != "raw_ids"},
     }
@@ -1107,9 +1139,16 @@ def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tu
                 ).fetchall()
             )
         raw_rows.sort(key=lambda row: str(row[0]))
-        from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+        from polylogue.sources.origin_specs import (
+            lowering_fingerprint,
+            materializer_fingerprint,
+            parser_fingerprint_for_origin,
+            replay_routing_fingerprint,
+        )
 
         lowering = lowering_fingerprint()
+        materializer = materializer_fingerprint()
+        replay_routing = replay_routing_fingerprint()
         parser_fingerprints: dict[str, str] = {}
         for row in raw_rows:
             origin = str(row[1])
@@ -1140,6 +1179,8 @@ def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tu
                 "revision_authority_evidence": None if row[19] is None else str(row[19]),
                 "parser_fingerprint": parser_fingerprints[str(row[1])],
                 "lowering_fingerprint": lowering,
+                "replay_routing_fingerprint": replay_routing,
+                "materializer_fingerprint": materializer,
             }
             for row in raw_rows
         ]
@@ -1218,10 +1259,20 @@ def validate_rebuild_index_request(request: RebuildIndexRequest) -> None:
     """Reject selection and transaction combinations that cannot be promoted safely."""
     if request.raw_ids and request.only_missing:
         raise ValueError("--raw-id cannot be combined with --only-missing")
+    if request.selected_session_ids and not request.raw_ids:
+        raise ValueError("selected session evidence requires an explicit raw-id selection")
+    if len(set(request.selected_session_ids)) != len(request.selected_session_ids) or not all(
+        request.selected_session_ids
+    ):
+        raise ValueError("selected session evidence must contain unique non-empty ids")
     if (request.raw_ids or request.only_missing) and request.promote:
         raise ValueError("partial rebuild selections require --no-promote and can never replace the active index")
     if request.promote and request.candidate_acceptance_checks is not None:
         raise ValueError("caller-supplied candidate acceptance profiles require --no-promote")
+    if request.canary and request.promote:
+        raise ValueError("canary rebuilds require --no-promote")
+    if request.canary and request.candidate_acceptance_checks is not None:
+        raise ValueError("canary acceptance profile is daemon-owned")
     if request.max_blob_mb is not None and request.max_blob_mb <= 0:
         raise ValueError("max blob size must be positive")
     if request.max_blob_mb is not None and not request.raw_ids and not request.only_missing:
@@ -1515,6 +1566,8 @@ async def _rebuild_index_from_source_owned(
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
         REINDEX_ACCEPTANCE_CHECKS,
+        REINDEX_CANARY_ACCEPTANCE_CHECKS,
+        REINDEX_CANARY_ACCEPTANCE_PROFILE,
         REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
         passes_strict_acceptance,
         strict_acceptance_failures,
@@ -1666,6 +1719,7 @@ async def _rebuild_index_from_source_owned(
                 generation_owner_id=generation.owner_id,
                 candidate_index=Path(generation.index_path),
                 source_snapshot=generation.source_snapshot,
+                selected_session_ids=request.selected_session_ids,
             )
         except BaseException as exc:
             if transaction is None:
@@ -2027,6 +2081,7 @@ async def _rebuild_index_from_source_owned(
                 generation_owner_id=generation.owner_id,
                 candidate_index=Path(generation.index_path),
                 source_snapshot=generation.source_snapshot,
+                selected_session_ids=request.selected_session_ids,
             )
             if rebuild_source_evidence_snapshot(root) != generation.source_snapshot:
                 if transaction is not None and transaction_created_here:
@@ -2074,6 +2129,15 @@ async def _rebuild_index_from_source_owned(
             # generation, so cross-tier checks are excluded; see
             # REINDEX_ACCEPTANCE_CHECKS' docstring). This subsumed the older
             # fts-parity-only gate.
+            candidate_acceptance_checks = (
+                REINDEX_CANARY_ACCEPTANCE_CHECKS
+                if request.canary
+                else (
+                    request.candidate_acceptance_checks
+                    if request.candidate_acceptance_checks is not None
+                    else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
+                )
+            )
             acceptance_reports = (
                 verify_archive(generation_root, checks=REINDEX_ACCEPTANCE_CHECKS),
                 # polylogue-f1vg: an inactive generation has only index.db, so
@@ -2081,11 +2145,7 @@ async def _rebuild_index_from_source_owned(
                 # source tier at the archive root before promotion.
                 verify_archive(
                     root,
-                    checks=(
-                        request.candidate_acceptance_checks
-                        if request.candidate_acceptance_checks is not None
-                        else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
-                    ),
+                    checks=candidate_acceptance_checks,
                     index_path_override=Path(generation.index_path),
                 ),
             )
@@ -2105,9 +2165,7 @@ async def _rebuild_index_from_source_owned(
             )
             acceptance_requirements = (
                 REINDEX_ACCEPTANCE_CHECKS,
-                request.candidate_acceptance_checks
-                if request.candidate_acceptance_checks is not None
-                else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+                candidate_acceptance_checks,
             )
             acceptance_failures = tuple(
                 failure
@@ -2120,6 +2178,22 @@ async def _rebuild_index_from_source_owned(
                 raise RuntimeError(
                     f"reindex acceptance gate failed for generation {generation.generation_id}: {failing}"
                 )
+            canary_acceptance: dict[str, object] | None = None
+            if request.canary:
+                canary_results: list[dict[str, object]] = [
+                    {
+                        "name": check.name,
+                        "status": check.status.value,
+                        "summary": check.summary,
+                        "count": check.count,
+                    }
+                    for check in acceptance_reports[1].checks
+                    if check.name in REINDEX_CANARY_ACCEPTANCE_CHECKS
+                ]
+                canary_acceptance = {
+                    "profile": REINDEX_CANARY_ACCEPTANCE_PROFILE,
+                    "results": canary_results,
+                }
             # Derived insight materialization assumes a coherent lineage graph.
             # Reject a structurally invalid inactive candidate before invoking
             # it, so the acceptance receipt names the actual bad invariant
@@ -2303,6 +2377,7 @@ async def _rebuild_index_from_source_owned(
             ),
             selection_evidence=selection_evidence,
             source_evidence_after=source_evidence_after,
+            canary_acceptance=canary_acceptance,
             timings_s=_receipt_timings(
                 selection_s=selection_elapsed_s,
                 replay=replay,

@@ -14,7 +14,6 @@ import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from unittest.mock import patch
 
 from polylogue.config import Source
 from polylogue.core.enums import Origin
@@ -31,7 +30,7 @@ from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
-from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
+from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, markdown_export_payload
 
 CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
 CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN = Origin.CLAUDE_AI_EXPORT.value
@@ -482,8 +481,32 @@ def _write_generated_members(root: Path, *, indexes: tuple[int, ...] | None = No
     )
     paths: list[Path] = []
     for index in indexes or tuple(range(len(specs))):
-        written = SyntheticCorpus.write_spec_artifacts(specs[index], generated, prefix=f"zoo-{index:02d}")
-        paths.extend(written.files)
+        spec = specs[index]
+        if spec.provider == "antigravity":
+            # The durable archive input is the production markdown-export
+            # payload, not a synthetic language-server inventory. Reindex
+            # replays the retained bytes after this fixture's patch scope has
+            # ended, so this must take the ordinary document replay route.
+            cascade_id = "zoo-06-00:zoo-06-00.md"
+            artifact = generated / "zoo-06-00-antigravity-export.json"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text(
+                json.dumps(
+                    markdown_export_payload(
+                        AntigravitySessionSummary(
+                            cascade_id=cascade_id,
+                            title=f"Synthetic Antigravity {cascade_id}",
+                            last_modified_time="2026-01-01T00:00:00Z",
+                        ),
+                        "### User Input\\n\\nSynthetic prompt\\n\\n### Planner Response\\n\\nSynthetic response\\n",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            paths.append(artifact)
+        else:
+            written = SyntheticCorpus.write_spec_artifacts(spec, generated, prefix=f"zoo-{index:02d}")
+            paths.extend(written.files)
     return tuple(paths)
 
 
@@ -495,7 +518,7 @@ def _bind_durable_paths(
             member,
             durable_paths=(str(hook_event_path),)
             if member.member_id == "hook-event"
-            else (str(wire_root / "generated" / "conversations" / "zoo-06-00:zoo-06-00.md.pb"),)
+            else (str(wire_root / "generated" / "zoo-06-00-antigravity-export.json"),)
             if member.member_id == "non-stream-safe"
             else tuple(str(wire_root / raw_path) for raw_path in member.raw_paths),
         )
@@ -532,21 +555,13 @@ def build_pathology_zoo(archive_root: Path) -> PathologyZoo:
     _write_generated_members(wire_root, indexes=(0, 1, 3, 5, 6))
     _write_manual_members(wire_root)
     sources = [Source(name="pathology-zoo", path=wire_root), Source(name="antigravity", path=wire_root / "generated")]
-    with patch(
-        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
-        SyntheticAntigravityLanguageServerClient,
-    ):
-        asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
+    asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
     _write_generated_members(wire_root, indexes=(2, 4))
     _write_jsonl(
         wire_root / "manual" / "lineage-cycle-z-a-update.jsonl",
         _codex_records("zoo-cycle-a", ("cycle A", "cycle A revised"), parent="zoo-cycle-b", subagent=True),
     )
-    with patch(
-        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
-        SyntheticAntigravityLanguageServerClient,
-    ):
-        asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
+    asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
     hook_event_path = enqueue_hook_event(
         event_id="zoo-hook-event",
         provider="claude-code",

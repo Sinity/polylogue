@@ -89,6 +89,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Demos and Proofs](demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
 | [Cursor Authority Census, 2026-08-04](evidence/polylogue-xeck9-cursor-authority-census-2026-08-04.md) | Privacy-safe read-only census of cursor and accepted-head readiness evidence. |
 | [Topology Live-Proof Residue, 2026-08-06](evidence/polylogue-topology-live-proof-2026-08-06.md) | Candidate topology census, production-route cycle evidence, and unexercised live-archive residue. |
+| [Reindex Canary Differ Implementation, 2026-08-09](evidence/polylogue-0x7nh-reindex-canary-differ-implementation-2026-08-09.md) | Implementation packet, supersession proof, anti-vacuity evidence, and the remaining first-production-report gate. |
 | [Proof Artifacts](proof-artifacts.md) | Claim-to-proof map for public-facing demo and evidence claims. |
 | [README Public-Claims View](generated/public-claims/readme.md) | Generated compact status view for claims used in README-facing copy. |
 | [Launch Public-Claims View](generated/public-claims/launch.md) | Generated launch-copy claim status with evidence blockers and remediation refs. |

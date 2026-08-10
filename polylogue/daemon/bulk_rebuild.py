@@ -461,10 +461,128 @@ async def run_daemon_bulk_rebuild_pass(
     )
 
 
+def run_daemon_canary_rebuild(
+    *,
+    archive_root: Path,
+    raw_ids: tuple[str, ...],
+    selected_session_ids: tuple[str, ...],
+    index_schema_version: int,
+    schema_inference_receipt_path: Path,
+    message_owner_scope_backfill_receipt_path: Path | None = None,
+) -> dict[str, object]:
+    """Run the canary only through the running daemon's writer-owned HTTP route."""
+
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+    from polylogue.version import POLYLOGUE_VERSION
+
+    root = Path(archive_root).resolve()
+    config = load_polylogue_config()
+    client = DaemonClient(
+        daemon_socket_path(root),
+        timeout_s=None,
+        auth_token=resolve_api_auth_token(
+            config.api_auth_token, allow_no_auth=config.api_allow_no_auth, token_path=root / "api-auth-token"
+        ),
+    )
+    if (
+        client.probe(
+            archive_root=str(root),
+            index_schema_version=index_schema_version,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        is None
+    ):
+        raise RuntimeError("reindex canary requires a matching running daemon writer")
+    payload: dict[str, object] = {
+        "raw_ids": list(raw_ids),
+        "selected_session_ids": list(selected_session_ids),
+        "promote": False,
+        "canary": True,
+        "schema_inference_receipt_path": str(schema_inference_receipt_path.resolve()),
+    }
+    if message_owner_scope_backfill_receipt_path is not None:
+        payload["message_owner_scope_backfill_receipt_path"] = str(message_owner_scope_backfill_receipt_path.resolve())
+    receipt = client.request_json("POST", "/api/maintenance/rebuild-index", payload)
+    if receipt is None:
+        raise RuntimeError("daemon rejected or did not complete the reindex canary rebuild")
+    return receipt
+
+
+def discard_daemon_canary_candidate(
+    *,
+    archive_root: Path,
+    generation_id: str,
+    generation_owner_id: str,
+) -> None:
+    """Discard a failed canary candidate through its owning daemon process."""
+
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+
+    root = Path(archive_root).resolve()
+    config = load_polylogue_config()
+    client = DaemonClient(
+        daemon_socket_path(root),
+        timeout_s=None,
+        auth_token=resolve_api_auth_token(
+            config.api_auth_token, allow_no_auth=config.api_allow_no_auth, token_path=root / "api-auth-token"
+        ),
+    )
+    result = client.request_json(
+        "POST",
+        "/api/maintenance/discard-index-candidate",
+        {"generation_id": generation_id, "generation_owner_id": generation_owner_id},
+    )
+    if result != {"discarded": True, "generation_id": generation_id}:
+        raise RuntimeError(f"daemon did not discard inactive canary candidate {generation_id}")
+
+
+def consume_daemon_canary_report(*, archive_root: Path, report_path: Path) -> dict[str, object]:
+    """Consume report evidence through the archive's running daemon writer."""
+
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient, DaemonResponseError
+    from polylogue.maintenance.reindex_canary import UnclassifiedCanaryDiffError
+
+    root = Path(archive_root).resolve()
+    config = load_polylogue_config()
+    client = DaemonClient(
+        daemon_socket_path(root),
+        timeout_s=None,
+        auth_token=resolve_api_auth_token(
+            config.api_auth_token, allow_no_auth=config.api_allow_no_auth, token_path=root / "api-auth-token"
+        ),
+    )
+    try:
+        payload = client.request_json(
+            "POST",
+            "/api/maintenance/consume-canary-report",
+            {"report_path": str(Path(report_path).resolve())},
+            raise_for_status=True,
+        )
+    except DaemonResponseError as exc:
+        if 400 <= exc.status < 500:
+            raise UnclassifiedCanaryDiffError(exc.detail) from exc
+        raise RuntimeError(str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("daemon rejected or did not complete canary report consumption")
+    return payload
+
+
 __all__ = [
     "DAEMON_BULK_REBUILD_BATCH_SIZE",
     "DAEMON_BULK_REBUILD_OPERATION_ID",
+    "consume_daemon_canary_report",
+    "discard_daemon_canary_candidate",
     "has_resumable_daemon_bulk_rebuild_transaction",
     "resolve_or_start_daemon_bulk_rebuild_transaction",
+    "run_daemon_canary_rebuild",
     "run_daemon_bulk_rebuild_pass",
 ]

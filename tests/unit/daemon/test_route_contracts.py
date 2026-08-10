@@ -111,7 +111,7 @@ def test_rebuild_index_handler_forwards_resumable_pass_options_through_writer_br
 
     actor, timeout, function, request = bridge.write_bridge.run_sync_with_timeout.call_args.args
     assert actor == "http.maintenance.rebuild-index"
-    assert timeout > 0
+    assert timeout == 600.0
     assert function.__name__ == "rebuild_index_from_source_sync"
     assert request.operation_id is None
     assert request.raw_batch_size == 17

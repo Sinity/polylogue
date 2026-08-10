@@ -1,4 +1,4 @@
-"""Compatibility import for the lightweight daemon UDS client."""
+"""Daemon-package compatibility import for the neutral UDS client."""
 
 from polylogue.daemon_client import DaemonClient
 

@@ -453,6 +453,16 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
             ("api", "maintenance", "rebuild-index"),
             "_handle_rebuild_index",
         ),
+        _StaticPostRoute(
+            "/api/maintenance/consume-canary-report",
+            ("api", "maintenance", "consume-canary-report"),
+            "_handle_consume_canary_report",
+        ),
+        _StaticPostRoute(
+            "/api/maintenance/discard-index-candidate",
+            ("api", "maintenance", "discard-index-candidate"),
+            "_handle_discard_index_candidate",
+        ),
     )
 
 
@@ -1295,8 +1305,10 @@ class _AuthResult:
 # CLI's own --daemon HTTP client already tolerates up to 600s
 # (_rebuild_index.py's _run_daemon_rebuild, urlopen(..., timeout=600)) -- so
 # the HTTP route asks the bridge to wait that same 600s instead of the 30s
-# default, which would otherwise kill a still-running rebuild pass early.
-_REBUILD_INDEX_WRITE_TIMEOUT_S = 600.0
+# default. The bound returns control to the request path when parser or
+# acceptance work stalls, rather than leaving the daemon writer request
+# unbounded forever.
+_REBUILD_INDEX_WRITE_TIMEOUT_S: float = 600.0
 
 
 class DaemonAPIHandler(BaseHTTPRequestHandler):
@@ -5289,11 +5301,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_rebuild_index(self) -> None:
         """POST /api/maintenance/rebuild-index — one coordinator-owned replay pass.
 
-        polylogue-ogn1: waits up to ``_REBUILD_INDEX_WRITE_TIMEOUT_S`` through
-        the write bridge, matching the CLI's own ``--daemon`` HTTP client
-        timeout (``_run_daemon_rebuild``'s ``urlopen(..., timeout=600)``)
-        rather than the bridge's much shorter default request timeout (30s),
-        which would otherwise kill a still-running rebuild pass early.
+        The replay route has a finite bridge wait so an uncooperative parser or
+        acceptance check cannot leave the request path blocked indefinitely.
+        Canary receipt consumption remains a separate daemon-owned operation.
         """
         content_length = int(self.headers.get("Content-Length", 0))
         body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
@@ -5306,8 +5316,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
         raw_ids_value = body.get("raw_ids", [])
+        selected_session_ids = body.get("selected_session_ids", [])
+        candidate_acceptance_checks = body.get("candidate_acceptance_checks")
+        canary = body.get("canary", False)
         if not isinstance(raw_ids_value, list) or not all(
             isinstance(raw_id, str) and raw_id for raw_id in raw_ids_value
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if not isinstance(selected_session_ids, list) or not all(
+            isinstance(session_id, str) and session_id for session_id in selected_session_ids
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if candidate_acceptance_checks is not None and (
+            not isinstance(candidate_acceptance_checks, list)
+            or not all(isinstance(check, str) and check for check in candidate_acceptance_checks)
         ):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
@@ -5320,7 +5344,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         raw_batch_size = body.get("raw_batch_size", 500)
         pass_byte_budget_mb = body.get("pass_byte_budget_mb")
         pass_deadline_seconds = body.get("pass_deadline_seconds")
-        if not isinstance(only_missing, bool) or not isinstance(promote, bool):
+        if not isinstance(only_missing, bool) or not isinstance(promote, bool) or not isinstance(canary, bool):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
         if max_blob_mb is not None and (
@@ -5367,8 +5391,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             archive_root=archive_root(),
             only_missing=only_missing,
             raw_ids=tuple(raw_ids_value),
+            selected_session_ids=tuple(selected_session_ids),
             max_blob_mb=float(max_blob_mb) if max_blob_mb is not None else None,
             promote=promote,
+            canary=canary,
+            candidate_acceptance_checks=(
+                tuple(candidate_acceptance_checks) if candidate_acceptance_checks is not None else None
+            ),
             operation_id=operation_id,
             schema_inference_receipt_path=(
                 Path(schema_inference_receipt_path) if schema_inference_receipt_path is not None else None
@@ -5407,6 +5436,88 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             request,
         )
         self._send_json(HTTPStatus.OK, receipt.to_dict())
+
+    @daemon_safe_handler
+    def _handle_discard_index_candidate(self) -> None:
+        """Discard one owned inactive index candidate through the daemon."""
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            body = json.loads(body_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if not isinstance(body, dict):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        generation_id = body.get("generation_id")
+        generation_owner_id = body.get("generation_owner_id")
+        if (
+            not isinstance(generation_id, str)
+            or not generation_id
+            or not isinstance(generation_owner_id, str)
+            or not generation_owner_id
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        from polylogue.maintenance.rebuild_index import discard_inactive_rebuild_candidate
+        from polylogue.paths import archive_root
+
+        bridge = getattr(self.server, "write_bridge", None)
+        if bridge is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
+            return
+        cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
+            "http.maintenance.discard-index-candidate",
+            # Candidate cleanup must retain daemon ownership until completion:
+            # timing it out can orphan an inactive generation after a canary
+            # request has already released its receipt.
+            None,
+            discard_inactive_rebuild_candidate,
+            archive_root(),
+            generation_id,
+            generation_owner_id,
+        )
+        self._send_json(HTTPStatus.OK, {"discarded": True, "generation_id": generation_id})
+
+    @daemon_safe_handler
+    def _handle_consume_canary_report(self) -> None:
+        """POST /api/maintenance/consume-canary-report through the daemon writer."""
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            body = json.loads(body_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        report_path = body.get("report_path") if isinstance(body, dict) else None
+        if not isinstance(report_path, str) or not report_path:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        from polylogue.maintenance.reindex_canary import (
+            UnclassifiedCanaryDiffError,
+            approve_canary_report_under_daemon_ownership,
+        )
+        from polylogue.paths import archive_root
+
+        bridge = getattr(self.server, "write_bridge", None)
+        if bridge is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
+            return
+        try:
+            payload = cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
+                "http.maintenance.consume-canary-report",
+                None,
+                approve_canary_report_under_daemon_ownership,
+                Path(report_path),
+                archive_root=archive_root(),
+            )
+        except UnclassifiedCanaryDiffError as exc:
+            self._send_error(HTTPStatus.UNPROCESSABLE_ENTITY, "canary_report_invalid", str(exc))
+            return
+        self._send_json(HTTPStatus.OK, payload)
 
     @daemon_safe_handler
     def _handle_maintenance_status(self, operation_id: str) -> None:

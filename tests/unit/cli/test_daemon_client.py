@@ -111,3 +111,41 @@ def test_daemon_client_probes_the_production_uds_server(monkeypatch: pytest.Monk
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_daemon_client_preserves_typed_4xx_detail_from_the_production_uds_server() -> None:
+    """Maintenance clients can surface a daemon validation reason, not only a transport failure."""
+    from http import HTTPStatus
+
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
+    from polylogue.daemon_client import DaemonClient, DaemonResponseError
+
+    class InvalidCanaryReportHandler(DaemonAPIHandler):
+        def _handle_consume_canary_report(self) -> None:
+            self._send_error(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "canary_report_invalid",
+                "receipt is missing the canonical acceptance profile",
+            )
+
+    socket_path = Path("/realm/tmp") / f"polylogue-uds-canary-4xx-{getpid()}.sock"
+    server = DaemonAPIUnixHTTPServer(socket_path, InvalidCanaryReportHandler)
+    server.auth_token = "uds-test-token"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = DaemonClient(socket_path, auth_token="uds-test-token")
+        with pytest.raises(DaemonResponseError, match="missing the canonical acceptance profile") as raised:
+            client.request_json(
+                "POST",
+                "/api/maintenance/consume-canary-report",
+                {"report_path": "/fixture/report.json"},
+                raise_for_status=True,
+            )
+        assert raised.value.status == HTTPStatus.UNPROCESSABLE_ENTITY
+        assert raised.value.code == "canary_report_invalid"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

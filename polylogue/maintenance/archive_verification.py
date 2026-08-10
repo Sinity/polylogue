@@ -3105,6 +3105,9 @@ REINDEX_SOURCE_PREFLIGHT_CHECKS = archive_verification_check_names_for_phase(
 REINDEX_CANARY_ACCEPTANCE_CHECKS = archive_verification_check_names_for_phase(
     ArchiveVerificationExecutionPhase.REINDEX_CANARY_CANDIDATE
 )
+#: Stable identity for the daemon-selected canary acceptance profile. The
+#: check names themselves remain derived from the registry above.
+REINDEX_CANARY_ACCEPTANCE_PROFILE = "reindex-canary-v1"
 ARCHIVE_VERIFICATION_WAIVERS: dict[str, ArchiveVerificationWaiver] = {
     spec.name: spec.waiver for spec in ARCHIVE_VERIFICATION_CHECKS if spec.waiver is not None
 }
@@ -3244,6 +3247,7 @@ __all__ = [
     "ARCHIVE_VERIFICATION_CHECK_NAMES",
     "ARCHIVE_VERIFICATION_WAIVERS",
     "CORPUS_FIDELITY_CHECKS",
+    "REINDEX_CANARY_ACCEPTANCE_PROFILE",
     "REINDEX_CANARY_ACCEPTANCE_CHECKS",
     "REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS",
     "REINDEX_ACCEPTANCE_CHECKS",

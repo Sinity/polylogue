@@ -37,6 +37,14 @@ class DifferenceClassification(StrEnum):
     UNEXPECTED = "unexpected"
 
 
+class CanaryAuthorityKind(StrEnum):
+    """Structured authority attached to one reviewed difference."""
+
+    BEAD = "bead"
+    DELTA = "delta"
+    SUCCESSOR = "successor"
+
+
 class CanarySelectionError(ValueError):
     """The requested representative canary cannot be built from this index."""
 
@@ -174,6 +182,10 @@ class CanarySelection:
     pathology_session_ids: tuple[str, ...]
     sample_session_ids: tuple[str, ...]
     origin_counts: tuple[tuple[str, int], ...]
+    parser_fingerprints: tuple[tuple[str, str], ...] = ()
+    lowering_fingerprint: str | None = None
+    replay_routing_fingerprint: str | None = None
+    materializer_fingerprint: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -185,6 +197,10 @@ class CanarySelection:
             "pathology_session_ids": list(self.pathology_session_ids),
             "sample_session_ids": list(self.sample_session_ids),
             "origin_counts": dict(self.origin_counts),
+            "parser_fingerprints": dict(self.parser_fingerprints),
+            "lowering_fingerprint": self.lowering_fingerprint,
+            "replay_routing_fingerprint": self.replay_routing_fingerprint,
+            "materializer_fingerprint": self.materializer_fingerprint,
         }
 
 
@@ -210,6 +226,7 @@ def select_canary_sessions(
     sessions_per_origin: int = 100,
     pathology_session_ids: Iterable[str] = (),
     sample_session_ids: Iterable[str] = (),
+    source_root: Path | None = None,
 ) -> CanarySelection:
     """Select a representative raw-id set from a real active index.
 
@@ -266,9 +283,30 @@ def select_canary_sessions(
     selected = set(sampled).union(explicit)
     selected_session_ids = tuple(sorted(selected))
     selected_raw_ids = tuple(
-        sorted(raw_id for session_id in selected if (raw_id := records[session_id][1]) is not None)
+        dict.fromkeys(sorted(raw_id for session_id in selected if (raw_id := records[session_id][1]) is not None))
     )
+    if not selected_session_ids:
+        raise CanarySelectionError("automatic canary selection produced zero sessions; refusing full-source replay")
+    if not selected_raw_ids:
+        raise CanarySelectionError("automatic canary selection produced zero raw ids; refusing full-source replay")
     origin_counts = Counter(records[session_id][0] for session_id in selected)
+    from polylogue.sources.origin_specs import (
+        lowering_fingerprint,
+        materializer_fingerprint,
+        parser_fingerprint_for_origin,
+        replay_routing_fingerprint,
+    )
+
+    selected_origins = tuple(sorted(origin_counts))
+    parser_fingerprints: tuple[tuple[str, str], ...] = ()
+    lowering: str | None = None
+    replay_routing: str | None = None
+    materializer: str | None = None
+    if (Path(source_root) if source_root is not None else path.parent).joinpath("source.db").exists():
+        parser_fingerprints = tuple((origin, parser_fingerprint_for_origin(origin)) for origin in selected_origins)
+        lowering = lowering_fingerprint()
+        replay_routing = replay_routing_fingerprint()
+        materializer = materializer_fingerprint()
     return CanarySelection(
         index_path=path,
         sessions_per_origin=sessions_per_origin,
@@ -278,6 +316,10 @@ def select_canary_sessions(
         pathology_session_ids=tuple(sorted(pathology)),
         sample_session_ids=tuple(sorted(explicit_samples)),
         origin_counts=tuple(sorted(origin_counts.items())),
+        parser_fingerprints=parser_fingerprints,
+        lowering_fingerprint=lowering,
+        replay_routing_fingerprint=replay_routing,
+        materializer_fingerprint=materializer,
     )
 
 
@@ -304,7 +346,6 @@ def run_reindex_canary(
     if not no_promote:
         raise CanarySelectionError("reindex canary requires --no-promote")
     from polylogue.config import resolve_archive_root
-    from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
     from polylogue.storage.archive_identity import ArchiveLocation, TierFileIdentity
 
     root = Path(archive_root)
@@ -322,7 +363,6 @@ def run_reindex_canary(
                 "input index is not the configured archive active generation; "
                 "explicit canary input index must be inside or bound to the selected archive root"
             )
-    from polylogue.maintenance.archive_verification import REINDEX_CANARY_ACCEPTANCE_CHECKS
     from polylogue.maintenance.pathology_zoo import pathology_zoo_is_present, pathology_zoo_session_ids
 
     automatic_pathology_ids = (
@@ -334,17 +374,29 @@ def run_reindex_canary(
         sessions_per_origin=sessions_per_origin,
         pathology_session_ids=requested_pathology_ids,
         sample_session_ids=sample_session_ids,
+        source_root=root,
     )
-    receipt = rebuild_index_from_source_sync(
-        RebuildIndexRequest(
+    _validate_nonempty_selection(selection)
+    from polylogue.daemon.bulk_rebuild import run_daemon_canary_rebuild
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
+    if message_owner_scope_backfill_receipt_path is None:
+        receipt: object = run_daemon_canary_rebuild(
             archive_root=root,
             raw_ids=selection.selected_raw_ids,
-            promote=False,
-            candidate_acceptance_checks=REINDEX_CANARY_ACCEPTANCE_CHECKS,
+            selected_session_ids=selection.selected_session_ids,
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            schema_inference_receipt_path=schema_inference_receipt_path,
+        )
+    else:
+        receipt = run_daemon_canary_rebuild(
+            archive_root=root,
+            raw_ids=selection.selected_raw_ids,
+            selected_session_ids=selection.selected_session_ids,
+            index_schema_version=INDEX_SCHEMA_VERSION,
             schema_inference_receipt_path=schema_inference_receipt_path,
             message_owner_scope_backfill_receipt_path=message_owner_scope_backfill_receipt_path,
         )
-    )
     try:
         try:
             active_after_rebuild = ArchiveLocation.resolve(root).active_index
@@ -353,8 +405,24 @@ def run_reindex_canary(
                 raise CanarySelectionError("canary active index changed during rebuild")
         except OSError as exc:
             raise CanarySelectionError("canary active index could not be revalidated after rebuild") from exc
-        receipt_payload = receipt.to_dict()
-        _validate_selection_evidence(receipt_payload, selection.selected_raw_ids)
+        if isinstance(receipt, dict):
+            receipt_payload = receipt
+        else:
+            to_dict = getattr(receipt, "to_dict", None)
+            if not callable(to_dict):
+                raise CanarySelectionError("daemon canary rebuild did not return a receipt object")
+            receipt_payload = to_dict()
+        if not isinstance(receipt_payload, dict):
+            raise CanarySelectionError("daemon canary rebuild did not return a receipt object")
+        _validate_selection_evidence(
+            receipt_payload,
+            selection.selected_raw_ids,
+            selected_session_ids=selection.selected_session_ids,
+            expected_parser_fingerprints=selection.parser_fingerprints,
+            expected_lowering_fingerprint=selection.lowering_fingerprint,
+            expected_replay_routing_fingerprint=selection.replay_routing_fingerprint,
+            expected_materializer_fingerprint=selection.materializer_fingerprint,
+        )
         candidate_path = _validate_canary_candidate(
             root,
             current_index=current_index,
@@ -367,6 +435,10 @@ def run_reindex_canary(
             candidate_path,
             session_ids=selection.selected_session_ids,
         )
+        if comparison.session_ids != selection.selected_session_ids:
+            raise CanarySelectionError("canary comparator scope does not match the selected sessions")
+        if not comparison.session_ids:
+            raise CanarySelectionError("canary comparator scope is empty; refusing an unbounded comparison")
     except BaseException as exc:
         cleanup_errors = _discard_canary_candidate(root, receipt)
         _add_canary_cleanup_notes(exc, cleanup_errors)
@@ -380,26 +452,27 @@ def run_reindex_canary(
 
 def _discard_canary_candidate(archive_root: Path, receipt: object) -> list[BaseException]:
     """Discard the inactive canary candidate after a post-rebuild failure."""
-    from polylogue.storage.archive_identity import ArchiveLocation
-    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.daemon.bulk_rebuild import discard_daemon_canary_candidate
 
     errors: list[BaseException] = []
-    generation = getattr(receipt, "generation", None)
+    generation = receipt.get("generation") if isinstance(receipt, dict) else getattr(receipt, "generation", None)
     if not isinstance(generation, dict):
         return [RuntimeError("canary receipt did not identify a candidate for cleanup")]
     generation_id = generation.get("generation_id")
-    if not isinstance(generation_id, str) or not generation_id:
-        return [RuntimeError("canary receipt candidate generation id is missing")]
-    store = IndexGenerationStore(ArchiveLocation.resolve(archive_root), repair_anchor=False)
+    generation_owner_id = generation.get("owner_id")
+    if (
+        not isinstance(generation_id, str)
+        or not generation_id
+        or not isinstance(generation_owner_id, str)
+        or not generation_owner_id
+    ):
+        return [RuntimeError("canary receipt candidate generation identity is missing")]
     try:
-        candidate = store.load(generation_id)
-    except BaseException as exc:
-        return [exc]
-    if candidate.state != "inactive":
-        return [RuntimeError(f"canary candidate {generation_id} is not inactive")]
-    try:
-        if not store.discard_if_inactive(candidate):
-            errors.append(RuntimeError(f"canary candidate {generation_id} was not discarded"))
+        discard_daemon_canary_candidate(
+            archive_root=archive_root,
+            generation_id=generation_id,
+            generation_owner_id=generation_owner_id,
+        )
     except BaseException as exc:
         errors.append(exc)
     return errors
@@ -449,15 +522,19 @@ def _validate_canary_candidate(
     from polylogue.storage.archive_identity import ArchiveLocation
 
     root = archive_root.resolve()
-    receipt_root = getattr(receipt, "archive_root", None)
+
+    def field(name: str) -> object:
+        return receipt.get(name) if isinstance(receipt, dict) else getattr(receipt, name, None)
+
+    receipt_root = field("archive_root")
     if not isinstance(receipt_root, str) or Path(receipt_root).resolve() != root:
         raise CanarySelectionError("rebuild receipt belongs to a different archive root")
-    if getattr(receipt, "status", None) != "replayed" or getattr(receipt, "materialized", None) is not True:
+    if field("status") != "replayed" or field("materialized") is not True:
         raise CanarySelectionError("rebuild receipt is not a completed materialized replay")
-    if getattr(receipt, "selected_raw_count", None) != len(selection.selected_raw_ids):
+    if field("selected_raw_count") != len(selection.selected_raw_ids):
         raise CanarySelectionError("rebuild receipt selected a different raw-id set than the canary")
 
-    generation = getattr(receipt, "generation", None)
+    generation = field("generation")
     if not isinstance(generation, dict):
         raise CanarySelectionError("rebuild receipt did not identify an inactive candidate generation")
     if generation.get("archive_root") != str(root):
@@ -494,6 +571,19 @@ def _validate_canary_candidate(
     return candidate_path
 
 
+def _validate_nonempty_selection(selection: CanarySelection) -> None:
+    """Keep the canary route from inheriting the rebuild engine's full-source default."""
+
+    if not selection.selected_session_ids:
+        raise CanarySelectionError("canary selection contains zero sessions; refusing full-source replay")
+    if not selection.selected_raw_ids:
+        raise CanarySelectionError("canary selection contains zero raw ids; refusing full-source replay")
+    if len(set(selection.selected_session_ids)) != len(selection.selected_session_ids):
+        raise CanarySelectionError("canary selection contains duplicate session ids")
+    if len(set(selection.selected_raw_ids)) != len(selection.selected_raw_ids):
+        raise CanarySelectionError("canary selection contains duplicate raw ids")
+
+
 @dataclass(frozen=True, slots=True)
 class CanaryDifferenceReview:
     """An explicit operator classification for one diff row."""
@@ -505,6 +595,43 @@ class CanaryDifferenceReview:
     classification: DifferenceClassification
     reference: str
     rationale: str
+    authority_kind: CanaryAuthorityKind | None = None
+    authority_id: str | None = None
+
+    def __post_init__(self) -> None:
+        kind = self.authority_kind
+        authority_id = self.authority_id
+        has_explicit_authority = kind is not None or authority_id is not None
+        if (kind is None) != (authority_id is None):
+            raise UnclassifiedCanaryDiffError("canary review authority must provide both kind and id")
+        if kind is None or authority_id is None:
+            prefix, separator, value = self.reference.partition(":")
+            if separator and prefix in {item.value for item in CanaryAuthorityKind}:
+                kind = CanaryAuthorityKind(prefix)
+                authority_id = value
+            elif self.classification is DifferenceClassification.EXPECTED:
+                # Preserve compatibility for in-process callers. The durable
+                # representation below is always structured.
+                kind = CanaryAuthorityKind.BEAD
+                authority_id = self.reference
+            else:
+                kind = CanaryAuthorityKind.SUCCESSOR
+                authority_id = self.reference
+        if not str(authority_id).strip() or any(character.isspace() for character in str(authority_id)):
+            raise UnclassifiedCanaryDiffError("canary review authority must have a structured non-empty id")
+        canonical_reference = f"{kind.value}:{authority_id}"
+        if has_explicit_authority and self.reference != canonical_reference:
+            raise UnclassifiedCanaryDiffError("canary review reference disagrees with its structured authority")
+        if self.classification is DifferenceClassification.EXPECTED and kind not in {
+            CanaryAuthorityKind.BEAD,
+            CanaryAuthorityKind.DELTA,
+        }:
+            raise UnclassifiedCanaryDiffError("expected canary differences require a Bead or delta authority")
+        if self.classification is DifferenceClassification.UNEXPECTED and kind is not CanaryAuthorityKind.SUCCESSOR:
+            raise UnclassifiedCanaryDiffError("unexpected canary differences require a structured successor id")
+        object.__setattr__(self, "authority_kind", kind)
+        object.__setattr__(self, "authority_id", str(authority_id))
+        object.__setattr__(self, "reference", canonical_reference)
 
     @classmethod
     def for_difference(
@@ -530,6 +657,8 @@ class CanaryDifferenceReview:
         return self.table, self.operation, self.identity, self.changed_columns
 
     def to_dict(self) -> dict[str, object]:
+        authority_kind = self.authority_kind
+        assert authority_kind is not None
         return {
             "table": self.table,
             "operation": self.operation.value,
@@ -537,6 +666,7 @@ class CanaryDifferenceReview:
             "changed_columns": list(self.changed_columns),
             "classification": self.classification.value,
             "reference": self.reference,
+            "authority": {"kind": authority_kind.value, "id": self.authority_id},
             "rationale": self.rationale,
         }
 
@@ -559,7 +689,7 @@ class DurableCanaryReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 7,
+            "schema_version": 9,
             "selection": self.selection.to_dict(),
             "comparison": self.comparison.to_dict(),
             "rebuild_receipt": self.rebuild_receipt,
@@ -579,7 +709,7 @@ def write_canary_report(
     reviews: Iterable[CanaryDifferenceReview],
     allow_unreviewed: bool = False,
 ) -> DurableCanaryReport:
-    """Persist a fully reviewed report or an explicit durable unreviewed diff.
+    """Persist reviewed evidence, or one explicitly non-approvable discovery report.
 
     Reviews must cover exactly the comparator's row identities and signatures.
     This prevents a report from becoming a durable green-light artifact while a diff was
@@ -590,6 +720,7 @@ def write_canary_report(
     _validate_rebuild_receipt(
         rebuild_receipt,
         selected_raw_ids=selection.selected_raw_ids,
+        selected_session_ids=selection.selected_session_ids,
         candidate_index=comparison.candidate_index,
     )
     _validate_selection_binding(selection, comparison, rebuild_receipt)
@@ -604,6 +735,7 @@ def write_canary_report(
         if review.key in review_by_key:
             duplicate_keys.append(review.key)
         review_by_key[review.key] = review
+    _validate_expected_review_authorities(review_list)
     difference_keys = {
         (
             difference.table,
@@ -615,37 +747,35 @@ def write_canary_report(
     }
     missing_keys = difference_keys.difference(review_by_key)
     extra_keys = set(review_by_key).difference(difference_keys)
-    if (missing_keys and allow_unreviewed and not review_list and not extra_keys) or not comparison.differences:
-        review_status = "unreviewed" if missing_keys else "reviewed"
-    elif duplicate_keys or missing_keys or extra_keys:
+    incomplete = bool(duplicate_keys or missing_keys or extra_keys)
+    if incomplete and not (allow_unreviewed and not review_list):
         detail = [
             f"duplicate={len(duplicate_keys)}",
             f"missing={len(missing_keys)}",
             f"extra={len(extra_keys)}",
         ]
         raise UnclassifiedCanaryDiffError("canary report classification is incomplete (" + ", ".join(detail) + ")")
-    else:
-        review_status = "reviewed"
+    review_status = "unreviewed" if incomplete else "reviewed"
 
     archive_provenance = _capture_archive_provenance(comparison, rebuild_receipt)
-    reviewed_differences = (
-        comparison.differences
-        if review_status == "unreviewed"
-        else tuple(
+    if review_status == "reviewed":
+        reviewed_differences = tuple(
             replace(
                 difference,
                 classification=review_by_key[
                     (difference.table, difference.operation, difference.identity, difference.changed_columns)
                 ].classification,
-                rationale=(
-                    f"{review_by_key[(difference.table, difference.operation, difference.identity, difference.changed_columns)].reference}: "
-                    f"{review_by_key[(difference.table, difference.operation, difference.identity, difference.changed_columns)].rationale}"
+                rationale=_reviewed_difference_rationale(
+                    review_by_key[
+                        (difference.table, difference.operation, difference.identity, difference.changed_columns)
+                    ]
                 ),
             )
             for difference in comparison.differences
         )
-    )
-    reviewed_comparison = replace(comparison, differences=reviewed_differences)
+        reviewed_comparison = replace(comparison, differences=reviewed_differences)
+    else:
+        reviewed_comparison = comparison
     durable = DurableCanaryReport(
         selection=selection,
         comparison=reviewed_comparison,
@@ -695,19 +825,40 @@ def _validate_selection_binding(
     *,
     archive_root: Path | None = None,
 ) -> None:
+    _validate_nonempty_selection(selection)
     if selection.index_path.resolve() != comparison.current_index.resolve():
         raise UnclassifiedCanaryDiffError("canary report selection index does not match the compared current index")
+    if not comparison.session_ids:
+        raise UnclassifiedCanaryDiffError("canary report has an empty comparison scope")
     if selection.selected_session_ids != comparison.session_ids:
         raise UnclassifiedCanaryDiffError("canary report selection sessions do not match the comparison")
-    _validate_selection_evidence(receipt, selection.selected_raw_ids, archive_root=archive_root)
+    _validate_selection_evidence(
+        receipt,
+        selection.selected_raw_ids,
+        selected_session_ids=selection.selected_session_ids,
+        archive_root=archive_root,
+        expected_parser_fingerprints=selection.parser_fingerprints,
+        expected_lowering_fingerprint=selection.lowering_fingerprint,
+        expected_replay_routing_fingerprint=selection.replay_routing_fingerprint,
+        expected_materializer_fingerprint=selection.materializer_fingerprint,
+    )
 
 
 def _validate_selection_evidence(
-    receipt: dict[str, object], selected_raw_ids: Iterable[str], *, archive_root: Path | None = None
+    receipt: dict[str, object],
+    selected_raw_ids: Iterable[str],
+    *,
+    selected_session_ids: Iterable[str] = (),
+    archive_root: Path | None = None,
+    expected_parser_fingerprints: Iterable[tuple[str, str]] = (),
+    expected_lowering_fingerprint: str | None = None,
+    expected_replay_routing_fingerprint: str | None = None,
+    expected_materializer_fingerprint: str | None = None,
 ) -> None:
     """Match report selection to the rebuild-owned candidate commitment."""
 
     from polylogue.maintenance.rebuild_index import rebuild_selection_evidence
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import FrozenSourceRemediationRequiredError
 
     generation = receipt.get("generation")
     evidence = receipt.get("selection_evidence")
@@ -730,16 +881,201 @@ def _validate_selection_evidence(
             raise UnclassifiedCanaryDiffError(
                 "canary report rebuild receipt belongs to a different configured archive root"
             )
-    expected = rebuild_selection_evidence(
-        tuple(selected_raw_ids),
-        archive_root=evidence_root,
-        generation_id=cast(str, generation["generation_id"]),
-        generation_owner_id=cast(str, generation["owner_id"]),
-        candidate_index=Path(cast(str, generation["index_path"])),
-        source_snapshot=cast(str, generation["source_snapshot"]),
-    )
+    try:
+        expected = rebuild_selection_evidence(
+            tuple(selected_raw_ids),
+            archive_root=evidence_root,
+            generation_id=cast(str, generation["generation_id"]),
+            generation_owner_id=cast(str, generation["owner_id"]),
+            candidate_index=Path(cast(str, generation["index_path"])),
+            source_snapshot=cast(str, generation["source_snapshot"]),
+            selected_session_ids=tuple(selected_session_ids),
+        )
+    except FrozenSourceRemediationRequiredError as exc:
+        raise UnclassifiedCanaryDiffError(
+            "canary report selection evidence cannot be recomputed after source remediation changed"
+        ) from exc
+    if evidence.get("selected_session_ids") != expected["selected_session_ids"]:
+        raise UnclassifiedCanaryDiffError(
+            "canary report selection sessions do not match the authoritative rebuild receipt"
+        )
     if evidence != expected:
         raise UnclassifiedCanaryDiffError("canary report selection does not match the authoritative rebuild receipt")
+    _validate_parser_binding(
+        evidence,
+        expected_parser_fingerprints=expected_parser_fingerprints,
+        expected_lowering_fingerprint=expected_lowering_fingerprint,
+        expected_replay_routing_fingerprint=expected_replay_routing_fingerprint,
+        expected_materializer_fingerprint=expected_materializer_fingerprint,
+    )
+    _validate_canary_acceptance_evidence(receipt)
+    _validate_live_replay_routing_fingerprint(expected_replay_routing_fingerprint)
+    _validate_live_materializer_fingerprint(expected_materializer_fingerprint)
+    _validate_live_parser_and_lowering_fingerprints(expected_parser_fingerprints, expected_lowering_fingerprint)
+
+
+def _validate_canary_acceptance_evidence(receipt: dict[str, object]) -> None:
+    """Require the running daemon's full canonical canary-profile attestation."""
+
+    from polylogue.maintenance.archive_verification import (
+        REINDEX_CANARY_ACCEPTANCE_CHECKS,
+        REINDEX_CANARY_ACCEPTANCE_PROFILE,
+    )
+
+    acceptance = receipt.get("canary_acceptance")
+    if not isinstance(acceptance, dict):
+        raise UnclassifiedCanaryDiffError("canary report has no daemon acceptance-profile attestation")
+    if acceptance.get("profile") != REINDEX_CANARY_ACCEPTANCE_PROFILE:
+        raise UnclassifiedCanaryDiffError("canary report acceptance profile does not match the running daemon")
+    results = acceptance.get("results")
+    if not isinstance(results, list):
+        raise UnclassifiedCanaryDiffError("canary report acceptance attestation has no per-check results")
+    expected_names = list(REINDEX_CANARY_ACCEPTANCE_CHECKS)
+    actual_names: list[str] = []
+    for result in results:
+        if not isinstance(result, dict):
+            raise UnclassifiedCanaryDiffError("canary report acceptance attestation has invalid per-check results")
+        name = result.get("name")
+        status = result.get("status")
+        if not isinstance(name, str) or not isinstance(status, str):
+            raise UnclassifiedCanaryDiffError("canary report acceptance attestation has invalid per-check results")
+        actual_names.append(name)
+        if status != "ok":
+            raise UnclassifiedCanaryDiffError(f"canary report acceptance check {name} is not ok")
+    if actual_names != expected_names:
+        raise UnclassifiedCanaryDiffError("canary report acceptance attestation does not match the running profile")
+
+
+def _validate_live_replay_routing_fingerprint(expected: str | None) -> None:
+    """Reject a persisted canary when installed replay routing has changed."""
+
+    if expected is None:
+        return
+    from polylogue.sources.origin_specs import replay_routing_fingerprint
+
+    if replay_routing_fingerprint() != expected:
+        raise UnclassifiedCanaryDiffError("canary replay routing fingerprint no longer matches the running code")
+
+
+def _validate_live_materializer_fingerprint(expected: str | None) -> None:
+    """Reject a persisted canary when installed materialization has changed."""
+
+    if expected is None:
+        return
+    from polylogue.sources.origin_specs import materializer_fingerprint
+
+    if materializer_fingerprint() != expected:
+        raise UnclassifiedCanaryDiffError("canary materializer fingerprint no longer matches the running code")
+
+
+def _validate_live_parser_and_lowering_fingerprints(
+    expected_parsers: Iterable[tuple[str, str]], expected_lowering: str | None
+) -> None:
+    """Reject reports whose parser or lowering semantics differ from live code."""
+    from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+
+    if expected_lowering is not None and lowering_fingerprint() != expected_lowering:
+        raise UnclassifiedCanaryDiffError("canary lowering fingerprint no longer matches the running code")
+    for origin, fingerprint in expected_parsers:
+        if parser_fingerprint_for_origin(origin) != fingerprint:
+            raise UnclassifiedCanaryDiffError("canary parser fingerprints no longer match the running code")
+
+
+def _validate_parser_binding(
+    evidence: object,
+    *,
+    expected_parser_fingerprints: Iterable[tuple[str, str]],
+    expected_lowering_fingerprint: str | None,
+    expected_replay_routing_fingerprint: str | None = None,
+    expected_materializer_fingerprint: str | None = None,
+) -> None:
+    """Keep parser semantics bound to the selected origin evidence."""
+    expected_parsers = dict(expected_parser_fingerprints)
+    if (
+        not expected_parsers
+        and expected_lowering_fingerprint is None
+        and expected_replay_routing_fingerprint is None
+        and expected_materializer_fingerprint is None
+    ):
+        return
+    raw_session_evidence = _raw_session_evidence(evidence)
+    if raw_session_evidence is None:
+        raise UnclassifiedCanaryDiffError("canary selection has no parser-fingerprint evidence")
+    parser_by_origin: dict[str, str] = {}
+    lowering_values: set[str] = set()
+    replay_routing_values: set[str] = set()
+    materializer_values: set[str] = set()
+    for item in raw_session_evidence:
+        if not isinstance(item, dict):
+            raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is malformed")
+        origin = item.get("origin")
+        parser = item.get("parser_fingerprint")
+        lowering = item.get("lowering_fingerprint")
+        replay_routing = item.get("replay_routing_fingerprint")
+        materializer = item.get("materializer_fingerprint")
+        if not all(isinstance(value, str) and value for value in (origin, parser, lowering)):
+            raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is incomplete")
+        if expected_replay_routing_fingerprint is not None and not isinstance(replay_routing, str):
+            raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is incomplete")
+        if expected_materializer_fingerprint is not None and not isinstance(materializer, str):
+            raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is incomplete")
+        parser_by_origin[str(origin)] = str(parser)
+        lowering_values.add(str(lowering))
+        if expected_replay_routing_fingerprint is not None:
+            replay_routing_values.add(str(replay_routing))
+        if expected_materializer_fingerprint is not None:
+            materializer_values.add(str(materializer))
+    if any(parser_by_origin.get(origin) != parser for origin, parser in expected_parsers.items()):
+        raise UnclassifiedCanaryDiffError("canary parser fingerprints no longer match the selected origins")
+    if expected_lowering_fingerprint is not None and lowering_values != {expected_lowering_fingerprint}:
+        raise UnclassifiedCanaryDiffError("canary lowering fingerprint no longer matches the selected origins")
+    if expected_replay_routing_fingerprint is not None and replay_routing_values != {
+        expected_replay_routing_fingerprint
+    }:
+        raise UnclassifiedCanaryDiffError("canary replay routing fingerprint no longer matches the selected origins")
+    if expected_materializer_fingerprint is not None and materializer_values != {expected_materializer_fingerprint}:
+        raise UnclassifiedCanaryDiffError("canary materializer fingerprint no longer matches the selected origins")
+
+
+def _parser_binding_from_evidence(
+    evidence: object,
+) -> tuple[tuple[tuple[str, str], ...], str | None, str | None, str | None]:
+    raw_session_evidence = _raw_session_evidence(evidence)
+    if raw_session_evidence is None:
+        raise UnclassifiedCanaryDiffError("canary selection has no parser-fingerprint evidence")
+    parsers: dict[str, str] = {}
+    lowering: set[str] = set()
+    replay_routing: set[str] = set()
+    materializer: set[str] = set()
+    for item in raw_session_evidence:
+        if not isinstance(item, dict):
+            raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is malformed")
+        origin = item.get("origin")
+        parser = item.get("parser_fingerprint")
+        value = item.get("lowering_fingerprint")
+        routing = item.get("replay_routing_fingerprint")
+        materialized = item.get("materializer_fingerprint")
+        if not all(isinstance(entry, str) and entry for entry in (origin, parser, value, routing, materialized)):
+            raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is incomplete")
+        parsers[str(origin)] = str(parser)
+        lowering.add(str(value))
+        replay_routing.add(str(routing))
+        materializer.add(str(materialized))
+    if len(lowering) != 1 or len(replay_routing) != 1 or len(materializer) != 1:
+        raise UnclassifiedCanaryDiffError("canary selection has inconsistent parser routing fingerprints")
+    return tuple(sorted(parsers.items())), next(iter(lowering)), next(iter(replay_routing)), next(iter(materializer))
+
+
+def _raw_session_evidence(evidence: object) -> list[object] | None:
+    if not isinstance(evidence, dict):
+        return None
+    direct = evidence.get("raw_session_evidence")
+    if isinstance(direct, list):
+        return direct
+    closure = evidence.get("replay_closure")
+    if isinstance(closure, dict) and isinstance(closure.get("raw_session_evidence"), list):
+        return cast(list[object], closure["raw_session_evidence"])
+    return None
 
 
 def _comparison_fingerprint(comparison: CanaryDiffReport) -> str:
@@ -774,9 +1110,11 @@ def _validate_rebuild_receipt(
     receipt: object,
     *,
     selected_raw_ids: Iterable[str],
+    selected_session_ids: Iterable[str],
     candidate_index: Path | str,
     configured_archive_root: Path | None = None,
 ) -> None:
+    requested_raw_ids = tuple(selected_raw_ids)
     if not isinstance(receipt, dict):
         raise UnclassifiedCanaryDiffError("canary report has no rebuild receipt")
     archive_root = receipt.get("archive_root")
@@ -787,7 +1125,8 @@ def _validate_rebuild_receipt(
         receipt.get("receipt_schema_version") != 4
         or not isinstance(archive_root, str)
         or not archive_root
-        or selected_raw_count != len(tuple(selected_raw_ids))
+        or not requested_raw_ids
+        or selected_raw_count != len(requested_raw_ids)
         or receipt.get("status") != "replayed"
         or receipt.get("materialized") is not True
         or not isinstance(generation, dict)
@@ -822,7 +1161,12 @@ def _validate_rebuild_receipt(
         )
     if Path(generation_index).resolve() != Path(candidate_index).resolve():
         raise UnclassifiedCanaryDiffError("canary report rebuild receipt does not identify the compared candidate")
-    _validate_selection_evidence(receipt, selected_raw_ids, archive_root=configured_archive_root)
+    _validate_selection_evidence(
+        receipt,
+        requested_raw_ids,
+        selected_session_ids=selected_session_ids,
+        archive_root=configured_archive_root,
+    )
 
 
 def _validate_authoritative_rebuild_receipt(receipt: dict[str, object], candidate_index: Path) -> None:
@@ -967,6 +1311,9 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
     source_evidence_after = _verified_source_evidence(root)
     if source_evidence_after != receipt.get("source_evidence_after"):
         raise UnclassifiedCanaryDiffError("archive-owned source evidence does not match the rebuild receipt")
+    parser_fingerprints, lowering_fingerprint, replay_routing_fingerprint, materializer_fingerprint = (
+        _parser_binding_from_evidence(receipt.get("selection_evidence"))
+    )
     return {
         "archive_root": str(root.resolve()),
         "active_pointer": str(location.active_pointer) if location.active_pointer is not None else None,
@@ -976,6 +1323,10 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
         "candidate_index": _index_evidence(candidate_path),
         "source_snapshot": source_snapshot,
         "source_evidence_after": source_evidence_after,
+        "parser_fingerprints": dict(parser_fingerprints),
+        "lowering_fingerprint": lowering_fingerprint,
+        "replay_routing_fingerprint": replay_routing_fingerprint,
+        "materializer_fingerprint": materializer_fingerprint,
     }
 
 
@@ -1035,6 +1386,17 @@ def _validate_archive_provenance(
     if not same_candidate:
         raise UnclassifiedCanaryDiffError("archive-owned candidate generation no longer matches the report")
     _same_index_evidence(provenance.get("candidate_index"), candidate_path, label="candidate")
+    parser_fingerprints, lowering_fingerprint, replay_routing_fingerprint, materializer_fingerprint = (
+        _parser_binding_from_evidence(receipt.get("selection_evidence"))
+    )
+    if provenance.get("parser_fingerprints") != dict(parser_fingerprints):
+        raise UnclassifiedCanaryDiffError("archive-owned parser fingerprints no longer match the report")
+    if provenance.get("lowering_fingerprint") != lowering_fingerprint:
+        raise UnclassifiedCanaryDiffError("archive-owned lowering fingerprint no longer matches the report")
+    if provenance.get("replay_routing_fingerprint") != replay_routing_fingerprint:
+        raise UnclassifiedCanaryDiffError("archive-owned replay routing fingerprint no longer matches the report")
+    if provenance.get("materializer_fingerprint") != materializer_fingerprint:
+        raise UnclassifiedCanaryDiffError("archive-owned materializer fingerprint no longer matches the report")
     source_snapshot = _verified_source_evidence(root)
     if provenance.get("source_snapshot") != source_snapshot or live_fields["source_snapshot"] != source_snapshot:
         raise UnclassifiedCanaryDiffError("archive-owned source snapshot no longer matches the inactive candidate")
@@ -1074,7 +1436,7 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise UnclassifiedCanaryDiffError("canary report root must be an object")
-    if payload.get("schema_version") != 7:
+    if payload.get("schema_version") != 9:
         raise UnclassifiedCanaryDiffError("canary report has no authoritative rebuild receipt schema")
     configured_root = (
         _validate_report_archive_root(payload, configured_archive_root=Path(archive_root))
@@ -1095,9 +1457,10 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     if not isinstance(raw_reviews, list):
         raise UnclassifiedCanaryDiffError("canary report has no reviews list")
     reviews = tuple(_review_from_dict(item) for item in raw_reviews)
+    _validate_expected_review_authorities(reviews)
     review_status = payload.get("review_status")
-    if review_status not in {"reviewed", "unreviewed"}:
-        raise UnclassifiedCanaryDiffError("canary report has invalid review status")
+    if review_status != "reviewed":
+        raise UnclassifiedCanaryDiffError("canary report is not fully reviewed")
     comparison_fingerprint = payload.get("comparison_fingerprint")
     if not isinstance(comparison_fingerprint, str) or len(comparison_fingerprint) != 64:
         raise UnclassifiedCanaryDiffError("canary report has invalid comparison fingerprint")
@@ -1105,23 +1468,47 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     if not isinstance(selection, dict):
         raise UnclassifiedCanaryDiffError("canary report has no selection object")
     selected_raw_ids = selection.get("selected_raw_ids")
+    selection_sessions = selection.get("selected_session_ids")
     candidate_index = comparison.get("candidate_index")
-    if not isinstance(selected_raw_ids, list) or not all(isinstance(value, str) for value in selected_raw_ids):
+    if (
+        not isinstance(selected_raw_ids, list)
+        or not selected_raw_ids
+        or not all(isinstance(value, str) and value for value in selected_raw_ids)
+    ):
         raise UnclassifiedCanaryDiffError("canary report has invalid selected raw ids")
+    if (
+        not isinstance(selection_sessions, list)
+        or not selection_sessions
+        or not all(isinstance(value, str) and value for value in selection_sessions)
+    ):
+        raise UnclassifiedCanaryDiffError("canary report has invalid selected session ids")
     if not isinstance(candidate_index, str):
         raise UnclassifiedCanaryDiffError("canary report has no candidate index")
     _validate_rebuild_receipt(
         payload.get("rebuild_receipt"),
         selected_raw_ids=cast(list[str], selected_raw_ids),
+        selected_session_ids=cast(list[str], selection_sessions),
         candidate_index=candidate_index,
         configured_archive_root=configured_root,
     )
-    selection_sessions = selection.get("selected_session_ids")
-    if not isinstance(selection_sessions, list) or not all(isinstance(value, str) for value in selection_sessions):
-        raise UnclassifiedCanaryDiffError("canary report has invalid selected session ids")
     selection_index = selection.get("index_path")
     sessions_per_origin = selection.get("sessions_per_origin")
-    if not isinstance(selection_index, str) or not isinstance(sessions_per_origin, int):
+    raw_parser_fingerprints = selection.get("parser_fingerprints")
+    lowering_fingerprint = selection.get("lowering_fingerprint")
+    replay_routing_fingerprint = selection.get("replay_routing_fingerprint")
+    materializer_fingerprint = selection.get("materializer_fingerprint")
+    if (
+        not isinstance(selection_index, str)
+        or not isinstance(sessions_per_origin, int)
+        or not isinstance(raw_parser_fingerprints, dict)
+        or not all(
+            isinstance(origin, str) and isinstance(fingerprint, str)
+            for origin, fingerprint in raw_parser_fingerprints.items()
+        )
+        or (lowering_fingerprint is not None and not isinstance(lowering_fingerprint, str))
+        or (replay_routing_fingerprint is not None and not isinstance(replay_routing_fingerprint, str))
+        or (materializer_fingerprint is not None and not isinstance(materializer_fingerprint, str))
+    ):
         raise UnclassifiedCanaryDiffError("canary report has invalid selection binding")
     persisted_selection = CanarySelection(
         index_path=Path(selection_index),
@@ -1132,6 +1519,10 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         pathology_session_ids=(),
         sample_session_ids=(),
         origin_counts=(),
+        parser_fingerprints=tuple(sorted(cast(dict[str, str], raw_parser_fingerprints).items())),
+        lowering_fingerprint=lowering_fingerprint,
+        replay_routing_fingerprint=replay_routing_fingerprint,
+        materializer_fingerprint=materializer_fingerprint,
     )
     current_index = comparison.get("current_index")
     compared_sessions = comparison.get("session_ids")
@@ -1206,18 +1597,18 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     review_by_key = dict(zip(review_keys, reviews, strict=True))
     missing_keys = set(difference_by_key).difference(review_by_key)
     extra_keys = set(review_by_key).difference(difference_by_key)
-    if review_status == "unreviewed":
-        if reviews or not differences:
-            raise UnclassifiedCanaryDiffError("canary report unreviewed state is invalid")
-    elif missing_keys or extra_keys:
+    if missing_keys or extra_keys:
         raise UnclassifiedCanaryDiffError(
             f"canary report review coverage is incomplete (missing={len(missing_keys)}, extra={len(extra_keys)})"
         )
-    if review_status == "reviewed":
-        for key, difference in difference_by_key.items():
-            review = review_by_key[key]
-            if review.classification is not difference.classification:
-                raise UnclassifiedCanaryDiffError("canary report review classification disagrees with its difference")
+    for key, difference in difference_by_key.items():
+        review = review_by_key[key]
+        if review.classification is not difference.classification:
+            raise UnclassifiedCanaryDiffError("canary report review classification disagrees with its difference")
+        if difference.rationale != _reviewed_difference_rationale(review):
+            raise UnclassifiedCanaryDiffError(
+                "canary report difference rationale disagrees with its structured authority"
+            )
     comparison["summary"] = _summary_for_differences(differences)
     return cast(dict[str, object], payload)
 
@@ -1234,31 +1625,40 @@ def approve_canary_report(path: Path, *, archive_root: Path) -> dict[str, object
         owned = OwnedArchiveLocation.acquire(location)
         try:
             assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
-            payload = load_canary_report(path, archive_root=root)
-            if payload.get("review_status") != "reviewed":
-                raise UnclassifiedCanaryDiffError("canary report is not approved: review is incomplete")
-            comparison = payload.get("comparison")
-            summary = comparison.get("summary") if isinstance(comparison, dict) else None
-            if not isinstance(summary, dict) or summary.get("unexpected_count") != 0:
-                raise UnclassifiedCanaryDiffError("canary report is not approved: unexpected differences remain")
+            _validate_approved_canary_report(path, root)
 
             # The first load proves that the report was valid when approval
             # began. Re-run the complete report, source, candidate, and
             # comparison validation immediately before returning approval.
             assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
-            final_payload = load_canary_report(path, archive_root=root)
-            if final_payload.get("review_status") != "reviewed":
-                raise UnclassifiedCanaryDiffError("canary report is not approved: review changed during approval")
-            final_comparison = final_payload.get("comparison")
-            final_summary = final_comparison.get("summary") if isinstance(final_comparison, dict) else None
-            if not isinstance(final_summary, dict) or final_summary.get("unexpected_count") != 0:
-                raise UnclassifiedCanaryDiffError(
-                    "canary report is not approved: unexpected differences appeared during approval"
-                )
+            final_payload = _validate_approved_canary_report(path, root)
             assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
             return final_payload
         finally:
             owned.release()
+
+
+def approve_canary_report_under_daemon_ownership(path: Path, *, archive_root: Path) -> dict[str, object]:
+    """Validate report approval while the daemon write coordinator owns the archive."""
+
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+    if not daemon_write_lease_active():
+        raise RuntimeError("canary report consumption requires the daemon write coordinator")
+    root = Path(archive_root)
+    _validate_approved_canary_report(path, root)
+    return _validate_approved_canary_report(path, root)
+
+
+def _validate_approved_canary_report(path: Path, archive_root: Path) -> dict[str, object]:
+    payload = load_canary_report(path, archive_root=archive_root)
+    if payload.get("review_status") != "reviewed":
+        raise UnclassifiedCanaryDiffError("canary report is not approved: review is incomplete")
+    comparison = payload.get("comparison")
+    summary = comparison.get("summary") if isinstance(comparison, dict) else None
+    if not isinstance(summary, dict) or summary.get("unexpected_count") != 0:
+        raise UnclassifiedCanaryDiffError("canary report is not approved: unexpected differences remain")
+    return payload
 
 
 def _difference_key(
@@ -1312,6 +1712,7 @@ def _review_from_dict(value: object) -> CanaryDifferenceReview:
     changed_columns = value.get("changed_columns")
     table = value.get("table")
     reference = value.get("reference")
+    authority = value.get("authority")
     rationale = value.get("rationale")
     if (
         not isinstance(identity, dict)
@@ -1320,6 +1721,9 @@ def _review_from_dict(value: object) -> CanaryDifferenceReview:
         or not all(isinstance(column, str) for column in changed_columns)
         or not isinstance(table, str)
         or not isinstance(reference, str)
+        or not isinstance(authority, dict)
+        or not isinstance(authority.get("kind"), str)
+        or not isinstance(authority.get("id"), str)
         or not isinstance(rationale, str)
         or not reference.strip()
         or not rationale.strip()
@@ -1330,6 +1734,10 @@ def _review_from_dict(value: object) -> CanaryDifferenceReview:
         classification = DifferenceClassification(value["classification"])
     except (KeyError, ValueError) as exc:
         raise UnclassifiedCanaryDiffError("canary report review has invalid operation or classification") from exc
+    try:
+        authority_kind = CanaryAuthorityKind(authority["kind"])
+    except (KeyError, ValueError) as exc:
+        raise UnclassifiedCanaryDiffError("canary report review has invalid structured authority") from exc
     return CanaryDifferenceReview(
         table=table,
         operation=operation,
@@ -1338,6 +1746,8 @@ def _review_from_dict(value: object) -> CanaryDifferenceReview:
         classification=classification,
         reference=reference,
         rationale=rationale,
+        authority_kind=authority_kind,
+        authority_id=authority["id"],
     )
 
 
@@ -1347,7 +1757,9 @@ def load_canary_review_manifest(path: Path) -> tuple[CanaryDifferenceReview, ...
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not isinstance(payload.get("reviews"), list):
         raise UnclassifiedCanaryDiffError("canary review manifest must contain a reviews list")
-    return tuple(_review_from_dict(item) for item in cast(list[object], payload["reviews"]))
+    reviews = tuple(_review_from_dict(item) for item in cast(list[object], payload["reviews"]))
+    _validate_expected_review_authorities(reviews)
+    return reviews
 
 
 def _summary_for_differences(differences: tuple[RowDifference, ...]) -> dict[str, object]:
@@ -1360,6 +1772,50 @@ def _summary_for_differences(differences: tuple[RowDifference, ...]) -> dict[str
         "unclassified_count": 0,
         "counts_by_table": dict(sorted(Counter(item.table for item in differences).items())),
     }
+
+
+def _reviewed_difference_rationale(review: CanaryDifferenceReview) -> str:
+    """Return the only persisted rationale text a structured review may authorize."""
+    return f"{review.reference}: {review.rationale}"
+
+
+def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceReview]) -> None:
+    """Resolve expected-difference authorities from packaged and typed catalogs."""
+    from polylogue.maintenance.canary_authorities import BEAD_AUTHORITY_IDS, OPEN_BEAD_AUTHORITY_IDS
+    from polylogue.storage.sqlite.lifecycle import INDEX_DELTA_DECLARATIONS
+
+    expected_beads: set[str] = {
+        review.authority_id
+        for review in reviews
+        if review.classification is DifferenceClassification.EXPECTED
+        and review.authority_kind is CanaryAuthorityKind.BEAD
+        and review.authority_id is not None
+    }
+    expected_deltas = {
+        review.authority_id
+        for review in reviews
+        if review.classification is DifferenceClassification.EXPECTED
+        and review.authority_kind is CanaryAuthorityKind.DELTA
+        and review.authority_id is not None
+    }
+    unknown_beads = sorted(bead for bead in expected_beads if bead not in BEAD_AUTHORITY_IDS)
+    successor_beads = {
+        review.authority_id
+        for review in reviews
+        if review.authority_kind is CanaryAuthorityKind.SUCCESSOR and review.authority_id is not None
+    }
+    unknown_successors = sorted(bead for bead in successor_beads if bead not in OPEN_BEAD_AUTHORITY_IDS)
+    declared_deltas = {str(declaration.version) for declaration in INDEX_DELTA_DECLARATIONS}
+    unknown_deltas = sorted(delta for delta in expected_deltas if delta not in declared_deltas)
+    if unknown_beads or unknown_successors or unknown_deltas:
+        detail = ", ".join(
+            [
+                *(f"unknown Bead {bead}" for bead in unknown_beads),
+                *(f"unknown successor Bead {bead}" for bead in unknown_successors),
+                *(f"unknown index delta {delta}" for delta in unknown_deltas),
+            ]
+        )
+        raise UnclassifiedCanaryDiffError(f"expected canary authority is not declared in packaged evidence: {detail}")
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -1387,6 +1843,7 @@ _CORE_TABLES = ("sessions", "messages", "blocks", "session_links")
 _SESSION_SCOPE_COLUMNS = (
     "session_id",
     "src_session_id",
+    "resolved_dst_session_id",
     "parent_session_id",
     "child_session_id",
 )
@@ -1591,7 +2048,11 @@ def _compare_table(
     columns = tuple(column for column in current_columns if column in candidate_columns)
     if not columns:
         return []
-    scope_columns = tuple(column for column in _SESSION_SCOPE_COLUMNS if column in columns)
+    scope_columns = (
+        ("src_session_id",)
+        if table == "session_links" and "src_session_id" in columns
+        else tuple(column for column in _SESSION_SCOPE_COLUMNS if column in columns)
+    )
     if not scope_columns:
         return []
     current_rows = _table_rows(current, table, columns, scope_columns, session_ids)
@@ -1705,6 +2166,7 @@ def _quote_identifier(value: str) -> str:
 
 
 __all__ = [
+    "CanaryAuthorityKind",
     "CanaryDifferenceReview",
     "CanaryDiffReport",
     "CanaryRunResult",
@@ -1717,6 +2179,7 @@ __all__ = [
     "RowDifference",
     "UnclassifiedCanaryDiffError",
     "approve_canary_report",
+    "approve_canary_report_under_daemon_ownership",
     "compare_reindex_generations",
     "load_canary_report",
     "run_reindex_canary",
