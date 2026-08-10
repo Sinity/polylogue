@@ -3137,7 +3137,7 @@ def main(argv: list[str] | None = None) -> int:
         # is still a typed verification receipt.  ``None`` made merge-gate
         # treat an explicit quick receipt as malformed instead of as a valid
         # non-release gate.
-        release_baseline_allowed = False
+        release_baseline_allowed: bool | None = False
     elif full_pytest or args.seed_testmon:
         narrow_terminal = bool(args.skip_slow)
         authorized_narrow_terminal = args.terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
