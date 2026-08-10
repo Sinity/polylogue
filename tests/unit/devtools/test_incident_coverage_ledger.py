@@ -63,7 +63,7 @@ def test_deleting_a_ledger_row_emits_machine_readable_missing_id() -> None:
         resolve_incident_coverage(ledger, _graph())
 
     assert error.value.diagnostic["error"] == "forcing_set_mismatch"
-    assert "polylogue-xselt" in error.value.diagnostic["missing_ids"]
+    assert "polylogue-xselt" in cast(list[object], error.value.diagnostic["missing_ids"])
 
 
 def test_duplicate_forcing_row_is_blocking() -> None:
@@ -86,7 +86,7 @@ def test_current_beads_jsonl_removing_a_forcing_dependency_is_blocking(tmp_path:
         resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
 
     assert error.value.diagnostic["error"] == "campaign_graph_mismatch"
-    assert "polylogue-xselt" in error.value.diagnostic["extra_ids"]
+    assert "polylogue-xselt" in cast(list[object], error.value.diagnostic["extra_ids"])
 
 
 def test_current_beads_jsonl_adding_a_p0_forcing_blocker_is_blocking(tmp_path: Path) -> None:
@@ -106,7 +106,7 @@ def test_current_beads_jsonl_adding_a_p0_forcing_blocker_is_blocking(tmp_path: P
     with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
 
-    assert "polylogue-jdesf" in error.value.diagnostic["missing_ids"]
+    assert "polylogue-jdesf" in cast(list[object], error.value.diagnostic["missing_ids"])
 
 
 def test_current_beads_jsonl_dependency_kind_change_is_blocking(tmp_path: Path) -> None:
@@ -120,7 +120,7 @@ def test_current_beads_jsonl_dependency_kind_change_is_blocking(tmp_path: Path) 
     with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
 
-    assert "polylogue-a7xr.25" in error.value.diagnostic["extra_ids"]
+    assert "polylogue-a7xr.25" in cast(list[object], error.value.diagnostic["extra_ids"])
 
 
 def test_transitive_forcing_closure_is_load_bearing() -> None:
