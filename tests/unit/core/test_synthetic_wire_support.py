@@ -243,9 +243,7 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids(
                 session.model_copy(
                     update={
                         "messages": [
-                            message
-                            if index == 0
-                            else message.model_copy(update={"text": "body dropped by parser", "blocks": []})
+                            message if index == 0 else message.model_copy(update={"text": "", "blocks": []})
                             for index, message in enumerate(session.messages)
                         ]
                     }

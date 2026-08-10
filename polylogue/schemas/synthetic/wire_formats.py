@@ -1176,9 +1176,7 @@ def _parser_artifact_messages_have_artifact_bound_content(
 ) -> bool:
     """Require each identified parsed message to retain content from its raw node."""
     raw_texts_by_identity = {
-        identity: {
-            _normalise_evidence_text(text) for text in _payload_string_values(node) if _normalise_evidence_text(text)
-        }
+        identity: _parser_artifact_node_content_texts(provider, node)
         for node in _parser_artifact_expected_nodes(provider, payload)
         if (identity := _parser_artifact_node_identity(provider, node)) is not None
     }
@@ -1187,16 +1185,41 @@ def _parser_artifact_messages_have_artifact_bound_content(
             if not message.provider_message_id:
                 continue
             expected_texts = raw_texts_by_identity.get(message.provider_message_id)
-            if expected_texts is None:
+            if not expected_texts:
                 continue
             observed_texts = {
                 _normalise_evidence_text(text)
                 for text in (message.text, *(block.text for block in message.blocks))
                 if isinstance(text, str) and _normalise_evidence_text(text)
             }
-            if observed_texts and not observed_texts & expected_texts:
+            if not observed_texts or not observed_texts & expected_texts:
                 return False
     return True
+
+
+def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONValue]) -> set[str]:
+    """Extract text-bearing message content, excluding structured tool arguments."""
+    if provider == "chatgpt":
+        message = node.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        parts = content.get("parts") if isinstance(content, Mapping) else None
+        values = _payload_string_values(parts) if isinstance(parts, list) else ()
+    elif provider == "codex":
+        content = node.get("content")
+        values = (
+            tuple(
+                text
+                for item in content
+                if isinstance(item, Mapping) and item.get("type") in {"input_text", "output_text", "thinking"}
+                for text in (item.get("text"), item.get("thinking"))
+                if isinstance(text, str)
+            )
+            if isinstance(content, list)
+            else ()
+        )
+    else:
+        values = ()
+    return {_normalise_evidence_text(value) for value in values if _normalise_evidence_text(value)}
 
 
 def _parser_artifact_has_complete_message_coverage(
