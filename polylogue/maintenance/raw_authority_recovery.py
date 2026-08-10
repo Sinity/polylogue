@@ -79,6 +79,11 @@ _RESET_TABLES = (
     "raw_authority_censuses",
 )
 _INDEX_TARGETS = ("raw_revision_heads", "raw_revision_applications")
+_INDEX_SEED_KEY_COLUMNS = {
+    "raw_revision_heads": "logical_source_key",
+    "raw_revision_applications": "decision_id",
+}
+_INDEX_SEED_APPEND_ONLY_TABLES = frozenset({"raw_revision_applications"})
 
 
 class RawAuthorityRecoveryError(RuntimeError):
@@ -299,59 +304,161 @@ def _index_candidates(conn: sqlite3.Connection) -> dict[str, tuple[str, ...]]:
     return {"raw_revision_heads": heads, "raw_revision_applications": applications}
 
 
-def _index_seed_rows(
+def _stream_index_seed_rows(
     conn: sqlite3.Connection, *, excluded_keys: Mapping[str, tuple[str, ...]] | None = None
-) -> dict[str, dict[str, str]]:
-    """Return stable row digests keyed by each index-seed primary key."""
+) -> dict[str, dict[str, object]]:
+    """Return bounded retained-row proofs for the index-seed tables."""
 
-    key_columns = {
-        "raw_revision_heads": "logical_source_key",
-        "raw_revision_applications": "decision_id",
-    }
-    payload: dict[str, dict[str, str]] = {}
-    for table, key_column in key_columns.items():
+    excluded_rowids = _index_seed_candidate_rowids(conn, excluded_keys=excluded_keys)
+    payload: dict[str, dict[str, object]] = {}
+    for table in _INDEX_SEED_KEY_COLUMNS:
         quoted = _quote_identifier(table)
         columns = [str(row[1]) for row in conn.execute(f"PRAGMA table_info({quoted})")]
         if not columns:
             raise RawAuthorityRecoveryError(f"cannot fingerprint missing or malformed table: {table}")
-        key_index = columns.index(key_column)
-        excluded = set(() if excluded_keys is None else excluded_keys.get(table, ()))
-        row_digests: dict[str, str] = {}
-        for row in conn.execute(f"SELECT * FROM {quoted}"):
-            key = str(row[key_index])
-            if key in excluded:
-                continue
-            if key in row_digests:
-                raise RawAuthorityRecoveryError(f"index seed table has a duplicate primary key: {table}.{key_column}")
-            row_digests[key] = _digest({"columns": columns, "row": [_value_for_digest(value) for value in row]})
-        payload[table] = row_digests
+        rowid_watermark = int(conn.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {quoted}").fetchone()[0])
+        row_count, rows_sha256 = _stream_index_seed_table(
+            conn,
+            table=table,
+            columns=columns,
+            excluded_rowids=excluded_rowids[table],
+            rowid_watermark=rowid_watermark,
+        )
+        payload[table] = {
+            "excluded_rowids": list(excluded_rowids[table]),
+            "retained_row_count": row_count,
+            "retained_rows_sha256": rows_sha256,
+            "rowid_watermark": rowid_watermark,
+        }
     return payload
 
 
+def _index_seed_candidate_rowids(
+    conn: sqlite3.Connection, *, excluded_keys: Mapping[str, tuple[str, ...]] | None
+) -> dict[str, tuple[int, ...]]:
+    """Resolve the bounded candidate set to its pre-prune SQLite rowids."""
+
+    rowids: dict[str, tuple[int, ...]] = {}
+    for table, key_column in _INDEX_SEED_KEY_COLUMNS.items():
+        quoted_table = _quote_identifier(table)
+        quoted_key = _quote_identifier(key_column)
+        resolved: list[int] = []
+        for key in () if excluded_keys is None else excluded_keys.get(table, ()):
+            row = conn.execute(f"SELECT rowid FROM {quoted_table} WHERE {quoted_key} = ?", (key,)).fetchone()
+            if row is None:
+                raise RawAuthorityRecoveryError("planned index seed candidate disappeared before proof publication")
+            resolved.append(int(row[0]))
+        rowids[table] = tuple(sorted(resolved))
+    return rowids
+
+
+def _stream_index_seed_table(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    columns: list[str],
+    excluded_rowids: tuple[int, ...],
+    rowid_watermark: int,
+) -> tuple[int, str]:
+    """Hash retained rows through a rowid-bounded, ordered cursor."""
+
+    quoted = _quote_identifier(table)
+    excluded = set(excluded_rowids)
+    digest = hashlib.sha256()
+
+    def update(value: object) -> None:
+        encoded = _canonical_bytes(value)
+        digest.update(len(encoded).to_bytes(8, byteorder="big"))
+        digest.update(encoded)
+
+    update(
+        {
+            "table": table,
+            "columns": columns,
+            "excluded_rowids": list(excluded_rowids),
+            "rowid_watermark": rowid_watermark,
+        }
+    )
+    retained_count = 0
+    for row in conn.execute(f"SELECT rowid, * FROM {quoted} WHERE rowid <= ? ORDER BY rowid", (rowid_watermark,)):
+        if int(row[0]) in excluded:
+            continue
+        update({"rowid": int(row[0]), "row": [_value_for_digest(value) for value in row[1:]]})
+        retained_count += 1
+    return retained_count, digest.hexdigest()
+
+
+def _index_seed_candidate_presence(
+    conn: sqlite3.Connection, candidate_keys: Mapping[str, tuple[str, ...]]
+) -> tuple[int, int]:
+    """Return the number of planned candidates and those still present."""
+
+    planned = 0
+    present = 0
+    for table, key_column in _INDEX_SEED_KEY_COLUMNS.items():
+        quoted = _quote_identifier(table)
+        quoted_key = _quote_identifier(key_column)
+        for key in candidate_keys[table]:
+            planned += 1
+            if conn.execute(f"SELECT 1 FROM {quoted} WHERE {quoted_key} = ?", (key,)).fetchone() is not None:
+                present += 1
+    return planned, present
+
+
 def _index_seed_digest(conn: sqlite3.Connection, *, excluded_keys: Mapping[str, tuple[str, ...]] | None = None) -> str:
-    """Hash a bounded, key-addressable index-seed row snapshot."""
+    """Hash a bounded index-seed retained-row proof."""
 
-    return _digest(_index_seed_rows(conn, excluded_keys=excluded_keys))
+    return _digest(_stream_index_seed_rows(conn, excluded_keys=excluded_keys))
 
 
-def _verify_index_seed_post_target(conn: sqlite3.Connection, plan: RawAuthorityRecoveryPlan) -> None:
-    """Require planned retained rows and candidate absence, allowing append-only successors."""
+def _verify_index_seed_post_target(conn: sqlite3.Connection, plan: RawAuthorityRecoveryPlan) -> bool:
+    """Prove a committed prune while permitting later append-only applications."""
 
-    if plan.post_target_rows is None or plan.post_target_digest is None:
-        raise RawAuthorityRecoveryError("recovery plan is missing its exact index seed post-target state")
-    if _digest(plan.post_target_rows) != plan.post_target_digest:
-        raise RawAuthorityRecoveryError("recovery plan has an invalid exact index seed post-target digest")
-    observed = _index_seed_rows(conn)
-    for table in _INDEX_TARGETS:
-        candidate_keys = set(plan.candidate_keys[table])
-        if candidate_keys & set(observed[table]):
-            raise RawAuthorityRecoveryError("recovery intent still contains a planned orphaned index seed")
-        expected = plan.post_target_rows.get(table)
+    if plan.post_target_proof is None:
+        raise RawAuthorityRecoveryError("recovery plan is missing its bounded index seed post-target proof")
+    planned_candidates, present_candidates = _index_seed_candidate_presence(conn, plan.candidate_keys)
+    if planned_candidates == 0 or present_candidates == planned_candidates:
+        return False
+    if present_candidates:
+        raise RawAuthorityRecoveryError("recovery intent has only partially pruned its planned index seed candidates")
+    for table in _INDEX_SEED_KEY_COLUMNS:
+        expected = plan.post_target_proof.get(table)
         if not isinstance(expected, dict):
-            raise RawAuthorityRecoveryError("recovery plan has malformed index seed post-target rows")
-        retained = {key: observed[table].get(key) for key in expected}
-        if retained != expected:
+            raise RawAuthorityRecoveryError("recovery plan has malformed bounded index seed post-target proof")
+        rowid_watermark = expected.get("rowid_watermark")
+        excluded_rowids = expected.get("excluded_rowids")
+        expected_count = expected.get("retained_row_count")
+        expected_digest = expected.get("retained_rows_sha256")
+        if (
+            not isinstance(rowid_watermark, int)
+            or rowid_watermark < 0
+            or not isinstance(excluded_rowids, list)
+            or any(not isinstance(rowid, int) or rowid <= 0 for rowid in excluded_rowids)
+            or not isinstance(expected_count, int)
+            or expected_count < 0
+            or not isinstance(expected_digest, str)
+        ):
+            raise RawAuthorityRecoveryError("recovery plan has malformed bounded index seed post-target proof")
+        columns = [str(row[1]) for row in conn.execute(f"PRAGMA table_info({_quote_identifier(table)})")]
+        observed_count, observed_digest = _stream_index_seed_table(
+            conn,
+            table=table,
+            columns=columns,
+            excluded_rowids=tuple(excluded_rowids),
+            rowid_watermark=rowid_watermark,
+        )
+        if (observed_count, observed_digest) != (expected_count, expected_digest):
             raise RawAuthorityRecoveryError("recovery intent does not match the exact committed index seed state")
+        if table not in _INDEX_SEED_APPEND_ONLY_TABLES:
+            quoted_table = _quote_identifier(table)
+            if conn.execute(f"SELECT 1 FROM {quoted_table} WHERE rowid > ?", (rowid_watermark,)).fetchone() is not None:
+                raise RawAuthorityRecoveryError("recovery intent has an unexpected post-plan index seed successor")
+            if any(
+                conn.execute(f"SELECT 1 FROM {quoted_table} WHERE rowid = ?", (rowid,)).fetchone() is not None
+                for rowid in excluded_rowids
+            ):
+                raise RawAuthorityRecoveryError("recovery intent replaced a non-append-only index seed candidate")
+    return True
 
 
 def _validate_backup(path: Path | None, *, tier: ArchiveTier, connection: sqlite3.Connection) -> dict[str, object]:
@@ -424,8 +531,7 @@ class RawAuthorityRecoveryPlan:
     active_generation: dict[str, object]
     before_counts: dict[str, int]
     candidate_keys: dict[str, tuple[str, ...]]
-    post_target_rows: dict[str, dict[str, str]] | None
-    post_target_digest: str | None
+    post_target_proof: dict[str, dict[str, object]] | None
     protected_digest: str
     backup_authority: dict[str, object] | None
     receipt_path: str
@@ -447,8 +553,7 @@ class RawAuthorityRecoveryPlan:
             "active_generation": self.active_generation,
             "before_counts": self.before_counts,
             "candidate_keys": {key: list(value) for key, value in self.candidate_keys.items()},
-            "post_target_rows": self.post_target_rows,
-            "post_target_digest": self.post_target_digest,
+            "post_target_proof": self.post_target_proof,
             "protected_digest": self.protected_digest,
             "backup_authority": self.backup_authority,
             "receipt_path": self.receipt_path,
@@ -487,26 +592,26 @@ class RawAuthorityRecoveryPlan:
             "source_snapshot",
             "active_generation",
             "before_counts",
-            "post_target_rows",
-            "post_target_digest",
+            "post_target_proof",
             "protected_digest",
             "receipt_path",
         )
         if any(key not in payload for key in required):
             raise RawAuthorityRecoveryError("raw-authority recovery plan is missing a required field")
-        post_target_rows = payload["post_target_rows"]
-        if post_target_rows is not None and (
-            not isinstance(post_target_rows, dict)
+        post_target_proof = payload["post_target_proof"]
+        if post_target_proof is not None and (
+            not isinstance(post_target_proof, dict)
             or any(
-                not isinstance(rows, dict)
-                or any(not isinstance(key, str) or not isinstance(value, str) for key, value in rows.items())
-                for rows in post_target_rows.values()
+                not isinstance(proof, dict)
+                or not isinstance(proof.get("rowid_watermark"), int)
+                or not isinstance(proof.get("excluded_rowids"), list)
+                or any(not isinstance(rowid, int) or rowid <= 0 for rowid in proof.get("excluded_rowids", []))
+                or not isinstance(proof.get("retained_row_count"), int)
+                or not isinstance(proof.get("retained_rows_sha256"), str)
+                for proof in post_target_proof.values()
             )
         ):
-            raise RawAuthorityRecoveryError("raw-authority recovery plan post-target rows are malformed")
-        post_target_digest = payload["post_target_digest"]
-        if post_target_digest is not None and not isinstance(post_target_digest, str):
-            raise RawAuthorityRecoveryError("raw-authority recovery plan post-target digest is malformed")
+            raise RawAuthorityRecoveryError("raw-authority recovery plan post-target proof is malformed")
         return cls(
             operation_id=str(payload["operation_id"]),
             operation=str(payload["operation"]),
@@ -521,8 +626,7 @@ class RawAuthorityRecoveryPlan:
             active_generation=cast(dict[str, object], payload["active_generation"]),
             before_counts=_int_mapping(payload["before_counts"], field="before_counts"),
             candidate_keys=candidates,
-            post_target_rows=cast(dict[str, dict[str, str]] | None, post_target_rows),
-            post_target_digest=post_target_digest,
+            post_target_proof=cast(dict[str, dict[str, object]] | None, post_target_proof),
             protected_digest=str(payload["protected_digest"]),
             backup_authority=(
                 cast(dict[str, object], payload["backup_authority"])
@@ -793,8 +897,7 @@ def _build_plan(
             _validate_integrity(source, tier="source")
             counts = source_counts
             candidate_keys: dict[str, tuple[str, ...]] = {}
-            post_target_rows: dict[str, dict[str, str]] | None = None
-            post_target_digest: str | None = None
+            post_target_proof: dict[str, dict[str, object]] | None = None
             protected = _protected_digest(source, excluded=_RESET_TABLES)
         else:
             with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index:
@@ -803,8 +906,7 @@ def _build_plan(
                 _validate_integrity(index, tier="active index")
                 candidate_keys = _index_candidates(index)
                 counts = _count_tables(index, _INDEX_TARGETS)
-                post_target_rows = _index_seed_rows(index, excluded_keys=candidate_keys)
-                post_target_digest = _digest(post_target_rows)
+                post_target_proof = _stream_index_seed_rows(index, excluded_keys=candidate_keys)
                 protected = _protected_digest(index, excluded=_INDEX_TARGETS)
         source_snapshot = source_revision_snapshot(root)
     backup_authority: dict[str, object] | None = None
@@ -830,8 +932,7 @@ def _build_plan(
         "active_generation": _generation_identity(root, location),
         "before_counts": counts,
         "candidate_keys": {key: list(value) for key, value in candidate_keys.items()},
-        "post_target_rows": post_target_rows,
-        "post_target_digest": post_target_digest,
+        "post_target_proof": post_target_proof,
         "protected_digest": protected,
         "backup_authority": backup_authority,
         "receipt_path": str(receipt),
@@ -850,8 +951,7 @@ def _build_plan(
         active_generation=cast(dict[str, object], payload["active_generation"]),
         before_counts=counts,
         candidate_keys=candidate_keys,
-        post_target_rows=post_target_rows,
-        post_target_digest=post_target_digest,
+        post_target_proof=post_target_proof,
         protected_digest=protected,
         backup_authority=backup_authority,
         receipt_path=str(receipt),
@@ -1046,7 +1146,8 @@ def _committed_postflight(plan: RawAuthorityRecoveryPlan) -> tuple[dict[str, int
             after_counts = _count_tables(conn, _INDEX_TARGETS)
             expected_after = {key: plan.before_counts[key] - len(plan.candidate_keys[key]) for key in _INDEX_TARGETS}
         if operation is RecoveryOperation.PRUNE_INDEX_SEEDS:
-            _verify_index_seed_post_target(conn, plan)
+            if not _verify_index_seed_post_target(conn, plan):
+                return None
         elif after_counts != expected_after:
             return None
         postflight = _postflight(conn, protected_digest=plan.protected_digest, excluded=excluded)

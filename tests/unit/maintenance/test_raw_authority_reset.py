@@ -604,6 +604,34 @@ def test_index_seed_digest_avoids_unbounded_sql_parameters(tmp_path: Path) -> No
     assert len(digest) == 64
 
 
+def test_index_prune_plan_keeps_retained_seed_evidence_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real recovery plan stores summary proof, never every retained seed identity."""
+
+    initialize_active_archive_root(tmp_path)
+    active_index = _seed_index_seeds(tmp_path)
+    with sqlite3.connect(active_index) as conn:
+        conn.executemany(
+            "INSERT INTO raw_revision_applications "
+            "(decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation, "
+            "decision, detail, decided_at_ms) VALUES (?, 'r-present', ?, ?, 'sr', 1, 'selected_baseline', 'd', 2)",
+            [(f"d-retained-{index}", f"s-retained-{index}", f"k-retained-{index}") for index in range(64)],
+        )
+
+    backup = _backup_authority(tmp_path, monkeypatch, tier="index")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+
+    assert plan.post_target_proof is not None
+    applications_proof = plan.post_target_proof["raw_revision_applications"]
+    assert set(applications_proof) == {
+        "excluded_rowids",
+        "retained_row_count",
+        "retained_rows_sha256",
+        "rowid_watermark",
+    }
+    assert applications_proof["retained_row_count"] == 65
+    assert "d-retained-0" not in json.dumps(plan.to_dict(), sort_keys=True)
+
+
 def test_index_prune_refuses_stale_active_pointer_and_wrong_backup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -694,6 +722,42 @@ def test_index_prune_resume_accepts_append_only_successor_rows(tmp_path: Path, m
         assert conn.execute(
             "SELECT COUNT(*) FROM raw_revision_applications WHERE decision_id = 'd-successor'"
         ).fetchone() == (1,)
+
+
+def test_uncommitted_index_prune_intent_reauthorizes_before_deleting_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An intact index-prune intent resumes through executor authorization, not postflight receipt recovery."""
+
+    initialize_active_archive_root(tmp_path)
+    active_index = _seed_index_seeds(tmp_path)
+    backup = _backup_authority(tmp_path, monkeypatch, tier="index")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    _write_recovery_intent(plan)
+
+    original_authorize = OperationExecutor.authorize
+
+    def require_authorization(*_args: object, **_kwargs: object) -> Never:
+        raise RuntimeError("executor authorization was required")
+
+    monkeypatch.setattr(OperationExecutor, "authorize", require_authorization)
+    with pytest.raises(RuntimeError, match="executor authorization was required"):
+        resume_raw_authority_recovery(
+            tmp_path,
+            RecoveryOperation.PRUNE_INDEX_SEEDS,
+            operation_id=plan.operation_id,
+        )
+    with sqlite3.connect(active_index) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone() == (2,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone() == (2,)
+
+    monkeypatch.setattr(OperationExecutor, "authorize", original_authorize)
+    resumed = resume_raw_authority_recovery(
+        tmp_path,
+        RecoveryOperation.PRUNE_INDEX_SEEDS,
+        operation_id=plan.operation_id,
+    )
+    assert resumed.status == "applied"
 
 
 def test_index_recovery_actuator_reports_index_targets_and_deleted_candidates(
