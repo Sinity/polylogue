@@ -9,6 +9,8 @@ This document records the production-toolchain disposition of the preserved audi
 
 The lab established distinct production-useful roles for these tools: ast-grep generates structural candidates, scc reports cheap code-size and complexity trends, and CodeQL supports periodic security-focused dataflow analysis. They do not independently enforce any audit policy.
 
+The landing PR also carries a versioned Beads-scope receipt; validate the published boundary with `devtools workspace pr-scope check --pr 3917` before merging.
+
 ## Deliberately not adopted
 
 This Bead does not carry forward the lab's probe scripts, query packs, rule files, generated outputs, or exploratory Python dependencies. A future policy change can adopt a specific rule, query, or additional dependency with its own verification contract.
