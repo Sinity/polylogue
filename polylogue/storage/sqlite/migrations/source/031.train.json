@@ -12,7 +12,7 @@
     "slot": 31,
     "path": "031_raw_authority_artifact_census_receipts.sql",
     "owner_ref": "feature/fix/raw-authority-census",
-    "sql_sha256": "ab85d4f8c26496447c3277cabd8375f77f1a8a2664a5bdbc5bce91a4ac346aab",
+    "sql_sha256": "f6bfd7eded76d3ce8180a6dbc9cb63e6484ebc64381dbb3b09607317da95f3a4",
     "requires_backup": true
   },
   "riders": [
@@ -21,7 +21,10 @@
       "owner_ref": "feature/fix/raw-authority-census",
       "schema_objects": [
         "table:raw_authority_artifact_census_receipts",
-        "index:idx_raw_authority_artifact_census_receipts_applied_at"
+        "index:idx_raw_authority_artifact_census_receipts_applied_at",
+        "table:raw_authority_artifact_census_checkpoints",
+        "table:raw_authority_artifact_census_checkpoint_members",
+        "index:idx_raw_authority_artifact_census_checkpoint_members_page"
       ],
       "runtime_consumers": [
         {
@@ -65,5 +68,5 @@
   "release_evidence_ref": null,
   "proof_refs": [],
   "source_continuity_evidence": null,
-  "manifest_sha256": "3c853b2c489579622877180a1d0873094074d64ba60f6730acce013ae9fec92d"
+  "manifest_sha256": "65152d8c6bb563bceb614af64bd9721c3725192ccdfe0d1948d856130e8db25b"
 }

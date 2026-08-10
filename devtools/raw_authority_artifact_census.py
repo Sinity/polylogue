@@ -32,7 +32,12 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser.add_argument(
         "--after-raw-id",
         default=None,
-        help="Exclusive raw-id cursor for the next bounded page.",
+        help="Exclusive cursor from the durable checkpoint; requires --census-id for --apply.",
+    )
+    parser.add_argument(
+        "--census-id",
+        default=None,
+        help="Durable checkpoint identity returned by the preceding apply page.",
     )
     parser.add_argument(
         "--apply",
@@ -69,6 +74,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
             limit=args.limit,
             after_raw_id=args.after_raw_id,
             receipt_path=args.receipt,
+            census_id=args.census_id,
         )
     except (RawAuthorityArtifactCensusError, FileNotFoundError, ValueError) as exc:
         print(f"refused: {exc}", file=stdout)

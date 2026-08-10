@@ -15,7 +15,10 @@ from devtools.command_catalog import COMMANDS
 from devtools.raw_authority_artifact_census import main
 from polylogue.core.enums import Provider
 from polylogue.daemon import backup as backup_module
-from polylogue.maintenance.raw_authority_artifact_census import run_raw_authority_artifact_census
+from polylogue.maintenance.raw_authority_artifact_census import (
+    RawAuthorityArtifactCensusError,
+    run_raw_authority_artifact_census,
+)
 from polylogue.storage.artifacts.raw_authority_census import RawAuthorityBucket
 from polylogue.storage.blob_store import reset_blob_store
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -153,6 +156,12 @@ def test_apply_pages_observations_through_real_backup_gates_and_records_receipts
     assert payload["observations_written"] == 1
     assert payload["receipt_id"] is not None
     assert payload["receipt"]["page"] == {"after_raw_id": None, "next_after_raw_id": "raw-artifact"}
+    census_id = payload["receipt"]["evidence"]["checkpoint"]["census_id"]
+    assert payload["receipt"]["evidence"].keys() == {"archive", "backup", "checkpoint", "command", "inventory"}
+    assert (
+        payload["receipt"]["evidence"]["inventory"]["before_sha256"]
+        != payload["receipt"]["evidence"]["inventory"]["after_sha256"]
+    )
     assert payload["receipt"]["scope"]["logical_database_operations"] == ["upsert raw_artifacts observations"]
     assert payload["receipt"]["scope"]["physical_database_operations"] == [
         "PRAGMA wal_checkpoint(TRUNCATE) on source.db after initial backup validation"
@@ -187,6 +196,8 @@ def test_apply_pages_observations_through_real_backup_gates_and_records_receipts
                 "--archive-root",
                 str(archive),
                 "--apply",
+                "--census-id",
+                census_id,
                 "--backup-manifest",
                 str(second_manifest),
                 "--limit",
@@ -204,6 +215,81 @@ def test_apply_pages_observations_through_real_backup_gates_and_records_receipts
     with sqlite3.connect(archive / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (2,)
         assert conn.execute("SELECT COUNT(*) FROM raw_authority_artifact_census_receipts").fetchone() == (2,)
+        checkpoint = conn.execute(
+            "SELECT next_after_raw_id, last_receipt_id, completed_at_ms FROM raw_authority_artifact_census_checkpoints WHERE census_id = ?",
+            (census_id,),
+        ).fetchone()
+        assert checkpoint is not None
+        next_after_raw_id, last_receipt_id, completed_at_ms = checkpoint
+        assert next_after_raw_id is None
+        assert last_receipt_id == second_payload["receipt_id"]
+        assert completed_at_ms is not None
+
+
+def test_apply_refuses_replayed_or_unbound_page_cursor(
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_artifact(archive, raw_id="raw-b")
+    _write_artifact(archive, raw_id="raw-c")
+    first_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="first")
+    first = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=first_manifest, limit=1)
+    evidence = first.receipt["evidence"]
+    assert isinstance(evidence, dict)
+    checkpoint_evidence = evidence["checkpoint"]
+    assert isinstance(checkpoint_evidence, dict)
+    census_id = checkpoint_evidence["census_id"]
+    assert isinstance(census_id, str)
+    next_after = first.census.next_after_raw_id
+    assert next_after == "raw-b"
+    second_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="second")
+
+    with pytest.raises(RawAuthorityArtifactCensusError, match="continuation cursor"):
+        run_raw_authority_artifact_census(
+            archive,
+            apply=True,
+            backup_manifest=second_manifest,
+            limit=1,
+            census_id=census_id,
+            after_raw_id="raw-c",
+        )
+    with pytest.raises(RawAuthorityArtifactCensusError, match="requires --census-id"):
+        run_raw_authority_artifact_census(
+            archive,
+            apply=True,
+            backup_manifest=second_manifest,
+            limit=1,
+            after_raw_id=next_after,
+        )
+
+    _write_artifact(archive, raw_id="raw-a-added-after-checkpoint")
+    third_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="third")
+    resumed = run_raw_authority_artifact_census(
+        archive,
+        apply=True,
+        backup_manifest=third_manifest,
+        limit=1,
+        census_id=census_id,
+        after_raw_id=next_after,
+    )
+    assert resumed.census.next_after_raw_id is None
+    with sqlite3.connect(archive / "source.db") as conn:
+        assert {row[0] for row in conn.execute("SELECT raw_id FROM raw_artifacts ORDER BY raw_id")} == {
+            "raw-b",
+            "raw-c",
+        }
+    fourth_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="fourth")
+    with pytest.raises(RawAuthorityArtifactCensusError, match="already complete"):
+        run_raw_authority_artifact_census(
+            archive,
+            apply=True,
+            backup_manifest=fourth_manifest,
+            limit=1,
+            census_id=census_id,
+            after_raw_id=next_after,
+        )
+    fifth_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="fifth")
+    next_census = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=fifth_manifest, limit=1)
+    assert [entry.raw_id for entry in next_census.census.entries] == ["raw-a-added-after-checkpoint"]
 
 
 def test_apply_rejects_receipt_option_before_mutating_source(archive: Path) -> None:

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO, cast
@@ -25,6 +27,7 @@ from polylogue.storage.artifacts.raw_authority_census import (
     write_artifact_observations,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.index_generation import RebuildLease
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import MigrationError, validate_migration_backup_manifest
 
@@ -67,11 +70,40 @@ def _checkpoint_source_tier(conn: sqlite3.Connection) -> None:
         raise RawAuthorityArtifactCensusError("source.db WAL checkpoint was blocked; retry when the tier is idle")
 
 
-def _validate_source_backup(path: Path, conn: sqlite3.Connection) -> None:
+def _canonical_digest(payload: object) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _file_identity(path: Path) -> dict[str, object]:
+    stat = path.stat()
+    return {
+        "path": str(path.resolve(strict=False)),
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "size_bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _json_value(value: object) -> object:
+    return {"bytes": bytes(value).hex()} if isinstance(value, (bytes, bytearray, memoryview)) else value
+
+
+def _validate_source_backup(path: Path, conn: sqlite3.Connection) -> dict[str, object]:
     try:
-        validate_migration_backup_manifest(path, ArchiveTier.SOURCE, connection=conn)
+        verification_receipt = validate_migration_backup_manifest(path, ArchiveTier.SOURCE, connection=conn)
     except MigrationError as exc:
         raise RawAuthorityArtifactCensusError(str(exc)) from exc
+    receipt_path = Path(verification_receipt)
+    return {
+        "manifest": {"path": str(path.resolve(strict=False)), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()},
+        "verification_receipt": {
+            "path": str(receipt_path.resolve(strict=False)),
+            "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+        },
+    }
 
 
 def _write_immutable_receipt(path: Path, payload: dict[str, object]) -> None:
@@ -110,21 +142,114 @@ def _open_readonly(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30.0)
 
 
-def _scan(
+def _snapshot_candidate_raw_ids(conn: sqlite3.Connection) -> tuple[str, ...]:
+    return tuple(
+        str(row[0])
+        for row in conn.execute(
+            """
+            SELECT raw_id FROM raw_sessions
+            WHERE revision_authority = 'quarantined' AND parse_error IS NULL
+            ORDER BY raw_id
+            """
+        )
+    )
+
+
+def _create_checkpoint(conn: sqlite3.Connection, *, now_ms: int) -> tuple[str, int, str]:
+    raw_ids = _snapshot_candidate_raw_ids(conn)
+    universe_sha256 = _canonical_digest(list(raw_ids))
+    census_id = f"raw-authority-artifact-census:{uuid.uuid4().hex}"
+    conn.execute(
+        """
+        INSERT INTO raw_authority_artifact_census_checkpoints (
+            census_id, universe_sha256, candidate_count, next_after_raw_id, created_at_ms
+        ) VALUES (?, ?, ?, NULL, ?)
+        """,
+        (census_id, universe_sha256, len(raw_ids), now_ms),
+    )
+    conn.executemany(
+        """
+        INSERT INTO raw_authority_artifact_census_checkpoint_members (census_id, ordinal, raw_id)
+        VALUES (?, ?, ?)
+        """,
+        ((census_id, ordinal, raw_id) for ordinal, raw_id in enumerate(raw_ids)),
+    )
+    return census_id, len(raw_ids), universe_sha256
+
+
+def _checkpoint_state(conn: sqlite3.Connection, census_id: str) -> tuple[int, str | None, str]:
+    row = conn.execute(
+        """
+        SELECT candidate_count, next_after_raw_id, universe_sha256
+        FROM raw_authority_artifact_census_checkpoints
+        WHERE census_id = ?
+        """,
+        (census_id,),
+    ).fetchone()
+    if row is None:
+        raise RawAuthorityArtifactCensusError(f"unknown durable census checkpoint: {census_id}")
+    candidate_count, next_after_raw_id, universe_sha256 = row
+    if (
+        next_after_raw_id is None
+        and conn.execute(
+            "SELECT 1 FROM raw_authority_artifact_census_checkpoints WHERE census_id = ? AND last_receipt_id IS NOT NULL",
+            (census_id,),
+        ).fetchone()
+    ):
+        raise RawAuthorityArtifactCensusError("durable census checkpoint is already complete")
+    return int(candidate_count), str(next_after_raw_id) if next_after_raw_id is not None else None, str(universe_sha256)
+
+
+def _checkpoint_page_raw_ids(
+    conn: sqlite3.Connection, *, census_id: str, after_raw_id: str | None, limit: int
+) -> tuple[tuple[str, ...], bool]:
+    rows = conn.execute(
+        """
+        SELECT raw_id FROM raw_authority_artifact_census_checkpoint_members
+        WHERE census_id = ?
+          AND (? IS NULL OR raw_id > ?)
+        ORDER BY ordinal
+        LIMIT ?
+        """,
+        (census_id, after_raw_id, after_raw_id, limit + 1),
+    ).fetchall()
+    selected = tuple(str(row[0]) for row in rows[:limit])
+    return selected, len(rows) > limit
+
+
+def _page_inventory_digest(conn: sqlite3.Connection, raw_ids: tuple[str, ...]) -> str:
+    if not raw_ids:
+        return _canonical_digest({"raw_sessions": [], "raw_artifacts": []})
+    records: dict[str, list[list[object]]] = {"raw_sessions": [], "raw_artifacts": []}
+    for start in range(0, len(raw_ids), 500):
+        selected = raw_ids[start : start + 500]
+        marks = ",".join("?" for _ in selected)
+        for table, columns in (
+            ("raw_sessions", "raw_id, revision_authority, parse_error, blob_hash, blob_size"),
+            ("raw_artifacts", "raw_id, artifact_kind, support_status, parse_as_session, schema_eligible"),
+        ):
+            rows = conn.execute(
+                f"SELECT {columns} FROM {table} WHERE raw_id IN ({marks}) ORDER BY raw_id",
+                selected,
+            ).fetchall()
+            records[table].extend([[_json_value(value) for value in row] for row in rows])
+    return _canonical_digest(records)
+
+
+def _snapshot_census(
     archive_root: Path,
+    location: ArchiveLocation,
     *,
     limit: int | None,
     after_raw_id: str | None,
 ) -> RawAuthorityArtifactCensus:
-    source_db = archive_root / "source.db"
-    index_db = resolve_active_index_path(archive_root)
-    if not source_db.is_file():
-        raise FileNotFoundError(f"no source.db at {source_db}")
-    if not index_db.is_file():
-        raise FileNotFoundError(f"no index.db at {index_db}")
-    source_conn = _open_readonly(source_db)
-    index_conn = _open_readonly(index_db)
+    source_conn = _open_readonly(archive_root / "source.db")
+    index_conn = _open_readonly(location.active_index_path)
     try:
+        source_conn.execute("BEGIN")
+        index_conn.execute("BEGIN")
+        source_conn.execute("SELECT 1 FROM raw_sessions LIMIT 1").fetchone()
+        index_conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone()
         return scan_quarantined_raw_authority(
             source_conn,
             index_conn,
@@ -137,6 +262,35 @@ def _scan(
         index_conn.close()
 
 
+def _scan(
+    archive_root: Path,
+    *,
+    limit: int | None,
+    after_raw_id: str | None,
+) -> RawAuthorityArtifactCensus:
+    source_db = archive_root / "source.db"
+    index_db = resolve_active_index_path(archive_root)
+    if not source_db.is_file():
+        raise FileNotFoundError(f"no source.db at {source_db}")
+    if not index_db.is_file():
+        raise FileNotFoundError(f"no index.db at {index_db}")
+    del index_db
+    try:
+        ownership = acquire_durable_archive_ownership(
+            archive_root,
+            owner_id="maintenance:raw-authority-artifact-census:dry-run",
+        )
+    except ArchiveOwnershipError as exc:
+        raise RawAuthorityArtifactCensusError(str(exc)) from exc
+    with ownership, RebuildLease(archive_root):
+        current_location = ArchiveLocation.resolve(archive_root)
+        try:
+            assert_owns_archive_location(ownership, current_location)
+        except ArchiveOwnershipError as exc:
+            raise RawAuthorityArtifactCensusError(str(exc)) from exc
+        return _snapshot_census(archive_root, current_location, limit=limit, after_raw_id=after_raw_id)
+
+
 def run_raw_authority_artifact_census(
     archive_root: Path,
     *,
@@ -145,6 +299,7 @@ def run_raw_authority_artifact_census(
     limit: int | None = None,
     after_raw_id: str | None = None,
     receipt_path: Path | None = None,
+    census_id: str | None = None,
 ) -> RawAuthorityArtifactCensusReport:
     """Run one census, optionally persisting only artifact observations.
 
@@ -172,6 +327,10 @@ def run_raw_authority_artifact_census(
         assert scan_limit is not None
         if receipt_path is not None:
             raise RawAuthorityArtifactCensusError("--receipt is only supported for the read-only dry-run census")
+        if census_id is None and after_raw_id is not None:
+            raise RawAuthorityArtifactCensusError(
+                "--after-raw-id requires --census-id from the preceding durable receipt"
+            )
     elif receipt_path is None:
         raise RawAuthorityArtifactCensusError("read-only dry-run requires --receipt for an immutable census receipt")
     if receipt_path is not None:
@@ -207,20 +366,64 @@ def run_raw_authority_artifact_census(
                 _checkpoint_source_tier(source_conn)
                 source_conn.execute("BEGIN IMMEDIATE")
                 try:
-                    _validate_source_backup(backup_manifest, source_conn)
+                    backup_evidence = _validate_source_backup(backup_manifest, source_conn)
+                    observed_at_ms = int(time.time() * 1000)
+                    if census_id is None:
+                        active_census_id, candidate_count, universe_sha256 = _create_checkpoint(
+                            source_conn, now_ms=observed_at_ms
+                        )
+                        expected_after_raw_id = None
+                    else:
+                        active_census_id = census_id
+                        candidate_count, expected_after_raw_id, universe_sha256 = _checkpoint_state(
+                            source_conn, census_id
+                        )
+                        if after_raw_id != expected_after_raw_id:
+                            raise RawAuthorityArtifactCensusError(
+                                "continuation cursor must equal the durable checkpoint next_after_raw_id"
+                            )
+                    page_raw_ids, has_more = _checkpoint_page_raw_ids(
+                        source_conn,
+                        census_id=active_census_id,
+                        after_raw_id=expected_after_raw_id,
+                        limit=scan_limit,
+                    )
+                    index_conn.execute("BEGIN")
                     census = scan_quarantined_raw_authority(
                         source_conn,
                         index_conn,
                         blob_store=BlobStore(archive_root / "blob"),
-                        limit=scan_limit,
-                        after_raw_id=after_raw_id,
+                        raw_ids=page_raw_ids,
+                        total_quarantined_count=candidate_count,
+                        has_more=has_more,
+                        after_raw_id=expected_after_raw_id,
                     )
+                    before_inventory = _page_inventory_digest(source_conn, page_raw_ids)
                     observations_written = write_artifact_observations(source_conn, census.artifact_observations())
-                    observed_at_ms = int(time.time() * 1000)
+                    after_inventory = _page_inventory_digest(source_conn, page_raw_ids)
+                    evidence = {
+                        "backup": backup_evidence,
+                        "archive": {
+                            "configured_root": str(archive_root.resolve(strict=False)),
+                            "active_index_path": str(location.active_index_path.resolve(strict=False)),
+                            "active_generation": location.active_generation,
+                            "source_tier": _file_identity(source_db),
+                            "active_index": _file_identity(index_db),
+                        },
+                        "checkpoint": {
+                            "census_id": active_census_id,
+                            "universe_sha256": universe_sha256,
+                            "candidate_count": candidate_count,
+                            "page_raw_ids_sha256": _canonical_digest(list(page_raw_ids)),
+                        },
+                        "inventory": {"before_sha256": before_inventory, "after_sha256": after_inventory},
+                        "command": {"operation": "raw-authority-artifact-census", "limit": scan_limit},
+                    }
                     receipt = census.receipt_payload(
                         mode="apply",
                         observations_written=observations_written,
                         observed_at_ms=observed_at_ms,
+                        evidence=evidence,
                     )
                     receipt_sha256 = str(receipt["receipt_sha256"])
                     receipt_id = f"raw-authority-artifact-census:{receipt_sha256}"
@@ -239,9 +442,19 @@ def run_raw_authority_artifact_census(
                             str(receipt["tool_version"]),
                         ),
                     )
-                    quick_check = source_conn.execute("PRAGMA quick_check").fetchone()
-                    if quick_check is None or str(quick_check[0]).lower() != "ok":
-                        raise RawAuthorityArtifactCensusError(f"source.db quick_check failed: {quick_check!r}")
+                    source_conn.execute(
+                        """
+                        UPDATE raw_authority_artifact_census_checkpoints
+                        SET next_after_raw_id = ?, last_receipt_id = ?, completed_at_ms = ?
+                        WHERE census_id = ?
+                        """,
+                        (
+                            census.next_after_raw_id,
+                            receipt_id,
+                            observed_at_ms if census.next_after_raw_id is None else None,
+                            active_census_id,
+                        ),
+                    )
                 except Exception:
                     if source_conn.in_transaction:
                         source_conn.rollback()

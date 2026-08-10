@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -74,6 +75,7 @@ class RawAuthorityArtifactCensus:
     total_quarantined_count: int
     entries: tuple[RawAuthorityCensusEntry, ...]
     after_raw_id: str | None = None
+    has_more: bool | None = None
 
     @property
     def scanned_count(self) -> int:
@@ -81,7 +83,7 @@ class RawAuthorityArtifactCensus:
 
     @property
     def truncated(self) -> bool:
-        return self.scanned_count < self.total_quarantined_count
+        return self.has_more if self.has_more is not None else self.scanned_count < self.total_quarantined_count
 
     @property
     def next_after_raw_id(self) -> str | None:
@@ -114,6 +116,7 @@ class RawAuthorityArtifactCensus:
         mode: str,
         observations_written: int = 0,
         observed_at_ms: int | None = None,
+        evidence: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """Return a canonical, identifier-bearing operator receipt.
 
@@ -152,6 +155,8 @@ class RawAuthorityArtifactCensus:
                 "unchanged": ["raw_sessions rows", "revision authority", "index.db rows", "blob store"],
             },
         }
+        if evidence is not None:
+            payload["evidence"] = evidence
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         payload["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
         return payload
@@ -190,11 +195,14 @@ def scan_quarantined_raw_authority(
     blob_store: BlobStore | None = None,
     limit: int | None = None,
     after_raw_id: str | None = None,
+    raw_ids: Sequence[str] | None = None,
+    total_quarantined_count: int | None = None,
+    has_more: bool | None = None,
 ) -> RawAuthorityArtifactCensus:
     """Classify quarantined raw rows without mutating either database.
 
-    Classification precedence is fixed: missing bytes, known non-session
-    artifact, indexed byte-identical twin, parseable novel raw, unresolved
+    Classification precedence is fixed: missing bytes, indexed byte-identical
+    twin, known non-session artifact, parseable novel raw, unresolved
     authority. Every selected row lands in exactly one bucket.
     """
     if limit is not None and limit < 0:
@@ -205,37 +213,57 @@ def scan_quarantined_raw_authority(
     source_conn.row_factory = sqlite3.Row
     index_conn.row_factory = sqlite3.Row
     try:
-        total = int(
-            source_conn.execute(
-                """
-                SELECT COUNT(*) FROM raw_sessions
-                WHERE revision_authority = 'quarantined'
-                  AND parse_error IS NULL
-                  AND (? IS NULL OR raw_id > ?)
-                """,
-                (after_raw_id, after_raw_id),
-            ).fetchone()[0]
-        )
+        if raw_ids is not None and limit is not None:
+            raise ValueError("raw_ids cannot be combined with limit")
+        selected = tuple(dict.fromkeys(raw_ids or ()))
+        if raw_ids is None:
+            total = int(
+                source_conn.execute(
+                    """
+                    SELECT COUNT(*) FROM raw_sessions
+                    WHERE revision_authority = 'quarantined'
+                      AND parse_error IS NULL
+                      AND (? IS NULL OR raw_id > ?)
+                    """,
+                    (after_raw_id, after_raw_id),
+                ).fetchone()[0]
+            )
+        else:
+            total = total_quarantined_count if total_quarantined_count is not None else len(selected)
+            if not selected:
+                return RawAuthorityArtifactCensus(total_quarantined_count=total, entries=(), has_more=has_more)
         query = """
             SELECT rowid AS raw_rowid, *
             FROM raw_sessions
-            WHERE revision_authority = 'quarantined'
-              AND parse_error IS NULL
+            WHERE 1 = 1
         """
         params: list[object] = []
-        if after_raw_id is not None:
+        if raw_ids is not None:
+            placeholders = ",".join("?" for _ in selected)
+            query += f" AND raw_id IN ({placeholders})"
+            params.extend(selected)
+        else:
+            query += " AND revision_authority = 'quarantined' AND parse_error IS NULL"
+        if raw_ids is None and after_raw_id is not None:
             query += " AND raw_id > ?"
             params.append(after_raw_id)
         query += " ORDER BY raw_id"
-        if limit is not None:
+        if raw_ids is None and limit is not None:
             query += " LIMIT ?"
             params.append(limit)
         rows = source_conn.execute(query, params).fetchall()
+        if raw_ids is not None:
+            found = {str(row["raw_id"]) for row in rows}
+            if found != set(selected):
+                raise ValueError("checkpoint candidate raw is missing from source.db")
+            if any(row["revision_authority"] != "quarantined" or row["parse_error"] is not None for row in rows):
+                raise ValueError("checkpoint candidate no longer belongs to the accepted parser universe")
         duplicate_plan = plan_byte_duplicate_supersession(
             source_conn,
             index_conn,
-            limit=limit,
-            after_raw_id=after_raw_id,
+            limit=limit if raw_ids is None else None,
+            after_raw_id=after_raw_id if raw_ids is None else None,
+            raw_ids=selected if raw_ids is not None else None,
         )
         duplicate_by_raw_id = {candidate.raw_id: candidate for candidate in duplicate_plan.duplicates}
         indexed_raw_ids = _indexed_raw_ids(index_conn, [str(row["raw_id"]) for row in rows])
@@ -255,22 +283,8 @@ def scan_quarantined_raw_authority(
                 )
                 continue
 
-            observation = inspect_raw_artifact(_row_to_raw_session(row), blob_store=blob_store)
-            if not observation.parse_as_session and observation.artifact_kind != ArtifactKind.UNKNOWN.value:
-                entries.append(
-                    RawAuthorityCensusEntry(
-                        raw_id=raw_id,
-                        bucket=RawAuthorityBucket.ARTIFACT,
-                        blob_size=blob_size,
-                        reason=observation.classification_reason,
-                        artifact_kind=observation.artifact_kind,
-                        support_status=observation.support_status,
-                        observation=observation,
-                    )
-                )
-                continue
-
             if duplicate := duplicate_by_raw_id.get(raw_id):
+                observation = inspect_raw_artifact(_row_to_raw_session(row), blob_store=blob_store)
                 entries.append(
                     RawAuthorityCensusEntry(
                         raw_id=raw_id,
@@ -281,6 +295,21 @@ def scan_quarantined_raw_authority(
                         support_status=observation.support_status,
                         duplicate_of_raw_id=duplicate.duplicate_of_raw_id,
                         duplicate_of_session_id=duplicate.duplicate_of_session_id,
+                        observation=observation,
+                    )
+                )
+                continue
+
+            observation = inspect_raw_artifact(_row_to_raw_session(row), blob_store=blob_store)
+            if not observation.parse_as_session and observation.artifact_kind != ArtifactKind.UNKNOWN.value:
+                entries.append(
+                    RawAuthorityCensusEntry(
+                        raw_id=raw_id,
+                        bucket=RawAuthorityBucket.ARTIFACT,
+                        blob_size=blob_size,
+                        reason=observation.classification_reason,
+                        artifact_kind=observation.artifact_kind,
+                        support_status=observation.support_status,
                         observation=observation,
                     )
                 )
@@ -320,6 +349,7 @@ def scan_quarantined_raw_authority(
             total_quarantined_count=total,
             entries=tuple(entries),
             after_raw_id=after_raw_id,
+            has_more=has_more,
         )
     finally:
         source_conn.row_factory = previous_source_factory

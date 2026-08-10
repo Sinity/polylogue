@@ -53,6 +53,7 @@ actuator in this family (``raw_live_source_reconciliation_apply``,
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 
@@ -97,6 +98,7 @@ def plan_byte_duplicate_supersession(
     *,
     limit: int | None = None,
     after_raw_id: str | None = None,
+    raw_ids: Sequence[str] | None = None,
 ) -> ByteDuplicateSupersessionPlan:
     """Read-only: classify quarantined, logical-key-less raws against already-indexed twins.
 
@@ -109,6 +111,8 @@ def plan_byte_duplicate_supersession(
     source_conn.row_factory = sqlite3.Row
     index_conn.row_factory = sqlite3.Row
     try:
+        if raw_ids is not None and limit is not None:
+            raise ValueError("raw_ids cannot be combined with limit")
         query = """
             SELECT raw_id, blob_hash, blob_size
             FROM raw_sessions
@@ -117,7 +121,14 @@ def plan_byte_duplicate_supersession(
               AND parse_error IS NULL
         """
         params: list[object] = []
-        if after_raw_id is not None:
+        if raw_ids is not None:
+            selected = tuple(dict.fromkeys(raw_ids))
+            if not selected:
+                return ByteDuplicateSupersessionPlan(scanned_count=0, duplicates=(), novel_count=0)
+            placeholders = ", ".join("?" for _ in selected)
+            query += f" AND raw_id IN ({placeholders})"
+            params.extend(selected)
+        elif after_raw_id is not None:
             query += " AND raw_id > ?"
             params.append(after_raw_id)
         query += " ORDER BY raw_id"

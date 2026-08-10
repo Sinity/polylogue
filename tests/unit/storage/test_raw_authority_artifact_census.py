@@ -303,6 +303,44 @@ def test_census_reuses_duplicate_authority_and_excludes_parser_failures(archive:
     assert report.entries[0].bucket is RawAuthorityBucket.TERMINAL_BYTE_DUPLICATE
 
 
+def test_census_gives_canonical_duplicate_precedence_over_artifact_path(archive: Path) -> None:
+    payload = _tool_result_payload()
+    with ArchiveStore.open_existing(archive, read_only=False) as store:
+        _write_raw(
+            store,
+            raw_id="raw-indexed-twin",
+            provider=Provider.CLAUDE_CODE,
+            payload=payload,
+            source_path="/exports/twin.json",
+        )
+        _write_raw(
+            store,
+            raw_id="raw-artifact-duplicate",
+            provider=Provider.CLAUDE_CODE,
+            payload=payload,
+            source_path="/home/user/.claude/projects/p/tool-results/duplicate.json",
+        )
+        store.commit()
+    with sqlite3.connect(archive / "source.db") as source_conn:
+        source_conn.execute("UPDATE raw_sessions SET revision_authority = 'asserted' WHERE raw_id = 'raw-indexed-twin'")
+    with sqlite3.connect(archive / "index.db") as index_conn:
+        index_conn.execute(
+            "INSERT INTO sessions (origin, native_id, content_hash, raw_id, created_at_ms, updated_at_ms) "
+            "VALUES ('claude-code-session', 'indexed', ?, 'raw-indexed-twin', 0, 0)",
+            (bytes.fromhex("04" * 32),),
+        )
+
+    with (
+        sqlite3.connect(f"file:{archive / 'source.db'}?mode=ro", uri=True) as source_conn,
+        sqlite3.connect(f"file:{archive / 'index.db'}?mode=ro", uri=True) as index_conn,
+    ):
+        report = scan_quarantined_raw_authority(source_conn, index_conn, blob_store=BlobStore(archive / "blob"))
+
+    assert report.entries_for(RawAuthorityBucket.ARTIFACT) == ()
+    duplicate = report.entries_for(RawAuthorityBucket.TERMINAL_BYTE_DUPLICATE)
+    assert [entry.raw_id for entry in duplicate] == ["raw-artifact-duplicate"]
+
+
 def test_census_passes_the_selected_archive_blob_store_to_inspection(
     archive: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
