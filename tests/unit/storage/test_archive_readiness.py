@@ -184,6 +184,8 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
             return getattr(self._cursor, name)
 
     class GuardedConnection:
+        _connection: sqlite3.Connection
+
         def __init__(self, connection: sqlite3.Connection) -> None:
             object.__setattr__(self, "_connection", connection)
 
