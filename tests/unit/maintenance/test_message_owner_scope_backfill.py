@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 import polylogue.maintenance.message_owner_scope_backfill as owner_backfill_module
+from polylogue.annotations.batch import AnnotationBatch
+from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
+from polylogue.annotations.write import assertion_id_for_schema_annotation, upsert_annotation_assertion
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
@@ -78,6 +82,66 @@ def _allow_backup(monkeypatch: pytest.MonkeyPatch) -> None:
         "polylogue.maintenance.message_owner_scope_backfill.validate_migration_backup_manifest",
         lambda path, tier, *, connection: path,
     )
+
+
+def _write_batched_message_annotation(root: Path, *, target_id: str) -> str:
+    """Persist actual annotation-batch provenance for one message assertion."""
+    schema = AnnotationSchema(
+        schema_id="test.message-owner",
+        version=1,
+        title="Message owner backfill",
+        description="Regression fixture for batch-scoped message annotations.",
+        fields=(AnnotationField(name="label", value_type="enum", enum_values=("yes", "no")),),
+        target_ref_kinds=("message",),
+        evidence_policy="optional",
+        status="active",
+    )
+    batch_ref = "annotation-batch:message-owner-backfill"
+    target_ref = f"message:{target_id}"
+    author_ref = "agent:message-owner-backfill"
+    assertion_id = assertion_id_for_schema_annotation(
+        schema_qualified_id=schema.qualified_id,
+        target_ref=target_ref,
+        author_ref=author_ref,
+        row_key="batch-row",
+        batch_ref=batch_ref,
+    )
+    batch = AnnotationBatch(
+        batch_id="message-owner-backfill",
+        schema_id=schema.schema_id,
+        schema_version=schema.version,
+        target_ref=target_ref,
+        source_result_ref="result-set:message-owner-backfill",
+        actor_ref=author_ref,
+        model_ref="agent:gpt-5.6-terra",
+        prompt_ref="block:message-owner-backfill:0",
+        total_count=1,
+        valid_count=1,
+        invalid_count=0,
+        abstained_count=0,
+        assertion_refs=(f"assertion:{assertion_id}",),
+        created_at_ms=1_000,
+    )
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.save_annotation_schema(schema, registered_at_ms=1_000)
+        archive.save_annotation_batch(batch)
+    registry = AnnotationSchemaRegistry()
+    registry.register(schema)
+    with sqlite3.connect(root / "user.db") as conn:
+        persisted = upsert_annotation_assertion(
+            conn,
+            schema=schema,
+            registry=registry,
+            target_ref=target_ref,
+            value={"label": "yes"},
+            row_key="batch-row",
+            author_ref=author_ref,
+            batch_ref=batch_ref,
+            now_ms=2_000,
+        )
+        conn.commit()
+    assert persisted.assertion_id == assertion_id
+    return assertion_id
 
 
 def test_census_is_deterministic_and_opaque_for_n_and_p_ids(workspace_env: dict[str, Path], tmp_path: Path) -> None:
@@ -572,3 +636,168 @@ def test_prepared_recovery_preserves_a_partial_receipt_before_republishing(
     assert recovered.terminal_state == "committed"
     assert json.loads(receipt.read_text(encoding="utf-8"))["recovered_receipt_fragment"]["path"] == str(fragment)
     assert fragment.read_text(encoding="utf-8") == '{"partial":'
+
+
+def test_annotation_batch_scope_survives_owner_backfill_and_candidate_proof(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Batch provenance remains immutable while the receipt binds its message owner.
+
+    Anti-vacuity: the assertion is created through ``upsert_annotation_assertion``
+    against a durable ``AnnotationBatch`` and passes the production census,
+    transaction, receipt, and candidate-index gate.  Treating every non-session
+    scope as malformed makes the initial plan block instead.
+    """
+
+    root, message_rows = _seed_opaque_archive(workspace_env)
+    target_id = message_rows[0][0]
+    assertion_id = _write_batched_message_annotation(root, target_id=target_id)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+
+    before = census_message_owner_scope_backfill(root)
+    batch_row = next(row for row in before.rows if row.assertion_id == assertion_id)
+    assert batch_row.scope_ref == "annotation-batch:message-owner-backfill"
+    assert batch_row.disposition.value == "already-scoped"
+
+    apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+
+    with sqlite3.connect(root / "user.db") as conn:
+        assert conn.execute("SELECT scope_ref FROM assertions WHERE assertion_id = ?", (assertion_id,)).fetchone() == (
+            "annotation-batch:message-owner-backfill",
+        )
+    assert validate_message_owner_scope_backfill_receipt(root, receipt, candidate_index_path=root / "index.db")
+
+
+def test_daemon_bulk_rebuild_resolves_completed_message_owner_receipt(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daemon transaction admission consumes the same completed owner receipt.
+
+    Anti-vacuity: this reaches the real daemon transaction resolver over the
+    fixture's durable SQLite archive.  Removing the daemon receipt handoff
+    makes its preflight pass ``None`` and rejects the completed backfill.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+    monkeypatch.setenv(owner_backfill_module.MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV, str(receipt))
+    monkeypatch.setattr(bulk_rebuild, "_validate_rebuild_provenance_receipt", lambda _root, _receipt: None)
+    monkeypatch.setattr(bulk_rebuild, "validate_rebuild_source_admission", lambda _root, _location: None)
+
+    transaction = bulk_rebuild.resolve_or_start_daemon_bulk_rebuild_transaction(root)
+
+    assert transaction.operation_id == bulk_rebuild.DAEMON_BULK_REBUILD_OPERATION_ID
+
+
+def test_partial_no_promote_rebuild_skips_archive_wide_candidate_owner_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selected subset is admitted but cannot prove unrelated durable rows.
+
+    Anti-vacuity: this drives a real raw-id selected no-promote rebuild to its
+    inactive generation.  Restoring unconditional candidate proof supplies a
+    candidate path to the production owner gate; the complete-only route does
+    not.
+    """
+
+    root = tmp_path / "partial-candidate-archive"
+    initialize_active_archive_root(root)
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"partial-candidate"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"partial-candidate-m0",'
+        b'"role":"user","content":[{"type":"input_text","text":"partial candidate"}]}}\n'
+    )
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="partial-candidate.jsonl",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_source_key="codex-session:partial-candidate",
+                kind=RawRevisionKind.FULL,
+                source_revision="partial-candidate-v1",
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.ASSERTED,
+            ),
+        )
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET baseline_raw_id = raw_id, revision_authority = 'byte_proven'")
+        conn.commit()
+    backfill_historical_revision_evidence(root)
+    schema_receipt = write_valid_rebuild_receipt(root, tmp_path / "schema-receipt.json")
+    candidate_paths: list[Path] = []
+    original_gate = owner_backfill_module.validate_message_owner_scope_for_index_replacement
+
+    def record_candidate_gate(
+        archive_root: Path, *, receipt_path: Path | None, candidate_index_path: Path | None = None
+    ) -> None:
+        original_gate(archive_root, receipt_path=receipt_path, candidate_index_path=candidate_index_path)
+        if candidate_index_path is not None:
+            candidate_paths.append(candidate_index_path)
+
+    monkeypatch.setattr(
+        owner_backfill_module, "validate_message_owner_scope_for_index_replacement", record_candidate_gate
+    )
+    rebuilt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            promote=False,
+            raw_ids=(raw_id,),
+            schema_inference_receipt_path=schema_receipt,
+        )
+    )
+
+    assert rebuilt.generation["state"] == "inactive"
+    assert candidate_paths == []
+
+
+def test_prepared_recovery_accepts_a_valid_terminal_receipt_left_after_publication(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash after immutable receipt publication only needs marker cleanup.
+
+    Anti-vacuity: the production writer first creates a self-hashed terminal
+    receipt, then raises before marker removal.  The second production apply
+    must accept that receipt; the old recovery path rejected it as a conflict.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    original_final_receipt = owner_backfill_module._final_receipt
+
+    def publish_then_fail(**kwargs: object) -> None:
+        original_final_receipt(**cast(Any, kwargs))
+        raise OSError("simulated crash after receipt publication")
+
+    with monkeypatch.context() as post_publication_failure:
+        post_publication_failure.setattr(
+            "polylogue.maintenance.message_owner_scope_backfill._final_receipt", publish_then_fail
+        )
+        with pytest.raises(OSError, match="after receipt publication"):
+            apply_message_owner_scope_backfill(
+                root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+            )
+
+    assert receipt.exists()
+    assert receipt.with_name(receipt.name + ".prepared").exists()
+    recovered = apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+
+    assert recovered.terminal_state == "committed"
+    assert not receipt.with_name(receipt.name + ".prepared").exists()

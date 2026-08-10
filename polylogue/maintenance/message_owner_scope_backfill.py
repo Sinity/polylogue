@@ -39,6 +39,7 @@ from polylogue.version import VERSION_INFO
 TOOL_VERSION = "message-owner-scope-backfill-v1"
 PLAN_FORMAT = "polylogue.message-owner-scope-backfill-plan.v1"
 RECEIPT_FORMAT = "polylogue.message-owner-scope-backfill-receipt.v1"
+MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV = "POLYLOGUE_MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT"
 
 _ACTIVE_MESSAGE_ASSERTION_COLUMNS = (
     "assertion_id",
@@ -323,7 +324,19 @@ def _classify_row(
 ) -> MessageOwnerScopeBackfillRow:
     scoped_owner: str | None = None
     if scope_ref is not None:
-        if not scope_ref.startswith("session:") or len(scope_ref) <= len("session:"):
+        if scope_ref.startswith("annotation-batch:") and len(scope_ref) > len("annotation-batch:"):
+            # Batch scope is immutable annotation provenance, not an owner
+            # namespace. The one active-index owner is captured in the final
+            # receipt and proved against the replacement candidate.
+            if kind != "annotation":
+                disposition = MessageOwnerScopeDisposition.MALFORMED_SCOPE
+            elif len(indexed_owner_ids) == 0:
+                disposition = MessageOwnerScopeDisposition.MISSING_INDEX_OWNER
+            elif len(indexed_owner_ids) != 1:
+                disposition = MessageOwnerScopeDisposition.CONFLICTING_SCOPE
+            else:
+                disposition = MessageOwnerScopeDisposition.ALREADY_SCOPED
+        elif not scope_ref.startswith("session:") or len(scope_ref) <= len("session:"):
             disposition = MessageOwnerScopeDisposition.MALFORMED_SCOPE
         else:
             # The suffix remains opaque. It is never decoded or split.
@@ -553,6 +566,47 @@ def _receipt_digest(payload: Mapping[str, object]) -> str:
     return hash_payload({key: value for key, value in payload.items() if key != "receipt_sha256"})
 
 
+def resolve_message_owner_scope_backfill_receipt_reference(
+    archive_root: Path, receipt_path: Path | None = None
+) -> Path:
+    """Resolve the completed owner-backfill receipt used by rebuild callers."""
+    root = Path(archive_root).absolute()
+    candidate = receipt_path
+    if candidate is None:
+        configured = os.environ.get(MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV, "").strip()
+        if not configured:
+            raise MessageOwnerScopeBackfillError(
+                "a completed message-owner backfill receipt is required; pass a receipt path or set "
+                f"{MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV}"
+            )
+        candidate = Path(configured)
+    target = candidate.expanduser().resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return target
+    raise MessageOwnerScopeBackfillError(
+        "message-owner backfill receipt filename/path must be outside the archive root"
+    )
+
+
+def _owner_bindings(plan: MessageOwnerScopeBackfillPlan) -> list[dict[str, str]]:
+    """Bind every complete-plan assertion to the one observed session owner."""
+    bindings: list[dict[str, str]] = []
+    for row in plan.rows:
+        owner = row.exact_owner
+        if owner is None:
+            raise MessageOwnerScopeBackfillError("complete owner-backfill plan lacks an exact message owner")
+        bindings.append(
+            {
+                "assertion_id": row.assertion_id,
+                "target_ref": row.target_ref,
+                "owner_session_id": owner,
+            }
+        )
+    return bindings
+
+
 def _write_prepared_marker(path: Path, *, plan: MessageOwnerScopeBackfillPlan, backup: Mapping[str, object]) -> Path:
     marker = path.with_name(path.name + ".prepared")
     payload: dict[str, object] = {
@@ -599,6 +653,7 @@ def _final_receipt(
         "before_counts": plan.counts,
         "after_counts": after_plan.counts,
         "after_plan_digest": after_plan.plan_digest,
+        "after_owner_bindings": _owner_bindings(after_plan) if after_plan.unresolved_denominator == 0 else [],
         "durable_message_assertion_state": dict(durable_message_assertion_state),
         "updated_count": updated_count,
         "unresolved_denominator": after_plan.unresolved_denominator,
@@ -661,6 +716,36 @@ def _recover_prepared_receipt(
         raise MessageOwnerScopeBackfillError(
             "prepared message-owner backfill marker does not prove the committed durable state"
         )
+    if receipt_path.exists():
+        try:
+            terminal = validate_message_owner_scope_backfill_receipt(root, receipt_path)
+        except MessageOwnerScopeBackfillError:
+            terminal = None
+        if terminal is not None:
+            if (
+                terminal.get("plan_digest") != plan.plan_digest
+                or terminal.get("archive_identity") != plan.archive_identity
+                or terminal.get("schema_binding") != plan.schema_binding
+                or terminal.get("backup_manifest") != dict(backup)
+                or terminal.get("after_plan_digest") != expected_after.plan_digest
+            ):
+                raise MessageOwnerScopeBackfillError(
+                    "prepared message-owner backfill marker does not match its terminal receipt"
+                )
+            updated_count = terminal.get("updated_count")
+            if not isinstance(updated_count, int) or isinstance(updated_count, bool):
+                raise MessageOwnerScopeBackfillError("prepared terminal receipt has an invalid updated count")
+            marker.unlink(missing_ok=True)
+            _fsync_directory(marker.parent)
+            return MessageOwnerScopeBackfillReport(
+                plan=plan,
+                after_plan=current,
+                applied=True,
+                terminal_state="committed",
+                updated_count=updated_count,
+                backup_manifest=Path(str(backup["path"])),
+                receipt_path=receipt_path,
+            )
     recovered_receipt_fragment = _preserve_partial_receipt(receipt_path)
     _final_receipt(
         plan=plan,
@@ -842,10 +927,14 @@ def validate_message_owner_scope_backfill_receipt(
         raise MessageOwnerScopeBackfillError("unsupported message-owner backfill receipt format")
     if raw.get("receipt_sha256") != _receipt_digest(raw):
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt content digest mismatch")
+    if raw.get("phase") != "terminal":
+        raise MessageOwnerScopeBackfillError("message-owner backfill receipt is not terminal")
     if raw.get("terminal_state") != "committed" or raw.get("complete") is not True:
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt is not complete")
     if raw.get("unresolved_denominator") != 0:
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt has unresolved owners")
+    if not isinstance(raw.get("updated_count"), int) or isinstance(raw.get("updated_count"), bool):
+        raise MessageOwnerScopeBackfillError("message-owner backfill receipt has an invalid updated count")
     root = archive_root.resolve()
     binding = raw.get("archive_identity")
     if not isinstance(binding, dict) or binding.get("archive_root") != str(root):
@@ -866,13 +955,86 @@ def validate_message_owner_scope_backfill_receipt(
     durable_state = raw.get("durable_message_assertion_state")
     if not isinstance(durable_state, dict) or durable_state != _durable_message_assertion_state(root):
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt durable message assertion state is stale")
+    owner_bindings = _receipt_owner_bindings(root, raw)
+    _validate_durable_owner_bindings(root, owner_bindings)
     if candidate_index_path is not None:
-        _validate_candidate_message_owners(root, candidate_index_path)
+        _validate_candidate_message_owners(root, candidate_index_path, owner_bindings=owner_bindings)
     return cast(dict[str, object], raw)
 
 
-def _validate_candidate_message_owners(root: Path, candidate_index_path: Path) -> None:
-    """Prove each durable message assertion has one matching candidate owner."""
+def _receipt_owner_bindings(root: Path, receipt: Mapping[str, object]) -> dict[str, tuple[str, str]]:
+    """Load durable assertion-to-owner bindings committed by a complete receipt."""
+    raw_bindings = receipt.get("after_owner_bindings")
+    if raw_bindings is None:
+        # Receipts created before batch provenance was admitted can still prove
+        # legacy session-scoped rows from their durable state. Batch-scoped
+        # assertions require the explicit binding added with this format.
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = open_readonly_connection(root / "user.db")
+            rows = _active_message_assertion_snapshots(conn)
+        except sqlite3.Error as exc:
+            raise MessageOwnerScopeBackfillError("could not read legacy message-owner receipt bindings") from exc
+        finally:
+            if conn is not None:
+                conn.close()
+        bindings: dict[str, tuple[str, str]] = {}
+        for row in rows:
+            assertion_id = _required_text(row, "assertion_id")
+            target_ref = _required_text(row, "target_ref")
+            scope_ref = _optional_text(row, "scope_ref")
+            if scope_ref is None or not scope_ref.startswith("session:") or len(scope_ref) == len("session:"):
+                raise MessageOwnerScopeBackfillError(
+                    "legacy message-owner receipt cannot prove non-session-scoped assertions"
+                )
+            bindings[assertion_id] = (target_ref, scope_ref[len("session:") :])
+        return bindings
+    if not isinstance(raw_bindings, list):
+        raise MessageOwnerScopeBackfillError("message-owner backfill receipt owner bindings are invalid")
+    bindings = {}
+    for raw_binding in raw_bindings:
+        if not isinstance(raw_binding, dict):
+            raise MessageOwnerScopeBackfillError("message-owner backfill receipt owner binding is invalid")
+        try:
+            assertion_id = _required_text(raw_binding, "assertion_id")
+            target_ref = _required_text(raw_binding, "target_ref")
+            owner_session_id = _required_text(raw_binding, "owner_session_id")
+        except (KeyError, TypeError) as exc:
+            raise MessageOwnerScopeBackfillError("message-owner backfill receipt owner binding is invalid") from exc
+        if assertion_id in bindings:
+            raise MessageOwnerScopeBackfillError("message-owner backfill receipt owner bindings are duplicated")
+        bindings[assertion_id] = (target_ref, owner_session_id)
+    return bindings
+
+
+def _validate_durable_owner_bindings(root: Path, owner_bindings: Mapping[str, tuple[str, str]]) -> None:
+    """Require the receipt's binding set to cover the current durable rows exactly."""
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = open_readonly_connection(root / "user.db")
+        rows = conn.execute(
+            """
+            SELECT assertion_id, target_ref
+            FROM assertions
+            WHERE target_ref LIKE 'message:%' AND kind IN ('mark', 'annotation')
+              AND COALESCE(status, 'active') != 'deleted'
+            ORDER BY assertion_id
+            """
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise MessageOwnerScopeBackfillError("could not validate durable message-owner receipt bindings") from exc
+    finally:
+        if conn is not None:
+            conn.close()
+    current = {str(assertion_id): str(target_ref) for assertion_id, target_ref in rows}
+    if set(owner_bindings) != set(current) or any(owner_bindings[key][0] != target for key, target in current.items()):
+        raise MessageOwnerScopeBackfillError("message-owner backfill receipt owner bindings are stale")
+
+
+def _validate_candidate_message_owners(
+    root: Path, candidate_index_path: Path, *, owner_bindings: Mapping[str, tuple[str, str]]
+) -> None:
+    """Prove each receipt-bound durable assertion has one matching candidate owner."""
     user: sqlite3.Connection | None = None
     index: sqlite3.Connection | None = None
     try:
@@ -880,20 +1042,22 @@ def _validate_candidate_message_owners(root: Path, candidate_index_path: Path) -
         index = open_readonly_connection(candidate_index_path)
         rows = user.execute(
             """
-            SELECT assertion_id, target_ref, scope_ref
+            SELECT assertion_id, target_ref
             FROM assertions
             WHERE target_ref LIKE 'message:%' AND kind IN ('mark', 'annotation')
               AND COALESCE(status, 'active') != 'deleted'
             ORDER BY assertion_id
             """
         ).fetchall()
-        for assertion_id, target_ref, scope_ref in rows:
+        observed_assertion_ids: set[str] = set()
+        for assertion_id, target_ref in rows:
             assertion = str(assertion_id)
             target = str(target_ref)
-            scope = None if scope_ref is None else str(scope_ref)
-            if scope is None or not scope.startswith("session:") or len(scope) == len("session:"):
+            observed_assertion_ids.add(assertion)
+            binding = owner_bindings.get(assertion)
+            if binding is None or binding[0] != target:
                 raise MessageOwnerScopeBackfillError(
-                    f"candidate index does not own durable message assertion {assertion}: invalid scope {scope!r}"
+                    f"candidate index has no receipt-bound owner for durable message assertion {assertion}"
                 )
             owners = tuple(
                 str(owner)
@@ -902,10 +1066,12 @@ def _validate_candidate_message_owners(root: Path, candidate_index_path: Path) -
                     (target[len("message:") :],),
                 )
             )
-            if owners != (scope[len("session:") :],):
+            if owners != (binding[1],):
                 raise MessageOwnerScopeBackfillError(
                     f"candidate index does not own durable message assertion {assertion} for {target}"
                 )
+        if observed_assertion_ids != set(owner_bindings):
+            raise MessageOwnerScopeBackfillError("candidate index receipt-bound assertion set is stale")
     except sqlite3.Error as exc:
         raise MessageOwnerScopeBackfillError("could not validate candidate message ownership") from exc
     finally:
@@ -941,7 +1107,7 @@ def validate_message_owner_scope_for_index_replacement(
             candidate_index_path=candidate_index_path,
         )
     elif candidate_index_path is not None:
-        _validate_candidate_message_owners(root, candidate_index_path)
+        _validate_candidate_message_owners(root, candidate_index_path, owner_bindings={})
 
 
 __all__ = [
@@ -950,11 +1116,13 @@ __all__ = [
     "MessageOwnerScopeBackfillReport",
     "MessageOwnerScopeBackfillRow",
     "MessageOwnerScopeDisposition",
+    "MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV",
     "PLAN_FORMAT",
     "RECEIPT_FORMAT",
     "TOOL_VERSION",
     "apply_message_owner_scope_backfill",
     "census_message_owner_scope_backfill",
+    "resolve_message_owner_scope_backfill_receipt_reference",
     "validate_message_owner_scope_backfill_receipt",
     "validate_message_owner_scope_for_index_replacement",
     "write_message_owner_scope_backfill_plan",

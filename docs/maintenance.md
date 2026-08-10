@@ -367,20 +367,7 @@ unresolved denominator is zero; it fingerprints complete active durable message
 assertion rows, excluding soft-deleted assertions. Missing owners remain typed
 blockers.
 
-Every rebuild candidate, including a no-promote rebuild and the daemon's bulk
-rebuild route, takes the same gate before candidate creation, after archive
-ownership acquisition, and before candidate acceptance. Unscoped rows must be
-backfilled first. Once active durable message assertions are scoped, the gate
-requires the complete backfill receipt and proves each assertion has exactly one
-matching owner in the actual current-schema candidate index, not merely a
-matching candidate schema. Apply first fsyncs an immutable `.prepared` marker,
-commits the user-tier transaction atomically, and fsyncs the terminal receipt
-before removing that marker. A retry with the same plan, backup, and receipt
-path can finalize a prepared marker only when the complete current durable state
-exactly matches the marker's expected committed state. If receipt publication
-left a partial file, recovery preserves it as a `.partial` artifact before
-publishing the terminal receipt; all other prepared states fail closed for
-operator recovery. No index or source-tier files are written by this operation.
+Every rebuild candidate, including a no-promote rebuild and the daemon's bulk rebuild route, takes the same gate before candidate creation, after archive ownership acquisition, and before candidate acceptance. Unscoped rows must be backfilled first. Once active durable message assertions are scoped, the gate requires the complete backfill receipt. The receipt preserves `annotation-batch:` scope as immutable provenance and separately binds every assertion to its observed session owner. A complete replacement candidate proves each binding against its current-schema index; an intentionally partial no-promote candidate receives the durable admission gate without making an archive-wide proof it cannot satisfy. The daemon bulk route receives the same completed receipt from `POLYLOGUE_MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT` when message assertions exist. Apply first fsyncs an immutable `.prepared` marker, commits the user-tier transaction atomically, and fsyncs the terminal receipt before removing that marker. A retry with the same plan, backup, and receipt path can finalize a prepared marker only when the complete current durable state exactly matches the marker's expected committed state. A valid terminal receipt matching the prepared marker is accepted by recovery; a partial publication is preserved as a `.partial` artifact before the terminal receipt is published. Other prepared states fail closed for operator recovery. No index or source-tier files are written by this operation.
 
 ### `polylogue ops maintenance preview` — staleness inventory
 

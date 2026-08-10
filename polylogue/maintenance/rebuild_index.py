@@ -2078,7 +2078,7 @@ async def _rebuild_index_from_source_owned(
             _require_message_owner_scope_backfill(
                 root,
                 request,
-                candidate_index_path=Path(generation.index_path),
+                candidate_index_path=Path(generation.index_path) if resumable_full_source else None,
             )
             terminal_timings_s["terminal.reindex_acceptance"] = time.perf_counter() - terminal_started_at
             logger.info(

@@ -492,16 +492,16 @@ def rebuild_index_command(
         except SchemaInferenceGateError as exc:
             raise click.ClickException(str(exc)) from exc
     if message_owner_scope_backfill_receipt_path is not None:
-        from polylogue.maintenance.schema_inference_gate import (
-            SchemaInferenceGateError,
-            resolve_schema_inference_receipt_reference,
+        from polylogue.maintenance.message_owner_scope_backfill import (
+            MessageOwnerScopeBackfillError,
+            resolve_message_owner_scope_backfill_receipt_reference,
         )
 
         try:
-            message_owner_scope_backfill_receipt_path = resolve_schema_inference_receipt_reference(
+            message_owner_scope_backfill_receipt_path = resolve_message_owner_scope_backfill_receipt_reference(
                 root, message_owner_scope_backfill_receipt_path
             )
-        except SchemaInferenceGateError as exc:
+        except MessageOwnerScopeBackfillError as exc:
             raise click.ClickException(str(exc)) from exc
     if use_daemon:
         payload = _run_daemon_rebuild(
