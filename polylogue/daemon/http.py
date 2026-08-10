@@ -1305,8 +1305,10 @@ class _AuthResult:
 # CLI's own --daemon HTTP client already tolerates up to 600s
 # (_rebuild_index.py's _run_daemon_rebuild, urlopen(..., timeout=600)) -- so
 # the HTTP route asks the bridge to wait that same 600s instead of the 30s
-# default, which would otherwise kill a still-running rebuild pass early.
-_REBUILD_INDEX_WRITE_TIMEOUT_S: float | None = None
+# default. The bound returns control to the request path when parser or
+# acceptance work stalls, rather than leaving the daemon writer request
+# unbounded forever.
+_REBUILD_INDEX_WRITE_TIMEOUT_S: float = 600.0
 
 
 class DaemonAPIHandler(BaseHTTPRequestHandler):
@@ -5299,9 +5301,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_rebuild_index(self) -> None:
         """POST /api/maintenance/rebuild-index — one coordinator-owned replay pass.
 
-        Canary callers wait for the daemon-owned receipt without a competing
-        synchronous deadline. Otherwise the bridge can finish an inactive
-        candidate after the caller has timed out and lost cleanup authority.
+        The replay route has a finite bridge wait so an uncooperative parser or
+        acceptance check cannot leave the request path blocked indefinitely.
+        Canary receipt consumption remains a separate daemon-owned operation.
         """
         content_length = int(self.headers.get("Content-Length", 0))
         body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
@@ -5466,7 +5468,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
             "http.maintenance.discard-index-candidate",
-            _REBUILD_INDEX_WRITE_TIMEOUT_S,
+            # Candidate cleanup must retain daemon ownership until completion:
+            # timing it out can orphan an inactive generation after a canary
+            # request has already released its receipt.
+            None,
             discard_inactive_rebuild_candidate,
             archive_root(),
             generation_id,
