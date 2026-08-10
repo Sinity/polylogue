@@ -1194,8 +1194,12 @@ def _parser_artifact_node_role(provider: str, node: Mapping[str, JSONValue]) -> 
     except ValueError:
         return Role.UNKNOWN
     if provider in {"claude-ai", "claude-code"} and role is Role.USER:
-        message = node.get("message") if provider == "claude-code" else node
-        content = message.get("content") if isinstance(message, Mapping) else None
+        tool_envelope: Mapping[str, JSONValue] = node
+        if provider == "claude-code":
+            nested_message = node.get("message")
+            if isinstance(nested_message, Mapping):
+                tool_envelope = nested_message
+        content = tool_envelope.get("content")
         if (
             isinstance(content, list)
             and content
@@ -1404,9 +1408,11 @@ def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fall
                     return session_id
     if provider == "claude-code" and isinstance(payload, list):
         session_ids = {
-            record.get("sessionId")
+            session_id
             for record in payload
-            if isinstance(record, Mapping) and isinstance(record.get("sessionId"), str) and record.get("sessionId")
+            if isinstance(record, Mapping)
+            for session_id in (record.get("sessionId"),)
+            if isinstance(session_id, str) and session_id
         }
         return next(iter(session_ids)) if len(session_ids) == 1 else None
     return fallback_id
