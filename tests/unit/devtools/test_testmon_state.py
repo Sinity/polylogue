@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -116,6 +117,18 @@ def test_omitted_interrupted_and_uncovered_nodes_fail_closed(tmp_path: Path) -> 
     data.unlink()
     _write_graph(data, with_edges=False)
     assert stamp_from_attempt(_attempt(data), data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
+
+
+def test_stamp_from_attempt_does_not_reopen_the_validated_database(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data)
+    attempt = _attempt(data)
+
+    with patch("devtools.testmon_state.file_fingerprint", return_value=attempt["testmon_data"]) as fingerprint:
+        stamp = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)
+
+    assert stamp is not None
+    fingerprint.assert_called_once_with(data)
 
 
 def test_incomplete_attempt_fails_closed(tmp_path: Path) -> None:

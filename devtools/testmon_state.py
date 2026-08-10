@@ -14,6 +14,7 @@ verification, worktree bootstrap, and the checkout guard.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -530,7 +531,7 @@ def inspect_testmon_database(path: Path, expected_nodeids: Sequence[str]) -> Gra
             GraphStatus.INCOMPLETE, 0, 0, expected, 0, 0, "missing or malformed expected nodeids", ()
         )
     try:
-        with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True) as connection:
+        with contextlib.closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as connection:
             if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                 return GraphInspection(GraphStatus.INVALID, 0, 0, expected, 0, 0, "sqlite integrity check failed", ())
             required = {"test_execution", "test_execution_file_fp", "file_fp"}
@@ -836,7 +837,7 @@ def stamp_from_attempt(
         graph,
         typed_identity,
         typed_binding,
-        file_fingerprint(data_path),
+        recorded_data,
         run_id,
         artifact_dir,
     )
