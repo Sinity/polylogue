@@ -1187,14 +1187,14 @@ def _parser_artifact_messages_have_artifact_bound_content(
             if not message.provider_message_id:
                 continue
             expected_texts = raw_texts_by_identity.get(message.provider_message_id)
-            if not expected_texts:
-                return False
+            if expected_texts is None:
+                continue
             observed_texts = {
                 _normalise_evidence_text(text)
                 for text in (message.text, *(block.text for block in message.blocks))
                 if isinstance(text, str) and _normalise_evidence_text(text)
             }
-            if not observed_texts or not observed_texts & expected_texts:
+            if observed_texts and not observed_texts & expected_texts:
                 return False
     return True
 

@@ -14,7 +14,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, TypeAlias, cast
+from typing import Literal, TypeAlias, cast, get_args
 
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
@@ -398,15 +398,7 @@ def _manifest_entry_from_payload(payload: object) -> InferredCorpusManifestEntry
     details = raw_unsupported.get("details", [])
     if set(raw_unsupported) != {"reason", "details"}:
         raise ValueError("manifest unsupported record fields changed")
-    valid_reasons = {
-        "provider_without_wire_format",
-        "wire_support_selection_unwitnessed",
-        "wire_support_receipt_incomplete",
-        "unsupported_wire_route",
-        "unsupported_element",
-        "missing_schema",
-        "unsupported_json_schema_construct",
-    }
+    valid_reasons = set(get_args(UnsupportedCorpusReason))
     if (
         reason not in valid_reasons
         or not isinstance(details, list)
@@ -967,20 +959,12 @@ def _validate_inference_handoff(
             raise ValueError("schema-inference handoff coverage decision changed")
 
     expected_unsupported: set[tuple[str, str, str, str, str, tuple[str, ...]]] = set()
+    entries_by_wire_key = {
+        wire_support_key(entry.key.provider, entry.key.package_version, entry.key.element_kind): entry
+        for entry in manifest.entries
+    }
     for provider, _catalog, package, element in catalog_entries:
-        live_entry = next(
-            (
-                candidate
-                for candidate in manifest.entries
-                if wire_support_key(
-                    candidate.key.provider,
-                    candidate.key.package_version,
-                    candidate.key.element_kind,
-                )
-                == wire_support_key(provider, package.version, element.element_kind)
-            ),
-            None,
-        )
+        live_entry = entries_by_wire_key.get(wire_support_key(provider, package.version, element.element_kind))
         if live_entry is None:
             raise ValueError("schema-inference manifest is missing a live registry entry")
         live_schema = registry.get_element_schema(provider, version=package.version, element_kind=element.element_kind)
@@ -1074,9 +1058,12 @@ def _validate_current_wire_support_route(
         seed=witness_seed,
         providers=tuple(cast(str, provider) for provider in raw_providers),
     )
-    if current.to_dict() != persisted:
+    rebuilt = current.to_dict()
+    if rebuilt != persisted:
+        changed_fields = sorted(key for key in set(rebuilt) | set(persisted) if rebuilt.get(key) != persisted.get(key))
         raise ValueError(
-            "schema-inference wire-support receipt changed under the current parser or wire-normalizer route"
+            "schema-inference wire-support receipt changed under the current parser or wire-normalizer route: "
+            f"changed_fields={changed_fields!r}"
         )
 
 

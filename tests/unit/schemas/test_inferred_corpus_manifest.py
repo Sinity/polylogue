@@ -305,7 +305,7 @@ def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pyt
         return original_parse_payload(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(dispatch_module, "parse_payload", drifted_parse_payload)
-    with pytest.raises(ValueError, match="wire-support receipt changed"):
+    with pytest.raises(ValueError, match=r"wire-support receipt changed.*changed_fields=.*entries"):
         read_inferred_corpus_manifest(
             path,
             campaign_mode=True,

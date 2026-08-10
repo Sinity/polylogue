@@ -7,6 +7,7 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -1736,7 +1737,7 @@ def test_archive_insights_execute_ids_propagates_provider_high_water_mark(tmp_pa
         ).fetchone()
 
     assert latency is not None
-    assert latency["input_high_water_mark"] is not None
+    assert latency["input_high_water_mark"] == datetime.fromtimestamp(provider_hwm_ms / 1000, tz=UTC).isoformat()
     assert latency["input_high_water_mark_source"] == "provider_ts"
     assert materialization is not None
     assert materialization["input_high_water_mark_ms"] == provider_hwm_ms
