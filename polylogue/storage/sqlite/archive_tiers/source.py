@@ -21,7 +21,7 @@ from polylogue.core.enums import (
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
-SOURCE_SCHEMA_VERSION = 30
+SOURCE_SCHEMA_VERSION = 31
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -554,6 +554,22 @@ CREATE TABLE IF NOT EXISTS gc_generations (
     reclaimed_count  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_count >= 0),
     reclaimed_bytes  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes >= 0)
 ) STRICT;
+
+-- v31 (feature/fix/raw-authority-census): each bounded artifact-census apply
+-- records its canonical receipt in the source tier in the same transaction as
+-- its selected raw_artifacts upserts. The receipt is evidence only: it never
+-- changes raw authority and its immutable digest identifies the exact page.
+CREATE TABLE IF NOT EXISTS raw_authority_artifact_census_receipts (
+    receipt_id              TEXT PRIMARY KEY,
+    receipt_sha256          TEXT NOT NULL UNIQUE CHECK(length(receipt_sha256) = 64),
+    receipt_json            TEXT NOT NULL,
+    backup_manifest_path    TEXT NOT NULL,
+    applied_at_ms           INTEGER NOT NULL CHECK(applied_at_ms >= 0),
+    tool_version            TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_authority_artifact_census_receipts_applied_at
+ON raw_authority_artifact_census_receipts(applied_at_ms);
 
 CREATE TABLE IF NOT EXISTS raw_artifacts (
     artifact_id              TEXT PRIMARY KEY,

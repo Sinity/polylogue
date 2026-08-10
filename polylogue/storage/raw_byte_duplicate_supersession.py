@@ -96,6 +96,7 @@ def plan_byte_duplicate_supersession(
     index_conn: sqlite3.Connection,
     *,
     limit: int | None = None,
+    after_raw_id: str | None = None,
 ) -> ByteDuplicateSupersessionPlan:
     """Read-only: classify quarantined, logical-key-less raws against already-indexed twins.
 
@@ -114,12 +115,15 @@ def plan_byte_duplicate_supersession(
             WHERE revision_authority = 'quarantined'
               AND logical_source_key IS NULL
               AND parse_error IS NULL
-            ORDER BY raw_id
         """
-        params: tuple[object, ...] = ()
+        params: list[object] = []
+        if after_raw_id is not None:
+            query += " AND raw_id > ?"
+            params.append(after_raw_id)
+        query += " ORDER BY raw_id"
         if limit is not None:
             query += " LIMIT ?"
-            params = (limit,)
+            params.append(limit)
         candidate_rows = source_conn.execute(query, params).fetchall()
         if not candidate_rows:
             return ByteDuplicateSupersessionPlan(scanned_count=0, duplicates=(), novel_count=0)

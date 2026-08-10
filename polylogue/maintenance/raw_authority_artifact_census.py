@@ -41,6 +41,7 @@ class RawAuthorityArtifactCensusReport:
     mode: str
     observations_written: int
     receipt: dict[str, object]
+    receipt_id: str | None = None
     receipt_path: Path | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -48,6 +49,7 @@ class RawAuthorityArtifactCensusReport:
             "mode": self.mode,
             "observations_written": self.observations_written,
             "receipt": self.receipt,
+            "receipt_id": self.receipt_id,
             "receipt_path": str(self.receipt_path) if self.receipt_path is not None else None,
         }
 
@@ -112,6 +114,7 @@ def _scan(
     archive_root: Path,
     *,
     limit: int | None,
+    after_raw_id: str | None,
 ) -> RawAuthorityArtifactCensus:
     source_db = archive_root / "source.db"
     index_db = resolve_active_index_path(archive_root)
@@ -127,6 +130,7 @@ def _scan(
             index_conn,
             blob_store=BlobStore(archive_root / "blob"),
             limit=limit,
+            after_raw_id=after_raw_id,
         )
     finally:
         source_conn.close()
@@ -139,6 +143,7 @@ def run_raw_authority_artifact_census(
     apply: bool = False,
     backup_manifest: Path | None = None,
     limit: int | None = None,
+    after_raw_id: str | None = None,
     receipt_path: Path | None = None,
 ) -> RawAuthorityArtifactCensusReport:
     """Run one census, optionally persisting only artifact observations.
@@ -150,11 +155,15 @@ def run_raw_authority_artifact_census(
     never changes ``raw_sessions`` rows, revision authority, index rows, or
     blob storage. A verified source-tier backup manifest is required for apply.
     """
+    receipt: dict[str, object] = {}
+    receipt_id: str | None = None
     if limit is not None and limit < 0:
         raise RawAuthorityArtifactCensusError("--limit must be non-negative")
     scan_limit: int | None = None
     if apply:
         scan_limit = DEFAULT_APPLY_LIMIT if limit is None else limit
+        if scan_limit <= 0:
+            raise RawAuthorityArtifactCensusError("--limit must be positive for --apply")
         if scan_limit > MAX_APPLY_ROWS:
             raise RawAuthorityArtifactCensusError(f"--limit cannot exceed {MAX_APPLY_ROWS} for --apply")
         if backup_manifest is None:
@@ -194,8 +203,8 @@ def run_raw_authority_artifact_census(
             source_conn = sqlite3.connect(source_db, timeout=30.0)
             index_conn = _open_readonly(index_db)
             try:
-                _checkpoint_source_tier(source_conn)
                 _validate_source_backup(backup_manifest, source_conn)
+                _checkpoint_source_tier(source_conn)
                 source_conn.execute("BEGIN IMMEDIATE")
                 try:
                     _validate_source_backup(backup_manifest, source_conn)
@@ -204,8 +213,32 @@ def run_raw_authority_artifact_census(
                         index_conn,
                         blob_store=BlobStore(archive_root / "blob"),
                         limit=scan_limit,
+                        after_raw_id=after_raw_id,
                     )
                     observations_written = write_artifact_observations(source_conn, census.artifact_observations())
+                    observed_at_ms = int(time.time() * 1000)
+                    receipt = census.receipt_payload(
+                        mode="apply",
+                        observations_written=observations_written,
+                        observed_at_ms=observed_at_ms,
+                    )
+                    receipt_sha256 = str(receipt["receipt_sha256"])
+                    receipt_id = f"raw-authority-artifact-census:{receipt_sha256}"
+                    source_conn.execute(
+                        """
+                        INSERT INTO raw_authority_artifact_census_receipts (
+                            receipt_id, receipt_sha256, receipt_json, backup_manifest_path, applied_at_ms, tool_version
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            receipt_id,
+                            receipt_sha256,
+                            json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                            str(backup_manifest),
+                            observed_at_ms,
+                            str(receipt["tool_version"]),
+                        ),
+                    )
                     quick_check = source_conn.execute("PRAGMA quick_check").fetchone()
                     if quick_check is None or str(quick_check[0]).lower() != "ok":
                         raise RawAuthorityArtifactCensusError(f"source.db quick_check failed: {quick_check!r}")
@@ -220,14 +253,15 @@ def run_raw_authority_artifact_census(
                 index_conn.close()
         mode = "apply"
     else:
-        census = _scan(archive_root, limit=limit)
+        census = _scan(archive_root, limit=limit, after_raw_id=after_raw_id)
         observations_written = 0
         mode = "dry_run"
-    receipt = census.receipt_payload(
-        mode=mode,
-        observations_written=observations_written,
-        observed_at_ms=int(time.time() * 1000),
-    )
+    if not apply:
+        receipt = census.receipt_payload(
+            mode=mode,
+            observations_written=observations_written,
+            observed_at_ms=int(time.time() * 1000),
+        )
     if not apply and receipt_path is not None:
         _write_immutable_receipt(receipt_path, receipt)
     return RawAuthorityArtifactCensusReport(
@@ -235,6 +269,7 @@ def run_raw_authority_artifact_census(
         mode=mode,
         observations_written=observations_written,
         receipt=receipt,
+        receipt_id=receipt_id,
         receipt_path=receipt_path,
     )
 
@@ -256,6 +291,8 @@ def render_report(report: RawAuthorityArtifactCensusReport, *, stdout: TextIO | 
     print(f"artifact observations written: {report.observations_written}", file=stream)
     if report.receipt_path is not None:
         print(f"immutable receipt: {report.receipt_path}", file=stream)
+    if report.receipt_id is not None:
+        print(f"durable receipt: {report.receipt_id}", file=stream)
 
 
 __all__ = [

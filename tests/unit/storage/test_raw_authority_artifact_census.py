@@ -258,6 +258,51 @@ def test_logical_keyed_revision_with_indexed_twin_stays_unresolved(archive: Path
     assert [entry.raw_id for entry in unresolved] == ["raw-logical-keyed"]
 
 
+def test_census_reuses_duplicate_authority_and_excludes_parser_failures(archive: Path) -> None:
+    payload = _chatgpt_payload("duplicate")
+    with ArchiveStore.open_existing(archive, read_only=False) as store:
+        _write_raw(
+            store,
+            raw_id="raw-indexed-twin",
+            provider=Provider.CHATGPT,
+            payload=payload,
+            source_path="/exports/indexed.json",
+        )
+        _write_raw(
+            store,
+            raw_id="raw-duplicate",
+            provider=Provider.CHATGPT,
+            payload=payload,
+            source_path="/exports/duplicate.json",
+        )
+        _write_raw(
+            store,
+            raw_id="raw-parser-failed",
+            provider=Provider.CHATGPT,
+            payload=_chatgpt_payload("failed"),
+            source_path="/exports/failed.json",
+        )
+        store.commit()
+    with sqlite3.connect(archive / "source.db") as source_conn:
+        source_conn.execute("UPDATE raw_sessions SET revision_authority = 'asserted' WHERE raw_id = 'raw-indexed-twin'")
+        source_conn.execute("UPDATE raw_sessions SET parse_error = 'parser failed' WHERE raw_id = 'raw-parser-failed'")
+    with sqlite3.connect(archive / "index.db") as index_conn:
+        index_conn.execute(
+            "INSERT INTO sessions (origin, native_id, content_hash, raw_id, created_at_ms, updated_at_ms) "
+            "VALUES ('chatgpt-export', 'indexed', ?, 'raw-indexed-twin', 0, 0)",
+            (bytes.fromhex("03" * 32),),
+        )
+
+    with (
+        sqlite3.connect(f"file:{archive / 'source.db'}?mode=ro", uri=True) as source_conn,
+        sqlite3.connect(f"file:{archive / 'index.db'}?mode=ro", uri=True) as index_conn,
+    ):
+        report = scan_quarantined_raw_authority(source_conn, index_conn, blob_store=BlobStore(archive / "blob"))
+
+    assert [entry.raw_id for entry in report.entries] == ["raw-duplicate"]
+    assert report.entries[0].bucket is RawAuthorityBucket.TERMINAL_BYTE_DUPLICATE
+
+
 def test_census_passes_the_selected_archive_blob_store_to_inspection(
     archive: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

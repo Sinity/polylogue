@@ -1286,17 +1286,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace raw-authority-artifact-census",
         "workspace",
-        "Census quarantined raws into five authority buckets; apply only upserts raw_artifacts and records its source.db WAL checkpoint.",
+        "Census quarantined raws into five authority buckets; apply pages raw_artifacts upserts and records durable receipts.",
         "devtools.raw_authority_artifact_census",
         use_when=(
             "Run one full read-only quarantine census through inspect_raw_artifact. The optional --apply is bounded, "
-            "requires a verified source-tier backup and --json. Apply logically upserts only raw_artifacts observations "
-            "but also checkpoints source.db for backup validation; it never changes raw_sessions rows, revision "
-            "authority, index rows, or blobs."
+            "requires a verified source-tier backup and --json. Apply logically upserts only raw_artifacts observations, "
+            "writes an immutable source-tier receipt, and accepts --after-raw-id for the next page; it never changes "
+            "raw_sessions rows, revision authority, index rows, or blobs."
         ),
         examples=(
             "devtools workspace raw-authority-artifact-census --json --receipt /realm/tmp/work/raw-census.json",
             "devtools workspace raw-authority-artifact-census --apply --backup-manifest /path/to/manifest.json --json",
+            "devtools workspace raw-authority-artifact-census --apply --after-raw-id raw-000500 --backup-manifest /path/to/manifest.json --json",
         ),
     ),
     CommandSpec(

@@ -30,6 +30,11 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         help="Cap rows scanned; dry-run defaults to the full quarantine and --apply defaults to 500.",
     )
     parser.add_argument(
+        "--after-raw-id",
+        default=None,
+        help="Exclusive raw-id cursor for the next bounded page.",
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="Upsert only artifact observations. Requires --backup-manifest; never changes raw authority.",
@@ -62,6 +67,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
             apply=args.apply,
             backup_manifest=args.backup_manifest,
             limit=args.limit,
+            after_raw_id=args.after_raw_id,
             receipt_path=args.receipt,
         )
     except (RawAuthorityArtifactCensusError, FileNotFoundError, ValueError) as exc:

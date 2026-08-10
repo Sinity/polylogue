@@ -19,6 +19,7 @@ from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore, get_blob_store
+from polylogue.storage.raw_byte_duplicate_supersession import plan_byte_duplicate_supersession
 from polylogue.storage.runtime import ArtifactObservationRecord
 from polylogue.storage.sqlite.queries.mappers_archive import _row_to_raw_session
 
@@ -72,6 +73,7 @@ class RawAuthorityArtifactCensus:
 
     total_quarantined_count: int
     entries: tuple[RawAuthorityCensusEntry, ...]
+    after_raw_id: str | None = None
 
     @property
     def scanned_count(self) -> int:
@@ -80,6 +82,13 @@ class RawAuthorityArtifactCensus:
     @property
     def truncated(self) -> bool:
         return self.scanned_count < self.total_quarantined_count
+
+    @property
+    def next_after_raw_id(self) -> str | None:
+        """Return the exclusive cursor for the next bounded page, if any."""
+        if not self.truncated or not self.entries:
+            return None
+        return self.entries[-1].raw_id
 
     def entries_for(self, bucket: RawAuthorityBucket) -> tuple[RawAuthorityCensusEntry, ...]:
         return tuple(entry for entry in self.entries if entry.bucket is bucket)
@@ -129,10 +138,16 @@ class RawAuthorityArtifactCensus:
             "raw_ids_by_bucket": raw_ids_by_bucket,
             "entries": [entry.to_receipt_dict() for entry in self.entries],
             "observations_written": observations_written,
+            "page": {
+                "after_raw_id": self.after_raw_id,
+                "next_after_raw_id": self.next_after_raw_id,
+            },
             "scope": {
                 "logical_database_operations": (["upsert raw_artifacts observations"] if mode == "apply" else []),
                 "physical_database_operations": (
-                    ["PRAGMA wal_checkpoint(TRUNCATE) on source.db before backup validation"] if mode == "apply" else []
+                    ["PRAGMA wal_checkpoint(TRUNCATE) on source.db after initial backup validation"]
+                    if mode == "apply"
+                    else []
                 ),
                 "unchanged": ["raw_sessions rows", "revision authority", "index.db rows", "blob store"],
             },
@@ -151,30 +166,11 @@ def _blob_hash_hex(value: object) -> str | None:
     return raw.hex()
 
 
-def _indexed_evidence(
-    source_conn: sqlite3.Connection,
-    index_conn: sqlite3.Connection,
-    blob_hashes: set[bytes],
-) -> tuple[dict[bytes, tuple[str, str]], set[str]]:
-    """Return the lowest indexed twin per hash and raw ids indexed themselves."""
-    raw_ids_by_hash: dict[bytes, list[str]] = {}
-    hashes = sorted(blob_hashes)
-    for start in range(0, len(hashes), 500):
-        hash_chunk = hashes[start : start + 500]
-        if not hash_chunk:
-            continue
-        marks = ",".join("?" for _ in hash_chunk)
-        rows = source_conn.execute(
-            f"SELECT raw_id, blob_hash FROM raw_sessions WHERE blob_hash IN ({marks})", hash_chunk
-        ).fetchall()
-        for row in rows:
-            blob_hash = bytes(row["blob_hash"])
-            raw_ids_by_hash.setdefault(blob_hash, []).append(str(row["raw_id"]))
-
-    all_raw_ids = sorted({raw_id for raw_ids in raw_ids_by_hash.values() for raw_id in raw_ids})
+def _indexed_raw_ids(index_conn: sqlite3.Connection, raw_ids: list[str]) -> set[str]:
+    """Return selected raws with a materialized session, without classifying authority."""
     indexed_session_by_raw_id: dict[str, str] = {}
-    for start in range(0, len(all_raw_ids), 500):
-        raw_id_chunk = all_raw_ids[start : start + 500]
+    for start in range(0, len(raw_ids), 500):
+        raw_id_chunk = raw_ids[start : start + 500]
         if not raw_id_chunk:
             continue
         marks = ",".join("?" for _ in raw_id_chunk)
@@ -184,15 +180,7 @@ def _indexed_evidence(
         ).fetchall()
         for row in rows:
             indexed_session_by_raw_id.setdefault(str(row["raw_id"]), str(row["session_id"]))
-
-    indexed_twin_by_hash: dict[bytes, tuple[str, str]] = {}
-    for blob_hash, raw_ids in raw_ids_by_hash.items():
-        candidates = sorted(
-            (raw_id, indexed_session_by_raw_id[raw_id]) for raw_id in raw_ids if raw_id in indexed_session_by_raw_id
-        )
-        if candidates:
-            indexed_twin_by_hash[blob_hash] = candidates[0]
-    return indexed_twin_by_hash, set(indexed_session_by_raw_id)
+    return set(indexed_session_by_raw_id)
 
 
 def scan_quarantined_raw_authority(
@@ -201,6 +189,7 @@ def scan_quarantined_raw_authority(
     *,
     blob_store: BlobStore | None = None,
     limit: int | None = None,
+    after_raw_id: str | None = None,
 ) -> RawAuthorityArtifactCensus:
     """Classify quarantined raw rows without mutating either database.
 
@@ -218,26 +207,38 @@ def scan_quarantined_raw_authority(
     try:
         total = int(
             source_conn.execute(
-                "SELECT COUNT(*) FROM raw_sessions WHERE revision_authority = 'quarantined'"
+                """
+                SELECT COUNT(*) FROM raw_sessions
+                WHERE revision_authority = 'quarantined'
+                  AND parse_error IS NULL
+                  AND (? IS NULL OR raw_id > ?)
+                """,
+                (after_raw_id, after_raw_id),
             ).fetchone()[0]
         )
         query = """
             SELECT rowid AS raw_rowid, *
             FROM raw_sessions
             WHERE revision_authority = 'quarantined'
-            ORDER BY raw_id
+              AND parse_error IS NULL
         """
-        params: tuple[object, ...] = ()
+        params: list[object] = []
+        if after_raw_id is not None:
+            query += " AND raw_id > ?"
+            params.append(after_raw_id)
+        query += " ORDER BY raw_id"
         if limit is not None:
             query += " LIMIT ?"
-            params = (limit,)
+            params.append(limit)
         rows = source_conn.execute(query, params).fetchall()
-        valid_hashes = {
-            bytes(row["blob_hash"])
-            for row in rows
-            if isinstance(row["blob_hash"], (bytes, bytearray, memoryview)) and len(bytes(row["blob_hash"])) == 32
-        }
-        indexed_twin_by_hash, indexed_raw_ids = _indexed_evidence(source_conn, index_conn, valid_hashes)
+        duplicate_plan = plan_byte_duplicate_supersession(
+            source_conn,
+            index_conn,
+            limit=limit,
+            after_raw_id=after_raw_id,
+        )
+        duplicate_by_raw_id = {candidate.raw_id: candidate for candidate in duplicate_plan.duplicates}
+        indexed_raw_ids = _indexed_raw_ids(index_conn, [str(row["raw_id"]) for row in rows])
         entries: list[RawAuthorityCensusEntry] = []
         for row in rows:
             raw_id = str(row["raw_id"])
@@ -269,8 +270,7 @@ def scan_quarantined_raw_authority(
                 )
                 continue
 
-            twin = indexed_twin_by_hash.get(bytes(row["blob_hash"]))
-            if row["logical_source_key"] is None and twin is not None and twin[0] != raw_id:
+            if duplicate := duplicate_by_raw_id.get(raw_id):
                 entries.append(
                     RawAuthorityCensusEntry(
                         raw_id=raw_id,
@@ -279,8 +279,8 @@ def scan_quarantined_raw_authority(
                         reason="byte-identical raw already has an indexed twin",
                         artifact_kind=observation.artifact_kind,
                         support_status=observation.support_status,
-                        duplicate_of_raw_id=twin[0],
-                        duplicate_of_session_id=twin[1],
+                        duplicate_of_raw_id=duplicate.duplicate_of_raw_id,
+                        duplicate_of_session_id=duplicate.duplicate_of_session_id,
                         observation=observation,
                     )
                 )
@@ -316,7 +316,11 @@ def scan_quarantined_raw_authority(
                     observation=observation,
                 )
             )
-        return RawAuthorityArtifactCensus(total_quarantined_count=total, entries=tuple(entries))
+        return RawAuthorityArtifactCensus(
+            total_quarantined_count=total,
+            entries=tuple(entries),
+            after_raw_id=after_raw_id,
+        )
     finally:
         source_conn.row_factory = previous_source_factory
         index_conn.row_factory = previous_index_factory
