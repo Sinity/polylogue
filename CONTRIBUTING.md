@@ -28,6 +28,16 @@ devtools status
 devtools render all
 ```
 
+### Audit tooling
+
+The `audit` dependency group supplies `ast-grep` for local structural candidate generation:
+
+```bash
+uv sync --group audit
+```
+
+The project devshell also provides `scc` for code-size and complexity summaries and `codeql` for periodic security-focused analysis. These tools are advisory until a separately scoped audit policy adopts a specific rule or query.
+
 Before choosing a module, read [Code Navigation](docs/code-navigation.md). It
 maps common changes to the package that owns their meaning, the production
 route that must be exercised, and the minimum verification expected. The

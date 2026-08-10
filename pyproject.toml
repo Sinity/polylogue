@@ -120,6 +120,14 @@ tree-sitter = [
   "tree-sitter-yaml>=0.6.0",
 ]
 
+[dependency-groups]
+# Structural candidate generation for repository audits.  This is a tooling
+# group, not a shipped product dependency; the devshell supplies the
+# complementary native tools (scc and CodeQL).
+audit = [
+  "ast-grep-cli>=0.45.0",
+]
+
 [project.urls]
 Homepage = "https://sinity.github.io/polylogue/"
 Repository = "https://github.com/sinity/polylogue"
