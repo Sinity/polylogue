@@ -219,6 +219,64 @@ def test_apply_is_idempotent_with_a_fresh_plan(
     assert second.terminal_state == "committed"
 
 
+def test_apply_identical_plan_and_receipt_returns_the_completed_report(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted caller can retry its exact completed apply without another write.
+
+    Anti-vacuity: both calls take the production apply route against the same
+    immutable plan, backup manifest, and receipt file.  Before the repair the
+    second route rejected the existing terminal receipt before checking that it
+    proved this exact durable outcome.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+
+    completed = apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+    receipt_before_retry = receipt.read_bytes()
+
+    retried = apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+
+    assert retried.applied is True
+    assert retried.terminal_state == "committed"
+    assert retried.updated_count == completed.updated_count == 4
+    assert receipt.read_bytes() == receipt_before_retry
+
+
+def test_apply_refuses_missing_user_db_without_recreating_the_durable_tier(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Apply never turns a missing durable tier into a fresh empty SQLite file.
+
+    Anti-vacuity: the immutable plan is produced from the real archive, then
+    its file-backed ``user.db`` is removed before the production apply route.
+    The old default SQLite connection recreated it before the plan could fail.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    user_path = root / "user.db"
+    user_path.unlink()
+
+    with pytest.raises(MessageOwnerScopeBackfillError, match="could not open existing user.db"):
+        apply_message_owner_scope_backfill(
+            root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+        )
+
+    assert not user_path.exists()
+
+
 def test_missing_owner_is_a_typed_blocker_and_not_a_complete_receipt(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -560,6 +618,46 @@ def test_stale_active_index_schema_can_backfill_and_validate_a_current_candidate
     assert (
         validate_message_owner_scope_backfill_receipt(root, receipt, candidate_index_path=candidate)["complete"] is True
     )
+
+
+def test_complete_receipt_remains_valid_after_promoting_a_current_schema_candidate(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A candidate proved by the receipt remains admissible after promotion.
+
+    Anti-vacuity: this starts from a stale active index, applies the production
+    durable backfill, validates a real current-schema candidate, then records
+    the promoted schema version on the active SQLite file.  The old receipt
+    validator rejected that upgraded active file solely by its stale schema
+    snapshot.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] - 1}")
+        conn.commit()
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+    candidate = tmp_path / "promoted-current-index.db"
+    with sqlite3.connect(root / "index.db") as source, sqlite3.connect(candidate) as target:
+        source.backup(target)
+    with sqlite3.connect(candidate) as conn:
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
+        conn.commit()
+
+    assert (
+        validate_message_owner_scope_backfill_receipt(root, receipt, candidate_index_path=candidate)["complete"] is True
+    )
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
+        conn.commit()
+
+    assert validate_message_owner_scope_backfill_receipt(root, receipt)["complete"] is True
 
 
 def test_completed_message_owner_backfill_requires_a_receipt_for_index_replacement(

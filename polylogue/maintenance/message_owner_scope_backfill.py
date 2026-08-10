@@ -689,6 +689,39 @@ def _final_receipt(
     _write_immutable_json(receipt_path, payload, label="message-owner backfill receipt")
 
 
+def _completed_receipt_report(
+    root: Path,
+    *,
+    plan: MessageOwnerScopeBackfillPlan,
+    backup: Mapping[str, object],
+    receipt_path: Path,
+) -> MessageOwnerScopeBackfillReport:
+    """Return a validated no-op report for an exact completed apply retry."""
+    terminal = validate_message_owner_scope_backfill_receipt(root, receipt_path)
+    expected_after = _expected_after_plan(plan)
+    if (
+        terminal.get("plan_digest") != plan.plan_digest
+        or terminal.get("archive_identity") != plan.archive_identity
+        or terminal.get("backup_manifest") != dict(backup)
+        or terminal.get("after_plan_digest") != expected_after.plan_digest
+    ):
+        raise MessageOwnerScopeBackfillError(
+            "immutable message-owner backfill receipt does not match this completed apply"
+        )
+    updated_count = terminal.get("updated_count")
+    if not isinstance(updated_count, int) or isinstance(updated_count, bool):
+        raise MessageOwnerScopeBackfillError("message-owner backfill receipt has an invalid updated count")
+    return MessageOwnerScopeBackfillReport(
+        plan=plan,
+        after_plan=census_message_owner_scope_backfill(root),
+        applied=True,
+        terminal_state="committed",
+        updated_count=updated_count,
+        backup_manifest=Path(str(backup["path"])),
+        receipt_path=receipt_path,
+    )
+
+
 def _validate_plan_binding(root: Path, plan: MessageOwnerScopeBackfillPlan) -> MessageOwnerScopeBackfillPlan:
     current = census_message_owner_scope_backfill(root)
     if current.plan_digest != plan.plan_digest:
@@ -849,7 +882,12 @@ def apply_message_owner_scope_backfill(
     receipt_path = resolve_message_owner_scope_backfill_receipt_reference(root, receipt_path)
     marker_path = receipt_path.with_name(receipt_path.name + ".prepared")
     if receipt_path.exists() and not marker_path.exists():
-        raise MessageOwnerScopeBackfillError(f"immutable message-owner backfill receipt already exists: {receipt_path}")
+        return _completed_receipt_report(
+            root,
+            plan=plan,
+            backup=_manifest_identity(backup_manifest),
+            receipt_path=receipt_path,
+        )
     if running_daemon_pid(_offline_config(root)) is not None:
         raise MessageOwnerScopeBackfillError("message-owner backfill requires the daemon to be stopped")
 
@@ -860,7 +898,10 @@ def apply_message_owner_scope_backfill(
         raise MessageOwnerScopeBackfillError(f"could not acquire exclusive offline archive ownership: {exc}") from exc
     with owner:
         user_path = root / "user.db"
-        conn = sqlite3.connect(user_path, timeout=60)
+        try:
+            conn = sqlite3.connect(f"{user_path.resolve(strict=True).as_uri()}?mode=rw", uri=True, timeout=60)
+        except (OSError, sqlite3.Error) as exc:
+            raise MessageOwnerScopeBackfillError("could not open existing user.db for message-owner backfill") from exc
         marker: Path | None = None
         updated_count = 0
         try:
@@ -992,8 +1033,18 @@ def validate_message_owner_scope_backfill_receipt(
     if not isinstance(schema, dict) or schema.get("user") != _schema_version(root / "user.db"):
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt user schema binding is stale")
     active_index_path = ArchiveLocation.resolve(root).active_index_path
-    if active_index_path.exists() and schema.get("active_index") != _schema_version(active_index_path):
-        raise MessageOwnerScopeBackfillError("message-owner backfill receipt active index schema binding is stale")
+    active_schema_upgrade_requires_owner_proof = False
+    if active_index_path.exists():
+        receipt_active_schema = schema.get("active_index")
+        active_schema = _schema_version(active_index_path)
+        if not isinstance(receipt_active_schema, int) or isinstance(receipt_active_schema, bool):
+            raise MessageOwnerScopeBackfillError("message-owner backfill receipt active index schema binding is stale")
+        if receipt_active_schema != active_schema:
+            if active_schema != ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]:
+                raise MessageOwnerScopeBackfillError(
+                    "message-owner backfill receipt active index schema binding is stale"
+                )
+            active_schema_upgrade_requires_owner_proof = True
     if (
         candidate_index_path is not None
         and _schema_version(candidate_index_path) != ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
@@ -1004,6 +1055,8 @@ def validate_message_owner_scope_backfill_receipt(
         raise MessageOwnerScopeBackfillError("message-owner backfill receipt durable message assertion state is stale")
     owner_bindings = _receipt_owner_bindings(root, raw)
     _validate_durable_owner_bindings(root, owner_bindings)
+    if active_schema_upgrade_requires_owner_proof:
+        _validate_candidate_message_owners(root, active_index_path, owner_bindings=owner_bindings)
     if candidate_index_path is not None:
         _validate_candidate_message_owners(root, candidate_index_path, owner_bindings=owner_bindings)
     return cast(dict[str, object], raw)
