@@ -21,6 +21,7 @@ from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.wire_formats import (
     PROVIDER_WIRE_FORMATS,
+    PROVIDER_WIRE_ROUTES,
     WireSupportEntry,
     WireSupportReceipt,
     build_wire_support_receipt,
@@ -227,6 +228,41 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
     )
     assert restored == manifest
     assert restored.wire_support_receipt == wire_support.to_dict()
+
+
+def test_campaign_rejects_a_bound_receipt_with_a_missing_catalog_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    providers = ("claude-ai", "codex")
+    package_receipt = build_schema_inference_receipt(
+        registry,
+        provider=providers[0],
+        gate_receipt_digest=gate_digest,
+    ).merged_with(
+        build_schema_inference_receipt(
+            registry,
+            provider=providers[1],
+            gate_receipt_digest=gate_digest,
+        )
+    )
+    monkeypatch.delitem(PROVIDER_WIRE_ROUTES, "codex")
+    wire_support = build_wire_support_receipt(registry=registry, providers=providers)
+
+    assert wire_support.missing_routes == ("codex",)
+    assert any(entry.status == "supported" for entry in wire_support.entries)
+    with pytest.raises(ValueError, match="explicit synthetic wire route"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=providers,
+            package_receipt=package_receipt.to_payload(),
+            wire_support_receipt=wire_support,
+            campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
 
 
 def test_campaign_indexes_persisted_wire_support_entries_once(

@@ -873,6 +873,11 @@ def compile_inferred_corpus_manifest(
         support_entries = {wire_support_entry_key(entry): entry for entry in wire_support_receipt.entries}
     if campaign_mode and package_receipt is None:
         raise ValueError("campaign mode requires a persisted schema-inference handoff")
+    if campaign_mode and wire_support_receipt is not None and wire_support_receipt.missing_routes:
+        raise ValueError(
+            "campaign mode requires an explicit synthetic wire route for every catalog provider: "
+            f"missing={list(wire_support_receipt.missing_routes)!r}"
+        )
     entries = tuple(
         _compile_entry(
             provider=provider,
@@ -918,7 +923,12 @@ def _validate_inference_handoff(
         gate_receipt_path=gate_receipt_path,
         archive_root=archive_root,
     )
-    _validate_current_wire_support_route(manifest, registry)
+    current_wire_support = _validate_current_wire_support_route(manifest, registry)
+    if current_wire_support is not None and current_wire_support.missing_routes:
+        raise ValueError(
+            "campaign mode requires an explicit synthetic wire route for every catalog provider: "
+            f"missing={list(current_wire_support.missing_routes)!r}"
+        )
     if not manifest.supported_specs:
         raise ValueError("campaign mode has no executable synthetic corpus selection")
     expected_packages = package_hashes_for_registry(cast(SchemaReceiptRegistry, registry), providers)
@@ -1042,12 +1052,12 @@ def _validate_inference_handoff(
 def _validate_current_wire_support_route(
     manifest: InferredCorpusManifest,
     registry: RuntimeSchemaRegistryLike,
-) -> None:
+) -> WireSupportReceipt | None:
     """Re-run the exact persisted wire witnesses through current production code."""
 
     persisted = manifest.wire_support_receipt
     if persisted is None:
-        return
+        return None
     witness_seed = persisted.get("witness_seed")
     if isinstance(witness_seed, bool) or not isinstance(witness_seed, int):
         raise ValueError("wire_support_receipt witness_seed must be an integer")
@@ -1066,6 +1076,7 @@ def _validate_current_wire_support_route(
             "schema-inference wire-support receipt changed under the current parser or wire-normalizer route: "
             f"changed_fields={changed_fields!r}"
         )
+    return current
 
 
 __all__ = [

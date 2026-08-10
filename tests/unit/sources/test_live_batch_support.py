@@ -2519,6 +2519,56 @@ def test_codex_append_identity_rejects_mismatched_index_owner_before_global_fall
     assert processor._append_payload_for_provider(path, "codex", b'{"type":"event_msg"}\n') is None
 
 
+def test_codex_append_identity_rejects_global_fallback_when_ownership_query_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "candidate.jsonl"
+    payload = b'{"type":"session_meta","payload":{"id":"codex-id"}}\n'
+    path.write_bytes(payload)
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        unrelated_raw_id = write_source_raw_session(
+            conn,
+            origin="codex-session",
+            source_path=str(root / "unrelated.jsonl"),
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1_770_000_000_000,
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, raw_id, title, content_hash) VALUES (?, ?, ?, ?, ?)",
+            ("codex-id", "codex-session", unrelated_raw_id, "unrelated fallback", bytes(32)),
+        )
+        conn.commit()
+
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    assert processor._existing_provider_session_id(path, expected_origin="codex-session") == "codex-id"
+
+    def unavailable_ownership_view(*_args: object, **_kwargs: object) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("source tier unavailable")
+
+    monkeypatch.setattr(sqlite3, "connect", unavailable_ownership_view)
+
+    assert processor._append_payload_for_provider(path, "codex", b'{"type":"event_msg"}\n') is None
+
+
 def test_latest_raw_fingerprint_ignores_archive_source_row_with_missing_blob(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

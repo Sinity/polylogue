@@ -1163,9 +1163,7 @@ def _parser_artifact_expected_message_keys(
             keys.append(f"id:{identity}")
             continue
 
-        text = node.get("text")
-        if isinstance(text, str) and text.strip():
-            keys.append(f"text:{_normalise_evidence_text(text)}")
+        keys.extend(f"text:{text}" for text in _parser_artifact_node_content_texts(provider, node))
     return tuple(keys)
 
 
@@ -1175,26 +1173,32 @@ def _parser_artifact_messages_have_artifact_bound_content(
     payload: JSONValue,
 ) -> bool:
     """Require each identified parsed message to retain content from its raw node."""
-    raw_texts_by_identity = {
-        identity: _parser_artifact_node_content_texts(provider, node)
-        for node in _parser_artifact_expected_nodes(provider, payload)
-        if (identity := _parser_artifact_node_identity(provider, node)) is not None
-    }
+    raw_texts_by_identity: dict[str, set[str]] = {}
+    anonymous_raw_texts: Counter[str] = Counter()
+    for node in _parser_artifact_expected_nodes(provider, payload):
+        expected_texts = _parser_artifact_node_content_texts(provider, node)
+        if not expected_texts:
+            continue
+        identity = _parser_artifact_node_identity(provider, node)
+        if identity is None:
+            anonymous_raw_texts.update(expected_texts)
+        else:
+            raw_texts_by_identity.setdefault(identity, set()).update(expected_texts)
+
+    observed_anonymous_texts: Counter[str] = Counter()
     for session in sessions:
         for message in session.messages:
-            if not message.provider_message_id:
-                continue
-            expected_texts = raw_texts_by_identity.get(message.provider_message_id)
-            if not expected_texts:
-                continue
             observed_texts = {
                 _normalise_evidence_text(text)
                 for text in (message.text, *(block.text for block in message.blocks))
                 if isinstance(text, str) and _normalise_evidence_text(text)
             }
-            if not observed_texts or not observed_texts & expected_texts:
+            if message.provider_message_id in raw_texts_by_identity and (
+                not observed_texts or not observed_texts & raw_texts_by_identity[message.provider_message_id]
+            ):
                 return False
-    return True
+            observed_anonymous_texts.update(observed_texts)
+    return not (anonymous_raw_texts - observed_anonymous_texts)
 
 
 def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONValue]) -> set[str]:
@@ -1206,7 +1210,7 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
         values = _payload_string_values(parts) if isinstance(parts, list) else ()
     elif provider == "codex":
         content = node.get("content")
-        values = (
+        content_values = (
             tuple(
                 text
                 for item in content
@@ -1217,6 +1221,30 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
             if isinstance(content, list)
             else ()
         )
+        message = node.get("message")
+        values = (*content_values, message) if isinstance(message, str) else content_values
+    elif provider in {"claude-ai", "gemini"}:
+        text = node.get("text")
+        values = (text,) if isinstance(text, str) else ()
+    elif provider == "claude-code":
+        message = node.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if isinstance(content, str):
+            values = (content,)
+        elif isinstance(content, list):
+            values = tuple(
+                text
+                for item in content
+                if isinstance(item, Mapping) and item.get("type") in {"text", "thinking", "tool_result"}
+                for text in (
+                    item.get("text"),
+                    item.get("thinking"),
+                    *(_payload_string_values(item.get("content")) if item.get("type") == "tool_result" else ()),
+                )
+                if isinstance(text, str)
+            )
+        else:
+            values = ()
     else:
         values = ()
     return {_normalise_evidence_text(value) for value in values if _normalise_evidence_text(value)}

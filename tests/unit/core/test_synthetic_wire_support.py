@@ -216,13 +216,15 @@ def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: 
     assert not receipt.complete
 
 
-def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids(
+@pytest.mark.parametrize("provider", sorted(wire_formats.PROVIDER_WIRE_FORMATS))
+def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_every_supported_route(
     monkeypatch: pytest.MonkeyPatch,
+    provider: str,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
 
     def replace_all_but_one_message_body(
-        provider: str,
+        parsed_provider: str,
         payload: object,
         fallback_id: str,
         _depth: int = 0,
@@ -231,37 +233,44 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids(
         source_path: str | None = None,
     ) -> list[ParsedSession]:
         sessions = original_parse_payload(
-            provider,
+            parsed_provider,
             payload,
             fallback_id,
             _depth,
             schema_resolution=schema_resolution,
             source_path=source_path,
         )
-        if provider == "chatgpt" and fallback_id.endswith(":0"):
-            return [
-                session.model_copy(
-                    update={
-                        "messages": [
-                            message if index == 0 else message.model_copy(update={"text": "", "blocks": []})
-                            for index, message in enumerate(session.messages)
-                        ]
-                    }
-                )
-                for session in sessions
-            ]
+        if parsed_provider == provider and fallback_id.endswith(":0"):
+            stripped_sessions: list[ParsedSession] = []
+            for session in sessions:
+                retained_body = False
+                messages: list[ParsedMessage] = []
+                for message in session.messages:
+                    has_body = any(
+                        isinstance(text, str) and text.strip()
+                        for text in (message.text, *(block.text for block in message.blocks))
+                    )
+                    if has_body and not retained_body:
+                        retained_body = True
+                        messages.append(message)
+                    else:
+                        messages.append(message.model_copy(update={"text": "", "blocks": []}))
+                stripped_sessions.append(session.model_copy(update={"messages": messages}))
+            return stripped_sessions
         return sessions
 
     monkeypatch.setattr(dispatch_module, "parse_payload", replace_all_but_one_message_body)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
 
-    entry = next(item for item in receipt.entries if item.package_version == "v1")
-    baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
-    assert baseline.parsed_message_count == 4
-    assert not baseline.artifact_evidence
-    assert baseline.validation_error == "artifact message coverage is incomplete"
-    assert not baseline.healthy
-    assert not entry.healthy
+    supported_entries = [entry for entry in receipt.entries if entry.status == "supported"]
+    assert supported_entries
+    for entry in supported_entries:
+        baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
+        assert baseline.parsed_message_count > 0
+        assert not baseline.artifact_evidence
+        assert baseline.validation_error == "artifact message coverage is incomplete"
+        assert not baseline.healthy
+        assert not entry.healthy
     assert not receipt.complete
 
 
