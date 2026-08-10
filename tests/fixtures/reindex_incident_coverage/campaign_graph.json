@@ -1,12 +1,864 @@
 {
   "schema_version": 1,
-  "source_commit": "426851d0e",
+  "source_commit": "e7f820ff6d",
   "source_path": ".beads/issues.jsonl",
   "target_bead_id": "polylogue-818fy",
   "forcing_dependencies": [
-    {"bead_id": "polylogue-a7xr.25", "status": "open", "kind": "decision", "dependency_kind": "blocks", "child_bead_ids": []},
-    {"bead_id": "polylogue-reindex-source-remediation", "status": "open", "kind": "operation", "dependency_kind": "blocks", "child_bead_ids": []},
-    {"bead_id": "polylogue-xselt", "status": "open", "kind": "verification", "dependency_kind": "blocks", "child_bead_ids": []}
+    {
+      "bead_id": "polylogue-a7xr.25",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-reindex-source-remediation",
+      "status": "open",
+      "kind": "operation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-6k0na",
+        "polylogue-a7gmk",
+        "polylogue-byte-supersession-live-proof",
+        "polylogue-cursor-authority-live-proof",
+        "polylogue-cursor-authority-reconcile-implementation",
+        "polylogue-dyica",
+        "polylogue-excluded-cursor-live-proof",
+        "polylogue-hook-reconciliation-apply-proof",
+        "polylogue-raw-dedupe-apply-proof",
+        "polylogue-reindex-preflight-authorization",
+        "polylogue-s8s54",
+        "polylogue-stalled-cursor-live-proof",
+        "polylogue-uecir",
+        "polylogue-xeck9"
+      ]
+    },
+    {
+      "bead_id": "polylogue-xselt",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-0qfy",
+        "polylogue-7zp4",
+        "polylogue-gysk3",
+        "polylogue-slshy",
+        "polylogue-uqwd"
+      ]
+    },
+    {
+      "bead_id": "polylogue-6k0na",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-a7gmk",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-052vs",
+        "polylogue-1xc.8",
+        "polylogue-2qx.3",
+        "polylogue-2tfug",
+        "polylogue-5q2u",
+        "polylogue-6bebe",
+        "polylogue-6krh",
+        "polylogue-8ac0",
+        "polylogue-9kc0",
+        "polylogue-9qnzy",
+        "polylogue-aex0",
+        "polylogue-b5l.1",
+        "polylogue-c831",
+        "polylogue-cc4k",
+        "polylogue-cijx.2",
+        "polylogue-ds4b4",
+        "polylogue-e98k",
+        "polylogue-es7b",
+        "polylogue-f47j",
+        "polylogue-gxig",
+        "polylogue-gysk3",
+        "polylogue-h57ic",
+        "polylogue-h7y0j",
+        "polylogue-hjwr",
+        "polylogue-i3zo",
+        "polylogue-iuyr",
+        "polylogue-k8wv",
+        "polylogue-kmqwm",
+        "polylogue-ksgg",
+        "polylogue-lb39z",
+        "polylogue-lkrc",
+        "polylogue-lyv4",
+        "polylogue-qhk8z",
+        "polylogue-swqu",
+        "polylogue-tnqqt",
+        "polylogue-tu1f",
+        "polylogue-tw4ar",
+        "polylogue-vp2ky",
+        "polylogue-w6hql",
+        "polylogue-yla8",
+        "polylogue-z22ml",
+        "polylogue-zoek0"
+      ]
+    },
+    {
+      "bead_id": "polylogue-byte-supersession-live-proof",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-6753s"
+      ]
+    },
+    {
+      "bead_id": "polylogue-cursor-authority-live-proof",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-cursor-authority-reconcile-implementation"
+      ]
+    },
+    {
+      "bead_id": "polylogue-cursor-authority-reconcile-implementation",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-xeck9"
+      ]
+    },
+    {
+      "bead_id": "polylogue-dyica",
+      "status": "in_progress",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-excluded-cursor-live-proof",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-ix5r"
+      ]
+    },
+    {
+      "bead_id": "polylogue-hook-reconciliation-apply-proof",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-nhbvf"
+      ]
+    },
+    {
+      "bead_id": "polylogue-raw-dedupe-apply-proof",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-zm4w8"
+      ]
+    },
+    {
+      "bead_id": "polylogue-reindex-preflight-authorization",
+      "status": "open",
+      "kind": "operation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-eqq02",
+        "polylogue-incident-coverage-ledger",
+        "polylogue-pr-scope-contract",
+        "polylogue-reindex-proof-edge-correction"
+      ]
+    },
+    {
+      "bead_id": "polylogue-s8s54",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-stalled-cursor-live-proof",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-2qrx"
+      ]
+    },
+    {
+      "bead_id": "polylogue-uecir",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-xeck9",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-0qfy",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-7zp4",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-gysk3",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-slshy",
+      "status": "in_progress",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-uqwd",
+      "status": "in_progress",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-052vs",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-1xc.8",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-2qx.3",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-9qnzy"
+      ]
+    },
+    {
+      "bead_id": "polylogue-2tfug",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-1fijp"
+      ]
+    },
+    {
+      "bead_id": "polylogue-5q2u",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-6bebe",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-lkrc"
+      ]
+    },
+    {
+      "bead_id": "polylogue-6krh",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-8ac0",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-9kc0",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-9qnzy",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-dcrmm",
+        "polylogue-dudtn"
+      ]
+    },
+    {
+      "bead_id": "polylogue-aex0",
+      "status": "in_progress",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-b5l.1",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-c831",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-cc4k",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-cijx.2",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-ds4b4",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-tw4ar",
+        "polylogue-w6hql"
+      ]
+    },
+    {
+      "bead_id": "polylogue-e98k",
+      "status": "in_progress",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-es7b",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-f47j",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-gxig",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-h57ic",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-h7y0j",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-hjwr",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-i3zo",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-iuyr",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-k8wv",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-swqu"
+      ]
+    },
+    {
+      "bead_id": "polylogue-kmqwm",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-ksgg",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-lb39z",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-lkrc",
+      "status": "in_progress",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-6753s",
+        "polylogue-lb39z",
+        "polylogue-yla8",
+        "polylogue-zm4w8"
+      ]
+    },
+    {
+      "bead_id": "polylogue-lyv4",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-qhk8z",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-swqu",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-tnqqt",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-2qx.3",
+        "polylogue-3m3de",
+        "polylogue-4987i",
+        "polylogue-8ac0",
+        "polylogue-f47j",
+        "polylogue-iuyr",
+        "polylogue-kmqwm",
+        "polylogue-mvcbi",
+        "polylogue-o8c3m",
+        "polylogue-omsw",
+        "polylogue-r9xsj",
+        "polylogue-tu1f"
+      ]
+    },
+    {
+      "bead_id": "polylogue-tu1f",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-tw4ar",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-vp2ky",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-w6hql",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-lb39z",
+        "polylogue-lr6dx",
+        "polylogue-tw4ar"
+      ]
+    },
+    {
+      "bead_id": "polylogue-yla8",
+      "status": "in_progress",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-9qnzy",
+        "polylogue-h7y0j"
+      ]
+    },
+    {
+      "bead_id": "polylogue-z22ml",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-zoek0",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-6753s",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-ix5r",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-nhbvf",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-zm4w8",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-eqq02",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-incident-coverage-ledger",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-ey4ro",
+        "polylogue-ohkfy",
+        "polylogue-t0m73"
+      ]
+    },
+    {
+      "bead_id": "polylogue-pr-scope-contract",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-inygw"
+      ]
+    },
+    {
+      "bead_id": "polylogue-reindex-proof-edge-correction",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-2qrx",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-1fijp",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-dcrmm",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-dudtn",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-3m3de",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-4987i",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-mvcbi",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-o8c3m",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-omsw",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-1fijp"
+      ]
+    },
+    {
+      "bead_id": "polylogue-r9xsj",
+      "status": "in_progress",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-0v4tn",
+        "polylogue-6753s",
+        "polylogue-84ake",
+        "polylogue-lb39z",
+        "polylogue-lkrc",
+        "polylogue-nhbvf",
+        "polylogue-w6hql",
+        "polylogue-zm4w8"
+      ]
+    },
+    {
+      "bead_id": "polylogue-lr6dx",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-2qx",
+        "polylogue-lkrc",
+        "polylogue-yla8"
+      ]
+    },
+    {
+      "bead_id": "polylogue-ey4ro",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-rrxe4",
+        "polylogue-t0m73",
+        "polylogue-yazae"
+      ]
+    },
+    {
+      "bead_id": "polylogue-ohkfy",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-t0m73",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-in24n",
+        "polylogue-reindex-registry-two-plane-subset"
+      ]
+    },
+    {
+      "bead_id": "polylogue-inygw",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-0v4tn",
+      "status": "in_progress",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-84ake",
+      "status": "closed",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-2qx",
+      "status": "open",
+      "kind": "operation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-rrxe4",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-4v2d3",
+        "polylogue-amrpx",
+        "polylogue-canonical-snapshot",
+        "polylogue-ehzfn",
+        "polylogue-t0m73",
+        "polylogue-un60n",
+        "polylogue-yazae"
+      ]
+    },
+    {
+      "bead_id": "polylogue-yazae",
+      "status": "in_progress",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-amrpx"
+      ]
+    },
+    {
+      "bead_id": "polylogue-in24n",
+      "status": "open",
+      "kind": "verification",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-reindex-registry-two-plane-subset",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": [
+        "polylogue-g8v5z"
+      ]
+    },
+    {
+      "bead_id": "polylogue-4v2d3",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-amrpx",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-canonical-snapshot",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-ehzfn",
+      "status": "closed",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-un60n",
+      "status": "open",
+      "kind": "implementation",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    },
+    {
+      "bead_id": "polylogue-g8v5z",
+      "status": "open",
+      "kind": "decision",
+      "dependency_kind": "blocks",
+      "child_bead_ids": []
+    }
   ],
   "known_child_bead_ids": []
 }

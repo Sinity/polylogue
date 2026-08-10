@@ -14,6 +14,7 @@
     "snapshots",
     "receipts",
     "successors",
+    "routes",
     "rows"
   ],
   "properties": {
@@ -27,11 +28,12 @@
       "uniqueItems": true,
       "items": {"$ref": "#/$defs/dependencyKind"}
     },
-    "fixtures": {"$ref": "#/$defs/catalog"},
+    "fixtures": {"$ref": "#/$defs/fixtureCatalog"},
     "checks": {"$ref": "#/$defs/catalog"},
     "snapshots": {"$ref": "#/$defs/catalog"},
     "receipts": {"$ref": "#/$defs/receiptCatalog"},
     "successors": {"$ref": "#/$defs/catalog"},
+    "routes": {"$ref": "#/$defs/catalog"},
     "rows": {
       "type": "array",
       "minItems": 1,
@@ -51,6 +53,20 @@
           "source": {"type": "string", "minLength": 1},
           "status": {"type": "string", "minLength": 1},
           "owner_bead_id": {"type": "string", "pattern": "^polylogue-[a-z0-9][a-z0-9.-]*$"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "fixtureCatalog": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["kind", "source", "mutation_ids"],
+        "properties": {
+          "kind": {"type": "string", "minLength": 1},
+          "source": {"type": "string", "minLength": 1},
+          "mutation_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
         },
         "additionalProperties": true
       }

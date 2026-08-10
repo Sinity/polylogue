@@ -167,6 +167,7 @@ def _derive_forcing_dependencies(records: dict[str, JsonObject], target: str) ->
         _fail("bead_dependencies_invalid", f"Bead {target}.dependencies must be a list", bead_id=target)
     dependencies: list[JsonObject] = []
     seen: set[str] = set()
+    queued: list[tuple[str, int]] = []
     for index, raw_dependency in enumerate(raw_dependencies):
         dependency = _object(raw_dependency, context=f"Bead {target}.dependencies[{index}]")
         issue_id = _string(dependency.get("issue_id"), context=f"Bead {target}.dependencies[{index}].issue_id")
@@ -179,15 +180,19 @@ def _derive_forcing_dependencies(records: dict[str, JsonObject], target: str) ->
                 issue_id=issue_id,
             )
         dependency_kind = _string(dependency.get("type"), context=f"Bead {target}.dependencies[{index}].type")
-        if dependency_kind != "blocks":
-            continue
-        bead_id = _string(dependency.get("depends_on_id"), context=f"Bead {target}.dependencies[{index}].depends_on_id")
-        if bead_id in seen:
-            _fail(
-                "duplicate_forcing_dependency",
-                f"duplicate forcing dependency {bead_id}",
-                duplicate_ids=[bead_id],
+        if dependency_kind == "blocks":
+            queued.append(
+                (
+                    _string(
+                        dependency.get("depends_on_id"), context=f"Bead {target}.dependencies[{index}].depends_on_id"
+                    ),
+                    1,
+                )
             )
+    while queued:
+        bead_id, depth = queued.pop(0)
+        if bead_id in seen:
+            continue
         seen.add(bead_id)
         record = records.get(bead_id)
         if record is None:
@@ -197,11 +202,33 @@ def _derive_forcing_dependencies(records: dict[str, JsonObject], target: str) ->
             {
                 "bead_id": bead_id,
                 "status": status,
-                "dependency_kind": dependency_kind,
+                "dependency_kind": "blocks",
+                "depth": depth,
                 "priority": record.get("priority"),
                 "issue_type": record.get("issue_type"),
             }
         )
+        children = record.get("dependencies", [])
+        if not isinstance(children, list):
+            _fail("bead_dependencies_invalid", f"Bead {bead_id}.dependencies must be a list", bead_id=bead_id)
+        for index, raw_child in enumerate(children):
+            child = _object(raw_child, context=f"Bead {bead_id}.dependencies[{index}]")
+            if _string(child.get("issue_id"), context=f"Bead {bead_id}.dependencies[{index}].issue_id") != bead_id:
+                _fail(
+                    "dependency_owner_mismatch",
+                    f"dependency record {index} on {bead_id} names another issue",
+                    bead_id=bead_id,
+                    dependency_index=index,
+                )
+            if _string(child.get("type"), context=f"Bead {bead_id}.dependencies[{index}].type") == "blocks":
+                queued.append(
+                    (
+                        _string(
+                            child.get("depends_on_id"), context=f"Bead {bead_id}.dependencies[{index}].depends_on_id"
+                        ),
+                        depth + 1,
+                    )
+                )
     return tuple(dependencies)
 
 
@@ -254,7 +281,7 @@ def _graph_dependencies(graph: JsonObject, *, bead_records: dict[str, JsonObject
             dependency.get("child_bead_ids"),
             context=f"campaign graph dependency {bead_id}.child_bead_ids",
         )
-        unknown_children = sorted(set(child_ids) - set(known_children))
+        unknown_children = sorted(set(child_ids) - set(bead_records))
         if unknown_children:
             _fail(
                 "unknown_successor_id",
@@ -381,7 +408,9 @@ def resolve_incident_coverage(
     graph_dependencies = _graph_dependencies(graph, bead_records=bead_records)
     _assert_same_forcing_graph(derived_dependencies, graph_dependencies)
 
-    catalogs = {name: _catalog(ledger, name) for name in ("fixtures", "checks", "snapshots", "receipts", "successors")}
+    catalogs = {
+        name: _catalog(ledger, name) for name in ("fixtures", "checks", "snapshots", "receipts", "successors", "routes")
+    }
     known_successors = set(_strings(graph.get("known_child_bead_ids"), context="campaign graph known_child_bead_ids"))
     missing_successors = sorted(known_successors - set(catalogs["successors"]))
     if missing_successors:
@@ -445,6 +474,14 @@ def resolve_incident_coverage(
         route_kind = _string(route.get("kind"), context=f"ledger row {bead_id}.route.kind")
         if route_kind not in ROUTE_KINDS:
             _fail("unknown_route_kind", f"unknown route kind {route_kind!r} for {bead_id}", bead_id=bead_id)
+        entrypoint = _string(route.get("entrypoint"), context=f"ledger row {bead_id}.route.entrypoint")
+        if entrypoint not in catalogs["routes"]:
+            _fail(
+                "unknown_route_entrypoint",
+                f"route entrypoint {entrypoint} is not registered for {bead_id}",
+                bead_id=bead_id,
+                entrypoint=entrypoint,
+            )
 
         schedule = _object(row.get("schedule"), context=f"ledger row {bead_id}.schedule")
         order = schedule.get("order")
@@ -463,6 +500,18 @@ def resolve_incident_coverage(
         fixture_id = _string(red_mutation.get("fixture_id"), context=f"ledger row {bead_id}.red_mutation.fixture_id")
         if fixture_id not in catalogs["fixtures"]:
             _fail("unknown_fixture", f"unknown fixture {fixture_id} for {bead_id}")
+        mutation_id = _string(red_mutation.get("mutation_id"), context=f"ledger row {bead_id}.red_mutation.mutation_id")
+        mutation_ids = _strings(
+            catalogs["fixtures"][fixture_id].get("mutation_ids"), context=f"ledger fixture {fixture_id}.mutation_ids"
+        )
+        if mutation_id not in mutation_ids:
+            _fail(
+                "unknown_mutation",
+                f"mutation {mutation_id} is not declared by fixture {fixture_id}",
+                bead_id=bead_id,
+                fixture_id=fixture_id,
+                mutation_id=mutation_id,
+            )
 
         check_ids = _strings(row.get("registry_checks"), context=f"ledger row {bead_id}.registry_checks")
         unknown_checks = sorted(set(check_ids) - set(catalogs["checks"]))
@@ -506,8 +555,10 @@ def resolve_incident_coverage(
 
         if graph_entry.get("status") == "closed" and graph_entry.get("kind") == "implementation":
             closed_implementation_ids.append(bead_id)
-            live_proof = any(receipts[receipt_id].get("kind") == "live-proof" for receipt_id in receipt_ids)
-            if not live_proof and successor_id is None:
+            implementation_proof = any(
+                receipts[receipt_id].get("kind") in {"live-proof", "implementation-proof"} for receipt_id in receipt_ids
+            )
+            if not implementation_proof and successor_id is None:
                 _fail(
                     "closed_implementation_unproven",
                     f"closed implementation bead {bead_id} has no live proof or named child successor",
