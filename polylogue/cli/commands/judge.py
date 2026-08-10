@@ -247,6 +247,22 @@ def _render_queue_health(payload: AssertionCandidateQueueHealthPayload, output_f
         f"  producer: {payload.producer_status or 'unobserved'}; "
         f"scheduler: {payload.scheduler_state}; debt: {payload.producer_debt_count}"
     )
+    if payload.judgment_scheduler_receipt_status != "unknown":
+        click.echo(
+            f"  receipt: {payload.judgment_scheduler_receipt_status}; "
+            f"retryable={payload.judgment_scheduler_receipt_retryable}; "
+            f"route={payload.judgment_scheduler_receipt_retry_route or 'none'}; "
+            f"batch={payload.judgment_scheduler_receipt_batch_limit or 'none'}"
+        )
+        click.echo(
+            "  receipt counts: "
+            f"considered={payload.judgment_scheduler_receipt_considered or 0}, "
+            f"accepted={payload.judgment_scheduler_receipt_accepted or 0}, "
+            f"rejected={payload.judgment_scheduler_receipt_rejected or 0}, "
+            f"escalated={payload.judgment_scheduler_receipt_escalated or 0}, "
+            f"idempotent={payload.judgment_scheduler_receipt_idempotent or 0}, "
+            f"failed={payload.judgment_scheduler_receipt_failed or 0}"
+        )
     click.echo(f"  retention: {payload.retention_outcome}")
     for caveat in payload.caveats:
         click.echo(f"  caveat: {caveat}")
