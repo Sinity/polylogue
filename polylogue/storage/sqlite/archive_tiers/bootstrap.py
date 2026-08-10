@@ -311,7 +311,11 @@ def initialize_archive_database(
 
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
-    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+    from polylogue.storage.archive_identity import (
+        ArchiveLocation,
+        OwnedArchiveLocation,
+        assert_owns_archive_location,
+    )
     from polylogue.storage.sqlite.durable_change_train import (
         _record_fresh_durable_bootstrap,
         _record_fresh_durable_bootstrap_intent,
@@ -328,9 +332,15 @@ def initialize_active_archive_root(root: Path) -> None:
         ArchiveLocation.resolve(root),
         owner_id=f"bootstrap:{os.getpid()}",
         allow_reentrant=True,
-    ):
+    ) as owned:
+
+        def assert_owned_root() -> None:
+            """Refuse pathname writes after the owned root has been replaced."""
+            assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
+
         # Classify the archive after acquiring ownership. Another process may
         # publish a marker or durable train while the probe is in flight.
+        assert_owned_root()
         durable_tier_exists = any(
             (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
         )
@@ -364,22 +374,29 @@ def initialize_active_archive_root(root: Path) -> None:
             and not has_pending_bootstrap
         )
         if fresh_durable_bootstrap:
+            assert_owned_root()
             _record_fresh_durable_bootstrap_intent(root)
         if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
+            assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
         for spec in ARCHIVE_TIER_SPECS.values():
+            assert_owned_root()
             initialize_archive_database(root / spec.filename, spec.tier)
         if recovering_fresh_durable_bootstrap:
+            assert_owned_root()
             _record_fresh_durable_bootstrap(root)
         elif pre_marker_adoption:
             from polylogue.storage.sqlite.durable_change_train import _adopt_pre_marker_durable_bootstrap
 
+            assert_owned_root()
             _adopt_pre_marker_durable_bootstrap(root)
+            assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
         elif has_pending_bootstrap:
             # A crash after publishing the completed marker but before
             # removing the intent is harmless. Keep the intent until the
             # completed marker has passed normal startup reconciliation.
+            assert_owned_root()
             pending_bootstrap_path.unlink(missing_ok=True)
 
 

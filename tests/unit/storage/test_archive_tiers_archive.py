@@ -57,6 +57,43 @@ def test_active_archive_root_creation_is_private_under_permissive_umask(tmp_path
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
 
 
+def test_active_archive_root_refuses_replacement_after_acquiring_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bootstrap must not create tiers in a root its ownership token does not cover."""
+    from polylogue.storage import archive_identity
+    from polylogue.storage.archive_identity import ArchiveOwnershipError
+
+    root = tmp_path / "archive"
+    moved_root = tmp_path / "archive-owned"
+    root.mkdir()
+    real_acquire = archive_identity.OwnedArchiveLocation.acquire
+
+    class ReplaceAfterAcquire:
+        def __init__(self, owned: archive_identity.OwnedArchiveLocation) -> None:
+            self._owned = owned
+
+        def __enter__(self) -> archive_identity.OwnedArchiveLocation:
+            owned = self._owned.__enter__()
+            root.rename(moved_root)
+            root.mkdir()
+            return owned
+
+        def __exit__(self, *args: object) -> None:
+            self._owned.__exit__(*args)
+
+    def acquire_then_replace(*args: object, **kwargs: object) -> ReplaceAfterAcquire:
+        return ReplaceAfterAcquire(real_acquire(*args, **kwargs))
+
+    monkeypatch.setattr(archive_identity.OwnedArchiveLocation, "acquire", acquire_then_replace)
+
+    with pytest.raises(ArchiveOwnershipError, match="archive root changed during ownership validation"):
+        initialize_active_archive_root(root)
+
+    assert not (root / "source.db").exists()
+    assert not (root / ".maintenance-state").exists()
+
+
 def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_path: Path) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,
