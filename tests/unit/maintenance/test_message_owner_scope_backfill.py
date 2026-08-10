@@ -11,6 +11,7 @@ import pytest
 from click.testing import CliRunner
 
 import polylogue.cli.commands.maintenance._message_owner_scope_backfill as owner_backfill_cli
+import polylogue.cli.commands.maintenance._rebuild_index as rebuild_index_cli
 import polylogue.maintenance.message_owner_scope_backfill as owner_backfill_module
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
@@ -320,7 +321,7 @@ def test_tampered_plan_and_receipt_are_rejected(workspace_env: dict[str, Path], 
         )
 
 
-def test_transaction_rolls_back_and_leaves_recovery_marker_on_mid_apply_failure(
+def test_transaction_rollback_clears_marker_and_allows_a_clean_retry(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, _ = _seed_opaque_archive(workspace_env)
@@ -338,25 +339,37 @@ def test_transaction_rolls_back_and_leaves_recovery_marker_on_mid_apply_failure(
             raise MessageOwnerScopeBackfillError("simulated crash")
         return original
 
-    monkeypatch.setattr("polylogue.maintenance.message_owner_scope_backfill._validate_plan_binding", fail_under_lock)
-    with pytest.raises(MessageOwnerScopeBackfillError, match="simulated crash"):
-        apply_message_owner_scope_backfill(
-            root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
-        )
+    with monkeypatch.context() as failure:
+        failure.setattr("polylogue.maintenance.message_owner_scope_backfill._validate_plan_binding", fail_under_lock)
+        with pytest.raises(MessageOwnerScopeBackfillError, match="simulated crash"):
+            apply_message_owner_scope_backfill(
+                root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+            )
     with sqlite3.connect(root / "user.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM assertions WHERE scope_ref IS NOT NULL").fetchone()[0] == 0
     assert not receipt.exists()
-    assert receipt.with_name(receipt.name + ".prepared").exists()
+    assert not receipt.with_name(receipt.name + ".prepared").exists()
+
+    retried = apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+
+    assert retried.terminal_state == "committed"
+    assert retried.updated_count == 4
 
 
 def test_post_commit_receipt_failure_recovers_only_the_prepared_exact_state(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, _ = _seed_opaque_archive(workspace_env)
-    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
-    backup.parent.mkdir()
-    backup.write_text("backup", encoding="utf-8")
-    _allow_backup(monkeypatch)
+    plan_path, _backup, receipt = _plan_and_paths(tmp_path, root)
+    from polylogue.daemon.backup import backup_archive
+
+    backup_result = backup_archive(output_dir=tmp_path / "backup", profile="full_evidence", verify=True)
+    assert backup_result.ok, backup_result.error
+    assert backup_result.verified, backup_result.verification
+    assert backup_result.output_path is not None
+    backup = Path(backup_result.output_path) / "manifest.json"
 
     with monkeypatch.context() as post_commit_failure:
         post_commit_failure.setattr(
@@ -377,6 +390,82 @@ def test_post_commit_receipt_failure_recovers_only_the_prepared_exact_state(
     assert recovered.updated_count == 4
     assert receipt.exists()
     assert not receipt.with_name(receipt.name + ".prepared").exists()
+
+
+def test_backfill_cli_renders_migration_backup_failure_as_a_click_error(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real Click invocation translates a normal invalid-backup operator error.
+
+    Anti-vacuity: the command calls production ``apply_message_owner_scope_backfill``
+    with a real plan and receives the migration-layer exception. Removing the
+    Click adapter catch leaks the exception instead of rendering its diagnostic.
+    """
+
+    from polylogue.storage.sqlite.migration_runner import MigrationError
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    monkeypatch.setattr(owner_backfill_cli, "archive_root", lambda: root)
+    monkeypatch.setattr(
+        owner_backfill_module,
+        "validate_migration_backup_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(MigrationError("backup is stale")),
+    )
+
+    result = CliRunner().invoke(
+        owner_backfill_cli.message_owner_scope_backfill_command,
+        [
+            "--apply",
+            "--plan-file",
+            str(plan_path),
+            "--backup-manifest",
+            str(backup),
+            "--receipt-file",
+            str(receipt),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "backup is stale" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_local_rebuild_cli_resolves_owner_receipt_from_environment(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The local command forwards the shared environment receipt resolution.
+
+    Anti-vacuity: this invokes the Click adapter with no explicit receipt option
+    and captures the real ``RebuildIndexRequest``. Removing the environment
+    resolver leaves the production request receipt path as ``None``.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    receipt = tmp_path / "owner-receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class RebuildReceipt:
+        def to_dict(self) -> dict[str, object]:
+            return {"status": "empty-source"}
+
+    def capture_request(request: RebuildIndexRequest) -> RebuildReceipt:
+        captured["request"] = request
+        return RebuildReceipt()
+
+    monkeypatch.setattr(rebuild_index_cli, "archive_root", lambda: root)
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", capture_request)
+    monkeypatch.setenv(owner_backfill_module.MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV, str(receipt))
+
+    result = CliRunner().invoke(rebuild_index_cli.rebuild_index_command, ["--output-format", "json"])
+
+    assert result.exit_code == 0, result.output
+    request = captured["request"]
+    assert isinstance(request, RebuildIndexRequest)
+    assert request.message_owner_scope_backfill_receipt_path == receipt.resolve()
 
 
 def test_complete_receipt_rejects_current_durable_scope_drift(

@@ -33,7 +33,7 @@ from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation,
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from polylogue.storage.sqlite.migration_runner import MigrationError, validate_migration_backup_manifest
 from polylogue.version import VERSION_INFO
 
 TOOL_VERSION = "message-owner-scope-backfill-v1"
@@ -734,10 +734,6 @@ def _recover_prepared_receipt(
     ):
         raise MessageOwnerScopeBackfillError("prepared message-owner backfill marker does not match this apply")
     current = census_message_owner_scope_backfill(root)
-    if current.plan_digest != expected_after.plan_digest:
-        raise MessageOwnerScopeBackfillError(
-            "prepared message-owner backfill marker does not prove the committed durable state"
-        )
     if receipt_path.exists():
         try:
             terminal = validate_message_owner_scope_backfill_receipt(root, receipt_path)
@@ -768,6 +764,14 @@ def _recover_prepared_receipt(
                 backup_manifest=Path(str(backup["path"])),
                 receipt_path=receipt_path,
             )
+    if current.plan_digest == plan.plan_digest:
+        marker.unlink(missing_ok=True)
+        _fsync_directory(marker.parent)
+        return None
+    if current.plan_digest != expected_after.plan_digest:
+        raise MessageOwnerScopeBackfillError(
+            "prepared message-owner backfill marker does not prove the committed durable state"
+        )
     recovered_receipt_fragment = _preserve_partial_receipt(receipt_path)
     _final_receipt(
         plan=plan,
@@ -860,16 +864,24 @@ def apply_message_owner_scope_backfill(
         marker: Path | None = None
         updated_count = 0
         try:
-            validate_migration_backup_manifest(backup_manifest, ArchiveTier.USER, connection=conn)
-            backup = _manifest_identity(backup_manifest)
-            recovered = _recover_prepared_receipt(
-                root,
-                plan=plan,
-                backup=backup,
-                receipt_path=receipt_path,
-            )
-            if recovered is not None:
-                return recovered
+            backup: dict[str, object] | None = None
+            if marker_path.exists():
+                backup = _manifest_identity(backup_manifest)
+                recovered = _recover_prepared_receipt(
+                    root,
+                    plan=plan,
+                    backup=backup,
+                    receipt_path=receipt_path,
+                )
+                if recovered is not None:
+                    return recovered
+            try:
+                validate_migration_backup_manifest(backup_manifest, ArchiveTier.USER, connection=conn)
+            except MigrationError as exc:
+                raise MessageOwnerScopeBackfillError(f"message-owner backfill backup validation failed: {exc}") from exc
+            if backup is None:
+                backup = _manifest_identity(backup_manifest)
+            assert backup is not None
             current = _validate_plan_binding(root, plan)
             if (
                 current.counts[MessageOwnerScopeDisposition.MALFORMED_SCOPE.value]
@@ -879,9 +891,15 @@ def apply_message_owner_scope_backfill(
                     "message-owner backfill refuses malformed or conflicting scope rows"
                 )
             marker = _write_prepared_marker(receipt_path, plan=plan, backup=backup)
-            conn.execute("BEGIN IMMEDIATE")
+            commit_attempted = False
             try:
-                validate_migration_backup_manifest(backup_manifest, ArchiveTier.USER, connection=conn)
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    validate_migration_backup_manifest(backup_manifest, ArchiveTier.USER, connection=conn)
+                except MigrationError as exc:
+                    raise MessageOwnerScopeBackfillError(
+                        f"message-owner backfill backup validation failed: {exc}"
+                    ) from exc
                 locked = _validate_plan_binding(root, plan)
                 if locked.counts != current.counts or locked.plan_digest != plan.plan_digest:
                     raise MessageOwnerScopeBackfillError("message-owner backfill plan changed under the write lock")
@@ -904,13 +922,17 @@ def apply_message_owner_scope_backfill(
                             f"message-owner backfill candidate changed: {row.assertion_id}"
                         )
                     updated_count += 1
+                commit_attempted = True
                 conn.commit()
             except Exception:
                 if conn.in_transaction:
                     conn.rollback()
+                    marker.unlink(missing_ok=True)
+                    _fsync_directory(marker.parent)
+                elif not commit_attempted:
+                    marker.unlink(missing_ok=True)
+                    _fsync_directory(marker.parent)
                 raise
-        except Exception:
-            raise
         finally:
             conn.close()
         after = census_message_owner_scope_backfill(root)
@@ -924,6 +946,7 @@ def apply_message_owner_scope_backfill(
         )
         if marker is not None:
             marker.unlink(missing_ok=True)
+            _fsync_directory(marker.parent)
         return MessageOwnerScopeBackfillReport(
             plan=plan,
             after_plan=after,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
@@ -491,12 +492,16 @@ def rebuild_index_command(
             )
         except SchemaInferenceGateError as exc:
             raise click.ClickException(str(exc)) from exc
-    if message_owner_scope_backfill_receipt_path is not None:
-        from polylogue.maintenance.message_owner_scope_backfill import (
-            MessageOwnerScopeBackfillError,
-            resolve_message_owner_scope_backfill_receipt_reference,
-        )
+    from polylogue.maintenance.message_owner_scope_backfill import (
+        MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV,
+        MessageOwnerScopeBackfillError,
+        resolve_message_owner_scope_backfill_receipt_reference,
+    )
 
+    if (
+        message_owner_scope_backfill_receipt_path is not None
+        or os.environ.get(MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV, "").strip()
+    ):
         try:
             message_owner_scope_backfill_receipt_path = resolve_message_owner_scope_backfill_receipt_reference(
                 root, message_owner_scope_backfill_receipt_path

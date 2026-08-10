@@ -459,13 +459,14 @@ polylogue ops maintenance blob-reference-prune-orphans \
 
 ### `polylogue ops maintenance reindex-canary` — inactive-generation semantic diff
 
-Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`. A run with observed differences writes an unreviewed durable report and exits non-zero. Re-run with `--review-manifest` to persist one classification per difference, then use `--consume-report` to validate the reviewed report and approve its evidence. Approval never authorizes promotion. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
+Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`. An isolated archive with active message assertions also needs an explicit completed `--message-owner-scope-backfill-receipt`; the canary does not rely on ambient receipt configuration. A run with observed differences writes an unreviewed durable report and exits non-zero. Re-run with `--review-manifest` to persist one classification per difference, then use `--consume-report` to validate the reviewed report and approve its evidence. Approval never authorizes promotion. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
 
 ```bash
 polylogue ops maintenance reindex-canary \
   --archive-root /realm/tmp/polylogue-canary-archive \
   --input /realm/tmp/polylogue-canary-archive/index.db \
   --schema-inference-receipt /realm/tmp/schema-inference-gate-receipt.json \
+  --message-owner-scope-backfill-receipt /realm/tmp/message-owner-backfill-receipt.json \
   --sample 100 \
   --report /realm/tmp/polylogue-reindex-canary.json \
   --no-promote \
