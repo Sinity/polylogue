@@ -198,7 +198,7 @@ Adopt evidence-ranked repository identity and observation-based file identity.
 Repository resolution uses the strongest available evidence in this order:
 
 1. Canonical remote identity, normalized across SSH, HTTPS, trailing `.git`, and case rules for the host.
-2. Git history-root identity, including object format and the sorted root commit set, for a repository with no remote.
+2. Git history-root identity, including object format and the sorted root commit set, as ancestry evidence for a repository with no remote. It is not canonical repository identity when independent forks share that history; the result remains ambiguous/provisional until corroborating evidence exists.
 3. Git common-dir identity for an empty or history-unavailable local repository, graded provisional.
 4. Checkout root only as checkout identity. A cwd without git evidence remains a directory and never creates a repository.
 
@@ -214,7 +214,7 @@ Grades are:
 
 The existing `session_commits` relation becomes the narrow checkout-head fact. Add `checkout_head` to its detection vocabulary, attach repository identity/evidence grade, and keep heuristic time-window/file-overlap correlation as a visibly separate derived view. No request-time live-git computation may masquerade as the persisted checkout relation.
 
-Reproduction prefers applying a captured patch or checking out a target commit at the recorded base. It automatically runs only `pure_read` and `safe_verify`. `mutating_patch` is allowed only inside the disposable worktree. `networked`, `secret_sensitive`, `interactive`, and `unknown` remain plan-only without explicit authorization. The receipt cites original evidence, exact base/target, commands, environment fingerprint, outputs, and cleanup state.
+Reproduction prefers applying a captured patch or checking out a target commit at the recorded base. A disposable worktree is not a host sandbox: `safe_verify` is a command classification, not authorization to execute repository-controlled code. Automatic execution requires an actual filesystem/process/network sandbox with credentials and ambient archive access denied, or explicit operator authorization recorded in the receipt. `mutating_patch` is allowed only inside the disposable worktree and sandbox. `networked`, `secret_sensitive`, `interactive`, and `unknown` remain plan-only without explicit authorization. The receipt cites original evidence, exact base/target, commands, sandbox/authorization identity, environment fingerprint, outputs, and cleanup state.
 
 ### Rejected alternatives
 

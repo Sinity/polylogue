@@ -131,9 +131,10 @@ Review and merge `c22418c3f` first if the zoo becomes an input. This packet can 
 
 **Owned files and symbols**
 
-- `polylogue/storage/raw_authority_verdict_cache.py`: add `find_stale_raw_authority_verdict_cohorts`, `refresh_raw_authority_verdict_cohorts`, and a `RawAuthorityVerdictRefreshResult` carrying refreshed, skipped-append, and remaining counts.
-- `polylogue/daemon/convergence_stages.py`: add `make_raw_authority_verdict_cache_stage` and register it in `make_default_convergence_stages`.
-- `tests/unit/storage/test_raw_authority_verdict_cache.py` and `tests/unit/daemon/test_convergence_stages.py`: real stage-interface coverage.
+The convergence implementation already exists on current master: `make_raw_authority_verdict_cache_stage()` is registered in `make_default_convergence_stages()`, performs bounded cache warming, skips append cohorts explicitly, and uses `false_means_pending=True`. This packet must not recreate those symbols. Its remaining scope is a current-tree audit of the implementation against the Bead's acceptance contract, plus any narrowly named residual tests or follow-up Beads discovered by that audit.
+
+- `polylogue/storage/raw_authority_verdict_cache.py` and `polylogue/daemon/convergence_stages.py`: inspect the landed stage and record only verified residuals.
+- `tests/unit/storage/test_raw_authority_verdict_cache.py` and `tests/unit/daemon/test_convergence_stages.py`: retain or extend real stage-interface coverage only where the current acceptance contract lacks evidence.
 
 **Avoided files**
 
@@ -143,7 +144,7 @@ Review and merge `c22418c3f` first if the zoo becomes an input. This packet can 
 
 **Production route**
 
-`DaemonConverger` invokes the registered stage. `check` discovers cohort keys missing from `raw_authority_verdicts` or mismatched by content fingerprint. `execute` calls the existing projection/cache write path in a bounded batch. Remaining work returns pending through `false_means_pending` and convergence debt.
+`DaemonConverger` already invokes the registered stage. `check` discovers cohort keys missing from `raw_authority_verdicts` or mismatched by content fingerprint. `execute` calls the existing projection/cache write path in a bounded batch. Remaining work returns pending through `false_means_pending` and convergence debt. The packet is not implementation authorization for a duplicate stage; it is an evidence/reconciliation packet for the landed behavior.
 
 **Anti-vacuity test**
 

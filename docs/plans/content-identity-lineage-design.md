@@ -413,7 +413,7 @@ The Bead's original choice between CDC and durable cursors is therefore rejected
 
 ### 9.2 Chunk and manifest contract
 
-Use a versioned FastCDC profile named `fastcdc-v1` with a checked-in fixed gear table, minimum chunk size 256 KiB, target average 1 MiB, and maximum 4 MiB. A chunk id is SHA-256 of exact chunk bytes. A manifest id is SHA-256 of canonical CBOR or canonical JSON containing chunker version, total length, and the ordered sequence of `(chunk_hash, chunk_length)`. The existing raw observation id remains SHA-256 of the complete acquired observation bytes and is verified independently after stream reconstruction.
+Use a versioned FastCDC profile named `fastcdc-v1` with a checked-in fixed gear table, minimum chunk size 256 KiB, target average 1 MiB, and maximum 4 MiB. A chunk id is SHA-256 of exact chunk bytes. A manifest id is SHA-256 of canonical CBOR or canonical JSON containing chunker version, total length, and the ordered sequence of `(chunk_hash, chunk_length)`. The existing provenance-bearing raw observation id remains stable even when equal bytes are observed under distinct source/native identities; `whole_sha256` is the byte-deduplication key and is verified independently after stream reconstruction. Any future raw-id identity migration must explicitly preserve observation provenance and memberships rather than collapsing equal bytes by itself.
 
 Add additive source-tier tables equivalent to:
 
@@ -422,7 +422,7 @@ raw_payload_manifests(manifest_id, chunker_version, total_length, whole_sha256, 
 raw_payload_manifest_chunks(manifest_id, position, chunk_hash, chunk_length)
 ```
 
-Chunk bytes use the existing blob store with a new `raw_chunk` reference type. A raw-session row refers to its manifest during migration while legacy whole-blob refs remain readable. The exact column names may follow current source DDL conventions, but the identities and constraints above are fixed.
+Chunk bytes use the existing blob store with a new `raw_chunk` reference type whose `ref_id` is the `manifest_id`. Extend `BLOB_REF_LIVENESS_JOIN`, orphan-census, integrity, privacy-deletion, and retirement tooling to resolve that manifest and its ordered chunk rows; a missing manifest is an integrity failure, not an unknown ref to retain forever. A raw-session row refers to its manifest during migration while legacy whole-blob refs remain readable. The exact column names may follow current source DDL conventions, but the identities and constraints above are fixed. Include a shared-chunk deletion test proving that deleting one manifest retains chunks still referenced by another and reclaims only chunks with no live manifest.
 
 Parsers receive a `RawPayloadReader` abstraction that can `readall`, stream ordered bytes, or open a seekable logical stream. It verifies chunk length, manifest length, and whole SHA-256 before the parse is accepted. A parser never sees chunk boundaries and cannot branch on them. The eager and streaming Claude Code paths therefore keep identical normalized semantics, including the chunk-order invariant repaired in PR #3669.
 
@@ -434,7 +434,7 @@ An incomplete append may store chunks for all observed bytes, but admission reco
 
 Deduplication has three layers:
 
-- Equal whole observation bytes share `raw_id` and require no new raw observation.
+- Equal whole observation bytes share the `whole_sha256` dedup key, but do not automatically share the provenance-bearing `raw_id`; distinct source/native observations remain distinct until an explicit identity rule says otherwise.
 - Different observations reuse equal chunks through blob refs.
 - Normalized sessions reuse source memberships only when current-version canonical hashes agree.
 
@@ -502,7 +502,7 @@ Safe live procedure:
 5. Validate row counts, per-origin coverage, hash versions, event retention/ref integrity, lineage completeness, physical/logical grains, FTS, and insights.
 6. Atomically promote the new generation, resume the writer, and retain the previous derived generation through the verification window.
 
-Rollback before promotion discards the new derived generation. Rollback after promotion switches to the retained previous index only if the writer has not committed v2 durable memberships that old code cannot interpret. Otherwise stop the writer, restore the verified source backup, and then reselect the old index generation. `user.db` is restored only for a failed user migration, never rebuilt. CDC dual-write permits reader fallback until old whole blobs are deliberately reclaimed.
+Rollback before promotion discards the new derived generation and must leave durable memberships unchanged. If candidate construction necessarily commits a v2 membership, the operation must either stage that write outside the authoritative source tier or, on every pre-promotion failure after the first such commit, restore/reconcile the verified source-tier backup before exposing the old active generation. Rollback after promotion switches to the retained previous index only if the writer has not committed v2 durable memberships that old code cannot interpret. Otherwise stop the writer, restore the verified source backup, and then reselect the old index generation. `user.db` is restored only for a failed user migration, never rebuilt. CDC dual-write permits reader fallback until old whole blobs are deliberately reclaimed.
 
 Existing authorization in `polylogue-a7xr.25` covers inclusion of the event transform in the `818fy` derived rebuild. It does not authorize Beads-origin durable CHECK narrowing, raw-column deletion, whole-blob reclamation, or any other destructive durable copy-forward.
 
