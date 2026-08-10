@@ -76,6 +76,7 @@ from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_source
 from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
+    from polylogue.config import Config
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.parse_prefetch import DaemonParseStage
     from polylogue.product.raw_authority import RawMaterializationCounts
@@ -1531,7 +1532,7 @@ def _browser_capture_spool_has_pending_files() -> bool:
     return False
 
 
-def _converge_raw_authority_frontier(config: Any, *, limit: int) -> int:
+def _converge_raw_authority_frontier(config: Config, *, limit: int) -> int:
     """Census the entire accepted frontier and execute a bounded safe slice.
 
     This runs only beneath ``DaemonWriteCoordinator``. Conflicts, missing

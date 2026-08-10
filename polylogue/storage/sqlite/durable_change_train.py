@@ -16,7 +16,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Literal, cast
 
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
@@ -74,6 +74,7 @@ _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")
 _DROP_SQL_RE = re.compile(r"(?is)\bDROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)\b")
 _SOURCE_CONTINUITY_PENDING_FORMAT = "polylogue.source-continuity-pending.v1"
+_SourceContinuityMutationKind = Literal["blob_ref_liveness", "raw_authority_recovery"]
 _FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
 _FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
 _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER = ".bootstrap.pending"
@@ -553,6 +554,7 @@ def write_source_continuity_pending_intent(
     pre_mutation_evidence: DurableDatabaseEvidence,
     operation_id: str,
     evidence_ref: str,
+    mutation_kind: _SourceContinuityMutationKind = "blob_ref_liveness",
 ) -> Path:
     """Persist the recovery input before a source mutation can commit."""
     mutation_receipt = mutation_receipt.resolve()
@@ -568,6 +570,7 @@ def write_source_continuity_pending_intent(
         "backup_manifest": str(backup_manifest),
         "operation_id": operation_id,
         "evidence_ref": evidence_ref,
+        "mutation_kind": mutation_kind,
         "source_before": _migration_runner._manifest_json_value(pre_mutation_evidence),
     }
     pending_digest = _canonical_json_sha256(payload)
@@ -658,11 +661,19 @@ def clear_source_continuity_pending_intent(path: Path) -> None:
     _migration_runner._fsync_manifest_directory(path.parent)
 
 
-def assert_source_continuity_apply_allowed(archive_root: Path) -> None:
+def assert_source_continuity_apply_allowed(
+    archive_root: Path, *, allowed_pending_operation_id: str | None = None
+) -> None:
     """Reject a new source mutation that could invalidate continuity recovery."""
     archive_root = archive_root.resolve()
     pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
     pending_intents = tuple(sorted(pending_root.glob("*.json"))) if pending_root.is_dir() else ()
+    if allowed_pending_operation_id is not None:
+        pending_intents = tuple(
+            path
+            for path in pending_intents
+            if _load_source_continuity_pending_intent(path).get("operation_id") != allowed_pending_operation_id
+        )
     if pending_intents:
         raise DurableChangeTrainError("source liveness apply is blocked while source continuity recovery is pending")
 
@@ -707,11 +718,13 @@ def assert_source_continuity_apply_allowed(archive_root: Path) -> None:
             _verify_released_train_live_tier(archive_root, connection, released[0])
 
 
-def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
+def _recover_pending_source_continuity_intents(archive_root: Path) -> frozenset[ArchiveTier]:
     """Finish committed source mutations whose manifest refresh was interrupted."""
+
+    deferred_tiers: set[ArchiveTier] = set()
     pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
     if not pending_root.is_dir():
-        return
+        return frozenset()
     for path in sorted(pending_root.glob("*.json")):
         raw = _load_source_continuity_pending_intent(path)
         terminal = raw.get("terminal_outcome")
@@ -741,9 +754,18 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             backup = Path(str(raw["backup_manifest"]))
             operation_id = str(raw["operation_id"])
             evidence_ref = str(raw["evidence_ref"])
+            mutation_kind = raw.get("mutation_kind", "blob_ref_liveness")
+            if mutation_kind not in {"blob_ref_liveness", "raw_authority_recovery"}:
+                raise ValueError("mutation_kind is unsupported")
         except (DurableChangeTrainError, KeyError, TypeError, ValueError) as exc:
             raise DurableChangeTrainError(f"source continuity pending intent is malformed: {path}") from exc
-        receipt_phase = _liveness_receipt_phase(receipt)
+        receipt_phase = _source_mutation_receipt_phase(
+            receipt,
+            allow_unfinalized_raw_authority=mutation_kind == "raw_authority_recovery",
+        )
+        if receipt_phase == "not_yet_finalized":
+            deferred_tiers.add(ArchiveTier.SOURCE)
+            continue
         if receipt_phase == "recovered_rolled_back":
             clear_source_continuity_pending_intent(path)
             continue
@@ -798,6 +820,27 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> None:
             mark_source_continuity_pending_intent_terminal(path, error=exc)
         else:
             clear_source_continuity_pending_intent(path)
+    return frozenset(deferred_tiers)
+
+
+def _source_mutation_receipt_phase(receipt_path: Path, *, allow_unfinalized_raw_authority: bool) -> str:
+    """Classify a committed source-maintenance receipt without guessing its format."""
+
+    try:
+        raw = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if allow_unfinalized_raw_authority:
+            return "not_yet_finalized"
+        raise DurableChangeTrainError(
+            f"source continuity pending liveness receipt is missing: {receipt_path}"
+        ) from None
+    except json.JSONDecodeError:
+        return _liveness_receipt_phase(receipt_path)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DurableChangeTrainError(f"source continuity pending receipt is unreadable: {receipt_path}") from exc
+    if isinstance(raw, dict) and raw.get("format") == "polylogue.raw-authority-recovery-receipt.v1":
+        return "committed"
+    return _liveness_receipt_phase(receipt_path)
 
 
 def _liveness_receipt_phase(receipt_path: Path) -> str:
@@ -906,6 +949,75 @@ def _validate_liveness_receipt_bytes(
     ):
         raise DurableChangeTrainError("source mutation receipt candidate digest or count mismatch")
     return header
+
+
+def _validate_raw_authority_reset_receipt(
+    payload: dict[str, object],
+    *,
+    source_path: Path,
+    backup_manifest: Path,
+    operation_id: str,
+) -> dict[str, object]:
+    """Authenticate a self-hashed source reset receipt for continuity refresh."""
+
+    receipt_sha256 = payload.pop("receipt_sha256", None)
+    if receipt_sha256 != _canonical_json_sha256(payload):
+        raise DurableChangeTrainError("source mutation receipt checksum mismatch")
+    authority = payload.get("backup_authority")
+    if not isinstance(authority, dict):
+        raise DurableChangeTrainError("source mutation receipt has no backup authority")
+    backup_digest = hashlib.sha256(backup_manifest.read_bytes()).hexdigest()
+    if (
+        payload.get("format") != "polylogue.raw-authority-recovery-receipt.v1"
+        or payload.get("operation") != "reset_raw_authority_census"
+        or payload.get("operation_id") != operation_id
+        or payload.get("archive_root") != str(source_path.parent)
+        or authority.get("tier") != ArchiveTier.SOURCE.value
+        or authority.get("manifest_path") != str(backup_manifest)
+        or authority.get("manifest_sha256") != backup_digest
+    ):
+        raise DurableChangeTrainError("source mutation receipt does not bind the named raw-authority reset")
+    after_counts = payload.get("after_counts")
+    if (
+        not isinstance(after_counts, dict)
+        or not after_counts
+        or any(not isinstance(value, int) or isinstance(value, bool) or value != 0 for value in after_counts.values())
+    ):
+        raise DurableChangeTrainError("source mutation receipt does not prove the raw-authority ledger reset")
+    return {"backup_manifest_sha256": backup_digest}
+
+
+def _validate_source_mutation_receipt_bytes(
+    receipt_bytes: bytes,
+    *,
+    source_path: Path,
+    backup_manifest: Path,
+    operation_id: str,
+) -> dict[str, object]:
+    """Authenticate the supported durable source-mutation receipt formats."""
+
+    try:
+        raw = json.loads(receipt_bytes)
+    except json.JSONDecodeError:
+        return _validate_liveness_receipt_bytes(
+            receipt_bytes,
+            source_path=source_path,
+            backup_manifest=backup_manifest,
+            operation_id=operation_id,
+        )
+    if isinstance(raw, dict) and raw.get("format") == "polylogue.raw-authority-recovery-receipt.v1":
+        return _validate_raw_authority_reset_receipt(
+            cast(dict[str, object], raw),
+            source_path=source_path,
+            backup_manifest=backup_manifest,
+            operation_id=operation_id,
+        )
+    return _validate_liveness_receipt_bytes(
+        receipt_bytes,
+        source_path=source_path,
+        backup_manifest=backup_manifest,
+        operation_id=operation_id,
+    )
 
 
 def _validate_source_continuity_refresh_receipt(
@@ -1024,7 +1136,7 @@ def _refresh_released_source_train_continuity_locked(
         receipt_bytes = mutation_receipt.read_bytes()
     except OSError as exc:
         raise DurableChangeTrainError("source mutation receipt is not readable") from exc
-    header = _validate_liveness_receipt_bytes(
+    header = _validate_source_mutation_receipt_bytes(
         receipt_bytes,
         source_path=source_path,
         backup_manifest=backup_manifest,
@@ -2166,7 +2278,7 @@ def _reconcile_durable_change_train_startup_locked(
     live_evidence_cache: dict[ArchiveTier, _DurableForwardVersionEvidence] | None = None,
 ) -> tuple[Path, ...]:
     """Reconcile persisted trains while the caller holds archive ownership."""
-    _recover_pending_source_continuity_intents(archive_root)
+    deferred_tiers = _recover_pending_source_continuity_intents(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     reconciled: list[Path] = []
     live_evidence_by_tier: dict[ArchiveTier, DurableDatabaseEvidence] = {}
@@ -2231,6 +2343,8 @@ def _reconcile_durable_change_train_startup_locked(
     # Recovery runs first so an indeterminate persisted failure keeps its
     # stronger fail-closed error rather than being masked by chain validation.
     for tier, adoption_floor in DURABLE_MIGRATION_ADOPTION_FLOORS.items():
+        if tier in deferred_tiers:
+            continue
         tier_path = archive_root / f"{tier.value}.db"
         if not tier_path.is_file():
             continue
@@ -2259,6 +2373,8 @@ def _reconcile_durable_change_train_startup_locked(
     for manifest_path in manifest_paths:
         train = load_durable_change_train_manifest(manifest_path)
         if train.state is not DurableChangeTrainState.RELEASED:
+            continue
+        if train.tier in deferred_tiers:
             continue
         with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
             actual = live_evidence_by_tier.get(train.tier)

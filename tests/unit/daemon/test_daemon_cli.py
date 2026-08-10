@@ -676,6 +676,73 @@ def test_whale_writer_route_blocks_unproven_cursor_authority(
     assert not (archive / "writer-mutated").exists()
 
 
+def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The daemon selects executable plans under its real writer lease."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.write_coordinator import daemon_write_coordinator, daemon_write_lease_active
+    from polylogue.storage.raw_authority import raw_authority_detail_query_handle
+    from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport
+
+    config = Config(
+        archive_root=tmp_path,
+        render_root=tmp_path / "render",
+        sources=[],
+        db_path=tmp_path / "index.db",
+    )
+    census = SimpleNamespace(
+        census_id="census-1",
+        items=(
+            SimpleNamespace(plan_id="blocked-1", executable=False),
+            SimpleNamespace(plan_id="safe-1", executable=True),
+            SimpleNamespace(plan_id="safe-2", executable=True),
+        ),
+    )
+    apply_calls: list[dict[str, object]] = []
+
+    def fake_apply(
+        _config: Config,
+        *,
+        preview_census_id: str,
+        selected_plan_ids: tuple[str, ...],
+    ) -> RawAuthorityFrontierApplyReport:
+        assert daemon_write_lease_active()
+        apply_calls.append(
+            {
+                "preview_census_id": preview_census_id,
+                "selected_plan_ids": selected_plan_ids,
+            }
+        )
+        return RawAuthorityFrontierApplyReport(
+            census_id="apply-census-1",
+            preview_census_id=preview_census_id,
+            selected_plan_count=len(selected_plan_ids),
+            executed_plan_count=1,
+            retryable_plan_count=0,
+            post_inventory_digest="digest",
+            post_plan_count=2,
+            outcome_refs=(raw_authority_detail_query_handle("apply-census-1", "safe-1"),),
+        )
+
+    monkeypatch.setattr("polylogue.product.raw_authority.inspect_frontier", lambda _config: census)
+    monkeypatch.setattr("polylogue.storage.raw_reconciler.apply_raw_authority_frontier", fake_apply)
+
+    async def run_under_daemon_coordinator() -> int:
+        return await daemon_write_coordinator().run_sync(
+            "maintenance.raw_authority_frontier",
+            daemon_cli._converge_raw_authority_frontier,
+            config,
+            limit=1,
+        )
+
+    executed = asyncio.run(run_under_daemon_coordinator())
+
+    assert executed == 1
+    assert apply_calls == [{"preview_census_id": "census-1", "selected_plan_ids": ("safe-1",)}]
+
+
 def test_maybe_recommend_bulk_rebuild_silent_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     """A backlog under both thresholds must not trigger the bulk-rebuild
     recommendation: this exercises the real threshold predicate

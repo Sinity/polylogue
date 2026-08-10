@@ -635,6 +635,46 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         code_refs=("polylogue.operations.mutation_actuators.BlockerResolveActuator",),
         readiness_surfaces=("cli", "maintenance"),
     ),
+    ArtifactNode(
+        name="raw_authority_census_ledger",
+        layer=ArtifactLayer.DURABLE,
+        description="Poisonable source-tier census-planning bookkeeping cleared only by guarded recovery.",
+        depends_on=("raw_sessions",),
+        code_refs=("polylogue.maintenance.raw_authority_recovery",),
+        readiness_surfaces=("cli", "maintenance"),
+    ),
+    ArtifactNode(
+        name="raw_authority_census_recovery_receipt",
+        layer=ArtifactLayer.DURABLE,
+        description="Immutable receipt for a guarded raw-authority census-ledger recovery.",
+        depends_on=("raw_authority_census_ledger",),
+        code_refs=("polylogue.maintenance.raw_authority_recovery",),
+        readiness_surfaces=("cli", "maintenance"),
+    ),
+    ArtifactNode(
+        name="raw_revision_heads",
+        layer=ArtifactLayer.PROJECTION,
+        description="Active-index raw revision frontier heads used by orphan-seed recovery.",
+        depends_on=("raw_sessions",),
+        code_refs=("polylogue.storage.sqlite.archive_tiers.index",),
+        readiness_surfaces=("cli", "maintenance"),
+    ),
+    ArtifactNode(
+        name="raw_revision_applications",
+        layer=ArtifactLayer.PROJECTION,
+        description="Active-index raw revision decisions used by orphan-seed recovery.",
+        depends_on=("raw_sessions",),
+        code_refs=("polylogue.storage.sqlite.archive_tiers.index",),
+        readiness_surfaces=("cli", "maintenance"),
+    ),
+    ArtifactNode(
+        name="raw_authority_index_seed_recovery_receipt",
+        layer=ArtifactLayer.DURABLE,
+        description="Immutable receipt for a guarded active-index orphan-seed prune.",
+        depends_on=("raw_revision_heads", "raw_revision_applications"),
+        code_refs=("polylogue.maintenance.raw_authority_recovery",),
+        readiness_surfaces=("cli", "maintenance"),
+    ),
 )
 
 RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
@@ -919,6 +959,18 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         name="raw-authority-blocker-resolution-loop",
         description="Raw evidence plans and blockers through their durable operator resolution receipt.",
         nodes=("raw_sessions", "raw_authority_plans", "raw_authority_blockers", "raw_authority_blocker_resolution"),
+    ),
+    ArtifactPath(
+        name="raw-authority-recovery-loop",
+        description="Guarded source census reset and active-index orphan-seed recovery with immutable receipts.",
+        nodes=(
+            "raw_sessions",
+            "raw_authority_census_ledger",
+            "raw_authority_census_recovery_receipt",
+            "raw_revision_heads",
+            "raw_revision_applications",
+            "raw_authority_index_seed_recovery_receipt",
+        ),
     ),
     ArtifactPath(
         name="saved-view-mutation-loop",

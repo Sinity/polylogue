@@ -154,6 +154,9 @@ rows:
       - polylogue.mcp.server_cutover._dispatch_write (operation=delete_annotation, via delete_annotation)
 
   # --- Phase 3: executor-routed (raw-authority blocker resolution) -----------
+  # Routine raw-authority frontier application is intentionally not an
+  # operator mutation row. It is a daemon convergence sub-route under the
+  # writer coordinator; the operator frontier command is inspection-only.
   # Tonight-discovered operator gap (2026-07-21/22): resolve_raw_authority_
   # blocker had a working CLI adapter (raw-authority-blocker-resolve, its own
   # --yes gate) but NO census entry and no authorization path shared with any
@@ -169,6 +172,26 @@ rows:
     surfaces: [cli]
     adapters:
       - polylogue.cli.commands.maintenance._raw_identity.raw_authority_blocker_resolve_command
+
+  - operation: mutate-reset-raw-authority-census
+    spec_name: mutate-reset-raw-authority-census
+    status: executor-routed
+    execution_owner: offline-operator-maintenance
+    recovery_continuation: offline-durable-intent
+    actuator: polylogue.maintenance.raw_authority_recovery.ResetRawAuthorityCensusActuator
+    surfaces: [cli]
+    adapters:
+      - polylogue.cli.commands.maintenance._raw_authority_recovery.raw_authority_recovery_command
+
+  - operation: mutate-prune-orphaned-index-revision-seeds
+    spec_name: mutate-prune-orphaned-index-revision-seeds
+    status: executor-routed
+    execution_owner: offline-operator-maintenance
+    recovery_continuation: offline-durable-intent
+    actuator: polylogue.maintenance.raw_authority_recovery.PruneOrphanedIndexRevisionSeedsActuator
+    surfaces: [cli]
+    adapters:
+      - polylogue.cli.commands.maintenance._raw_authority_recovery.raw_authority_recovery_command
 
   # --- Phase 4: executor-routed (saved-view/recall-pack/workspace family) ----
 

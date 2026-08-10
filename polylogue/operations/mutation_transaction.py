@@ -718,6 +718,10 @@ class OperationExecutor:
             default = next(iter(policies.values()), None)
             if default is None:
                 raise MutationTransactionError(f"{binding.spec.name!r} has no target authority policy")
+            if len(default.allowed_durabilities) != 1 or len(default.allowed_recovery) != 1:
+                raise MutationTransactionError(
+                    f"{binding.spec.name!r} must emit typed targets for an ambiguous default authority policy"
+                )
             targets = tuple(
                 MutationTarget(
                     kind=ref.split(":", 1)[0],
@@ -725,8 +729,8 @@ class OperationExecutor:
                     policy_key=default.key,
                     identity_digest=_sha256_document({"ref": ref}),
                     effect_identity=f"{binding.spec.name}:{ref}",
-                    durability="derived",
-                    recovery="none",
+                    durability=default.allowed_durabilities[0],
+                    recovery=default.allowed_recovery[0],
                 )
                 for ref in plan.target_refs
             )
@@ -832,7 +836,7 @@ class OperationExecutor:
         return actuator.apply(plan, args)
 
 
-def make_target_ref(kind: Literal["session", "message", "block", "source"], value: object) -> str:
+def make_target_ref(kind: Literal["session", "message", "block", "source", "index"], value: object) -> str:
     """Return a stable ``kind:value`` target ref, the shared vocabulary for plans/receipts."""
 
     return f"{kind}:{value}"

@@ -830,6 +830,36 @@ confirm-flag-strength authorization bound to that plan's hash, refusing
 (`preview_stale`) if the blocker was concurrently resolved between preview
 and confirm.
 
+### Raw-authority frontier ownership and recovery
+
+Routine raw-authority frontier application is daemon-owned. The daemon selects
+only executable proof-backed plans under the writer coordinator and validates
+the typed application receipt. `polylogue ops maintenance raw-authority-frontier`
+records an inspection census only; it has no manual plan selector or apply
+option.
+
+### `polylogue ops maintenance raw-authority-recovery` - guarded offline ledger recovery
+
+This command family is the only operator route for the two callerless raw-authority recovery actuators. It is inspect-only by default. The census reset removes only the five poisoned census-planning tables after a verified source-tier backup. The index-seed prune removes only active-index `raw_revision_heads` and `raw_revision_applications` rows whose source raw is absent. Parser census rows, source raws, blob receipts, and present-source revision rows are outside both target sets.
+
+Write an exact plan first, then apply that same plan with the required backup authority:
+
+```bash
+polylogue ops maintenance raw-authority-recovery \
+  --operation reset_raw_authority_census \
+  --plan-file /realm/tmp/work/raw-authority-census-reset.plan.json \
+  --backup-manifest /realm/staging/polylogue-backup/manifest.json \
+  --output-format json
+
+polylogue ops maintenance raw-authority-recovery \
+  --operation reset_raw_authority_census --apply \
+  --plan-file /realm/tmp/work/raw-authority-census-reset.plan.json \
+  --backup-manifest /realm/staging/polylogue-backup/manifest.json \
+  --output-format json
+```
+
+Apply is explicitly an offline operator-maintenance route, not a daemon-writer route. It refuses a running daemon, stale plan or active pointer, changed tier bytes or schema versions, malformed ledger, unexpected candidate set, mismatched backup authority, or changed unrelated rows. It acquires archive ownership and the rebuild lease before revalidation. Before the SQLite mutation it persists an fsynced immutable intent, including the complete plan, under `<archive-root>/.maintenance-state/raw-authority-recovery/`; a source-ledger reset also persists the established source-train continuity intent before committing. Each receipt-directory parent is fsynced while walked. A restart finalizes that intent into the self-hashed receipt only when the planned candidate rows are absent and every planned retained row matches; later append-only index successors are allowed. An uncommitted intent goes back through PREPARE, AUTHORIZE, and EXECUTE. Receipt destinations are restricted to that archive-owned durable location and are published through descriptor-relative no-follow operations that accept regular files only. If the external plan file was lost after a final-receipt failure, rerun `--apply --operation-id <shown-operation-id>` to resume the archive-owned intent, retaining `--receipt-file` when the original plan used a custom archive-owned receipt destination. It does not invoke the broad index reset or reparse path.
+
 ### Measuring Codex UUID-title coverage
 
 Codex sessions without a resolvable title (thread name / authored history /

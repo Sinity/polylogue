@@ -11,9 +11,6 @@ from polylogue.product import raw_authority
 
 
 @click.command("raw-authority-frontier")
-@click.option("--apply-plan", "plan_ids", multiple=True, help="Exact immutable plan id; repeatable.")
-@click.option("--preview-census", default=None, help="Completed dry-run census authorizing --apply-plan.")
-@click.option("--yes", "confirmed", is_flag=True, help="Confirm the selected break-glass application.")
 @click.option(
     "--output-format",
     type=click.Choice(["plain", "json"]),
@@ -23,40 +20,17 @@ from polylogue.product import raw_authority
 @click.pass_obj
 def raw_authority_frontier_command(
     env: AppEnv,
-    plan_ids: tuple[str, ...],
-    preview_census: str | None,
-    confirmed: bool,
     output_format: str,
 ) -> None:
-    """Inspect the complete frontier or apply exact plans as break-glass work."""
-    config = env.config
+    """Inspect and record the raw-authority frontier without applying plans."""
     try:
-        if plan_ids:
-            if not confirmed:
-                raise click.ClickException("refusing raw-authority application without --yes")
-            if preview_census is None:
-                raise click.ClickException("--apply-plan requires --preview-census")
-            payload = raw_authority.apply_frontier(
-                config,
-                preview_census_id=preview_census,
-                selected_plan_ids=plan_ids,
-            ).to_dict()
-        else:
-            if preview_census is not None or confirmed:
-                raise click.ClickException("apply options require at least one --apply-plan")
-            payload = raw_authority.inspect_frontier(config).to_dict()
+        payload = raw_authority.inspect_frontier(env.config).to_dict()
     except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
         if isinstance(exc, click.ClickException):
             raise
         raise click.ClickException(str(exc)) from exc
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    if plan_ids:
-        click.echo(
-            f"Applied {payload['executed_plan_count']}/{payload['selected_plan_count']} plan(s); "
-            f"retryable={payload['retryable_plan_count']} census={payload['census_id']}"
-        )
         return
     click.echo(
         f"Frontier {payload['census_id']}: accepted={payload['accepted_head_count']} "

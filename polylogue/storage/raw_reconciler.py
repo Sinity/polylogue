@@ -158,8 +158,8 @@ class RawAuthorityFrontierItem:
         # with an executable state. polylogue-u19l was precisely a
         # violation of this: REFINE_QUARANTINE (a dispatched actuator) was
         # being assigned to UNRESOLVED_PROVENANCE (a non-executable state),
-        # so the daemon and the operator break-glass path could never
-        # select it -- 4,147 blockers accumulated behind an actuator that
+        # so daemon convergence could never select it -- 4,147 blockers
+        # accumulated behind an actuator that
         # was structurally unreachable through every path that exists. This
         # makes that exact shape impossible to construct, not merely
         # undocumented.
@@ -167,7 +167,7 @@ class RawAuthorityFrontierItem:
             raise ValueError(
                 f"raw-authority frontier item is unreachable: actuator {self.actuator.value!r} has an apply() "
                 f"dispatch branch but state {self.state.value!r} is not in the executability gate "
-                "(_EXECUTABLE_STATES) -- no path (daemon or operator) would ever select this item for apply "
+                "(_EXECUTABLE_STATES) -- daemon convergence would never select this item for apply "
                 "(polylogue-u19l/polylogue-w32w)"
             )
 
@@ -237,12 +237,81 @@ class RawAuthorityFrontierApplyReport:
     post_plan_count: int
     outcome_refs: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        _validate_raw_authority_frontier_apply_counts(
+            self.selected_plan_count,
+            self.executed_plan_count,
+            self.retryable_plan_count,
+            self.outcome_refs,
+        )
+
     @property
     def success(self) -> bool:
         return self.retryable_plan_count == 0
 
     def to_dict(self) -> JSONDocument:
         return json_document(dataclasses.asdict(self) | {"success": self.success})
+
+
+def _validate_raw_authority_frontier_apply_counts(
+    selected: object,
+    executed: object,
+    retryable: object,
+    outcome_refs: object,
+) -> None:
+    counts = (selected, executed, retryable)
+    if any(type(count) is not int for count in counts):
+        raise TypeError("raw authority apply report plan counts must be integers")
+    selected_count = cast(int, selected)
+    executed_count = cast(int, executed)
+    retryable_count = cast(int, retryable)
+    if selected_count <= 0:
+        raise ValueError("raw authority apply report must contain at least one selected plan")
+    if executed_count < 0 or retryable_count < 0:
+        raise ValueError("raw authority apply report plan counts must be non-negative")
+    if executed_count + retryable_count != selected_count:
+        raise ValueError(
+            "raw authority apply report has incoherent plan counts: "
+            "executed_plan_count + retryable_plan_count must equal selected_plan_count"
+        )
+    if not isinstance(outcome_refs, tuple) or len(outcome_refs) != selected_count:
+        raise ValueError("raw authority apply report must contain one outcome reference per selected plan")
+
+
+def validate_raw_authority_frontier_apply_report(
+    report: object,
+    *,
+    selected_plan_ids: tuple[str, ...],
+    preview_census_id: str,
+) -> RawAuthorityFrontierApplyReport:
+    """Validate and type-check one raw-authority apply response at a boundary."""
+    _validate_raw_authority_frontier_apply_counts(
+        getattr(report, "selected_plan_count", None),
+        getattr(report, "executed_plan_count", None),
+        getattr(report, "retryable_plan_count", None),
+        getattr(report, "outcome_refs", None),
+    )
+    if not isinstance(report, RawAuthorityFrontierApplyReport):
+        raise TypeError("raw authority actuator returned an untyped apply report")
+    if report.selected_plan_count != len(selected_plan_ids):
+        raise ValueError(
+            "raw authority actuator response selected plan count does not match the request: "
+            f"response={report.selected_plan_count}, request={len(selected_plan_ids)}"
+        )
+    if report.preview_census_id != preview_census_id:
+        raise ValueError(
+            "raw authority actuator response preview census does not match the request: "
+            f"response={report.preview_census_id!r}, request={preview_census_id!r}"
+        )
+    expected_outcome_refs = tuple(
+        raw_authority_detail_query_handle(report.census_id, plan_id) for plan_id in selected_plan_ids
+    )
+    if report.outcome_refs != expected_outcome_refs:
+        raise ValueError(
+            "raw authority actuator response outcome references do not match the requested plan ids: "
+            f"response={report.outcome_refs!r}, request={expected_outcome_refs!r}"
+        )
+    return report
 
 
 def _archive_root(config: Config) -> Path:
@@ -1723,4 +1792,5 @@ __all__ = [
     "apply_raw_authority_frontier",
     "inspect_raw_authority_frontier",
     "recover_interrupted_raw_authority_frontier",
+    "validate_raw_authority_frontier_apply_report",
 ]

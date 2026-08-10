@@ -54,6 +54,8 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-update-index",
         "mutate-rebuild-insights",
         "mutate-resolve-raw-authority-blocker",
+        "mutate-reset-raw-authority-census",
+        "mutate-prune-orphaned-index-revision-seeds",
         "mutate-save-saved-view",
         "mutate-delete-saved-view",
         "mutate-save-recall-pack",
@@ -131,6 +133,23 @@ def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None
     for spec in build_runtime_operation_catalog().specs:
         assert spec.surfaces
         assert spec.code_refs
+
+
+def test_raw_authority_recovery_specs_declare_their_exact_target_kinds() -> None:
+    """Recovery target refs remain authorized by the production operation catalog."""
+
+    specs = build_runtime_operation_catalog().by_name()
+
+    reset_policy = specs["mutate-reset-raw-authority-census"].target_authority
+    prune_policy = specs["mutate-prune-orphaned-index-revision-seeds"].target_authority
+
+    assert [(policy.key, policy.target_kinds) for policy in reset_policy] == [
+        ("raw-authority-recovery-source", ("source",))
+    ]
+    assert reset_policy[0].allowed_durabilities == ("durable",)
+    assert [(policy.key, policy.target_kinds) for policy in prune_policy] == [
+        ("raw-authority-recovery-index", ("index",))
+    ]
 
 
 def test_declared_operation_catalog_contains_runtime_and_control_plane_operations() -> None:

@@ -24,9 +24,9 @@ polylogued status
 Raw-evidence authority is an ordinary daemon invariant. After bounded raw
 materialization, the daemon records one complete accepted-frontier census,
 applies only byte/provenance-safe plans, and leaves conflicts or missing bytes
-as durable remediation references in status. Operators can inspect the same
-ledger with `polylogue ops maintenance raw-authority-frontier`; its apply
-options are break-glass controls for exact plan IDs, not routine maintenance.
+as durable remediation references in status. Operators can inspect and record the same census, without applying plans, with `polylogue ops maintenance raw-authority-frontier`.
+
+The separate `raw-authority-recovery` command is not part of this daemon-owned convergence route. It is an explicit offline operator-maintenance action: it refuses while `polylogued` is running, takes archive ownership and the rebuild lease, and leaves a restartable receipt trail under the archive root.
 
 ## Auto-Discovery
 

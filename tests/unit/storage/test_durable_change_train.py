@@ -688,6 +688,143 @@ def test_startup_consumes_an_already_recovered_rollback_intent(tmp_path: Path) -
     assert not pending_path.exists()
 
 
+def test_startup_skips_unfinalized_raw_authority_receipt_and_recovers_other_intents(tmp_path: Path) -> None:
+    """A crash before receipt publication leaves the raw recovery intent resumable."""
+
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        before = migration_runner.capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    missing_pending = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=tmp_path / "raw-authority-receipt.json",
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="raw-authority-recovery",
+        evidence_ref="proof:raw-authority-recovery",
+        mutation_kind="raw_authority_recovery",
+    )
+    rolled_back_receipt = tmp_path / "rolled-back.jsonl"
+    rolled_back_receipt.write_text('{"phase": "recovered_rolled_back"}\n', encoding="utf-8")
+    rolled_back_pending = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=rolled_back_receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="other-recovery",
+        evidence_ref="proof:other-recovery",
+    )
+
+    assert durable_change_train_module._recover_pending_source_continuity_intents(tmp_path) == frozenset(
+        {ArchiveTier.SOURCE}
+    )
+
+    assert missing_pending.exists()
+    assert not rolled_back_pending.exists()
+
+
+def test_startup_defers_released_source_validation_for_an_unfinalized_reset_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reset awaiting its receipt cannot be rejected by stale released-train evidence."""
+
+    source_db = tmp_path / "source.db"
+    _create_current_database(source_db)
+    with sqlite3.connect(source_db) as connection:
+        before = migration_runner.capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    pending = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=tmp_path / "missing-raw-authority-receipt.json",
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="raw-authority-recovery",
+        evidence_ref="proof:raw-authority-recovery",
+        mutation_kind="raw_authority_recovery",
+    )
+    manifest_path = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-001.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.touch()
+    released = cast(
+        DurableChangeTrain,
+        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=1),
+    )
+
+    def fail_validation(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("unfinalized reset receipt must defer released source-train validation")
+
+    monkeypatch.setattr(durable_change_train_module, "DURABLE_MIGRATION_ADOPTION_FLOORS", {ArchiveTier.SOURCE: 0})
+    monkeypatch.setattr(durable_change_train_module, "_fresh_durable_bootstrap_versions", lambda *_args: {})
+    monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", lambda _path: released)
+    monkeypatch.setattr(durable_change_train_module, "_released_train_manifests_by_target", fail_validation)
+    monkeypatch.setattr(durable_change_train_module, "_verify_released_train_live_tier", fail_validation)
+
+    assert durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path) == ()
+    assert pending.exists()
+
+
+def test_startup_rejects_a_missing_liveness_receipt(tmp_path: Path) -> None:
+    """Liveness pending evidence is corrupt when its prewritten receipt disappears."""
+
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        before = migration_runner.capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    pending = write_source_continuity_pending_intent(
+        tmp_path,
+        mutation_receipt=tmp_path / "missing-liveness-receipt.jsonl",
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id="liveness-operation",
+        evidence_ref="proof:blob-ref-liveness:liveness-operation",
+    )
+
+    with pytest.raises(DurableChangeTrainError, match="liveness receipt is missing"):
+        durable_change_train_module._recover_pending_source_continuity_intents(tmp_path)
+
+    assert pending.exists()
+
+
+@pytest.mark.parametrize("after_counts", ({}, {"raw_authority_censuses": False}))
+def test_raw_authority_reset_receipt_requires_nonempty_integer_zero_counts(
+    tmp_path: Path, after_counts: dict[str, object]
+) -> None:
+    """A self-hashed reset receipt must prove each ledger table reached zero."""
+
+    source_path = tmp_path / "source.db"
+    _create_current_database(source_path)
+    backup_manifest = tmp_path / "backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    payload: dict[str, object] = {
+        "format": "polylogue.raw-authority-recovery-receipt.v1",
+        "operation": "reset_raw_authority_census",
+        "operation_id": "raw-authority-reset",
+        "archive_root": str(tmp_path),
+        "backup_authority": {
+            "tier": ArchiveTier.SOURCE.value,
+            "manifest_path": str(backup_manifest),
+            "manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
+        },
+        "after_counts": after_counts,
+    }
+    payload["receipt_sha256"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+    with pytest.raises(DurableChangeTrainError, match="does not prove"):
+        durable_change_train_module._validate_source_mutation_receipt_bytes(
+            json.dumps(payload).encode("utf-8"),
+            source_path=source_path,
+            backup_manifest=backup_manifest,
+            operation_id="raw-authority-reset",
+        )
+
+
 def test_postcondition_recovery_rejects_remaining_orphans(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
@@ -1429,7 +1566,7 @@ def test_startup_recovers_later_train_before_released_chain_validation(
     monkeypatch.setattr(
         durable_change_train_module,
         "_recover_pending_source_continuity_intents",
-        lambda _root: None,
+        lambda _root: frozenset(),
     )
     monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
     monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", fake_load)
@@ -1476,7 +1613,9 @@ def test_startup_checks_chain_when_only_current_train_remains(
         with sqlite3.connect(":memory:") as connection:
             yield connection
 
-    monkeypatch.setattr(durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: None)
+    monkeypatch.setattr(
+        durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: frozenset()
+    )
     monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
     monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", lambda _path: current)
     monkeypatch.setattr(
@@ -1506,7 +1645,9 @@ def test_startup_checks_chain_when_manifest_directory_is_missing(
             connection.execute("PRAGMA user_version = 28")
             yield connection
 
-    monkeypatch.setattr(durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: None)
+    monkeypatch.setattr(
+        durable_change_train_module, "_recover_pending_source_continuity_intents", lambda _root: frozenset()
+    )
     monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
 
     with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):

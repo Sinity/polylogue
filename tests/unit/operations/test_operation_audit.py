@@ -18,6 +18,7 @@ from polylogue.operations.mutation_transaction import (
     OperationExecutor,
     PlanStaleError,
     TargetAuthorityPolicy,
+    TargetDurability,
     build_plan,
 )
 from polylogue.operations.specs import OperationKind, OperationSpec
@@ -59,7 +60,9 @@ class _Actuator:
         )
 
 
-def _binding(actuator: _Actuator) -> OperationBinding[object, object]:
+def _binding(
+    actuator: _Actuator, *, target_durability: TargetDurability = "derived"
+) -> OperationBinding[object, object]:
     spec = OperationSpec(
         name="mutate-fixture",
         kind=OperationKind.MAINTENANCE,
@@ -74,7 +77,7 @@ def _binding(actuator: _Actuator) -> OperationBinding[object, object]:
                 required_capabilities=("archive.fixture.write",),
                 destructive_class="reversible",
                 required_confirmation="role_only",
-                allowed_durabilities=("derived",),
+                allowed_durabilities=(target_durability,),
                 allowed_recovery=("none",),
             ),
         ),
@@ -112,6 +115,23 @@ def test_token_is_digest_only_and_consumption_run_attempt_are_atomic(tmp_path: P
     with pytest.raises(RuntimeError, match="consumed"):
         executor.execute_bound(_binding(actuator), preview, authorization, object())
     assert actuator.calls == 1
+
+
+def test_prepare_bound_uses_the_declared_durable_target_for_legacy_actuators() -> None:
+    """Fallback target construction cannot downgrade a durable policy to derived."""
+
+    actuator = _Actuator()
+    preview = OperationExecutor().prepare_bound(
+        _binding(actuator, target_durability="durable"),
+        object(),
+        _principal(),
+        archive_instance_id="archive:test",
+        archive_identity_digest="identity:test",
+        parameter_digest="params:test",
+    )
+
+    assert preview.plan.targets[0].durability == "durable"
+    assert preview.plan.targets[0].recovery == "none"
 
 
 def test_invalid_capability_and_stale_preview_refuse_before_apply(tmp_path: Path) -> None:

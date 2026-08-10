@@ -16,6 +16,7 @@ from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport, RawAuthorityFrontierCensus
 
 
 RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
@@ -51,19 +52,50 @@ class RawMaterializationCounts:
         return self.repaired_sessions > 0 or self.executed_plans > 0 or self.censused_components > 0
 
 
-def inspect_frontier(config: Config) -> Any:
+def inspect_frontier(config: Config) -> RawAuthorityFrontierCensus:
     from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 
     return inspect_raw_authority_frontier(config)
 
 
-def apply_frontier(config: Config, *, preview_census_id: str, selected_plan_ids: tuple[str, ...]) -> Any:
+def _validate_frontier_apply_report(
+    report: object,
+    *,
+    selected_plan_ids: tuple[str, ...],
+    preview_census_id: str,
+) -> RawAuthorityFrontierApplyReport:
+    """Reject an actuator response that cannot conserve selected plan outcomes."""
+    from polylogue.storage.raw_reconciler import validate_raw_authority_frontier_apply_report
+
+    return validate_raw_authority_frontier_apply_report(
+        report,
+        selected_plan_ids=selected_plan_ids,
+        preview_census_id=preview_census_id,
+    )
+
+
+def apply_frontier(
+    config: Config,
+    *,
+    preview_census_id: str,
+    selected_plan_ids: tuple[str, ...],
+) -> RawAuthorityFrontierApplyReport:
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+    if not daemon_write_lease_active():
+        raise RuntimeError("raw authority frontier apply requires the daemon writer lease")
+
     from polylogue.storage.raw_reconciler import apply_raw_authority_frontier
 
-    return apply_raw_authority_frontier(
+    report = apply_raw_authority_frontier(
         config,
         preview_census_id=preview_census_id,
         selected_plan_ids=selected_plan_ids,
+    )
+    return _validate_frontier_apply_report(
+        report,
+        selected_plan_ids=selected_plan_ids,
+        preview_census_id=preview_census_id,
     )
 
 

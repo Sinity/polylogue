@@ -8,8 +8,8 @@ head into one of a small closed set of ``RawAuthorityFrontierState`` values,
 each paired with a ``RawAuthorityActuator``. Only actuators with a real
 ``apply()`` dispatch branch (``_APPLY_DISPATCHED_ACTUATORS``) promise
 "something automatically executes this"; only states in ``_EXECUTABLE_STATES``
-are ever selected by the daemon or the operator break-glass path
-(``item.executable``). polylogue-w32w found a state (``UNRESOLVED_PROVENANCE``)
+are ever selected by daemon convergence (``item.executable``).
+polylogue-w32w found a state (``UNRESOLVED_PROVENANCE``)
 paired with a dispatched actuator (``REFINE_QUARANTINE``) that was NOT in
 ``_EXECUTABLE_STATES`` -- 4,174 blockers demanded an actuator no path could
 ever select, and the gap accumulated silently for weeks because nothing
@@ -200,7 +200,7 @@ def _format_report(report: ExecutabilityReport, *, path: Path) -> str:
         lines.append("")
         lines.append(
             "Frontier states pairing a dispatched actuator with a non-executable "
-            "state -- no path (daemon or operator) would ever select these:"
+            "state -- daemon convergence would never select these:"
         )
         for pair in report.violations:
             lines.append(
@@ -208,8 +208,8 @@ def _format_report(report: ExecutabilityReport, *, path: Path) -> str:
                 f"{pair.actuator} has an apply() dispatch branch but {pair.state} is not in _EXECUTABLE_STATES"
             )
         lines.append(
-            "  Fix: either add the state to _EXECUTABLE_STATES (and prove the daemon/operator "
-            "path can safely select it), or pair this classification with a non-dispatched "
+            "  Fix: either add the state to _EXECUTABLE_STATES (and prove the daemon "
+            "convergence path can safely select it), or pair this classification with a non-dispatched "
             "actuator (RawAuthorityActuator.NONE, REACQUIRE, or REQUEST_JUDGMENT)."
         )
     if report.dynamic_sites:
