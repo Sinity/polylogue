@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -161,34 +161,48 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
 
     import polylogue.storage.archive_readiness as readiness_mod
 
-    original_connect = sqlite3.connect
+    readiness_sqlite = cast(Any, readiness_mod).sqlite3
+    original_connect = readiness_sqlite.connect
 
     class GuardedCursor:
         def __init__(self, cursor: sqlite3.Cursor, *, census_query: bool) -> None:
             self._cursor = cursor
             self._census_query = census_query
 
-        def fetchall(self) -> list[object]:
+        def fetchall(self) -> list[tuple[object, ...]]:
             if self._census_query:
                 raise AssertionError("parser census readiness must not materialize its cursor")
             return self._cursor.fetchall()
 
-        def __iter__(self) -> object:
-            return iter(self._cursor)
+        def __iter__(self) -> GuardedCursor:
+            return self
+
+        def __next__(self) -> tuple[object, ...]:
+            return next(self._cursor)
 
         def __getattr__(self, name: str) -> object:
             return getattr(self._cursor, name)
 
-    class GuardedConnection(sqlite3.Connection):
-        def execute(self, sql: str, parameters: object = ()) -> GuardedCursor:  # type: ignore[override]
-            cursor = super().execute(sql, parameters)
-            return GuardedCursor(cursor, census_query="raw_authority_parser_census AS c" in sql)
+    class GuardedConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            object.__setattr__(self, "_connection", connection)
 
-    def guarded_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        kwargs["factory"] = GuardedConnection
-        return original_connect(*args, **kwargs)
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor | GuardedCursor:
+            cursor = self._connection.execute(sql, cast(Any, parameters))
+            if "raw_authority_parser_census AS c" in sql:
+                return GuardedCursor(cursor, census_query=True)
+            return cursor
 
-    monkeypatch.setattr(readiness_mod.sqlite3, "connect", guarded_connect)
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._connection, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            setattr(self._connection, name, value)
+
+    def guarded_connect(*args: object, **kwargs: object) -> GuardedConnection:
+        return GuardedConnection(original_connect(*args, **kwargs))
+
+    monkeypatch.setattr(readiness_sqlite, "connect", guarded_connect)
 
     snapshot = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=False)
 

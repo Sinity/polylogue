@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from polylogue.archive.raw_materialization import (
     parsed_non_session_artifact_reason,
@@ -435,6 +435,7 @@ def raw_materialization_readiness_snapshot(
                         revision_kind=revision_kind,
                         membership_logical_keys=membership_keys,
                     )
+                    blob_size_value = cast(int | None, blob_size)
                     complete = (
                         receipt_raw_id is not None
                         and str(fingerprint) == RAW_AUTHORITY_PARSER_FINGERPRINT
@@ -448,10 +449,10 @@ def raw_materialization_readiness_snapshot(
                         parser_census_complete_count += 1
                     else:
                         parser_census_incomplete_count += 1
-                        parser_census_incomplete_blob_bytes += int(blob_size or 0)
+                        parser_census_incomplete_blob_bytes += int(blob_size_value or 0)
                         origin_key = str(origin)
                         incomplete_origins[origin_key] += 1
-                        incomplete_origin_bytes[origin_key] += int(blob_size or 0)
+                        incomplete_origin_bytes[origin_key] += int(blob_size_value or 0)
                         if receipt_raw_id is None:
                             parser_census_missing_receipt_count += 1
                         else:
