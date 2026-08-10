@@ -210,7 +210,10 @@ def test_census_reset_refuses_wal_visible_ledger_drift(tmp_path: Path, monkeypat
 
     assert source_db.read_bytes() == main_database_before
     assert source_db.with_name("source.db-wal").is_file()
-    with pytest.raises(RawAuthorityRecoveryError, match="census ledger snapshot"):
+    refreshed = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    assert refreshed.ledger_digest != plan.ledger_digest
+    assert refreshed.plan_digest != plan.plan_digest
+    with pytest.raises(RawAuthorityRecoveryError, match="stale before lease acquisition"):
         apply_raw_authority_recovery(plan)
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT residual_json FROM raw_authority_censuses WHERE census_id = 'c1'").fetchone() == (
