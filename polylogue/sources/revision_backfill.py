@@ -708,6 +708,11 @@ def _census_historical_revision_evidence(
             ),
             manage_transaction=not batched,
         )
+        record_current_parser_source_census(
+            archive._ensure_source_conn(),
+            raw_id,
+            inherited_logical_keys=(logical_key,),
+        )
         state.scanned += 1
         state.censused.add(raw_id)
         state.classified += 1
@@ -3090,6 +3095,7 @@ def _parse_stream_raw(
 
 
 __all__ = [
+    "RAW_AUTHORITY_PARSER_FINGERPRINT",
     "RawParsePrefetchCache",
     "RawRevisionReplayResourceBlockedError",
     "RebuildDeadlineExceededError",

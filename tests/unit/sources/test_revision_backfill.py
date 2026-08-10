@@ -1055,6 +1055,10 @@ def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
         assert conn.execute(
             "SELECT COUNT(*) FROM raw_sessions WHERE revision_kind = 'full' AND logical_source_key IS NOT NULL"
         ).fetchone()[0] == len(raw_ids)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_authority_parser_census WHERE parser_fingerprint = ? AND status = 'complete'",
+            (RAW_AUTHORITY_PARSER_FINGERPRINT,),
+        ).fetchone()[0] == len(raw_ids)
 
 
 def test_backfill_replay_reuses_spill_cache_when_bound_explicitly(

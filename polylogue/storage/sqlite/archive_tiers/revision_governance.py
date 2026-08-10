@@ -1836,14 +1836,19 @@ def record_current_parser_source_census(
     raw_id: str,
     *,
     parser_sessions: Sequence[ParsedSession] | None = None,
+    inherited_logical_keys: Sequence[str] | None = None,
 ) -> None:
-    """Persist one current-parser receipt from parsed identities.
+    """Persist one current-parser receipt from parsed or inherited identities.
 
     Ordinary admissions have a typed raw logical key; grouped imports instead
     establish their keys through ``raw_session_memberships``. The parsed
     identities must match that durable authority before this writer records a
-    complete receipt for replay promotion.
+    complete receipt for replay promotion. A byte-prefix revision may inherit
+    its identity from the independently parsed head, which is recorded through
+    ``inherited_logical_keys`` without parsing the already-proven prefix again.
     """
+    if parser_sessions is not None and inherited_logical_keys is not None:
+        raise ValueError("parser census cannot combine parsed and inherited identities")
     raw = conn.execute(
         """
         SELECT logical_source_key, revision_kind,
@@ -1884,6 +1889,8 @@ def record_current_parser_source_census(
             )
         )
         if parser_sessions is not None
+        else tuple(sorted(canonical_authority_logical_key(key) for key in inherited_logical_keys or ()))
+        if inherited_logical_keys is not None
         else ()
         if typed_non_session
         else None
@@ -1903,6 +1910,8 @@ def record_current_parser_source_census(
         if typed_non_session and complete
         else "parser-observed: membership census established durable authority identity"
         if membership_census is not None and complete
+        else "parser-observed: inherited from byte-proven revision head"
+        if inherited_logical_keys is not None and complete
         else "parser-observed: parser identity matches durable authority bindings"
         if complete
         else (

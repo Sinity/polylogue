@@ -42,7 +42,7 @@ from polylogue.scenarios import (
 from polylogue.scenarios.workload import raw_authority_fixed_point_spec
 from polylogue.schemas.operator.receipt import package_hashes_for_registry
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import RAW_AUTHORITY_PARSER_FINGERPRINT, backfill_historical_revision_evidence
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -81,6 +81,62 @@ def _baseline_message_timestamps(path: Path) -> tuple[str, ...]:
                 if len(timestamps) == len(_BASELINE_MESSAGE_IDS):
                     break
     return tuple(timestamps[message_id] for message_id in _BASELINE_MESSAGE_IDS)
+
+
+def _assert_baseline_timestamps_are_stable(actual: tuple[str, ...]) -> None:
+    """Require every observed wire revision to retain the baseline timestamps."""
+    assert actual == _BASELINE_MESSAGE_TIMESTAMPS
+
+
+def _assert_precheckpoint_state(
+    *,
+    status: str,
+    processed_raw_count: int,
+    last_raw_id: str | None,
+    last_blob_hash_hex: str | None,
+    receipt_names: tuple[str, ...],
+) -> None:
+    """Require a kill before the durable paused checkpoint to stay running."""
+    assert status == "running"
+    assert processed_raw_count == 0
+    assert last_raw_id is None
+    assert last_blob_hash_hex is None
+    assert receipt_names == ()
+
+
+def _assert_exact_authority_census(
+    *,
+    raw_ids: set[str],
+    authority_rows: tuple[tuple[str, str, int], ...],
+    authority_counts: tuple[tuple[str, int], ...],
+    parser_census_rows: tuple[tuple[str, str, str, str, str], ...],
+    application_rows: tuple[tuple[str, str, str | None], ...],
+    head_rows: tuple[tuple[str, str, str, str, int], ...],
+    source_key: str,
+    session_id: str,
+    terminal_raw_id: str,
+) -> None:
+    """Require one unambiguous authority and application for every raw."""
+    assert len(raw_ids) == REVISION_COUNT
+    assert len(authority_rows) == REVISION_COUNT
+    assert {row[0] for row in authority_rows} == raw_ids
+    assert all(row[1] == "byte_proven" and row[2] == 1 for row in authority_rows)
+    assert authority_counts == (("byte_proven", REVISION_COUNT),)
+    assert len(parser_census_rows) == REVISION_COUNT
+    assert {row[0] for row in parser_census_rows} == raw_ids
+    assert all(
+        row[1] == RAW_AUTHORITY_PARSER_FINGERPRINT
+        and row[2] == "complete"
+        and row[4].startswith("parser-observed:")
+        and isinstance(json.loads(row[3]), list)
+        and len(json.loads(row[3])) == 1
+        for row in parser_census_rows
+    )
+    assert len(application_rows) == REVISION_COUNT
+    assert {row[0] for row in application_rows} == raw_ids
+    assert {row[1] for row in application_rows} <= {"selected_baseline", "applied_append", "superseded"}
+    assert all(row[2] == terminal_raw_id for row in application_rows)
+    assert head_rows == ((source_key, session_id, terminal_raw_id, "byte", TERMINAL_WIRE_BYTES),)
 
 
 def _file_sha256(path: Path) -> str:
@@ -219,7 +275,19 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
 
     acquire_before = _resource_sample(root)
     acquire_started = time.perf_counter()
-    acquired_raw_ids, sizes, fixture_sha256s = acquire_codex_revision_chain(root, fixture, source_path)
+    observed_revisions: list[int] = []
+
+    def observe_revision(revision: int, path: Path) -> None:
+        assert revision == len(observed_revisions)
+        _assert_baseline_timestamps_are_stable(_baseline_message_timestamps(path))
+        observed_revisions.append(revision)
+
+    acquired_raw_ids, sizes, fixture_sha256s = acquire_codex_revision_chain(
+        root,
+        fixture,
+        source_path,
+        revision_observer=observe_revision,
+    )
     with sqlite3.connect(root / "source.db") as conn:
         persisted_sizes = tuple(
             int(row[0]) for row in conn.execute("SELECT blob_size FROM raw_sessions ORDER BY blob_size")
@@ -233,6 +301,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
         )
     )
     assert len(acquired_raw_ids) == REVISION_COUNT
+    assert observed_revisions == list(range(REVISION_COUNT))
     assert len(set(acquired_raw_ids)) == REVISION_COUNT
     assert len(sizes) == REVISION_COUNT
     assert sizes[0] == 4_096
@@ -250,7 +319,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
         first_source_bytes = handle.read(8_192)
     assert b"sanitized incident witness user baseline" in first_source_bytes
     assert b"sanitized parsed milestone revision 1" in first_source_bytes
-    assert _baseline_message_timestamps(source_path) == _BASELINE_MESSAGE_TIMESTAMPS
+    _assert_baseline_timestamps_are_stable(_baseline_message_timestamps(source_path))
 
     fixture_manifest_digest = hashlib.sha256(fixture_manifest.encode("utf-8")).hexdigest()
 
@@ -316,7 +385,11 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
 
     transaction = store.create_transaction(
         source_snapshot=rebuild_source_evidence_snapshot(root),
-        pass_byte_budget=64 * 1024 * 1024,
+        # The proof must spend one bounded restart pass on the complete
+        # synthetic corpus. A small production budget would make every retry
+        # re-enter frozen replay for the same 804-revision cohort, turning a
+        # restart proof into an unbounded terminal-stage stress loop.
+        pass_byte_budget=whale_component_bytes + 1,
     )
     operation_id = transaction.operation_id
     assert transaction.status == "running"
@@ -369,12 +442,14 @@ raise SystemExit("checkpoint seam was not reached")
     persisted_before_page = store.load_transaction(operation_id)
     # Mutation that advances the cursor before checkpoint_transaction returns
     # fails these pre-checkpoint invariants and the receipt census below.
-    assert persisted_before_page.status == "running"
-    assert persisted_before_page.processed_raw_count == 0
-    assert persisted_before_page.last_raw_id is None
-    assert persisted_before_page.last_blob_hash_hex is None
     receipt_directory = store.transactions_root / f"{operation_id}.receipts"
-    assert not tuple(receipt_directory.glob("pass-*.json")), "a pre-checkpoint kill emitted a false paused receipt"
+    _assert_precheckpoint_state(
+        status=persisted_before_page.status,
+        processed_raw_count=persisted_before_page.processed_raw_count,
+        last_raw_id=persisted_before_page.last_raw_id,
+        last_blob_hash_hex=persisted_before_page.last_blob_hash_hex,
+        receipt_names=tuple(path.name for path in receipt_directory.glob("pass-*.json")),
+    )
     precheckpoint_generation = store.load(persisted_before_page.generation_id)
     with sqlite3.connect(precheckpoint_generation.index_path) as conn:
         assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) > 0
@@ -469,20 +544,18 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 root = Path(sys.argv[1])
 operation_id = sys.argv[2]
 receipt = Path(sys.argv[3])
-for _ in range(200):
-    result = rebuild_index_from_source_sync(
-        RebuildIndexRequest(
-            archive_root=root,
-            operation_id=operation_id,
-            promote=False,
-            schema_inference_receipt_path=receipt,
-        )
+result = rebuild_index_from_source_sync(
+    RebuildIndexRequest(
+        archive_root=root,
+        operation_id=operation_id,
+        promote=False,
+        schema_inference_receipt_path=receipt,
+        raw_batch_size=804,
     )
-    if result.status == "replayed" and result.materialized:
-        print(result.generation["generation_id"])
-        break
-else:
-    raise SystemExit("persisted rebuild did not reach replayed")
+)
+if result.status != "replayed" or not result.materialized:
+    raise SystemExit(f"bounded restart did not reach replayed: {result.status!r}")
+print(result.generation["generation_id"])
 """
     replay_trace_path = tmp_path / "rebuild-replay-trace.jsonl"
     resumed_process = subprocess.run(
@@ -526,6 +599,66 @@ else:
     assert len(all_raw_sequence) == len(set(all_raw_sequence))
     assert set(committed_page_raw_ids).isdisjoint(set(resumed_raw_sequence))
     assert resumed_raw_sequence == all_raw_sequence[len(committed_page_raw_ids) :]
+
+    idempotence_script = """
+import json
+import sys
+from pathlib import Path
+
+import polylogue.maintenance.replay as replay_module
+
+trace = Path(sys.argv[4])
+real_replay = replay_module.rebuild_index_from_source
+
+async def recording_replay(*args, **kwargs):
+    with trace.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(list(kwargs["raw_ids"]), sort_keys=True) + "\\n")
+    return await real_replay(*args, **kwargs)
+
+replay_module.rebuild_index_from_source = recording_replay
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+
+root = Path(sys.argv[1])
+operation_id = sys.argv[2]
+receipt = Path(sys.argv[3])
+result = rebuild_index_from_source_sync(
+    RebuildIndexRequest(
+        archive_root=root,
+        operation_id=operation_id,
+        promote=False,
+        schema_inference_receipt_path=receipt,
+        raw_batch_size=804,
+    )
+)
+print(json.dumps({"status": result.status, "generation_id": result.generation["generation_id"]}))
+"""
+    idempotence_trace_path = tmp_path / "rebuild-idempotence-trace.jsonl"
+    idempotent_process = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            idempotence_script,
+            str(root),
+            operation_id,
+            str(schema_inference_receipt_path),
+            str(idempotence_trace_path),
+        ],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert idempotent_process.returncode == 0, (
+        f"idempotent restart failed: returncode={idempotent_process.returncode}; "
+        f"stdout={idempotent_process.stdout}; stderr={idempotent_process.stderr}"
+    )
+    idempotent_result = json.loads(idempotent_process.stdout.strip().splitlines()[-1])
+    assert idempotent_result == {"status": "replayed", "generation_id": generation_id}
+    idempotent_pages = tuple(
+        tuple(json.loads(line)) for line in idempotence_trace_path.read_text(encoding="utf-8").splitlines()
+    )
+    assert all(not page for page in idempotent_pages), "idempotent restart replayed a raw revision"
     phases.append(
         _phase(
             "postflight",
@@ -569,6 +702,10 @@ else:
             )
         )
         raw_ids = {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")}
+        source_authority_rows = tuple(
+            (str(row[0]), str(row[1]))
+            for row in conn.execute("SELECT raw_id, revision_authority FROM raw_sessions ORDER BY raw_id")
+        )
         authority_counts = tuple(
             (str(row[0]), int(row[1]))
             for row in conn.execute("SELECT revision_authority, COUNT(*) FROM raw_sessions GROUP BY revision_authority")
@@ -583,14 +720,19 @@ else:
             (str(row[0]), str(row[1]))
             for row in conn.execute("SELECT raw_id, status FROM raw_membership_census ORDER BY raw_id")
         )
+        parser_census_rows = tuple(
+            (str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]))
+            for row in conn.execute(
+                "SELECT raw_id, parser_fingerprint, status, logical_keys_json, detail "
+                "FROM raw_authority_parser_census ORDER BY raw_id"
+            )
+        )
     # This fixture is the byte-revision authority route, so semantic
     # membership census remains exactly empty. The application ledger below
     # is the production coverage relation for all 804 byte revisions.
     assert post_recovery_membership_count == 0
     # Mutation that omits one authority row from the final census fails the
     # exact raw, membership, and complete-census conservation below.
-    assert len(raw_ids) == REVISION_COUNT
-    assert authority_counts == (("byte_proven", REVISION_COUNT),)
     assert membership_rows == ()
     assert census_rows == ()
     assert len(source_keys) == 1
@@ -645,6 +787,33 @@ else:
         application_rows = conn.execute(
             "SELECT raw_id, decision, accepted_raw_id FROM raw_revision_applications ORDER BY raw_id"
         ).fetchall()
+        head_rows = tuple(
+            (str(row[0]), str(row[1]), str(row[2]), str(row[3]), int(row[4]))
+            for row in conn.execute(
+                "SELECT logical_source_key, session_id, accepted_raw_id, accepted_frontier_kind, accepted_frontier "
+                "FROM raw_revision_heads ORDER BY logical_source_key"
+            )
+        )
+    application_counts = {
+        str(raw_id): sum(1 for row in application_rows if str(row[0]) == str(raw_id))
+        for raw_id, _ in source_authority_rows
+    }
+    authority_rows = tuple(
+        (raw_id, authority, application_counts.get(raw_id, 0)) for raw_id, authority in source_authority_rows
+    )
+    _assert_exact_authority_census(
+        raw_ids=raw_ids,
+        authority_rows=authority_rows,
+        authority_counts=authority_counts,
+        parser_census_rows=parser_census_rows,
+        application_rows=tuple(
+            (str(row[0]), str(row[1]), None if row[2] is None else str(row[2])) for row in application_rows
+        ),
+        head_rows=head_rows,
+        source_key=source_keys[0],
+        session_id=f"codex-session:{SESSION_NATIVE_ID}",
+        terminal_raw_id=terminal_raw_id,
+    )
     assert len(application_rows) == REVISION_COUNT
     assert {str(row[0]) for row in application_rows} == raw_ids
     assert {str(row[1]) for row in application_rows} <= {"selected_baseline", "applied_append", "superseded"}
@@ -769,3 +938,37 @@ else:
             sort_keys=True,
         )
     )
+
+
+def test_codex_804_timestamp_red_mutation_is_rejected() -> None:
+    mutated = (_BASELINE_MESSAGE_TIMESTAMPS[0], "2026-07-31T04:25:21Z")
+    with pytest.raises(AssertionError):
+        _assert_baseline_timestamps_are_stable(mutated)
+
+
+def test_codex_804_false_paused_state_red_mutation_is_rejected() -> None:
+    with pytest.raises(AssertionError):
+        _assert_precheckpoint_state(
+            status="paused",
+            processed_raw_count=8,
+            last_raw_id="raw-008",
+            last_blob_hash_hex="deadbeef",
+            receipt_names=("pass-001.json",),
+        )
+
+
+def test_codex_804_incomplete_authority_red_mutation_is_rejected() -> None:
+    with pytest.raises(AssertionError):
+        _assert_exact_authority_census(
+            raw_ids={"raw-000", "raw-001"},
+            authority_rows=(("raw-000", "byte_proven", 1),),
+            authority_counts=(("byte_proven", 1),),
+            parser_census_rows=(
+                ("raw-000", RAW_AUTHORITY_PARSER_FINGERPRINT, "complete", "[]", "parser-observed: inherited"),
+            ),
+            application_rows=(("raw-000", "selected_baseline", "raw-001"),),
+            head_rows=(("codex-session:fixture", "codex-session:fixture", "raw-001", "byte", 1),),
+            source_key="codex-session:fixture",
+            session_id="codex-session:fixture",
+            terminal_raw_id="raw-001",
+        )
