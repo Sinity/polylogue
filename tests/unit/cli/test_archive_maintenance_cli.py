@@ -1989,9 +1989,12 @@ def test_raw_authority_frontier_cli_rejects_removed_apply_options(
 
 
 def test_raw_authority_recovery_cli_refuses_plan_for_another_operation(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner, tmp_path: Path
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The required operation is bound before a destructive plan artifact is consumed."""
+    from polylogue.version import VERSION_INFO
+
+    monkeypatch.setattr(VERSION_INFO, "dirty", False)
 
     plan = inspect_raw_authority_recovery(cli_workspace["archive_root"], RecoveryOperation.RESET_CENSUS)
     plan_file = tmp_path / "census-reset.plan.json"
