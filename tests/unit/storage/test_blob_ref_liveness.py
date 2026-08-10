@@ -24,6 +24,7 @@ from polylogue.storage.blob_ref_liveness import (
     stage_blob_ref_liveness,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash, deterministic_raw_session_id
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -290,10 +291,11 @@ def test_apply_refuses_a_fresh_mutation_while_continuity_recovery_is_pending(tmp
 def test_apply_refuses_an_unreleased_source_train_before_writing_a_receipt(tmp_path: Path) -> None:
     archive_root = _source_archive(tmp_path)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
-    manifest_root.mkdir(parents=True)
-    manifest_root.joinpath("source-029.json").write_text(
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    source_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    manifest_root.joinpath(f"source-{source_version:03}.json").write_text(
         resources.files("polylogue.storage.sqlite.migrations.source")
-        .joinpath("029.train.json")
+        .joinpath(f"{source_version:03}.train.json")
         .read_text(encoding="utf-8"),
         encoding="utf-8",
     )
