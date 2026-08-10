@@ -67,6 +67,13 @@ def _run_cli_canary_tests_through_real_rebuild_service(monkeypatch: pytest.Monke
 
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", rebuild_for_canary)
 
+    def consume_for_cli(*, archive_root: Path, report_path: Path) -> dict[str, object]:
+        from polylogue.maintenance.reindex_canary import approve_canary_report
+
+        return approve_canary_report(report_path, archive_root=archive_root)
+
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.consume_daemon_canary_report", consume_for_cli)
+
 
 def _schema_receipt_path(root: Path) -> Path:
     return root.parent / f"{root.name}-schema-inference-gate-receipt.json"
@@ -109,6 +116,43 @@ class _CanaryCliRunner(_ClickCliRunner):
 
 
 CliRunner = _CanaryCliRunner
+
+
+def test_cli_consumption_dispatches_to_daemon_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The command uses the production daemon-client seam for report consumption."""
+
+    report_path = tmp_path / "report.json"
+    report_path.touch()
+    calls: dict[str, Path] = {}
+
+    def consume(*, archive_root: Path, report_path: Path) -> dict[str, object]:
+        calls["archive_root"] = archive_root
+        calls["report_path"] = report_path
+        return {"review_status": "reviewed"}
+
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.consume_daemon_canary_report", consume)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(tmp_path),
+            "--report",
+            str(report_path),
+            "--consume-report",
+            "--no-promote",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == {"archive_root": tmp_path, "report_path": report_path}
+    assert json.loads(result.stdout)["decision"] == "evidence-approved"
 
 
 def _codex_session(native_id: str) -> bytes:
@@ -217,8 +261,8 @@ def _write_real_unreviewed_canary_report(
                         "identity": dict(difference.identity),
                         "changed_columns": list(difference.changed_columns),
                         "classification": "unexpected",
-                        "reference": "successor:polylogue-review",
-                        "authority": {"kind": "successor", "id": "polylogue-review"},
+                        "reference": "successor:polylogue-ox2iz",
+                        "authority": {"kind": "successor", "id": "polylogue-ox2iz"},
                         "rationale": "reviewed real canary difference",
                     }
                     for difference in observed_result.comparison.differences
@@ -266,8 +310,8 @@ def _write_review_manifest(path: Path, differences: list[dict[str, object]]) -> 
                     {
                         **difference,
                         "classification": "unexpected",
-                        "reference": "successor:polylogue-review",
-                        "authority": {"kind": "successor", "id": "polylogue-review"},
+                        "reference": "successor:polylogue-ox2iz",
+                        "authority": {"kind": "successor", "id": "polylogue-ox2iz"},
                         "rationale": "reviewed real canary difference",
                     }
                     for difference in differences
@@ -1243,9 +1287,9 @@ def test_reindex_canary_cli_runs_real_no_promote_route(
     )
 
     assert result.exit_code == 1, result.output
-    assert "classification is incomplete" in result.output
+    assert "persisted unreviewed" in result.output
     assert "refuses the configured live archive root" not in result.output
-    assert not report_path.exists()
+    assert json.loads(report_path.read_text(encoding="utf-8"))["review_status"] == "unreviewed"
 
 
 def test_reindex_canary_cli_forwards_an_explicit_owner_backfill_receipt(
@@ -1512,10 +1556,10 @@ def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest
     assert "classification is incomplete" in result.output
 
 
-def test_reindex_canary_cli_refuses_to_persist_unreviewed_real_candidate(
+def test_reindex_canary_cli_persists_unreviewed_real_candidate_for_later_review(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A real inactive rebuild cannot be serialized without complete review coverage."""
+    """A real inactive rebuild persists discovery evidence but cannot approve it."""
 
     live_root = tmp_path / "configured-live"
     canary_root = tmp_path / "isolated-canary"
@@ -1549,8 +1593,8 @@ def test_reindex_canary_cli_refuses_to_persist_unreviewed_real_candidate(
     )
 
     assert result.exit_code == 1
-    assert "classification is incomplete" in result.output
-    assert not report_path.exists()
+    assert "persisted unreviewed" in result.output
+    assert json.loads(report_path.read_text(encoding="utf-8"))["review_status"] == "unreviewed"
 
 
 def test_cli_canary_report_red_twin_rejects_arbitrary_copied_indexes(

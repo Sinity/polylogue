@@ -1135,11 +1135,13 @@ def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tu
         raw_rows.sort(key=lambda row: str(row[0]))
         from polylogue.sources.origin_specs import (
             lowering_fingerprint,
+            materializer_fingerprint,
             parser_fingerprint_for_origin,
             replay_routing_fingerprint,
         )
 
         lowering = lowering_fingerprint()
+        materializer = materializer_fingerprint()
         replay_routing = replay_routing_fingerprint()
         parser_fingerprints: dict[str, str] = {}
         for row in raw_rows:
@@ -1172,6 +1174,7 @@ def _rebuild_replay_closure_evidence(archive_root: Path, raw_ids: list[str] | tu
                 "parser_fingerprint": parser_fingerprints[str(row[1])],
                 "lowering_fingerprint": lowering,
                 "replay_routing_fingerprint": replay_routing,
+                "materializer_fingerprint": materializer,
             }
             for row in raw_rows
         ]

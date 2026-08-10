@@ -185,6 +185,7 @@ class CanarySelection:
     parser_fingerprints: tuple[tuple[str, str], ...] = ()
     lowering_fingerprint: str | None = None
     replay_routing_fingerprint: str | None = None
+    materializer_fingerprint: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -199,6 +200,7 @@ class CanarySelection:
             "parser_fingerprints": dict(self.parser_fingerprints),
             "lowering_fingerprint": self.lowering_fingerprint,
             "replay_routing_fingerprint": self.replay_routing_fingerprint,
+            "materializer_fingerprint": self.materializer_fingerprint,
         }
 
 
@@ -290,6 +292,7 @@ def select_canary_sessions(
     origin_counts = Counter(records[session_id][0] for session_id in selected)
     from polylogue.sources.origin_specs import (
         lowering_fingerprint,
+        materializer_fingerprint,
         parser_fingerprint_for_origin,
         replay_routing_fingerprint,
     )
@@ -298,10 +301,12 @@ def select_canary_sessions(
     parser_fingerprints: tuple[tuple[str, str], ...] = ()
     lowering: str | None = None
     replay_routing: str | None = None
+    materializer: str | None = None
     if (Path(source_root) if source_root is not None else path.parent).joinpath("source.db").exists():
         parser_fingerprints = tuple((origin, parser_fingerprint_for_origin(origin)) for origin in selected_origins)
         lowering = lowering_fingerprint()
         replay_routing = replay_routing_fingerprint()
+        materializer = materializer_fingerprint()
     return CanarySelection(
         index_path=path,
         sessions_per_origin=sessions_per_origin,
@@ -314,6 +319,7 @@ def select_canary_sessions(
         parser_fingerprints=parser_fingerprints,
         lowering_fingerprint=lowering,
         replay_routing_fingerprint=replay_routing,
+        materializer_fingerprint=materializer,
     )
 
 
@@ -675,7 +681,7 @@ class DurableCanaryReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 8,
+            "schema_version": 9,
             "selection": self.selection.to_dict(),
             "comparison": self.comparison.to_dict(),
             "rebuild_receipt": self.rebuild_receipt,
@@ -693,8 +699,9 @@ def write_canary_report(
     comparison: CanaryDiffReport,
     rebuild_receipt: dict[str, object],
     reviews: Iterable[CanaryDifferenceReview],
+    allow_unreviewed: bool = False,
 ) -> DurableCanaryReport:
-    """Persist a fully reviewed report with one authority for every diff.
+    """Persist reviewed evidence, or one explicitly non-approvable discovery report.
 
     Reviews must cover exactly the comparator's row identities and signatures.
     This prevents a report from becoming a durable green-light artifact while a diff was
@@ -732,29 +739,35 @@ def write_canary_report(
     }
     missing_keys = difference_keys.difference(review_by_key)
     extra_keys = set(review_by_key).difference(difference_keys)
-    if duplicate_keys or missing_keys or extra_keys:
+    incomplete = bool(duplicate_keys or missing_keys or extra_keys)
+    if incomplete and not (allow_unreviewed and not review_list):
         detail = [
             f"duplicate={len(duplicate_keys)}",
             f"missing={len(missing_keys)}",
             f"extra={len(extra_keys)}",
         ]
         raise UnclassifiedCanaryDiffError("canary report classification is incomplete (" + ", ".join(detail) + ")")
-    review_status = "reviewed"
+    review_status = "unreviewed" if incomplete else "reviewed"
 
     archive_provenance = _capture_archive_provenance(comparison, rebuild_receipt)
-    reviewed_differences = tuple(
-        replace(
-            difference,
-            classification=review_by_key[
-                (difference.table, difference.operation, difference.identity, difference.changed_columns)
-            ].classification,
-            rationale=_reviewed_difference_rationale(
-                review_by_key[(difference.table, difference.operation, difference.identity, difference.changed_columns)]
-            ),
+    if review_status == "reviewed":
+        reviewed_differences = tuple(
+            replace(
+                difference,
+                classification=review_by_key[
+                    (difference.table, difference.operation, difference.identity, difference.changed_columns)
+                ].classification,
+                rationale=_reviewed_difference_rationale(
+                    review_by_key[
+                        (difference.table, difference.operation, difference.identity, difference.changed_columns)
+                    ]
+                ),
+            )
+            for difference in comparison.differences
         )
-        for difference in comparison.differences
-    )
-    reviewed_comparison = replace(comparison, differences=reviewed_differences)
+        reviewed_comparison = replace(comparison, differences=reviewed_differences)
+    else:
+        reviewed_comparison = comparison
     durable = DurableCanaryReport(
         selection=selection,
         comparison=reviewed_comparison,
@@ -819,6 +832,7 @@ def _validate_selection_binding(
         expected_parser_fingerprints=selection.parser_fingerprints,
         expected_lowering_fingerprint=selection.lowering_fingerprint,
         expected_replay_routing_fingerprint=selection.replay_routing_fingerprint,
+        expected_materializer_fingerprint=selection.materializer_fingerprint,
     )
 
 
@@ -831,6 +845,7 @@ def _validate_selection_evidence(
     expected_parser_fingerprints: Iterable[tuple[str, str]] = (),
     expected_lowering_fingerprint: str | None = None,
     expected_replay_routing_fingerprint: str | None = None,
+    expected_materializer_fingerprint: str | None = None,
 ) -> None:
     """Match report selection to the rebuild-owned candidate commitment."""
 
@@ -883,8 +898,10 @@ def _validate_selection_evidence(
         expected_parser_fingerprints=expected_parser_fingerprints,
         expected_lowering_fingerprint=expected_lowering_fingerprint,
         expected_replay_routing_fingerprint=expected_replay_routing_fingerprint,
+        expected_materializer_fingerprint=expected_materializer_fingerprint,
     )
     _validate_live_replay_routing_fingerprint(expected_replay_routing_fingerprint)
+    _validate_live_materializer_fingerprint(expected_materializer_fingerprint)
 
 
 def _validate_live_replay_routing_fingerprint(expected: str | None) -> None:
@@ -898,16 +915,33 @@ def _validate_live_replay_routing_fingerprint(expected: str | None) -> None:
         raise UnclassifiedCanaryDiffError("canary replay routing fingerprint no longer matches the running code")
 
 
+def _validate_live_materializer_fingerprint(expected: str | None) -> None:
+    """Reject a persisted canary when installed materialization has changed."""
+
+    if expected is None:
+        return
+    from polylogue.sources.origin_specs import materializer_fingerprint
+
+    if materializer_fingerprint() != expected:
+        raise UnclassifiedCanaryDiffError("canary materializer fingerprint no longer matches the running code")
+
+
 def _validate_parser_binding(
     evidence: object,
     *,
     expected_parser_fingerprints: Iterable[tuple[str, str]],
     expected_lowering_fingerprint: str | None,
     expected_replay_routing_fingerprint: str | None = None,
+    expected_materializer_fingerprint: str | None = None,
 ) -> None:
     """Keep parser semantics bound to the selected origin evidence."""
     expected_parsers = dict(expected_parser_fingerprints)
-    if not expected_parsers and expected_lowering_fingerprint is None and expected_replay_routing_fingerprint is None:
+    if (
+        not expected_parsers
+        and expected_lowering_fingerprint is None
+        and expected_replay_routing_fingerprint is None
+        and expected_materializer_fingerprint is None
+    ):
         return
     raw_session_evidence = _raw_session_evidence(evidence)
     if raw_session_evidence is None:
@@ -915,6 +949,7 @@ def _validate_parser_binding(
     parser_by_origin: dict[str, str] = {}
     lowering_values: set[str] = set()
     replay_routing_values: set[str] = set()
+    materializer_values: set[str] = set()
     for item in raw_session_evidence:
         if not isinstance(item, dict):
             raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is malformed")
@@ -922,14 +957,19 @@ def _validate_parser_binding(
         parser = item.get("parser_fingerprint")
         lowering = item.get("lowering_fingerprint")
         replay_routing = item.get("replay_routing_fingerprint")
+        materializer = item.get("materializer_fingerprint")
         if not all(isinstance(value, str) and value for value in (origin, parser, lowering)):
             raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is incomplete")
         if expected_replay_routing_fingerprint is not None and not isinstance(replay_routing, str):
+            raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is incomplete")
+        if expected_materializer_fingerprint is not None and not isinstance(materializer, str):
             raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is incomplete")
         parser_by_origin[str(origin)] = str(parser)
         lowering_values.add(str(lowering))
         if expected_replay_routing_fingerprint is not None:
             replay_routing_values.add(str(replay_routing))
+        if expected_materializer_fingerprint is not None:
+            materializer_values.add(str(materializer))
     if any(parser_by_origin.get(origin) != parser for origin, parser in expected_parsers.items()):
         raise UnclassifiedCanaryDiffError("canary parser fingerprints no longer match the selected origins")
     if expected_lowering_fingerprint is not None and lowering_values != {expected_lowering_fingerprint}:
@@ -938,17 +978,20 @@ def _validate_parser_binding(
         expected_replay_routing_fingerprint
     }:
         raise UnclassifiedCanaryDiffError("canary replay routing fingerprint no longer matches the selected origins")
+    if expected_materializer_fingerprint is not None and materializer_values != {expected_materializer_fingerprint}:
+        raise UnclassifiedCanaryDiffError("canary materializer fingerprint no longer matches the selected origins")
 
 
 def _parser_binding_from_evidence(
     evidence: object,
-) -> tuple[tuple[tuple[str, str], ...], str | None, str | None]:
+) -> tuple[tuple[tuple[str, str], ...], str | None, str | None, str | None]:
     raw_session_evidence = _raw_session_evidence(evidence)
     if raw_session_evidence is None:
         raise UnclassifiedCanaryDiffError("canary selection has no parser-fingerprint evidence")
     parsers: dict[str, str] = {}
     lowering: set[str] = set()
     replay_routing: set[str] = set()
+    materializer: set[str] = set()
     for item in raw_session_evidence:
         if not isinstance(item, dict):
             raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is malformed")
@@ -956,14 +999,16 @@ def _parser_binding_from_evidence(
         parser = item.get("parser_fingerprint")
         value = item.get("lowering_fingerprint")
         routing = item.get("replay_routing_fingerprint")
-        if not all(isinstance(entry, str) and entry for entry in (origin, parser, value, routing)):
+        materialized = item.get("materializer_fingerprint")
+        if not all(isinstance(entry, str) and entry for entry in (origin, parser, value, routing, materialized)):
             raise UnclassifiedCanaryDiffError("canary parser-fingerprint evidence is incomplete")
         parsers[str(origin)] = str(parser)
         lowering.add(str(value))
         replay_routing.add(str(routing))
-    if len(lowering) != 1 or len(replay_routing) != 1:
+        materializer.add(str(materialized))
+    if len(lowering) != 1 or len(replay_routing) != 1 or len(materializer) != 1:
         raise UnclassifiedCanaryDiffError("canary selection has inconsistent parser routing fingerprints")
-    return tuple(sorted(parsers.items())), next(iter(lowering)), next(iter(replay_routing))
+    return tuple(sorted(parsers.items())), next(iter(lowering)), next(iter(replay_routing)), next(iter(materializer))
 
 
 def _raw_session_evidence(evidence: object) -> list[object] | None:
@@ -1211,8 +1256,8 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
     source_evidence_after = _verified_source_evidence(root)
     if source_evidence_after != receipt.get("source_evidence_after"):
         raise UnclassifiedCanaryDiffError("archive-owned source evidence does not match the rebuild receipt")
-    parser_fingerprints, lowering_fingerprint, replay_routing_fingerprint = _parser_binding_from_evidence(
-        receipt.get("selection_evidence")
+    parser_fingerprints, lowering_fingerprint, replay_routing_fingerprint, materializer_fingerprint = (
+        _parser_binding_from_evidence(receipt.get("selection_evidence"))
     )
     return {
         "archive_root": str(root.resolve()),
@@ -1226,6 +1271,7 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
         "parser_fingerprints": dict(parser_fingerprints),
         "lowering_fingerprint": lowering_fingerprint,
         "replay_routing_fingerprint": replay_routing_fingerprint,
+        "materializer_fingerprint": materializer_fingerprint,
     }
 
 
@@ -1285,8 +1331,8 @@ def _validate_archive_provenance(
     if not same_candidate:
         raise UnclassifiedCanaryDiffError("archive-owned candidate generation no longer matches the report")
     _same_index_evidence(provenance.get("candidate_index"), candidate_path, label="candidate")
-    parser_fingerprints, lowering_fingerprint, replay_routing_fingerprint = _parser_binding_from_evidence(
-        receipt.get("selection_evidence")
+    parser_fingerprints, lowering_fingerprint, replay_routing_fingerprint, materializer_fingerprint = (
+        _parser_binding_from_evidence(receipt.get("selection_evidence"))
     )
     if provenance.get("parser_fingerprints") != dict(parser_fingerprints):
         raise UnclassifiedCanaryDiffError("archive-owned parser fingerprints no longer match the report")
@@ -1294,6 +1340,8 @@ def _validate_archive_provenance(
         raise UnclassifiedCanaryDiffError("archive-owned lowering fingerprint no longer matches the report")
     if provenance.get("replay_routing_fingerprint") != replay_routing_fingerprint:
         raise UnclassifiedCanaryDiffError("archive-owned replay routing fingerprint no longer matches the report")
+    if provenance.get("materializer_fingerprint") != materializer_fingerprint:
+        raise UnclassifiedCanaryDiffError("archive-owned materializer fingerprint no longer matches the report")
     source_snapshot = _verified_source_evidence(root)
     if provenance.get("source_snapshot") != source_snapshot or live_fields["source_snapshot"] != source_snapshot:
         raise UnclassifiedCanaryDiffError("archive-owned source snapshot no longer matches the inactive candidate")
@@ -1333,7 +1381,7 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise UnclassifiedCanaryDiffError("canary report root must be an object")
-    if payload.get("schema_version") != 8:
+    if payload.get("schema_version") != 9:
         raise UnclassifiedCanaryDiffError("canary report has no authoritative rebuild receipt schema")
     configured_root = (
         _validate_report_archive_root(payload, configured_archive_root=Path(archive_root))
@@ -1393,6 +1441,7 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     raw_parser_fingerprints = selection.get("parser_fingerprints")
     lowering_fingerprint = selection.get("lowering_fingerprint")
     replay_routing_fingerprint = selection.get("replay_routing_fingerprint")
+    materializer_fingerprint = selection.get("materializer_fingerprint")
     if (
         not isinstance(selection_index, str)
         or not isinstance(sessions_per_origin, int)
@@ -1403,6 +1452,7 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         )
         or (lowering_fingerprint is not None and not isinstance(lowering_fingerprint, str))
         or (replay_routing_fingerprint is not None and not isinstance(replay_routing_fingerprint, str))
+        or (materializer_fingerprint is not None and not isinstance(materializer_fingerprint, str))
     ):
         raise UnclassifiedCanaryDiffError("canary report has invalid selection binding")
     persisted_selection = CanarySelection(
@@ -1417,6 +1467,7 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         parser_fingerprints=tuple(sorted(cast(dict[str, str], raw_parser_fingerprints).items())),
         lowering_fingerprint=lowering_fingerprint,
         replay_routing_fingerprint=replay_routing_fingerprint,
+        materializer_fingerprint=materializer_fingerprint,
     )
     current_index = comparison.get("current_index")
     compared_sessions = comparison.get("session_ids")
@@ -1519,31 +1570,40 @@ def approve_canary_report(path: Path, *, archive_root: Path) -> dict[str, object
         owned = OwnedArchiveLocation.acquire(location)
         try:
             assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
-            payload = load_canary_report(path, archive_root=root)
-            if payload.get("review_status") != "reviewed":
-                raise UnclassifiedCanaryDiffError("canary report is not approved: review is incomplete")
-            comparison = payload.get("comparison")
-            summary = comparison.get("summary") if isinstance(comparison, dict) else None
-            if not isinstance(summary, dict) or summary.get("unexpected_count") != 0:
-                raise UnclassifiedCanaryDiffError("canary report is not approved: unexpected differences remain")
+            _validate_approved_canary_report(path, root)
 
             # The first load proves that the report was valid when approval
             # began. Re-run the complete report, source, candidate, and
             # comparison validation immediately before returning approval.
             assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
-            final_payload = load_canary_report(path, archive_root=root)
-            if final_payload.get("review_status") != "reviewed":
-                raise UnclassifiedCanaryDiffError("canary report is not approved: review changed during approval")
-            final_comparison = final_payload.get("comparison")
-            final_summary = final_comparison.get("summary") if isinstance(final_comparison, dict) else None
-            if not isinstance(final_summary, dict) or final_summary.get("unexpected_count") != 0:
-                raise UnclassifiedCanaryDiffError(
-                    "canary report is not approved: unexpected differences appeared during approval"
-                )
+            final_payload = _validate_approved_canary_report(path, root)
             assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
             return final_payload
         finally:
             owned.release()
+
+
+def approve_canary_report_under_daemon_ownership(path: Path, *, archive_root: Path) -> dict[str, object]:
+    """Validate report approval while the daemon write coordinator owns the archive."""
+
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+    if not daemon_write_lease_active():
+        raise RuntimeError("canary report consumption requires the daemon write coordinator")
+    root = Path(archive_root)
+    _validate_approved_canary_report(path, root)
+    return _validate_approved_canary_report(path, root)
+
+
+def _validate_approved_canary_report(path: Path, archive_root: Path) -> dict[str, object]:
+    payload = load_canary_report(path, archive_root=archive_root)
+    if payload.get("review_status") != "reviewed":
+        raise UnclassifiedCanaryDiffError("canary report is not approved: review is incomplete")
+    comparison = payload.get("comparison")
+    summary = comparison.get("summary") if isinstance(comparison, dict) else None
+    if not isinstance(summary, dict) or summary.get("unexpected_count") != 0:
+        raise UnclassifiedCanaryDiffError("canary report is not approved: unexpected differences remain")
+    return payload
 
 
 def _difference_key(
@@ -1666,7 +1726,7 @@ def _reviewed_difference_rationale(review: CanaryDifferenceReview) -> str:
 
 def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceReview]) -> None:
     """Resolve expected-difference authorities from packaged and typed catalogs."""
-    from polylogue.maintenance.canary_authorities import OPEN_BEAD_AUTHORITY_IDS
+    from polylogue.maintenance.canary_authorities import BEAD_AUTHORITY_IDS, OPEN_BEAD_AUTHORITY_IDS
     from polylogue.storage.sqlite.lifecycle import INDEX_DELTA_DECLARATIONS
 
     expected_beads: set[str] = {
@@ -1683,13 +1743,20 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
         and review.authority_kind is CanaryAuthorityKind.DELTA
         and review.authority_id is not None
     }
-    unknown_beads = sorted(bead for bead in expected_beads if bead not in OPEN_BEAD_AUTHORITY_IDS)
+    unknown_beads = sorted(bead for bead in expected_beads if bead not in BEAD_AUTHORITY_IDS)
+    successor_beads = {
+        review.authority_id
+        for review in reviews
+        if review.authority_kind is CanaryAuthorityKind.SUCCESSOR and review.authority_id is not None
+    }
+    unknown_successors = sorted(bead for bead in successor_beads if bead not in OPEN_BEAD_AUTHORITY_IDS)
     declared_deltas = {str(declaration.version) for declaration in INDEX_DELTA_DECLARATIONS}
     unknown_deltas = sorted(delta for delta in expected_deltas if delta not in declared_deltas)
-    if unknown_beads or unknown_deltas:
+    if unknown_beads or unknown_successors or unknown_deltas:
         detail = ", ".join(
             [
                 *(f"unknown Bead {bead}" for bead in unknown_beads),
+                *(f"unknown successor Bead {bead}" for bead in unknown_successors),
                 *(f"unknown index delta {delta}" for delta in unknown_deltas),
             ]
         )
@@ -1724,7 +1791,6 @@ _SESSION_SCOPE_COLUMNS = (
     "resolved_dst_session_id",
     "parent_session_id",
     "child_session_id",
-    "thread_id",
 )
 _VOLATILE_COLUMNS = frozenset(
     {
@@ -2058,6 +2124,7 @@ __all__ = [
     "RowDifference",
     "UnclassifiedCanaryDiffError",
     "approve_canary_report",
+    "approve_canary_report_under_daemon_ownership",
     "compare_reindex_generations",
     "load_canary_report",
     "run_reindex_canary",

@@ -53,6 +53,12 @@ _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/archive/session_revision_membership.py",
 )
 _REPLAY_ROUTING_FINGERPRINT_PATHS: tuple[str, ...] = ("polylogue/sources/revision_backfill.py",)
+_MATERIALIZER_FINGERPRINT_PATHS: tuple[str, ...] = (
+    "polylogue/storage/repair.py",
+    "polylogue/storage/insights/session/rebuild.py",
+    "polylogue/storage/insights/session/threads.py",
+    "polylogue/storage/runtime/store_constants.py",
+)
 
 
 def _without_leading_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
@@ -419,6 +425,11 @@ def lowering_fingerprint() -> str:
 def replay_routing_fingerprint() -> str:
     """Fingerprint the production raw replay router, including special paths."""
     return _fingerprint_sources(_REPLAY_ROUTING_FINGERPRINT_PATHS, namespace="raw-replay-routing")
+
+
+def materializer_fingerprint() -> str:
+    """Fingerprint the session-insight materializer used by index replay."""
+    return _fingerprint_sources(_MATERIALIZER_FINGERPRINT_PATHS, namespace="session-materializer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1612,6 +1623,7 @@ __all__ = [
     "schema_observed_leaf_values",
     "undeclared_schema_values",
     "lowering_fingerprint",
+    "materializer_fingerprint",
     "replay_routing_fingerprint",
     "parser_fingerprint_for_origin",
     "validate_assembly_spec_parity",

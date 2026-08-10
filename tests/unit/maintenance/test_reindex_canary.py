@@ -622,7 +622,7 @@ def test_rebuild_selection_evidence_binds_compared_sessions_and_production_repla
     """The actual rebuild receipt binds both the replay and comparison denominator."""
     root = tmp_path / "archive"
     raw_id = _prepare_candidate_ready_archive(root)
-    from polylogue.sources.origin_specs import replay_routing_fingerprint
+    from polylogue.sources.origin_specs import materializer_fingerprint, replay_routing_fingerprint
 
     evidence = rebuild_selection_evidence(
         (raw_id,),
@@ -639,6 +639,7 @@ def test_rebuild_selection_evidence_binds_compared_sessions_and_production_repla
     closure = cast(dict[str, object], evidence["replay_closure"])
     raw_evidence = cast(list[dict[str, object]], closure["raw_session_evidence"])
     assert raw_evidence[0]["replay_routing_fingerprint"] == replay_routing_fingerprint()
+    assert raw_evidence[0]["materializer_fingerprint"] == materializer_fingerprint()
 
 
 def test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_daemon_route(
@@ -689,6 +690,38 @@ def test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_da
     assert client_options["timeout_s"] is None
 
 
+def test_daemon_canary_report_consumption_posts_to_the_writer_owned_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Consumption uses the daemon route rather than local archive ownership."""
+    from polylogue.daemon import bulk_rebuild
+
+    calls: dict[str, object] = {}
+
+    class Client:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            calls["init"] = (args, kwargs)
+
+        def request_json(self, method: str, path: str, body: dict[str, object]) -> dict[str, object]:
+            calls["request"] = (method, path, body)
+            return {"review_status": "reviewed"}
+
+    monkeypatch.setattr("polylogue.daemon_client.DaemonClient", Client)
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *args, **kwargs: "token")
+
+    report_path = tmp_path / "report.json"
+    assert bulk_rebuild.consume_daemon_canary_report(archive_root=tmp_path, report_path=report_path) == {
+        "review_status": "reviewed"
+    }
+    assert calls["request"] == (
+        "POST",
+        "/api/maintenance/consume-canary-report",
+        {"report_path": str(report_path.resolve())},
+    )
+    _socket_path, client_options = cast(tuple[object, dict[str, object]], calls["init"])
+    assert client_options["timeout_s"] is None
+
+
 def test_canary_cleanup_dispatches_dictionary_receipts_to_the_daemon(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -724,6 +757,14 @@ def test_live_replay_routing_fingerprint_rejects_changed_running_code(monkeypatc
 
     with pytest.raises(UnclassifiedCanaryDiffError, match="running code"):
         reindex_canary_module._validate_live_replay_routing_fingerprint("recorded-routing")
+
+
+def test_live_materializer_fingerprint_rejects_changed_running_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production guard rejects a materializer code mutation."""
+    monkeypatch.setattr("polylogue.sources.origin_specs.materializer_fingerprint", lambda: "changed-materializer")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="materializer fingerprint no longer matches"):
+        reindex_canary_module._validate_live_materializer_fingerprint("recorded-materializer")
 
 
 def test_expected_delta_and_packaged_bead_authorities_resolve_without_tracker_files() -> None:
@@ -1549,7 +1590,7 @@ def test_run_reindex_canary_refuses_foreign_input_index_before_rebuild(
         )
 
 
-def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:
+def test_durable_report_persists_unreviewed_discovery_and_refuses_consumption(tmp_path: Path) -> None:
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
     report_path = tmp_path / "reports" / "canary.json"
@@ -1558,15 +1599,18 @@ def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:
     comparison = compare_reindex_generations(current, candidate)
     selection = select_canary_sessions(current, sessions_per_origin=1)
 
-    with pytest.raises(UnclassifiedCanaryDiffError, match="classification is incomplete"):
-        write_canary_report(
-            report_path,
-            selection=selection,
-            comparison=comparison,
-            rebuild_receipt=_rebuild_receipt(selection, comparison),
-            reviews=(),
-        )
-    assert not report_path.exists()
+    durable = write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=(),
+        allow_unreviewed=True,
+    )
+    assert durable.review_status == "unreviewed"
+    assert json.loads(report_path.read_text(encoding="utf-8"))["review_status"] == "unreviewed"
+    with pytest.raises(UnclassifiedCanaryDiffError, match="not fully reviewed"):
+        load_canary_report(report_path)
 
 
 def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) -> None:
@@ -1581,7 +1625,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="polylogue-follow-up",
+            reference="polylogue-ox2iz",
             rationale="the canary has no reviewed expected delta for this row",
         )
         for difference in comparison.differences
@@ -1597,7 +1641,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert durable.unclassified_count == 0
     assert report_path.exists()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 8
+    assert payload["schema_version"] == 9
     comparison_payload = payload["comparison"]
     assert isinstance(comparison_payload, dict)
     summary = comparison_payload["summary"]
@@ -1693,6 +1737,97 @@ def test_review_manifest_rejects_unregistered_expected_bead_authority(tmp_path: 
         load_canary_review_manifest(manifest)
 
 
+def test_review_manifest_accepts_closed_expected_bead_and_open_successor(tmp_path: Path) -> None:
+    """Authority resolution uses the packaged full catalog, while successors stay actionable."""
+
+    manifest = tmp_path / "reviews.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        "table": "blocks",
+                        "operation": "changed",
+                        "identity": {"block_id": "closed"},
+                        "changed_columns": ["text"],
+                        "classification": "expected",
+                        "reference": "bead:polylogue-010x",
+                        "authority": {"kind": "bead", "id": "polylogue-010x"},
+                        "rationale": "completed repair declared this difference",
+                    },
+                    {
+                        "table": "blocks",
+                        "operation": "changed",
+                        "identity": {"block_id": "successor"},
+                        "changed_columns": ["text"],
+                        "classification": "unexpected",
+                        "reference": "successor:polylogue-ox2iz",
+                        "authority": {"kind": "successor", "id": "polylogue-ox2iz"},
+                        "rationale": "open successor owns the unresolved difference",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert len(load_canary_review_manifest(manifest)) == 2
+
+
+def test_review_manifest_rejects_unresolved_successor_authority(tmp_path: Path) -> None:
+    manifest = tmp_path / "reviews.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        "table": "blocks",
+                        "operation": "changed",
+                        "identity": {"block_id": "successor"},
+                        "changed_columns": ["text"],
+                        "classification": "unexpected",
+                        "reference": "successor:not-a-real-issue",
+                        "authority": {"kind": "successor", "id": "not-a-real-issue"},
+                        "rationale": "this must resolve through packaged actionable evidence",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="not declared in packaged evidence"):
+        load_canary_review_manifest(manifest)
+
+
+def test_partial_canary_scopes_thread_membership_by_session_not_thread_aggregate(tmp_path: Path) -> None:
+    """A selected thread member must not pull un-replayed siblings into the denominator."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current, sessions=("selected", "unselected"))
+    _seed_index(candidate, sessions=("selected",))
+    for index, session_ids in (
+        (current, ("codex-session:selected", "codex-session:unselected")),
+        (candidate, ("codex-session:selected",)),
+    ):
+        with sqlite3.connect(index) as connection:
+            connection.execute(
+                "INSERT INTO threads(thread_id, session_ids_json, session_count) VALUES (?, ?, ?)",
+                ("thread-root", json.dumps(session_ids), len(session_ids)),
+            )
+            connection.executemany(
+                "INSERT INTO thread_sessions(thread_id, session_id, position) VALUES (?, ?, ?)",
+                (("thread-root", session_id, position) for position, session_id in enumerate(session_ids)),
+            )
+            connection.commit()
+
+    report = compare_reindex_generations(current, candidate, session_ids=("codex-session:selected",))
+
+    assert all(difference.table != "thread_sessions" for difference in report.differences)
+    assert "threads" not in report.compared_tables
+
+
 def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) -> None:
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
@@ -1705,7 +1840,7 @@ def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) ->
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="polylogue-follow-up",
+            reference="polylogue-ox2iz",
             rationale="the canary has no reviewed expected delta for this row",
         )
         for difference in comparison.differences
@@ -1747,7 +1882,7 @@ def test_loading_canary_report_rejects_difference_rationale_that_contradicts_rev
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="successor:polylogue-follow-up",
+            reference="successor:polylogue-ox2iz",
             rationale="the structured review owns this disposition",
         )
         for difference in comparison.differences
@@ -1790,7 +1925,7 @@ def test_loading_canary_report_rejects_ambiguous_prior_evidence_schema(
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="polylogue-follow-up",
+            reference="polylogue-ox2iz",
             rationale="the canary has no reviewed expected delta for this row",
         )
         for difference in comparison.differences
@@ -1826,7 +1961,7 @@ def test_loading_canary_report_rejects_tampered_candidate_provenance(tmp_path: P
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="polylogue-follow-up",
+            reference="polylogue-ox2iz",
             rationale="the canary has no reviewed expected delta for this row",
         )
         for difference in comparison.differences
@@ -1865,7 +2000,7 @@ def test_loading_canary_report_rejects_tampered_selection_binding(tmp_path: Path
     )
     reviews = tuple(
         CanaryDifferenceReview.for_difference(
-            item, classification=DifferenceClassification.UNEXPECTED, reference="ref", rationale="r"
+            item, classification=DifferenceClassification.UNEXPECTED, reference="polylogue-ox2iz", rationale="r"
         )
         for item in comparison.differences
     )
@@ -1900,7 +2035,7 @@ def test_loading_canary_report_recomputes_tampered_summary(tmp_path: Path, monke
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="polylogue-follow-up",
+            reference="polylogue-ox2iz",
             rationale="the canary has no reviewed expected delta for this row",
         )
         for difference in comparison.differences
@@ -1946,7 +2081,7 @@ def test_canary_report_uses_unique_temporary_names(tmp_path: Path, monkeypatch: 
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="polylogue-follow-up",
+            reference="polylogue-ox2iz",
             rationale="the canary has no reviewed expected delta for this row",
         )
         for difference in comparison.differences
@@ -1994,7 +2129,7 @@ def test_canary_report_cleans_temporary_file_when_replace_fails(
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="polylogue-follow-up",
+            reference="polylogue-ox2iz",
             rationale="the canary has no reviewed expected delta for this row",
         )
         for difference in comparison.differences

@@ -278,6 +278,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "POST",
+        "/api/maintenance/consume-canary-report",
+        "maintenance",
+        "private",
+        "bearer_if_configured_and_same_origin",
+        "approved canary report",
+        "Validates report evidence while the daemon write coordinator owns the archive.",
+    ),
+    RouteContract(
+        "POST",
         "/api/maintenance/discard-index-candidate",
         "maintenance",
         "private",

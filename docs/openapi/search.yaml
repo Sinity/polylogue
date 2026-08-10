@@ -4499,6 +4499,13 @@ x-polylogue-route-contracts:
   response_contract: RebuildIndexReceipt
   notes: Runs exactly one source snapshot replay through the daemon write coordinator.
 - method: POST
+  pattern: /api/maintenance/consume-canary-report
+  kind: maintenance
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: approved canary report
+  notes: Validates report evidence while the daemon write coordinator owns the archive.
+- method: POST
   pattern: /api/maintenance/discard-index-candidate
   kind: maintenance
   stability: private

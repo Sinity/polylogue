@@ -454,6 +454,11 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
             "_handle_rebuild_index",
         ),
         _StaticPostRoute(
+            "/api/maintenance/consume-canary-report",
+            ("api", "maintenance", "consume-canary-report"),
+            "_handle_consume_canary_report",
+        ),
+        _StaticPostRoute(
             "/api/maintenance/discard-index-candidate",
             ("api", "maintenance", "discard-index-candidate"),
             "_handle_discard_index_candidate",
@@ -5468,6 +5473,37 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             generation_owner_id,
         )
         self._send_json(HTTPStatus.OK, {"discarded": True, "generation_id": generation_id})
+
+    @daemon_safe_handler
+    def _handle_consume_canary_report(self) -> None:
+        """POST /api/maintenance/consume-canary-report through the daemon writer."""
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            body = json.loads(body_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        report_path = body.get("report_path") if isinstance(body, dict) else None
+        if not isinstance(report_path, str) or not report_path:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        from polylogue.maintenance.reindex_canary import approve_canary_report_under_daemon_ownership
+        from polylogue.paths import archive_root
+
+        bridge = getattr(self.server, "write_bridge", None)
+        if bridge is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
+            return
+        payload = cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
+            "http.maintenance.consume-canary-report",
+            None,
+            approve_canary_report_under_daemon_ownership,
+            Path(report_path),
+            archive_root=archive_root(),
+        )
+        self._send_json(HTTPStatus.OK, payload)
 
     @daemon_safe_handler
     def _handle_maintenance_status(self, operation_id: str) -> None:

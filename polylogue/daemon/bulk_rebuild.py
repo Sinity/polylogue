@@ -545,9 +545,35 @@ def discard_daemon_canary_candidate(
         raise RuntimeError(f"daemon did not discard inactive canary candidate {generation_id}")
 
 
+def consume_daemon_canary_report(*, archive_root: Path, report_path: Path) -> dict[str, object]:
+    """Consume report evidence through the archive's running daemon writer."""
+
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+
+    root = Path(archive_root).resolve()
+    config = load_polylogue_config()
+    client = DaemonClient(
+        daemon_socket_path(root),
+        timeout_s=None,
+        auth_token=resolve_api_auth_token(config.api_auth_token, allow_no_auth=config.api_allow_no_auth),
+    )
+    payload = client.request_json(
+        "POST",
+        "/api/maintenance/consume-canary-report",
+        {"report_path": str(Path(report_path).resolve())},
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("daemon rejected or did not complete canary report consumption")
+    return payload
+
+
 __all__ = [
     "DAEMON_BULK_REBUILD_BATCH_SIZE",
     "DAEMON_BULK_REBUILD_OPERATION_ID",
+    "consume_daemon_canary_report",
     "discard_daemon_canary_candidate",
     "has_resumable_daemon_bulk_rebuild_transaction",
     "resolve_or_start_daemon_bulk_rebuild_transaction",
