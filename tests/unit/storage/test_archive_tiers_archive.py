@@ -5,6 +5,7 @@ import sqlite3
 import stat
 from hashlib import sha256
 from pathlib import Path
+from types import TracebackType
 
 import pytest
 
@@ -79,11 +80,21 @@ def test_active_archive_root_refuses_replacement_after_acquiring_ownership(
             root.mkdir()
             return owned
 
-        def __exit__(self, *args: object) -> None:
-            self._owned.__exit__(*args)
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            self._owned.__exit__(exc_type, exc, traceback)
 
-    def acquire_then_replace(*args: object, **kwargs: object) -> ReplaceAfterAcquire:
-        return ReplaceAfterAcquire(real_acquire(*args, **kwargs))
+    def acquire_then_replace(
+        location: archive_identity.ArchiveLocation,
+        *,
+        owner_id: str | None = None,
+        allow_reentrant: bool = False,
+    ) -> ReplaceAfterAcquire:
+        return ReplaceAfterAcquire(real_acquire(location, owner_id=owner_id, allow_reentrant=allow_reentrant))
 
     monkeypatch.setattr(archive_identity.OwnedArchiveLocation, "acquire", acquire_then_replace)
 
