@@ -375,7 +375,7 @@ def test_artifact_observation_upsert_preserves_newest_acquisition(archive: Path)
     )
     older = newer.model_copy(update={"raw_id": "raw-older", "last_observed_at": "100"})
     with sqlite3.connect(archive / "source.db") as conn:
-        write_artifact_observations(conn, (newer, older))
+        assert write_artifact_observations(conn, (newer, older)) == 1
         assert conn.execute(
             "SELECT raw_id, last_observed_at_ms FROM raw_artifacts WHERE artifact_id = 'shared-artifact'"
         ).fetchone() == ("raw-newer", 200)

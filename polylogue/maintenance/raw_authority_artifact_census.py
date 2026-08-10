@@ -169,68 +169,51 @@ def _create_checkpoint(conn: sqlite3.Connection, *, location: ArchiveLocation, n
             census_id, universe_sha256, candidate_count, universe_complete,
             snapshot_max_raw_rowid, materialized_after_rowid,
             index_generation, index_identity_sha256, next_after_raw_id, created_at_ms
-        ) VALUES (?, ?, 0, 0, ?, 0, ?, ?, NULL, ?)
+        ) VALUES (?, ?, 0, 1, ?, ?, ?, ?, NULL, ?)
         """,
-        (census_id, _canonical_digest([]), snapshot_max_raw_rowid, index_generation, index_identity_sha256, now_ms),
+        (
+            census_id,
+            _canonical_digest([]),
+            snapshot_max_raw_rowid,
+            snapshot_max_raw_rowid,
+            index_generation,
+            index_identity_sha256,
+            now_ms,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO raw_authority_artifact_census_checkpoint_members (census_id, ordinal, raw_id)
+        SELECT ?, ROW_NUMBER() OVER (ORDER BY rowid) - 1, raw_id
+        FROM raw_sessions
+        WHERE revision_authority = 'quarantined'
+          AND parse_error IS NULL
+          AND rowid <= ?
+        ORDER BY rowid
+        """,
+        (census_id, snapshot_max_raw_rowid),
+    )
+    digest = _canonical_digest([])
+    candidate_count = 0
+    for (raw_id,) in conn.execute(
+        "SELECT raw_id FROM raw_authority_artifact_census_checkpoint_members WHERE census_id = ? ORDER BY ordinal",
+        (census_id,),
+    ):
+        digest = _extend_universe_digest(digest, str(raw_id))
+        candidate_count += 1
+    conn.execute(
+        """
+        UPDATE raw_authority_artifact_census_checkpoints
+        SET universe_sha256 = ?, candidate_count = ?
+        WHERE census_id = ?
+        """,
+        (digest, candidate_count, census_id),
     )
     return _checkpoint_state(conn, census_id)
 
 
 def _extend_universe_digest(digest: str, raw_id: str) -> str:
     return hashlib.sha256(bytes.fromhex(digest) + b"\0" + raw_id.encode("utf-8")).hexdigest()
-
-
-def _materialize_checkpoint_candidates(
-    conn: sqlite3.Connection, checkpoint: _CheckpointState, *, limit: int
-) -> _CheckpointState:
-    if checkpoint.universe_complete:
-        return checkpoint
-    rows = conn.execute(
-        """
-        SELECT rowid, raw_id FROM raw_sessions
-        WHERE revision_authority = 'quarantined'
-          AND parse_error IS NULL
-          AND rowid > ?
-          AND rowid <= ?
-        ORDER BY rowid
-        LIMIT ?
-        """,
-        (checkpoint.materialized_after_rowid, checkpoint.snapshot_max_raw_rowid, limit + 1),
-    ).fetchall()
-    if not rows:
-        conn.execute(
-            "UPDATE raw_authority_artifact_census_checkpoints SET universe_complete = 1 WHERE census_id = ?",
-            (checkpoint.census_id,),
-        )
-        return _checkpoint_state(conn, checkpoint.census_id)
-    digest = checkpoint.universe_sha256
-    members: list[tuple[str, int, str]] = []
-    for offset, (_, raw_id) in enumerate(rows):
-        raw_id_text = str(raw_id)
-        digest = _extend_universe_digest(digest, raw_id_text)
-        members.append((checkpoint.census_id, checkpoint.candidate_count + offset, raw_id_text))
-    conn.executemany(
-        """
-        INSERT INTO raw_authority_artifact_census_checkpoint_members (census_id, ordinal, raw_id)
-        VALUES (?, ?, ?)
-        """,
-        members,
-    )
-    conn.execute(
-        """
-        UPDATE raw_authority_artifact_census_checkpoints
-        SET universe_sha256 = ?, candidate_count = ?, materialized_after_rowid = ?, universe_complete = ?
-        WHERE census_id = ?
-        """,
-        (
-            digest,
-            checkpoint.candidate_count + len(members),
-            int(rows[-1][0]),
-            int(len(rows) <= limit),
-            checkpoint.census_id,
-        ),
-    )
-    return _checkpoint_state(conn, checkpoint.census_id)
 
 
 def _checkpoint_state(conn: sqlite3.Connection, census_id: str) -> _CheckpointState:
@@ -468,7 +451,6 @@ def run_raw_authority_artifact_census(
                             raise RawAuthorityArtifactCensusError(
                                 "active index authority changed since the preceding durable census page"
                             )
-                    checkpoint = _materialize_checkpoint_candidates(source_conn, checkpoint, limit=scan_limit)
                     page_raw_ids, has_more = _checkpoint_page_raw_ids(
                         source_conn,
                         checkpoint=checkpoint,

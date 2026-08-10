@@ -25,12 +25,8 @@ def _upsert_artifact_observation(
     conn: sqlite3.Connection,
     record: ArtifactObservationRecord,
 ) -> bool:
-    exists = conn.execute(
-        "SELECT 1 FROM raw_artifacts WHERE artifact_id = ?",
-        (record.observation_id,),
-    ).fetchone()
-    conn.execute(RAW_ARTIFACT_UPSERT_SQL, artifact_observation_params(record))
-    return exists is None
+    cursor = conn.execute(RAW_ARTIFACT_UPSERT_SQL, artifact_observation_params(record))
+    return cursor.rowcount == 1
 
 
 def upsert_artifact_observations(
@@ -43,9 +39,7 @@ def upsert_artifact_observations(
     hold one source-tier transaction and prove that no raw authority or blob
     relation was touched. Callers own transaction boundaries.
     """
-    for record in records:
-        _upsert_artifact_observation(conn, record)
-    return len(records)
+    return sum(_upsert_artifact_observation(conn, record) for record in records)
 
 
 def materialize_artifact_observations(

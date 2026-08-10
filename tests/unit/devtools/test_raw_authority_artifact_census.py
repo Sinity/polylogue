@@ -230,8 +230,13 @@ def test_apply_pages_observations_through_real_backup_gates_and_records_receipts
 def test_apply_refuses_replayed_or_unbound_page_cursor(
     archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _write_artifact(archive, raw_id="raw-a-ineligible-at-checkpoint")
     _write_artifact(archive, raw_id="raw-b")
     _write_artifact(archive, raw_id="raw-c")
+    with sqlite3.connect(archive / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET parse_error = 'not yet eligible' WHERE raw_id = 'raw-a-ineligible-at-checkpoint'"
+        )
     first_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="first")
     first = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=first_manifest, limit=1)
     evidence = first.receipt["evidence"]
@@ -263,6 +268,8 @@ def test_apply_refuses_replayed_or_unbound_page_cursor(
         )
 
     _write_artifact(archive, raw_id="raw-a-added-after-checkpoint")
+    with sqlite3.connect(archive / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parse_error = NULL WHERE raw_id = 'raw-a-ineligible-at-checkpoint'")
     third_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="third")
     resumed = run_raw_authority_artifact_census(
         archive,
@@ -290,15 +297,15 @@ def test_apply_refuses_replayed_or_unbound_page_cursor(
         )
     fifth_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="fifth")
     next_census = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=fifth_manifest, limit=1)
-    assert [entry.raw_id for entry in next_census.census.entries] == ["raw-b"]
+    assert [entry.raw_id for entry in next_census.census.entries] == ["raw-a-ineligible-at-checkpoint"]
 
 
-def test_apply_checkpoint_is_bounded_and_refuses_changed_index_authority(
+def test_apply_checkpoint_freezes_full_membership_and_refuses_changed_index_authority(
     archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for raw_id in ("raw-a", "raw-b", "raw-c"):
         _write_artifact(archive, raw_id=raw_id)
-    first_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="bounded-first")
+    first_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="frozen-first")
     first = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=first_manifest, limit=1)
     evidence = first.receipt["evidence"]
     assert isinstance(evidence, dict)
@@ -307,18 +314,21 @@ def test_apply_checkpoint_is_bounded_and_refuses_changed_index_authority(
     census_id = checkpoint_evidence["census_id"]
     assert isinstance(census_id, str)
     assert first.census.next_after_raw_id == "raw-a"
+    assert first.census.total_quarantined_count == 3
+    assert checkpoint_evidence["candidate_count"] == 3
     with sqlite3.connect(archive / "source.db") as conn:
         assert conn.execute(
-            "SELECT candidate_count FROM raw_authority_artifact_census_checkpoints WHERE census_id = ?", (census_id,)
-        ).fetchone() == (2,)
+            "SELECT candidate_count, universe_complete FROM raw_authority_artifact_census_checkpoints WHERE census_id = ?",
+            (census_id,),
+        ).fetchone() == (3, 1)
         assert conn.execute(
             "SELECT COUNT(*) FROM raw_authority_artifact_census_checkpoint_members WHERE census_id = ?", (census_id,)
-        ).fetchone() == (2,)
+        ).fetchone() == (3,)
     active_index = ArchiveLocation.resolve(archive).active_index_path
     replacement = tmp_path / "changed-index.db"
     shutil.copy2(active_index, replacement)
     replacement.replace(active_index)
-    continuation_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="bounded-continuation")
+    continuation_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="frozen-continuation")
     with pytest.raises(RawAuthorityArtifactCensusError, match="index authority changed"):
         run_raw_authority_artifact_census(
             archive,
