@@ -955,6 +955,67 @@ def test_seed_node_outcomes_preserve_interrupted_active_node(tmp_path: Path) -> 
     assert outcomes[0]["outcome"] == "interrupted"
 
 
+def test_seed_resource_timeout_has_a_distinct_typed_terminal_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A supervisor resource stop must not collapse into generic incompleteness."""
+    monkeypatch.chdir(tmp_path)
+    expected = ["tests/test_seed.py::test_active"]
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "selection.json").write_text(
+        json.dumps(
+            {
+                "selected_count": len(expected),
+                "deselected_count": 0,
+                "selected_nodeids": expected,
+                "selected_nodeids_omitted": 0,
+            }
+        )
+    )
+    (artifact_dir / "events.jsonl").write_text(json.dumps({"event": "test_started", "nodeid": expected[0]}) + "\n")
+    TESTMON_DATA.parent.mkdir(parents=True)
+    with sqlite3.connect(TESTMON_DATA) as connection:
+        connection.execute("create table environment (id integer primary key, environment_name text)")
+        connection.execute("create table file_fp (id integer primary key, filename text, fsha text)")
+        connection.execute("create table test_execution (id integer primary key, test_name text, failed integer)")
+        connection.execute("create table test_execution_file_fp (test_execution_id integer, fingerprint_id integer)")
+    _write_run_receipt(tmp_path, "run-resource-timeout")
+
+    receipt = _finalize_testmon_seed_attempt(
+        prepared={
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {
+                "git_head": "head",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": False,
+                "lab": False,
+                **_testmon_runtime_identity_fields(Path.cwd()),
+            },
+            "resume": False,
+            "expected_nodeids": [],
+            "run_id": "run-resource-timeout",
+            "artifact_dir": ".cache/verify/runs/run-resource-timeout",
+        },
+        step_results=[
+            {
+                "name": "pytest seed-testmon",
+                "artifact_dir": str(artifact_dir),
+                "exit": 124,
+                "diagnosis": "pytest_terminated",
+                "termination_reason": "pytest tmpfs budget exceeded: 512.0 MiB > 500 MiB",
+            }
+        ],
+        exit_code=124,
+    )
+
+    assert receipt["status"] == "incomplete"
+    assert receipt["outcome"] == "resource-timeout"
+    assert receipt["release_baseline_allowed"] is False
+
+
 def test_seed_node_outcomes_accept_setup_skip_as_terminal_skip(tmp_path: Path) -> None:
     events = tmp_path / "events.jsonl"
     events.write_text(

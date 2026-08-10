@@ -47,6 +47,7 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(
     attempt = {
         "protocol_version": verify.TESTMON_SEED_PROTOCOL_VERSION,
         "status": "reusable",
+        "outcome": "red-baseline",
         "identity": {
             "git_head": "head",
             "worktree_fingerprint": "source-tree",

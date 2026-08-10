@@ -120,6 +120,26 @@ def test_omitted_interrupted_and_uncovered_nodes_fail_closed(tmp_path: Path) -> 
     assert stamp_from_attempt(_attempt(data), data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
 
 
+def test_current_protocol_rejects_a_reusable_attempt_with_a_nonreusable_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data, failed=True)
+    attempt = _attempt(data)
+    attempt["protocol_version"] = 6
+    identity = attempt["identity"]
+    assert isinstance(identity, dict)
+    identity["dependency_environment"] = "dependencies"
+    identity["pytest_harness"] = "harness"
+    monkeypatch.setattr(testmon_state, "testmon_runtime_identity", lambda _root: ("dependencies", "harness"))
+
+    attempt["outcome"] = "resource-timeout"
+    assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=6) is None
+
+    attempt["outcome"] = "red-baseline"
+    assert stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=6) is not None
+
+
 def test_stamp_from_attempt_does_not_reopen_the_validated_database(tmp_path: Path) -> None:
     data = tmp_path / "testmondata"
     _write_graph(data)

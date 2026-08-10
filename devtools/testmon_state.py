@@ -43,6 +43,16 @@ class BaselineStatus(StrEnum):
     RED = "red"
 
 
+class SeedAttemptOutcome(StrEnum):
+    """Terminal result of a seed attempt, separate from graph reusability."""
+
+    GREEN_RELEASE_BASELINE = "green-release-baseline"
+    RED_BASELINE = "red-baseline"
+    SELECTION_ONLY = "selection-only"
+    INCOMPLETE = "incomplete"
+    RESOURCE_TIMEOUT = "resource-timeout"
+
+
 class BindingMode(StrEnum):
     EXACT = "exact"
     RELATIVE_FILE_FINGERPRINTS = "relative-file-fingerprints"
@@ -821,6 +831,21 @@ def stamp_from_attempt(
     """Parse a complete attempt, withholding release authority until publication."""
     if attempt.get("protocol_version") != protocol_version or attempt.get("status") not in {"reusable", "complete"}:
         return None
+    if protocol_version >= 6:
+        raw_outcome = attempt.get("outcome")
+        if not isinstance(raw_outcome, str):
+            return None
+        try:
+            outcome = SeedAttemptOutcome(raw_outcome)
+        except ValueError:
+            return None
+        if attempt.get("status") == "complete" and outcome is not SeedAttemptOutcome.GREEN_RELEASE_BASELINE:
+            return None
+        if attempt.get("status") == "reusable" and outcome not in {
+            SeedAttemptOutcome.RED_BASELINE,
+            SeedAttemptOutcome.SELECTION_ONLY,
+        }:
+            return None
     selection = attempt.get("selection")
     expected = attempt.get("expected_nodeids")
     identity = attempt.get("identity")
@@ -965,6 +990,7 @@ __all__ = [
     "CollectionStatus",
     "GraphInspection",
     "GraphStatus",
+    "SeedAttemptOutcome",
     "TestmonBinding",
     "TestmonIdentity",
     "TestmonSeedStamp",
