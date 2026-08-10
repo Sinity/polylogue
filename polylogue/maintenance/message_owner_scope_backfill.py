@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -445,20 +446,28 @@ def census_message_owner_scope_backfill(archive_root: Path) -> MessageOwnerScope
 def _write_immutable_json(path: Path, payload: Mapping[str, object], *, label: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = (json.dumps(dict(payload), indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+    descriptor = -1
+    temporary_path: Path | None = None
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError as exc:
-        raise MessageOwnerScopeBackfillError(f"immutable {label} already exists: {path}") from exc
-    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temporary_path = Path(temporary_name)
         with os.fdopen(descriptor, "wb") as handle:
             descriptor = -1
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError as exc:
+            raise MessageOwnerScopeBackfillError(f"immutable {label} already exists: {path}") from exc
+        temporary_path.unlink()
+        temporary_path = None
+        _fsync_directory(path.parent)
     finally:
         if descriptor != -1:
             os.close(descriptor)
-    _fsync_directory(path.parent)
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _fsync_directory(path: Path) -> None:

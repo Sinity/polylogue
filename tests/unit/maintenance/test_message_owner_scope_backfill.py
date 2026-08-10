@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
@@ -450,6 +451,53 @@ def test_post_commit_receipt_failure_recovers_only_the_prepared_exact_state(
     assert recovered.updated_count == 4
     assert receipt.exists()
     assert not receipt.with_name(receipt.name + ".prepared").exists()
+
+
+def test_prepared_marker_publication_failure_leaves_no_recovery_blocker(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed marker fsync leaves no malformed final marker behind.
+
+    Anti-vacuity: this reaches the production apply route, fails marker
+    publication after the temporary file is written, and retries unchanged
+    inputs. Restoring final-path creation leaves the partial marker present and
+    makes the retry reject its malformed JSON before SQLite can proceed.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    real_fsync = os.fsync
+    marker = receipt.with_name(receipt.name + ".prepared")
+
+    def fail_marker_temporary_fsync(descriptor: int) -> None:
+        target = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        if target.parent == marker.parent and target.name.startswith(f".{marker.name}."):
+            raise OSError("prepared marker fsync failed")
+        real_fsync(descriptor)
+
+    with monkeypatch.context() as marker_failure:
+        marker_failure.setattr(
+            os,
+            "fsync",
+            fail_marker_temporary_fsync,
+        )
+        with pytest.raises(OSError, match="prepared marker fsync failed"):
+            apply_message_owner_scope_backfill(
+                root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+            )
+
+    assert os.fsync is real_fsync
+    assert not marker.exists()
+    assert not list(marker.parent.glob(f".{marker.name}.*.tmp"))
+
+    retried = apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+
+    assert retried.terminal_state == "committed"
 
 
 def test_backfill_cli_renders_migration_backup_failure_as_a_click_error(
