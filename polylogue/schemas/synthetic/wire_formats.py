@@ -1101,11 +1101,8 @@ def _parser_artifact_message_keys(
     return tuple(keys)
 
 
-def _parser_artifact_expected_message_keys(
-    provider: str,
-    payload: JSONValue,
-) -> tuple[str, ...]:
-    """Derive the full conversational identity/content set from one artifact."""
+def _parser_artifact_expected_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[str, JSONValue], ...]:
+    """Return the parser-owned raw nodes used for message coverage."""
     native_payload = payload.get("raw_provider_payload") if isinstance(payload, dict) else None
     if provider == "claude-ai" and isinstance(native_payload, (dict, list)):
         nodes = _parser_evidence_nodes(provider, native_payload)
@@ -1131,26 +1128,38 @@ def _parser_artifact_expected_message_keys(
         and isinstance(payload.get("raw_provider_payload"), (dict, list))
     ):
         payload = {key: value for key, value in payload.items() if key != "raw_provider_payload"}
-    if not nodes:
-        nodes = _parser_evidence_nodes(provider, payload)
+    return nodes or _parser_evidence_nodes(provider, payload)
+
+
+def _parser_artifact_node_identity(provider: str, node: Mapping[str, JSONValue]) -> str | None:
+    """Extract the provider message identity from one parser-owned raw node."""
+    identity: object = None
+    if provider == "chatgpt":
+        message = node.get("message")
+        if isinstance(message, Mapping):
+            identity = message.get("id")
+    if not isinstance(identity, str) or not identity:
+        identity = node.get("provider_turn_id")
+    if not isinstance(identity, str) or not identity:
+        identity = node.get("uuid")
+    if not isinstance(identity, str) or not identity:
+        identity = node.get("id")
+    if not isinstance(identity, str) or not identity:
+        message = node.get("message")
+        if isinstance(message, Mapping):
+            identity = message.get("id")
+    return identity if isinstance(identity, str) and identity else None
+
+
+def _parser_artifact_expected_message_keys(
+    provider: str,
+    payload: JSONValue,
+) -> tuple[str, ...]:
+    """Derive the full conversational identity/content set from one artifact."""
     keys: list[str] = []
-    for node in nodes:
-        identity: object = None
-        if provider == "chatgpt":
-            message = node.get("message")
-            if isinstance(message, Mapping):
-                identity = message.get("id")
-        if not isinstance(identity, str) or not identity:
-            identity = node.get("provider_turn_id")
-        if not isinstance(identity, str) or not identity:
-            identity = node.get("uuid")
-        if not isinstance(identity, str) or not identity:
-            identity = node.get("id")
-        if not isinstance(identity, str) or not identity:
-            message = node.get("message")
-            if isinstance(message, Mapping):
-                identity = message.get("id")
-        if isinstance(identity, str) and identity:
+    for node in _parser_artifact_expected_nodes(provider, payload):
+        identity = _parser_artifact_node_identity(provider, node)
+        if identity is not None:
             keys.append(f"id:{identity}")
             continue
 
@@ -1158,6 +1167,36 @@ def _parser_artifact_expected_message_keys(
         if isinstance(text, str) and text.strip():
             keys.append(f"text:{_normalise_evidence_text(text)}")
     return tuple(keys)
+
+
+def _parser_artifact_messages_have_artifact_bound_content(
+    sessions: Sequence[ParsedSession],
+    provider: str,
+    payload: JSONValue,
+) -> bool:
+    """Require each identified parsed message to retain content from its raw node."""
+    raw_texts_by_identity = {
+        identity: {
+            _normalise_evidence_text(text) for text in _payload_string_values(node) if _normalise_evidence_text(text)
+        }
+        for node in _parser_artifact_expected_nodes(provider, payload)
+        if (identity := _parser_artifact_node_identity(provider, node)) is not None
+    }
+    for session in sessions:
+        for message in session.messages:
+            if not message.provider_message_id:
+                continue
+            expected_texts = raw_texts_by_identity.get(message.provider_message_id)
+            if not expected_texts:
+                return False
+            observed_texts = {
+                _normalise_evidence_text(text)
+                for text in (message.text, *(block.text for block in message.blocks))
+                if isinstance(text, str) and _normalise_evidence_text(text)
+            }
+            if not observed_texts or not observed_texts & expected_texts:
+                return False
+    return True
 
 
 def _parser_artifact_has_complete_message_coverage(
@@ -1168,7 +1207,11 @@ def _parser_artifact_has_complete_message_coverage(
     """Require every parser-relevant generated node to survive parsing."""
     expected = _parser_artifact_expected_message_keys(provider, payload)
     observed = _parser_artifact_message_keys(sessions)
-    return bool(expected) and Counter(expected) == Counter(observed)
+    return (
+        bool(expected)
+        and Counter(expected) == Counter(observed)
+        and _parser_artifact_messages_have_artifact_bound_content(sessions, provider, payload)
+    )
 
 
 def build_wire_support_receipt(
@@ -1382,8 +1425,10 @@ def build_wire_support_receipt(
                         payload,
                         f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
                     )
+                    coverage_error: str | None = None
                     if not _parser_artifact_has_complete_message_coverage(artifact_sessions, provider, parser_payload):
                         artifact_evidence = ()
+                        coverage_error = "artifact message coverage is incomplete"
                     parsed_sessions.extend(artifact_sessions)
                     artifact_kind: Literal["baseline", "coverage"] = "baseline" if index == 0 else "coverage"
                     parser_witnesses.append(
@@ -1392,7 +1437,7 @@ def build_wire_support_receipt(
                             exercised_keywords=artifact_coverage.exercised_keywords,
                             parsed_session_count=len(artifact_sessions),
                             parsed_message_count=sum(len(session.messages) for session in artifact_sessions),
-                            validation_error=parse_error or artifact_validation_error,
+                            validation_error=parse_error or artifact_validation_error or coverage_error,
                             artifact_kind=artifact_kind,
                             artifact_evidence=artifact_evidence,
                         )
@@ -1417,7 +1462,7 @@ def build_wire_support_receipt(
                 validation_error = f"{type(exc).__name__}: {exc}"
 
             if parser_errors:
-                validation_error = "; ".join(parser_errors)
+                validation_error = "; ".join((*parser_errors, *((validation_error,) if validation_error else ())))
 
             if selection is not None:
                 witnessed = construct_coverage(selection.schema, payloads)

@@ -378,6 +378,9 @@ class AppendCapabilityReceipt:
         }
 
 
+_APPEND_CAPABLE_PROVIDER_VALUES = frozenset({Provider.CODEX.value, Provider.CLAUDE_CODE.value})
+
+
 def append_capability_receipt(
     *,
     provider: str,
@@ -386,7 +389,7 @@ def append_capability_receipt(
     stable_session_identity: bool,
 ) -> AppendCapabilityReceipt:
     """Resolve append support from the live route's identity contract."""
-    if provider not in {"codex", "claude-code"}:
+    if provider not in _APPEND_CAPABLE_PROVIDER_VALUES:
         return AppendCapabilityReceipt(
             provider=provider,
             package_version=package_version,
@@ -3694,22 +3697,28 @@ class LiveBatchProcessor:
         return None
 
     def _source_path_has_conflicting_origin(self, path: Path, *, expected_origin: str) -> bool:
+        """Reject a raw path whose source or joined indexed origin disagrees."""
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
-        if not source_db.exists():
+        index_db = ArchiveLocation.resolve(archive_root).active_index_path
+        if not source_db.exists() or not index_db.exists():
             return False
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
             try:
+                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
                 row = conn.execute(
                     """
                     SELECT 1
-                    FROM raw_sessions
-                    WHERE source_path = ? AND origin <> ?
+                    FROM source_tier.raw_sessions AS r
+                    LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
+                    WHERE r.source_path = ?
+                      AND (r.origin <> ? OR (s.session_id IS NOT NULL AND s.origin <> ?))
                     LIMIT 1
                     """,
-                    (str(path), expected_origin),
+                    (str(path), expected_origin, expected_origin),
                 ).fetchone()
+                conn.execute("DETACH DATABASE source_tier")
             finally:
                 conn.close()
         except sqlite3.Error:

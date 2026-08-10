@@ -87,8 +87,13 @@ def test_append_capability_receipt_is_keyed_to_live_identity_contract(
         "session_record_stream",
     )
     assert payload["capability_source"] == "LiveBatchProcessor.append"
-    if provider in {"codex", "claude-code"} and not stable_session_identity:
+    assert payload["operation"] == "append_prefix"
+    if provider not in {"codex", "claude-code"}:
+        assert payload["reason"] == "live append route supports only Codex and Claude Code JSONL identity contracts"
+    elif not stable_session_identity:
         assert payload["reason"] == "append delta requires a stable persisted session identity"
+    else:
+        assert payload["reason"] is None
 
 
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -2449,6 +2454,58 @@ def test_codex_append_identity_rejects_mixed_origins_at_same_path(
         conn.execute(
             "INSERT INTO sessions (native_id, origin, raw_id, title, content_hash) VALUES (?, ?, ?, ?, ?)",
             ("codex-id", index_origin, raw_id, "mixed origin", bytes(32)),
+        )
+        conn.commit()
+
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    assert processor._append_payload_for_provider(path, "codex", b'{"type":"event_msg"}\n') is None
+
+
+def test_codex_append_identity_rejects_mismatched_index_owner_before_global_fallback(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "shared.jsonl"
+    payload = b'{"type":"session_meta","payload":{"id":"codex-id"}}\n'
+    path.write_bytes(payload)
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        wrong_owner_raw_id = write_source_raw_session(
+            conn,
+            origin="codex-session",
+            source_path=str(path),
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1_770_000_000_000,
+        )
+        unrelated_codex_raw_id = write_source_raw_session(
+            conn,
+            origin="codex-session",
+            source_path=str(root / "other.jsonl"),
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1_770_000_000_001,
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, raw_id, title, content_hash) VALUES (?, ?, ?, ?, ?)",
+            ("codex-id", "claude-code-session", wrong_owner_raw_id, "wrong owner", bytes(32)),
+        )
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, raw_id, title, content_hash) VALUES (?, ?, ?, ?, ?)",
+            ("codex-id", "codex-session", unrelated_codex_raw_id, "unrelated fallback", bytes(32)),
         )
         conn.commit()
 
@@ -5847,6 +5904,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
         # retry-candidate query (storage/repair.py) nothing stable to match
         # once the message text drifts -- exactly what happened to a real
         # production session that hit this guard under #2718's original
+        # wording.
         # The structured evidence row, not the diagnostic wording, is the
         # retry authorization.
         with sqlite3.connect(tmp_path / "source.db") as conn:

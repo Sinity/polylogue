@@ -210,6 +210,58 @@ def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: 
     baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
     assert baseline.parsed_message_count == 1
     assert baseline.artifact_evidence == ()
+    assert baseline.validation_error == "artifact message coverage is incomplete"
+    assert not baseline.healthy
+    assert not entry.healthy
+    assert not receipt.complete
+
+
+def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+
+    def replace_all_but_one_message_body(
+        provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        sessions = original_parse_payload(
+            provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if provider == "chatgpt" and fallback_id.endswith(":0"):
+            return [
+                session.model_copy(
+                    update={
+                        "messages": [
+                            message
+                            if index == 0
+                            else message.model_copy(update={"text": "body dropped by parser", "blocks": []})
+                            for index, message in enumerate(session.messages)
+                        ]
+                    }
+                )
+                for session in sessions
+            ]
+        return sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", replace_all_but_one_message_body)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+
+    entry = next(item for item in receipt.entries if item.package_version == "v1")
+    baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
+    assert baseline.parsed_message_count == 4
+    assert not baseline.artifact_evidence
+    assert baseline.validation_error == "artifact message coverage is incomplete"
     assert not baseline.healthy
     assert not entry.healthy
     assert not receipt.complete
