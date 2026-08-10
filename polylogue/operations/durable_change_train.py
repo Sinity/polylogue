@@ -140,8 +140,8 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier, *, directory_
 
         target_name = path.name
 
-        def assert_no_adoption_evidence() -> None:
-            if adoption_lstat(target_name, "durable tier target") is not None:
+        def assert_no_adoption_evidence(*, check_target: bool = True) -> None:
+            if check_target and adoption_lstat(target_name, "durable tier target") is not None:
                 raise MigrationError(f"{tier.value} tier already exists; refusing missing-tier initialization: {path}")
 
             durable_siblings = tuple(f"{sibling.value}.db" for sibling in ArchiveTier if sibling is not tier)
@@ -330,7 +330,10 @@ def initialize_missing_durable_tier(path: Path, tier: ArchiveTier, *, directory_
         # Image construction can take long enough for retained archive evidence
         # to appear. Re-census immediately before the first visible link so an
         # empty durable tier is never adopted over a newly established archive.
-        assert_no_adoption_evidence()
+        # ``link`` is the atomic no-replacement check for the target itself;
+        # re-census only evidence whose appearance would otherwise make this
+        # empty tier an unsafe adoption.
+        assert_no_adoption_evidence(check_target=False)
         try:
             os.link(
                 f"/proc/self/fd/{descriptor}",
