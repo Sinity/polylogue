@@ -61,6 +61,7 @@ from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
 from devtools.testmon_state import (
     BindingMode,
     GraphStatus,
+    SeedAttemptOutcome,
     TerminalAuthorization,
     TestmonBinding,
     TestmonSeedStamp,
@@ -213,7 +214,7 @@ TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
 TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
-TESTMON_SEED_PROTOCOL_VERSION = 5
+TESTMON_SEED_PROTOCOL_VERSION = 6
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -2585,6 +2586,28 @@ def _seed_node_outcomes_from_events(
     return results
 
 
+def _seed_attempt_outcome(
+    *,
+    release_eligible: bool,
+    terminal_graph: bool,
+    exit_code: int,
+    pytest_step: Mapping[str, Any] | None,
+) -> SeedAttemptOutcome:
+    """Classify the terminal seed result without hiding a bounded resource stop."""
+    if release_eligible:
+        return SeedAttemptOutcome.GREEN_RELEASE_BASELINE
+    if terminal_graph:
+        return SeedAttemptOutcome.RED_BASELINE if exit_code != 0 else SeedAttemptOutcome.SELECTION_ONLY
+    diagnosis = str((pytest_step or {}).get("diagnosis") or "").casefold()
+    termination_reason = str((pytest_step or {}).get("termination_reason") or "").casefold()
+    if diagnosis in {"pytest_timeout", "pytest_stall_timeout", "pytest_resource_preflight_failed"} or any(
+        marker in termination_reason
+        for marker in ("runtime exceeded", "tmpfs budget exceeded", "resource budget", "resource limit")
+    ):
+        return SeedAttemptOutcome.RESOURCE_TIMEOUT
+    return SeedAttemptOutcome.INCOMPLETE
+
+
 def _finalize_testmon_seed_attempt(
     *,
     prepared: Mapping[str, Any],
@@ -2654,12 +2677,27 @@ def _finalize_testmon_seed_attempt(
     narrow_terminal = isinstance(identity, Mapping) and identity.get("skip_slow") is True
     terminal_authorized = _testmon_seed_terminal_authorized(prepared)
     release_eligible = green_complete and (not narrow_terminal or terminal_authorized)
+    terminal_graph = (
+        database["error"] is None
+        and database["graph_status"] == GraphStatus.COMPLETE.value
+        and not database["missing_nodeids"]
+        and database["orphan_execution_edges"] == 0
+        and database["orphan_fingerprint_edges"] == 0
+        and all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+    )
+    outcome = _seed_attempt_outcome(
+        release_eligible=release_eligible,
+        terminal_graph=terminal_graph,
+        exit_code=exit_code,
+        pytest_step=pytest_step,
+    )
     seed_scope = (
         VerificationScope.NARROW_TERMINAL.value if narrow_terminal else VerificationScope.RELEASE_BASELINE.value
     )
     attempt_candidate = {
         **dict(prepared),
-        "status": "complete" if release_eligible else "reusable",
+        "status": "complete" if release_eligible else "reusable" if terminal_graph else "incomplete",
+        "outcome": outcome.value,
         "exit_code": exit_code,
         "expected_nodeids": expected,
         "expected_count": len(expected),
@@ -2700,6 +2738,7 @@ def _finalize_testmon_seed_attempt(
     payload = {
         **dict(prepared),
         "status": attempt_status,
+        "outcome": outcome.value,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "exit_code": exit_code,
         "expected_nodeids": expected,
@@ -2788,6 +2827,11 @@ def _refresh_testmon_selection_attempt(
     payload = {
         **attempt,
         "status": "reusable" if graph_complete and terminal else "incomplete",
+        "outcome": (
+            SeedAttemptOutcome.RED_BASELINE.value
+            if graph_complete and terminal
+            else SeedAttemptOutcome.INCOMPLETE.value
+        ),
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "exit_code": exit_code,
         "expected_nodeids": expected,
@@ -3065,6 +3109,7 @@ def main(argv: list[str] | None = None) -> int:
     if seed_receipt is not None:
         history_entry["testmon_seed"] = {
             "status": seed_receipt["status"],
+            "outcome": seed_receipt["outcome"],
             "resume": seed_receipt["resume"],
             "expected_count": seed_receipt["expected_count"],
             "attempt_path": str(TESTMON_SEED_ATTEMPT),
