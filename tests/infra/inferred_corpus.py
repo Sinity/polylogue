@@ -475,6 +475,7 @@ def build_inferred_corpus_convergence_handoff(
 ) -> InferredCorpusConvergenceHandoff:
     """Bind every supported row from memory or persisted disk to convergence."""
 
+    read_validated_campaign_manifest = isinstance(manifest, Path) and campaign_mode
     persisted_manifest = (
         read_inferred_corpus_manifest(
             manifest,
@@ -486,7 +487,7 @@ def build_inferred_corpus_convergence_handoff(
         if isinstance(manifest, Path)
         else manifest
     )
-    if campaign_mode:
+    if campaign_mode and not read_validated_campaign_manifest:
         _require_inference_handoff(persisted_manifest)
         if registry is None:
             raise ValueError("campaign mode requires a live schema registry")

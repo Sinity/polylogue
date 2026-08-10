@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -313,6 +314,57 @@ def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pyt
             gate_receipt_path=gate_receipt_path,
             archive_root=archive_root,
         )
+
+
+def test_path_campaign_handoff_replays_current_wire_route_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipt = build_schema_inference_receipt(
+        registry,
+        provider="codex",
+        gate_receipt_digest=gate_digest,
+    )
+    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        providers=("codex",),
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    path = tmp_path / "campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    original_build_wire_support_receipt = build_wire_support_receipt
+    replay_count = 0
+
+    def count_wire_replays(
+        *,
+        registry: object | None = None,
+        seed: int = 20260805,
+        providers: Sequence[str] | None = None,
+    ) -> WireSupportReceipt:
+        nonlocal replay_count
+        replay_count += 1
+        return original_build_wire_support_receipt(registry=registry, seed=seed, providers=providers)
+
+    monkeypatch.setattr("tests.infra.inferred_corpus.build_wire_support_receipt", count_wire_replays)
+
+    handoff = build_inferred_corpus_convergence_handoff(
+        path,
+        campaign_mode=True,
+        registry=registry,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+
+    assert handoff.specs == manifest.supported_specs
+    assert replay_count == 1
 
 
 def test_manifest_refuses_a_selection_missing_from_bound_wire_support_receipt() -> None:
