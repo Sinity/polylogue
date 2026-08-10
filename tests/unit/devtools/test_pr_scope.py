@@ -172,6 +172,39 @@ def test_ci_resolves_pr_from_exact_head_when_circle_pr_url_is_absent(
     assert requests[0].full_url == f"https://api.github.com/repos/Sinity/polylogue/commits/{HEAD_SHA}/pulls"
 
 
+def test_fetch_pr_metadata_fetches_files_for_authoritative_dependabot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
+
+    def _urlopen(api_request: request.Request, *, timeout: int) -> _FakeHttpResponse:
+        assert timeout == 30
+        requests.append(api_request.full_url)
+        if api_request.full_url.endswith("/pulls/42"):
+            payload = {
+                "body": "",
+                "draft": False,
+                "head": {"sha": HEAD_SHA},
+                "base": {"sha": "b" * 40},
+                "user": {"login": "dependabot[bot]", "type": "Bot"},
+            }
+        else:
+            payload = [{"filename": "pyproject.toml"}, {"filename": "uv.lock"}]
+        return _FakeHttpResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(request, "urlopen", _urlopen)
+
+    metadata = pr_scope.fetch_pr_metadata(42, repository="Sinity/polylogue")
+
+    assert metadata.author_login == "dependabot[bot]"
+    assert metadata.author_type == "Bot"
+    assert metadata.changed_files == ("pyproject.toml", "uv.lock")
+    assert requests == [
+        "https://api.github.com/repos/Sinity/polylogue/pulls/42",
+        "https://api.github.com/repos/Sinity/polylogue/pulls/42/files?per_page=100",
+    ]
+
+
 def test_fetch_pr_for_head_reports_when_no_open_pr_matches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
