@@ -146,6 +146,38 @@ class TestUpsertAnnotationAssertion:
         assert updated.evidence_refs == ["session:codex-session:new-evidence"]
         assert updated.confidence == 0.9
 
+    def test_unbatched_message_upsert_preserves_backfilled_session_scope(self, user_conn: sqlite3.Connection) -> None:
+        schema = _delegation_tone_schema(target_ref_kinds=("message",), evidence_policy="optional")
+        registry = _registry_for(schema)
+        target_ref = "message:codex-session:demo:n:0"
+        first = upsert_annotation_assertion(
+            user_conn,
+            schema=schema,
+            registry=registry,
+            target_ref=target_ref,
+            value={"score": 2, "status": "rejected"},
+            row_key="backfilled-owner",
+            author_ref="agent:labeler",
+            now_ms=1_000,
+        )
+        user_conn.execute(
+            "UPDATE assertions SET scope_ref = 'session:codex-session:demo' WHERE assertion_id = ?",
+            (first.assertion_id,),
+        )
+
+        updated = upsert_annotation_assertion(
+            user_conn,
+            schema=schema,
+            registry=registry,
+            target_ref=target_ref,
+            value={"score": 5, "status": "approved"},
+            row_key="backfilled-owner",
+            author_ref="agent:labeler",
+            now_ms=2_000,
+        )
+
+        assert updated.scope_ref == "session:codex-session:demo"
+
     def test_invalid_row_raises_and_writes_nothing(self, user_conn: sqlite3.Connection) -> None:
         schema = _delegation_tone_schema()
         with pytest.raises(AnnotationValidationError) as excinfo:

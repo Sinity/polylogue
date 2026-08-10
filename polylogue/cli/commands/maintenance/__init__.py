@@ -201,6 +201,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "cursor_authority_reconcile_command",
         "Plan or apply one backup-gated cursor-authority reconciliation.",
     ),
+    (
+        "message-owner-scope-backfill",
+        "_message_owner_scope_backfill",
+        "message_owner_scope_backfill_command",
+        "Backfill exact durable message owners before an index replacement.",
+    ),
 )
 
 

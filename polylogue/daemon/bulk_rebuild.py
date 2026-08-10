@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -169,8 +170,23 @@ def _preflight_raw_failure_lifecycle(root: Path) -> None:
     raise RuntimeError(f"daemon bulk-rebuild raw failure lifecycle preflight failed: {reason}")
 
 
+def _resolve_daemon_message_owner_receipt(root: Path, receipt_path: Path | None) -> Path | None:
+    """Use configured owner-backfill evidence when the durable tier needs it."""
+    from polylogue.maintenance.message_owner_scope_backfill import (
+        MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV,
+        resolve_message_owner_scope_backfill_receipt_reference,
+    )
+
+    if receipt_path is None and not os.environ.get(MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV, "").strip():
+        return None
+    return resolve_message_owner_scope_backfill_receipt_reference(root, receipt_path)
+
+
 def resolve_or_start_daemon_bulk_rebuild_transaction(
-    root: Path, *, schema_inference_receipt_path: Path | None = None
+    root: Path,
+    *,
+    schema_inference_receipt_path: Path | None = None,
+    message_owner_scope_backfill_receipt_path: Path | None = None,
 ) -> IndexRebuildTransaction:
     """Load the daemon's resumable bulk-rebuild transaction, starting one if needed.
 
@@ -189,10 +205,19 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
     generation directory, so both must fail closed against a foreign/rotated
     archive location before touching disk, not just the eventual write pass.
     """
+    from polylogue.maintenance.message_owner_scope_backfill import (
+        MessageOwnerScopeBackfillError,
+        validate_message_owner_scope_for_index_replacement,
+    )
     from polylogue.maintenance.rebuild_index import require_rebuild_schema_currency
 
+    message_owner_receipt_path = _resolve_daemon_message_owner_receipt(root, message_owner_scope_backfill_receipt_path)
     require_rebuild_schema_currency(root)
     _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+    try:
+        validate_message_owner_scope_for_index_replacement(root, receipt_path=message_owner_receipt_path)
+    except MessageOwnerScopeBackfillError as exc:
+        raise RuntimeError(f"daemon bulk rebuild message-owner scope gate failed: {exc}") from exc
     # This must precede transaction resolution, because retiring a terminal
     # transaction and creating its replacement also creates generation state.
     # It must also precede the caller's page selection for a resumed
@@ -211,6 +236,10 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
         # after ownership acquisition so receipt expiry, source revision, or
         # external-corpus drift cannot reach generation bookkeeping.
         _validate_rebuild_provenance_receipt(root, schema_inference_receipt_path)
+        try:
+            validate_message_owner_scope_for_index_replacement(root, receipt_path=message_owner_receipt_path)
+        except MessageOwnerScopeBackfillError as exc:
+            raise RuntimeError(f"daemon bulk rebuild message-owner scope gate failed: {exc}") from exc
         store = IndexGenerationStore(location, repair_anchor=False)
         transaction: IndexRebuildTransaction | None
         try:
@@ -359,6 +388,10 @@ async def run_daemon_bulk_rebuild_pass(
     never opens a second writer connection of its own).
     """
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
+    from polylogue.maintenance.message_owner_scope_backfill import (
+        MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV,
+        resolve_message_owner_scope_backfill_receipt_reference,
+    )
     from polylogue.maintenance.rebuild_index import (
         RebuildIndexRequest,
         rebuild_index_from_source_sync,
@@ -368,10 +401,17 @@ async def run_daemon_bulk_rebuild_pass(
 
     root = Path(config.archive_root)
     receipt_path = resolve_schema_inference_receipt_reference(root)
-    transaction = await asyncio.to_thread(
+    message_owner_receipt_path = (
+        resolve_message_owner_scope_backfill_receipt_reference(root)
+        if os.environ.get(MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV, "").strip()
+        else None
+    )
+    transaction = await daemon_write_coordinator().run_sync(
+        "maintenance.bulk_rebuild_admission",
         resolve_or_start_daemon_bulk_rebuild_transaction,
         root,
         schema_inference_receipt_path=receipt_path,
+        message_owner_scope_backfill_receipt_path=message_owner_receipt_path,
     )
     if transaction.status in {"promoted", "promoted-attestation-failed"}:
         return None
@@ -410,6 +450,7 @@ async def run_daemon_bulk_rebuild_pass(
         promote=True,
         operation_id=transaction.operation_id,
         schema_inference_receipt_path=receipt_path,
+        message_owner_scope_backfill_receipt_path=message_owner_receipt_path,
         raw_batch_size=batch_size,
         prefetch_cache=parse_stage.cache,
     )

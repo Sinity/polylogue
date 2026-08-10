@@ -67,6 +67,13 @@ import click
     required=False,
     help="Explicit fresh schema-inference PASS receipt consumed by the canary rebuild.",
 )
+@click.option(
+    "--message-owner-scope-backfill-receipt",
+    "message_owner_scope_backfill_receipt_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
+    required=False,
+    help="Explicit completed message-owner backfill receipt consumed by the canary rebuild.",
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 @click.option(
     "--no-promote",
@@ -83,6 +90,7 @@ def reindex_canary_command(
     report_path: Path,
     consume_report: bool,
     schema_inference_receipt_path: Path | None,
+    message_owner_scope_backfill_receipt_path: Path | None,
     output_format: str,
     no_promote: bool,
 ) -> None:
@@ -134,6 +142,7 @@ def reindex_canary_command(
             sample_session_ids=sample_session_id,
             no_promote=no_promote,
             schema_inference_receipt_path=schema_inference_receipt_path,
+            message_owner_scope_backfill_receipt_path=message_owner_scope_backfill_receipt_path,
         )
         reviews = load_canary_review_manifest(review_manifest) if review_manifest is not None else ()
         durable = write_canary_report(

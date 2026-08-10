@@ -286,6 +286,7 @@ def run_reindex_canary(
     *,
     input_index: Path | None = None,
     schema_inference_receipt_path: Path | None,
+    message_owner_scope_backfill_receipt_path: Path | None = None,
     sessions_per_origin: int = 100,
     pathology_session_ids: Iterable[str] = (),
     sample_session_ids: Iterable[str] = (),
@@ -341,6 +342,7 @@ def run_reindex_canary(
             promote=False,
             candidate_acceptance_checks=REINDEX_CANARY_ACCEPTANCE_CHECKS,
             schema_inference_receipt_path=schema_inference_receipt_path,
+            message_owner_scope_backfill_receipt_path=message_owner_scope_backfill_receipt_path,
         )
     )
     try:

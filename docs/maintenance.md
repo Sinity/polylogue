@@ -340,6 +340,37 @@ recovered state. If an interrupted apply leaves a prepared receipt, rerun the
 same command with that receipt path to record recovery; use a fresh path only
 after reviewing the recovered terminal state.
 
+### `polylogue ops maintenance message-owner-scope-backfill` - pre-reindex user-state compatibility
+
+Read-only by default. It censuses legacy message marks and annotations against
+the exact active `index.db.messages(message_id, session_id)` relation and
+classifies exact owners, existing durable scopes, missing owners, malformed
+scopes, and conflicting scopes. Message IDs are opaque; the operation never
+decodes them or infers an owner from delimiters. Write an immutable plan, then
+apply only the exact subset while the daemon is stopped:
+
+```bash
+polylogue ops maintenance message-owner-scope-backfill \
+  --output-plan /path/to/message-owner-plan.json --output-format json
+polylogue ops maintenance message-owner-scope-backfill --apply \
+  --plan-file /path/to/message-owner-plan.json \
+  --backup-manifest /path/to/verified-user-backup/manifest.json \
+  --receipt-file /path/to/message-owner-backfill-receipt.json
+```
+
+The immutable receipt path must be outside the archive root so subsequent rebuild routes can consume it.
+
+Apply rechecks the plan digest, archive identity, active-index and user schema
+bindings, and authenticated user-tier backup before `BEGIN IMMEDIATE`. The
+active index may be an obsolete derived generation, but its exact schema binding
+remains part of the plan so an intervening active-generation change still
+refuses the write. The receipt is self-hashed and complete only when its
+unresolved denominator is zero; it fingerprints complete active durable message
+assertion rows, excluding soft-deleted assertions. Missing owners remain typed
+blockers.
+
+Every rebuild candidate, including a no-promote rebuild and the daemon's bulk rebuild route, takes the same gate before candidate creation, after archive ownership acquisition, and before candidate acceptance. Unscoped rows must be backfilled first. Once active durable message assertions are scoped, the gate requires the complete backfill receipt. The receipt preserves `annotation-batch:` scope as immutable provenance and separately binds every assertion to its observed session owner. A complete replacement candidate proves each binding against its current-schema index; an intentionally partial no-promote candidate receives the durable admission gate without making an archive-wide proof it cannot satisfy. If an index reset removed the active derived tier, the gate admits an archive with no active message assertions or validates the completed receipt before the replacement candidate exists. The daemon bulk route receives the same completed receipt from `POLYLOGUE_MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT` when message assertions exist. Apply first fsyncs an immutable `.prepared` marker, commits the user-tier transaction atomically, and fsyncs the terminal receipt before removing that marker. A retry with the same plan, backup, and receipt path can finalize a prepared marker only when the complete current durable state exactly matches the marker's expected committed state. A valid terminal receipt matching the prepared marker is accepted by recovery; a partial publication is preserved as a `.partial` artifact before the terminal receipt is published. Other prepared states fail closed for operator recovery. No index or source-tier files are written by this operation.
+
 ### `polylogue ops maintenance preview` — staleness inventory
 
 Read-only. Produces a per-model inventory of stale, missing, orphan,
@@ -428,13 +459,14 @@ polylogue ops maintenance blob-reference-prune-orphans \
 
 ### `polylogue ops maintenance reindex-canary` — inactive-generation semantic diff
 
-Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`. A run with observed differences writes an unreviewed durable report and exits non-zero. Re-run with `--review-manifest` to persist one classification per difference, then use `--consume-report` to validate the reviewed report and approve its evidence. Approval never authorizes promotion. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
+Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`. An isolated archive with active message assertions also needs an explicit completed `--message-owner-scope-backfill-receipt`; the canary does not rely on ambient receipt configuration. A run with observed differences writes an unreviewed durable report and exits non-zero. Re-run with `--review-manifest` to persist one classification per difference, then use `--consume-report` to validate the reviewed report and approve its evidence. Approval never authorizes promotion. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
 
 ```bash
 polylogue ops maintenance reindex-canary \
   --archive-root /realm/tmp/polylogue-canary-archive \
   --input /realm/tmp/polylogue-canary-archive/index.db \
   --schema-inference-receipt /realm/tmp/schema-inference-gate-receipt.json \
+  --message-owner-scope-backfill-receipt /realm/tmp/message-owner-backfill-receipt.json \
   --sample 100 \
   --report /realm/tmp/polylogue-reindex-canary.json \
   --no-promote \
