@@ -380,14 +380,16 @@ def run_reindex_canary(
     from polylogue.daemon.bulk_rebuild import run_daemon_canary_rebuild
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
-    receipt: object = run_daemon_canary_rebuild(
-        archive_root=root,
-        raw_ids=selection.selected_raw_ids,
-        selected_session_ids=selection.selected_session_ids,
-        index_schema_version=INDEX_SCHEMA_VERSION,
-        schema_inference_receipt_path=schema_inference_receipt_path,
-        message_owner_scope_backfill_receipt_path=message_owner_scope_backfill_receipt_path,
-    )
+    rebuild_kwargs: dict[str, object] = {
+        "archive_root": root,
+        "raw_ids": selection.selected_raw_ids,
+        "selected_session_ids": selection.selected_session_ids,
+        "index_schema_version": INDEX_SCHEMA_VERSION,
+        "schema_inference_receipt_path": schema_inference_receipt_path,
+    }
+    if message_owner_scope_backfill_receipt_path is not None:
+        rebuild_kwargs["message_owner_scope_backfill_receipt_path"] = message_owner_scope_backfill_receipt_path
+    receipt: object = run_daemon_canary_rebuild(**rebuild_kwargs)
     try:
         try:
             active_after_rebuild = ArchiveLocation.resolve(root).active_index

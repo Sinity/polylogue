@@ -1341,6 +1341,7 @@ def test_reindex_canary_cli_forwards_an_explicit_owner_backfill_receipt(
 
     class DurableReport:
         unclassified_count = 0
+        review_status = "reviewed"
 
         def to_dict(self) -> dict[str, object]:
             return {"status": "classified"}

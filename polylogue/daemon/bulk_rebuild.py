@@ -496,22 +496,16 @@ def run_daemon_canary_rebuild(
         is None
     ):
         raise RuntimeError("reindex canary requires a matching running daemon writer")
-    receipt = client.request_json(
-        "POST",
-        "/api/maintenance/rebuild-index",
-        {
-            "raw_ids": list(raw_ids),
-            "selected_session_ids": list(selected_session_ids),
-            "promote": False,
-            "canary": True,
-            "schema_inference_receipt_path": str(schema_inference_receipt_path.resolve()),
-            "message_owner_scope_backfill_receipt_path": (
-                str(message_owner_scope_backfill_receipt_path.resolve())
-                if message_owner_scope_backfill_receipt_path is not None
-                else None
-            ),
-        },
-    )
+    payload: dict[str, object] = {
+        "raw_ids": list(raw_ids),
+        "selected_session_ids": list(selected_session_ids),
+        "promote": False,
+        "canary": True,
+        "schema_inference_receipt_path": str(schema_inference_receipt_path.resolve()),
+    }
+    if message_owner_scope_backfill_receipt_path is not None:
+        payload["message_owner_scope_backfill_receipt_path"] = str(message_owner_scope_backfill_receipt_path.resolve())
+    receipt = client.request_json("POST", "/api/maintenance/rebuild-index", payload)
     if receipt is None:
         raise RuntimeError("daemon rejected or did not complete the reindex canary rebuild")
     return receipt
