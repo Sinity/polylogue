@@ -50,6 +50,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainError,
+    clear_source_continuity_pending_intent,
     reconcile_durable_change_train_startup,
     write_source_continuity_pending_intent,
 )
@@ -145,13 +146,26 @@ def _value_for_digest(value: object) -> object:
 
 
 def _table_digest(conn: sqlite3.Connection, name: str) -> str:
+    """Hash one table through a deterministic, streaming row traversal."""
+
     quoted = _quote_identifier(name)
-    columns = [str(row[1]) for row in conn.execute(f"PRAGMA table_info({quoted})")]
+    table_info = tuple(conn.execute(f"PRAGMA table_info({quoted})"))
+    columns = [str(row[1]) for row in table_info]
     if not columns:
         raise RawAuthorityRecoveryError(f"cannot fingerprint missing or malformed table: {name}")
-    rows = [[_value_for_digest(value) for value in row] for row in conn.execute(f"SELECT * FROM {quoted}")]
-    rows.sort(key=_canonical_bytes)
-    return _digest({"name": name, "columns": columns, "rows": rows})
+    primary_key_columns = [str(row[1]) for row in sorted(table_info, key=lambda row: int(row[5])) if int(row[5])]
+    order_by = ", ".join(_quote_identifier(column) for column in primary_key_columns) or "rowid"
+    digest = hashlib.sha256()
+
+    def update(value: object) -> None:
+        encoded = _canonical_bytes(value)
+        digest.update(len(encoded).to_bytes(8, byteorder="big"))
+        digest.update(encoded)
+
+    update({"name": name, "columns": columns})
+    for row in conn.execute(f"SELECT * FROM {quoted} ORDER BY {order_by}"):
+        update([_value_for_digest(value) for value in row])
+    return digest.hexdigest()
 
 
 def _protected_digest(conn: sqlite3.Connection, *, excluded: tuple[str, ...]) -> str:
@@ -908,7 +922,7 @@ def _recovery_intent(plan: RawAuthorityRecoveryPlan) -> dict[str, object]:
     }
 
 
-def _write_source_continuity_pending_intent(plan: RawAuthorityRecoveryPlan) -> None:
+def _write_source_continuity_pending_intent(plan: RawAuthorityRecoveryPlan) -> Path:
     """Persist source-train refresh evidence before the reset can commit."""
 
     authority = plan.backup_authority
@@ -918,7 +932,7 @@ def _write_source_continuity_pending_intent(plan: RawAuthorityRecoveryPlan) -> N
     try:
         with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as conn:
             before = capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
-        write_source_continuity_pending_intent(
+        return write_source_continuity_pending_intent(
             root,
             mutation_receipt=Path(plan.receipt_path),
             backup_manifest=Path(str(authority["manifest_path"])),
@@ -1070,13 +1084,17 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
             )
     _write_recovery_intent(plan)
     if operation is RecoveryOperation.RESET_CENSUS:
-        _write_source_continuity_pending_intent(plan)
+        continuity_intent = _write_source_continuity_pending_intent(plan)
+    else:
+        continuity_intent = None
     if operation is RecoveryOperation.RESET_CENSUS:
         with closing(sqlite3.connect(source_db)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
-            conn.execute("BEGIN IMMEDIATE")
+            transaction_started = False
             try:
+                conn.execute("BEGIN IMMEDIATE")
+                transaction_started = True
                 _revalidate_common(plan, root, location)
                 _validate_ledger(conn)
                 _validate_integrity(conn, tier="source")
@@ -1091,7 +1109,13 @@ def _apply_plan(plan: RawAuthorityRecoveryPlan) -> RawAuthorityRecoveryReport:
                 postflight = _postflight(conn, protected_digest=plan.protected_digest, excluded=excluded)
                 conn.commit()
             except Exception:
-                conn.rollback()
+                if not transaction_started or conn.in_transaction:
+                    try:
+                        if conn.in_transaction:
+                            conn.rollback()
+                    finally:
+                        if continuity_intent is not None:
+                            clear_source_continuity_pending_intent(continuity_intent)
                 raise
     else:
         with closing(sqlite3.connect(index_db)) as conn:

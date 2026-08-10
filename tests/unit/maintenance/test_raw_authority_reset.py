@@ -16,6 +16,7 @@ from polylogue.maintenance.raw_authority_recovery import (
     PruneOrphanedIndexRevisionSeedsActuator,
     RawAuthorityRecoveryError,
     RecoveryOperation,
+    _canonical_bytes,
     _index_seed_digest,
     _RecoveryArgs,
     _write_recovery_intent,
@@ -286,6 +287,59 @@ def test_census_reset_persists_source_continuity_intent_before_commit(
     assert apply_raw_authority_recovery(plan).status == "applied"
     assert len(pending_paths) == 1
     assert not pending_paths[0].exists()
+
+
+def test_census_reset_clears_continuity_intent_when_precommit_backup_revalidation_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reset refusal cannot strand a continuity intent without its receipt."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+
+    def reject_changed_backup(*_args: object, **_kwargs: object) -> None:
+        raise RawAuthorityRecoveryError("backup authority changed before commit")
+
+    monkeypatch.setattr("polylogue.maintenance.raw_authority_recovery._backup_from_plan", reject_changed_backup)
+    with pytest.raises(RawAuthorityRecoveryError, match="backup authority changed before commit"):
+        apply_raw_authority_recovery(plan)
+
+    pending_root = tmp_path / ".maintenance-state" / "source-continuity-pending"
+    assert list(pending_root.glob("*.json")) == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
+
+
+def test_recovery_protected_digest_streams_rows_without_a_whole_table_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inspection hashes protected tables incrementally instead of serializing all rows together."""
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("CREATE TABLE protected_rows (row_id INTEGER PRIMARY KEY, payload BLOB NOT NULL)")
+        conn.executemany(
+            "INSERT INTO protected_rows (row_id, payload) VALUES (?, ?)",
+            [(index, bytes([index]) * 32) for index in range(1, 5)],
+        )
+
+    def reject_whole_table_payload(value: object) -> bytes:
+        if isinstance(value, dict) and "rows" in value:
+            raise AssertionError("protected digest materialized a whole table")
+        return _canonical_bytes(value)
+
+    monkeypatch.setattr("polylogue.maintenance.raw_authority_recovery._canonical_bytes", reject_whole_table_payload)
+    before = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE protected_rows SET payload = x'ff' WHERE row_id = 2")
+    after = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
+
+    assert after.protected_digest != before.protected_digest
 
 
 def test_recovery_receipt_path_must_be_owned_by_the_archive(tmp_path: Path) -> None:
