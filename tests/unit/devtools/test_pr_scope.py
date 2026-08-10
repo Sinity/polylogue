@@ -180,6 +180,7 @@ def test_fetch_pr_metadata_fetches_files_for_authoritative_dependabot(
     def _urlopen(api_request: request.Request, *, timeout: int) -> _FakeHttpResponse:
         assert timeout == 30
         requests.append(api_request.full_url)
+        payload: object
         if api_request.full_url.endswith("/pulls/42"):
             payload = {
                 "body": "",
