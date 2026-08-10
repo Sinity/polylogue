@@ -4498,6 +4498,13 @@ x-polylogue-route-contracts:
   auth_policy: bearer_if_configured_and_same_origin
   response_contract: RebuildIndexReceipt
   notes: Runs exactly one source snapshot replay through the daemon write coordinator.
+- method: POST
+  pattern: /api/maintenance/discard-index-candidate
+  kind: maintenance
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: inactive candidate discard receipt
+  notes: Reclaims one generation only when its immutable owner id still identifies an inactive candidate.
 - method: GET
   pattern: /api/facets
   kind: read_query

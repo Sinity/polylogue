@@ -438,26 +438,27 @@ def run_reindex_canary(
 
 def _discard_canary_candidate(archive_root: Path, receipt: object) -> list[BaseException]:
     """Discard the inactive canary candidate after a post-rebuild failure."""
-    from polylogue.storage.archive_identity import ArchiveLocation
-    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.daemon.bulk_rebuild import discard_daemon_canary_candidate
 
     errors: list[BaseException] = []
-    generation = getattr(receipt, "generation", None)
+    generation = receipt.get("generation") if isinstance(receipt, dict) else getattr(receipt, "generation", None)
     if not isinstance(generation, dict):
         return [RuntimeError("canary receipt did not identify a candidate for cleanup")]
     generation_id = generation.get("generation_id")
-    if not isinstance(generation_id, str) or not generation_id:
-        return [RuntimeError("canary receipt candidate generation id is missing")]
-    store = IndexGenerationStore(ArchiveLocation.resolve(archive_root), repair_anchor=False)
+    generation_owner_id = generation.get("owner_id")
+    if (
+        not isinstance(generation_id, str)
+        or not generation_id
+        or not isinstance(generation_owner_id, str)
+        or not generation_owner_id
+    ):
+        return [RuntimeError("canary receipt candidate generation identity is missing")]
     try:
-        candidate = store.load(generation_id)
-    except BaseException as exc:
-        return [exc]
-    if candidate.state != "inactive":
-        return [RuntimeError(f"canary candidate {generation_id} is not inactive")]
-    try:
-        if not store.discard_if_inactive(candidate):
-            errors.append(RuntimeError(f"canary candidate {generation_id} was not discarded"))
+        discard_daemon_canary_candidate(
+            archive_root=archive_root,
+            generation_id=generation_id,
+            generation_owner_id=generation_owner_id,
+        )
     except BaseException as exc:
         errors.append(exc)
     return errors
@@ -883,6 +884,18 @@ def _validate_selection_evidence(
         expected_lowering_fingerprint=expected_lowering_fingerprint,
         expected_replay_routing_fingerprint=expected_replay_routing_fingerprint,
     )
+    _validate_live_replay_routing_fingerprint(expected_replay_routing_fingerprint)
+
+
+def _validate_live_replay_routing_fingerprint(expected: str | None) -> None:
+    """Reject a persisted canary when installed replay routing has changed."""
+
+    if expected is None:
+        return
+    from polylogue.sources.origin_specs import replay_routing_fingerprint
+
+    if replay_routing_fingerprint() != expected:
+        raise UnclassifiedCanaryDiffError("canary replay routing fingerprint no longer matches the running code")
 
 
 def _validate_parser_binding(
@@ -1652,7 +1665,10 @@ def _reviewed_difference_rationale(review: CanaryDifferenceReview) -> str:
 
 
 def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceReview]) -> None:
-    """Resolve expected-difference Beads from the committed tracker registry."""
+    """Resolve expected-difference authorities from packaged and typed catalogs."""
+    from polylogue.maintenance.canary_authorities import OPEN_BEAD_AUTHORITY_IDS
+    from polylogue.storage.sqlite.lifecycle import INDEX_DELTA_DECLARATIONS
+
     expected_beads: set[str] = {
         review.authority_id
         for review in reviews
@@ -1660,39 +1676,24 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
         and review.authority_kind is CanaryAuthorityKind.BEAD
         and review.authority_id is not None
     }
-    if any(
-        review.classification is DifferenceClassification.EXPECTED
-        and review.authority_kind is CanaryAuthorityKind.DELTA
+    expected_deltas = {
+        review.authority_id
         for review in reviews
-    ):
-        raise UnclassifiedCanaryDiffError("expected canary delta authorities have no registered declaration")
-    if not expected_beads:
-        return
-    tracker = Path(__file__).resolve().parents[2] / ".beads" / "issues.jsonl"
-    try:
-        lines = tracker.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise UnclassifiedCanaryDiffError("canary expected authority registry is unavailable") from exc
-    statuses: dict[str, str] = {}
-    try:
-        for line in lines:
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            if (
-                isinstance(item, dict)
-                and item.get("_type") == "issue"
-                and isinstance(item.get("id"), str)
-                and isinstance(item.get("status"), str)
-            ):
-                statuses[item["id"]] = item["status"]
-    except json.JSONDecodeError as exc:
-        raise UnclassifiedCanaryDiffError("canary expected authority registry is unreadable") from exc
-    unknown = sorted(bead for bead in expected_beads if bead not in statuses)
-    unavailable = sorted(bead for bead in expected_beads if statuses.get(bead) == "closed")
-    if unknown or unavailable:
-        detail = ", ".join([*(f"unknown {bead}" for bead in unknown), *(f"closed {bead}" for bead in unavailable)])
-        raise UnclassifiedCanaryDiffError(f"expected canary Bead authority is not open in the registry: {detail}")
+        if review.classification is DifferenceClassification.EXPECTED
+        and review.authority_kind is CanaryAuthorityKind.DELTA
+        and review.authority_id is not None
+    }
+    unknown_beads = sorted(bead for bead in expected_beads if bead not in OPEN_BEAD_AUTHORITY_IDS)
+    declared_deltas = {str(declaration.version) for declaration in INDEX_DELTA_DECLARATIONS}
+    unknown_deltas = sorted(delta for delta in expected_deltas if delta not in declared_deltas)
+    if unknown_beads or unknown_deltas:
+        detail = ", ".join(
+            [
+                *(f"unknown Bead {bead}" for bead in unknown_beads),
+                *(f"unknown index delta {delta}" for delta in unknown_deltas),
+            ]
+        )
+        raise UnclassifiedCanaryDiffError(f"expected canary authority is not declared in packaged evidence: {detail}")
 
 
 def _fsync_directory(directory: Path) -> None:

@@ -107,7 +107,7 @@ class _RecordingRebuildBridge(_RecordingBridge):
     """
 
     def run_sync_with_timeout(
-        self, actor: str, timeout: float, function: Callable[..., object], *args: object
+        self, actor: str, timeout: float | None, function: Callable[..., object], *args: object
     ) -> object:
         self.timeline.append(f"run_sync_with_timeout:{actor}:{timeout}")
         return function(*args)
@@ -153,7 +153,7 @@ def test_rebuild_index_route_uses_the_bridge_run_sync_with_timeout_writer_path(m
         with patch.object(handler, "_send_json") as send_json:
             handler._do_post_impl()
 
-    assert timeline == ["run_sync_with_timeout:http.maintenance.rebuild-index:600.0"]
+    assert timeline == ["run_sync_with_timeout:http.maintenance.rebuild-index:None"]
     request = rebuild.call_args.args[0]
     assert request.raw_ids == ("raw-1",)
     assert request.promote is False

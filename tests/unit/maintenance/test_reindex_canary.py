@@ -298,6 +298,13 @@ def _offline_canary_rebuild(
     )
 
 
+def _offline_canary_discard(*, archive_root: Path, generation_id: str, generation_owner_id: str) -> None:
+    """Exercise daemon-owned discard semantics against the fixture archive."""
+    from polylogue.maintenance.rebuild_index import discard_inactive_rebuild_candidate
+
+    discard_inactive_rebuild_candidate(archive_root, generation_id, generation_owner_id)
+
+
 @pytest.fixture(autouse=True)
 def _run_canary_postflight_tests_through_real_rebuild_service(
     monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
@@ -305,6 +312,10 @@ def _run_canary_postflight_tests_through_real_rebuild_service(
     """Keep post-rebuild guards local; daemon transport has its own route test."""
     if request.node.name != "test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_daemon_route":
         monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", _offline_canary_rebuild)
+        monkeypatch.setattr(
+            "polylogue.daemon.bulk_rebuild.discard_daemon_canary_candidate",
+            _offline_canary_discard,
+        )
 
 
 def test_equal_real_generations_ignore_only_materialization_metadata(tmp_path: Path) -> None:
@@ -650,7 +661,7 @@ def test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_da
             calls["request"] = (method, path, body)
             return {"status": "replayed"}
 
-    monkeypatch.setattr("polylogue.daemon.client.DaemonClient", Client)
+    monkeypatch.setattr("polylogue.daemon_client.DaemonClient", Client)
     monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *args, **kwargs: "token")
 
     receipt = bulk_rebuild.run_daemon_canary_rebuild(
@@ -674,6 +685,95 @@ def test_daemon_canary_rebuild_posts_the_bound_canary_request_to_the_existing_da
             "schema_inference_receipt_path": str(tmp_path / "schema.json"),
         },
     )
+    _socket_path, client_options = cast(tuple[object, dict[str, object]], calls["init"])
+    assert client_options["timeout_s"] is None
+
+
+def test_canary_cleanup_dispatches_dictionary_receipts_to_the_daemon(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Postflight failures must release a daemon receipt candidate through its owner."""
+    captured: dict[str, object] = {}
+
+    def discard(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.discard_daemon_canary_candidate", discard)
+
+    errors = reindex_canary_module._discard_canary_candidate(
+        tmp_path,
+        {
+            "generation": {
+                "generation_id": "candidate-1",
+                "owner_id": "owner-1",
+            }
+        },
+    )
+
+    assert errors == []
+    assert captured == {
+        "archive_root": tmp_path,
+        "generation_id": "candidate-1",
+        "generation_owner_id": "owner-1",
+    }
+
+
+def test_live_replay_routing_fingerprint_rejects_changed_running_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Persisted routing evidence cannot approve a changed replay dispatcher."""
+    monkeypatch.setattr("polylogue.sources.origin_specs.replay_routing_fingerprint", lambda: "changed-routing")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="running code"):
+        reindex_canary_module._validate_live_replay_routing_fingerprint("recorded-routing")
+
+
+def test_expected_delta_and_packaged_bead_authorities_resolve_without_tracker_files() -> None:
+    """Installed canaries use typed deltas and packaged Bead evidence, not .beads."""
+    difference = RowDifference(
+        table="blocks",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("block_id", "block"),),
+        before={"text": "before"},
+        after={"text": "after"},
+        changed_columns=("text",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    delta = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:33",
+        rationale="declared index delta",
+    )
+    bead = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="bead:polylogue-0x7nh",
+        rationale="packaged Bead authority",
+    )
+
+    reindex_canary_module._validate_expected_review_authorities((delta, bead))
+
+
+def test_unknown_expected_delta_authority_fails_closed() -> None:
+    difference = RowDifference(
+        table="blocks",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("block_id", "block"),),
+        before={"text": "before"},
+        after={"text": "after"},
+        changed_columns=("text",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    unknown = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:999999",
+        rationale="not declared",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="unknown index delta"):
+        reindex_canary_module._validate_expected_review_authorities((unknown,))
 
 
 def test_canary_comparison_is_read_only(tmp_path: Path) -> None:
@@ -1589,7 +1689,7 @@ def test_review_manifest_rejects_unregistered_expected_bead_authority(tmp_path: 
         encoding="utf-8",
     )
 
-    with pytest.raises(UnclassifiedCanaryDiffError, match="not open in the registry"):
+    with pytest.raises(UnclassifiedCanaryDiffError, match="not declared in packaged evidence"):
         load_canary_review_manifest(manifest)
 
 

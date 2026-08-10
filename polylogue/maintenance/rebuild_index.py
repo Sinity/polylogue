@@ -381,6 +381,25 @@ def _discard_generation_after_provenance_failure(
     return errors
 
 
+def discard_inactive_rebuild_candidate(archive_root: Path, generation_id: str, generation_owner_id: str) -> None:
+    """Discard exactly one daemon-owned inactive generation.
+
+    The caller supplies both immutable generation identity fields. The daemon
+    invokes this under its writer coordinator after client-side canary
+    validation fails; CLI processes never perform this lifecycle mutation.
+    """
+
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    store = IndexGenerationStore(ArchiveLocation.resolve(archive_root), repair_anchor=False)
+    candidate = store.load(generation_id)
+    if candidate.owner_id != generation_owner_id or candidate.state != "inactive":
+        raise RuntimeError(f"canary candidate {generation_id} is not an owned inactive generation")
+    if not store.discard_if_inactive(candidate):
+        raise RuntimeError(f"canary candidate {generation_id} was not discarded")
+
+
 def _discard_transaction_after_provenance_failure(
     generation_store: IndexGenerationStore,
     transaction: IndexRebuildTransaction,

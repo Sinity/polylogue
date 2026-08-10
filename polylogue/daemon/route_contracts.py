@@ -277,6 +277,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "Runs exactly one source snapshot replay through the daemon write coordinator.",
     ),
     RouteContract(
+        "POST",
+        "/api/maintenance/discard-index-candidate",
+        "maintenance",
+        "private",
+        "bearer_if_configured_and_same_origin",
+        "inactive candidate discard receipt",
+        "Reclaims one generation only when its immutable owner id still identifies an inactive candidate.",
+    ),
+    RouteContract(
         "GET",
         "/api/facets",
         "read_query",

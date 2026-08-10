@@ -453,6 +453,11 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
             ("api", "maintenance", "rebuild-index"),
             "_handle_rebuild_index",
         ),
+        _StaticPostRoute(
+            "/api/maintenance/discard-index-candidate",
+            ("api", "maintenance", "discard-index-candidate"),
+            "_handle_discard_index_candidate",
+        ),
     )
 
 
@@ -1296,7 +1301,7 @@ class _AuthResult:
 # (_rebuild_index.py's _run_daemon_rebuild, urlopen(..., timeout=600)) -- so
 # the HTTP route asks the bridge to wait that same 600s instead of the 30s
 # default, which would otherwise kill a still-running rebuild pass early.
-_REBUILD_INDEX_WRITE_TIMEOUT_S = 600.0
+_REBUILD_INDEX_WRITE_TIMEOUT_S: float | None = None
 
 
 class DaemonAPIHandler(BaseHTTPRequestHandler):
@@ -5289,11 +5294,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_rebuild_index(self) -> None:
         """POST /api/maintenance/rebuild-index — one coordinator-owned replay pass.
 
-        polylogue-ogn1: waits up to ``_REBUILD_INDEX_WRITE_TIMEOUT_S`` through
-        the write bridge, matching the CLI's own ``--daemon`` HTTP client
-        timeout (``_run_daemon_rebuild``'s ``urlopen(..., timeout=600)``)
-        rather than the bridge's much shorter default request timeout (30s),
-        which would otherwise kill a still-running rebuild pass early.
+        Canary callers wait for the daemon-owned receipt without a competing
+        synchronous deadline. Otherwise the bridge can finish an inactive
+        candidate after the caller has timed out and lost cleanup authority.
         """
         content_length = int(self.headers.get("Content-Length", 0))
         body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
@@ -5424,6 +5427,47 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             request,
         )
         self._send_json(HTTPStatus.OK, receipt.to_dict())
+
+    @daemon_safe_handler
+    def _handle_discard_index_candidate(self) -> None:
+        """Discard one owned inactive index candidate through the daemon."""
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            body = json.loads(body_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if not isinstance(body, dict):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        generation_id = body.get("generation_id")
+        generation_owner_id = body.get("generation_owner_id")
+        if (
+            not isinstance(generation_id, str)
+            or not generation_id
+            or not isinstance(generation_owner_id, str)
+            or not generation_owner_id
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        from polylogue.maintenance.rebuild_index import discard_inactive_rebuild_candidate
+        from polylogue.paths import archive_root
+
+        bridge = getattr(self.server, "write_bridge", None)
+        if bridge is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
+            return
+        cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
+            "http.maintenance.discard-index-candidate",
+            _REBUILD_INDEX_WRITE_TIMEOUT_S,
+            discard_inactive_rebuild_candidate,
+            archive_root(),
+            generation_id,
+            generation_owner_id,
+        )
+        self._send_json(HTTPStatus.OK, {"discarded": True, "generation_id": generation_id})
 
     @daemon_safe_handler
     def _handle_maintenance_status(self, operation_id: str) -> None:

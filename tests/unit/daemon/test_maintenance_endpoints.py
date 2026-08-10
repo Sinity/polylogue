@@ -212,6 +212,28 @@ class TestMaintenanceAPIRoutes:
         rebuild.assert_not_called()
         send_error.assert_called_once_with(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
 
+    def test_discard_candidate_runs_through_the_daemon_writer_bridge(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+        handler = _make_handler(
+            "/api/maintenance/discard-index-candidate",
+            body={"generation_id": "candidate-1", "generation_owner_id": "owner-1"},
+        )
+        calls: list[tuple[object, ...]] = []
+
+        class Bridge:
+            def run_sync_with_timeout(self, actor, timeout, function, *args):  # type: ignore[no-untyped-def]
+                calls.append((actor, timeout, *args))
+                return function(*args)
+
+        handler.server.write_bridge = type("Bridge", (Bridge,), {})()
+        with patch("polylogue.maintenance.rebuild_index.discard_inactive_rebuild_candidate") as discard:
+            with patch.object(handler, "_send_json") as send:
+                handler._handle_discard_index_candidate()
+
+        assert calls == [("http.maintenance.discard-index-candidate", None, tmp_path, "candidate-1", "owner-1")]
+        discard.assert_called_once_with(tmp_path, "candidate-1", "owner-1")
+        send.assert_called_once_with(HTTPStatus.OK, {"discarded": True, "generation_id": "candidate-1"})
+
 
 class TestMaintenanceRegistryEndpoints:
     """GET /api/maintenance/status/<op_id> and /api/maintenance/operations (#1197)."""
