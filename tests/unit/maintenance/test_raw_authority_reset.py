@@ -25,16 +25,18 @@ from polylogue.maintenance.raw_authority_recovery import (
     resume_raw_authority_recovery,
     write_recovery_plan,
 )
-from polylogue.maintenance.raw_authority_reset import (
-    prune_orphaned_index_revision_seeds,
-    reset_raw_authority_census,
-)
 from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import write_source_continuity_pending_intent
 from polylogue.storage.sqlite.migration_runner import DurableDatabaseEvidence, capture_durable_database_evidence
 from polylogue.version import VERSION_INFO
+
+
+@pytest.fixture(autouse=True)
+def _clean_recovery_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise recovery against the signed-build condition each test models."""
+    monkeypatch.setattr(VERSION_INFO, "dirty", False)
 
 
 def _seed_ledger(source_db: Path) -> None:
@@ -534,10 +536,11 @@ def test_census_reset_dry_run_does_not_mutate_and_apply_requires_backup(tmp_path
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     before = (tmp_path / "source.db").read_bytes()
-    reset_raw_authority_census(tmp_path, dry_run=True)
+    inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
     assert (tmp_path / "source.db").read_bytes() == before
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
     with pytest.raises(RawAuthorityRecoveryError, match="backup authority"):
-        reset_raw_authority_census(tmp_path, dry_run=False)
+        apply_raw_authority_recovery(plan)
     assert (tmp_path / "source.db").read_bytes() == before
 
 
@@ -963,11 +966,12 @@ def test_index_recovery_actuator_receipt_retains_authorized_plan_identity(
     assert receipt.affected_count == 2
 
 
-def test_named_compatibility_facade_requires_index_backup(tmp_path: Path) -> None:
+def test_index_prune_requires_index_backup(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     _seed_index_seeds(tmp_path)
+    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS)
     with pytest.raises(RawAuthorityRecoveryError, match="backup authority"):
-        prune_orphaned_index_revision_seeds(tmp_path, dry_run=False)
+        apply_raw_authority_recovery(plan)
 
 
 def test_storage_compatibility_helpers_refuse_direct_mutation(tmp_path: Path) -> None:
