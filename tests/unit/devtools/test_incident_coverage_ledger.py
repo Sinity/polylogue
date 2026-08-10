@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from copy import deepcopy
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -10,6 +12,7 @@ from devtools.incident_coverage_ledger import (
     CAMPAIGN_GRAPH_PATH,
     LEDGER_PATH,
     IncidentCoverageLedgerError,
+    load_beads_jsonl,
     load_campaign_graph,
     load_ledger,
     resolve_default_incident_coverage,
@@ -29,53 +32,37 @@ def _rows(ledger: dict[str, object]) -> list[dict[str, object]]:
     return cast(list[dict[str, object]], ledger["rows"])
 
 
-def test_real_campaign_graph_resolves_all_current_forcing_dependencies() -> None:
+def _mutated_beads(tmp_path: Path, mutation: Callable[[dict[str, dict[str, object]]], None]) -> Path:
+    records = deepcopy(load_beads_jsonl())
+    mutation(records)
+    path = tmp_path / "issues.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in records.values()) + "\n", encoding="utf-8")
+    return path
+
+
+def test_real_campaign_graph_resolves_the_current_forcing_set() -> None:
     result = resolve_default_incident_coverage()
 
     assert result.target_bead_id == "polylogue-818fy"
-    assert result.ledger_row_count == 40
-    assert len(result.forcing_dependency_ids) == 40
-    assert set(result.successor_backed_ids) == {
-        "polylogue-0qfy",
-        "polylogue-2hwl",
-        "polylogue-2qrx",
-        "polylogue-5iz4",
-        "polylogue-6753s",
-        "polylogue-foee",
-        "polylogue-ix5r",
-        "polylogue-slshy",
-        "polylogue-xofj",
-    }
+    assert result.forcing_dependency_ids == (
+        "polylogue-a7xr.25",
+        "polylogue-reindex-source-remediation",
+        "polylogue-xselt",
+    )
+    assert result.ledger_row_count == 3
     assert LEDGER_PATH.is_file()
     assert CAMPAIGN_GRAPH_PATH.is_file()
 
 
-def test_slshy_keeps_partial_disposition_and_named_residual_scope() -> None:
-    ledger = _ledger()
-    row = next(row for row in _rows(ledger) if row["bead_id"] == "polylogue-slshy")
-    graph_entry = next(
-        entry
-        for entry in cast(list[dict[str, object]], _graph()["forcing_dependencies"])
-        if entry["bead_id"] == "polylogue-slshy"
-    )
-
-    assert row["bead_status"] == "in_progress"
-    assert row["residual_successor"] == {
-        "bead_id": "polylogue-message-owner-scope-backfill",
-        "kind": "named-child-bead",
-    }
-    assert set(cast(list[str], graph_entry["child_bead_ids"])) == {
-        "polylogue-xselt",
-        "polylogue-message-owner-scope-backfill",
-    }
-
-
-def test_deleting_a_forcing_row_is_blocking() -> None:
+def test_deleting_a_ledger_row_emits_machine_readable_missing_id() -> None:
     ledger = _ledger()
     _rows(ledger).pop()
 
-    with pytest.raises(IncidentCoverageLedgerError, match="ledger rows do not match forcing dependencies"):
+    with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(ledger, _graph())
+
+    assert error.value.diagnostic["error"] == "forcing_set_mismatch"
+    assert error.value.diagnostic["missing_ids"] == ["polylogue-xselt"]
 
 
 def test_duplicate_forcing_row_is_blocking() -> None:
@@ -86,74 +73,145 @@ def test_duplicate_forcing_row_is_blocking() -> None:
         resolve_incident_coverage(ledger, _graph())
 
 
-def test_replacing_a_forcing_row_with_an_unknown_bead_is_blocking() -> None:
-    ledger = _ledger()
-    row = _rows(ledger)[0]
-    row["bead_id"] = "polylogue-not-a-forcing-dependency"
-    cast(dict[str, object], row["incident"])["bead_id"] = "polylogue-not-a-forcing-dependency"
+def test_current_beads_jsonl_removing_a_forcing_dependency_is_blocking(tmp_path: Path) -> None:
+    def remove_dependency(records: dict[str, dict[str, object]]) -> None:
+        target = records["polylogue-818fy"]
+        dependencies = cast(list[dict[str, object]], target["dependencies"])
+        dependencies.pop()
 
-    with pytest.raises(IncidentCoverageLedgerError, match="ledger rows do not match forcing dependencies"):
-        resolve_incident_coverage(ledger, _graph())
+    beads_path = _mutated_beads(tmp_path, remove_dependency)
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
+
+    assert error.value.diagnostic["error"] == "campaign_graph_mismatch"
+    assert error.value.diagnostic["missing_ids"] == []
+    assert error.value.diagnostic["extra_ids"] == ["polylogue-xselt"]
+
+
+def test_current_beads_jsonl_adding_a_p0_forcing_blocker_is_blocking(tmp_path: Path) -> None:
+    def add_dependency(records: dict[str, dict[str, object]]) -> None:
+        target = records["polylogue-818fy"]
+        dependencies = cast(list[dict[str, object]], target["dependencies"])
+        dependencies.append(
+            {
+                "issue_id": "polylogue-818fy",
+                "depends_on_id": "polylogue-dudtn",
+                "type": "blocks",
+            }
+        )
+
+    beads_path = _mutated_beads(tmp_path, add_dependency)
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
+
+    assert error.value.diagnostic["missing_ids"] == ["polylogue-dudtn"]
+
+
+def test_current_beads_jsonl_dependency_kind_change_is_blocking(tmp_path: Path) -> None:
+    def change_dependency_kind(records: dict[str, dict[str, object]]) -> None:
+        target = records["polylogue-818fy"]
+        dependencies = cast(list[dict[str, object]], target["dependencies"])
+        dependencies[0]["type"] = "relates-to"
+
+    beads_path = _mutated_beads(tmp_path, change_dependency_kind)
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
+
+    assert error.value.diagnostic["extra_ids"] == ["polylogue-a7xr.25"]
+
+
+def test_unknown_dependency_kind_is_structured_and_blocking(tmp_path: Path) -> None:
+    def change_dependency_kind(records: dict[str, dict[str, object]]) -> None:
+        target = records["polylogue-818fy"]
+        dependencies = cast(list[dict[str, object]], target["dependencies"])
+        dependencies[0]["type"] = "invented-kind"
+
+    beads_path = _mutated_beads(tmp_path, change_dependency_kind)
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(_ledger(), _graph(), beads_path=beads_path)
+
+    assert error.value.diagnostic["error"] == "unknown_dependency_kind"
+    assert error.value.diagnostic["dependency_kind"] == "invented-kind"
 
 
 @pytest.mark.parametrize(
-    ("mutation", "message"),
+    ("mutation", "diagnostic"),
     [
-        (lambda row: row["red_mutation"].__setitem__("fixture_id", "deleted-fixture"), "unknown fixture"),
-        (lambda row: row["registry_checks"].append("deleted-check"), "unknown checks"),
-        (lambda row: row["expected_snapshot"].__setitem__("snapshot_id", "deleted-snapshot"), "unknown snapshot"),
+        (lambda row: row["red_mutation"].__setitem__("fixture_id", "deleted-fixture"), "unknown_fixture"),
+        (lambda row: row["registry_checks"].append("deleted-check"), "unknown_checks"),
+        (lambda row: row["expected_snapshot"].__setitem__("snapshot_id", "deleted-snapshot"), "unknown_snapshot"),
     ],
 )
 def test_deleted_fixture_check_or_snapshot_is_blocking(
-    mutation: Callable[[dict[str, object]], None], message: str
+    mutation: Callable[[dict[str, object]], None], diagnostic: str
 ) -> None:
     ledger = _ledger()
-    row = _rows(ledger)[0]
-    mutation(row)
+    mutation(_rows(ledger)[0])
 
-    with pytest.raises(IncidentCoverageLedgerError, match=message):
+    with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(ledger, _graph())
 
+    assert error.value.diagnostic["error"] == diagnostic
 
-def test_deleting_a_named_successor_is_blocking() -> None:
+
+def test_catalog_source_must_resolve_to_a_committed_file() -> None:
     ledger = _ledger()
-    successor = cast(dict[str, object], _rows(ledger)[0]["residual_successor"])
-    cast(dict[str, object], ledger["successors"]).pop(str(successor["bead_id"]))
+    fixtures = cast(dict[str, dict[str, object]], ledger["fixtures"])
+    fixtures["campaign-corpus"]["source"] = "tests/fixtures/reindex_incident_coverage/deleted.json"
 
-    with pytest.raises(IncidentCoverageLedgerError, match="unknown successor"):
+    with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(ledger, _graph())
 
+    assert error.value.diagnostic["error"] == "unresolved_source_reference"
 
-def test_dangling_receipt_reference_is_blocking() -> None:
+
+def test_receipt_owner_must_match_the_row_that_uses_it() -> None:
     ledger = _ledger()
-    row = next(row for row in _rows(ledger) if row["bead_id"] == "polylogue-5xxmc")
-    cast(list[str], row["receipts"]).append("deleted-receipt")
+    receipts = cast(dict[str, dict[str, object]], ledger["receipts"])
+    receipts["live-proof-5xxmc"]["owner_bead_id"] = "polylogue-7zp4"
+    cast(list[str], _rows(ledger)[0]["receipts"]).append("live-proof-5xxmc")
 
-    with pytest.raises(IncidentCoverageLedgerError, match="unknown receipts"):
+    with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(ledger, _graph())
 
+    assert error.value.diagnostic["error"] == "receipt_owner_mismatch"
+    assert error.value.diagnostic["expected_owner"] == "polylogue-a7xr.25"
 
-def test_successor_from_another_parent_is_blocking() -> None:
+
+def test_successor_source_and_parent_are_resolved() -> None:
     ledger = _ledger()
-    successor = cast(dict[str, object], _rows(ledger)[0]["residual_successor"])
-    successor["bead_id"] = "polylogue-active-leaf-live-proof"
+    graph = _graph()
+    successor_id = "polylogue-claude-vintage-live-proof"
+    cast(list[str], graph["known_child_bead_ids"]).append(successor_id)
+    dependency = cast(list[dict[str, object]], graph["forcing_dependencies"])[0]
+    dependency["child_bead_ids"] = [successor_id]
+    _rows(ledger)[0]["residual_successor"] = {
+        "bead_id": successor_id,
+        "kind": "named-child-bead",
+    }
 
-    with pytest.raises(IncidentCoverageLedgerError, match="not a named child"):
-        resolve_incident_coverage(ledger, _graph())
+    result = resolve_incident_coverage(ledger, graph)
+
+    assert result.successor_backed_ids == ("polylogue-a7xr.25",)
 
 
-def test_closed_implementation_without_live_proof_or_child_is_blocking() -> None:
+def test_missing_successor_catalog_entry_is_blocking() -> None:
     ledger = _ledger()
-    row = next(row for row in _rows(ledger) if row["bead_id"] == "polylogue-5xxmc")
-    row["receipts"] = []
-    row["residual_successor"] = None
+    graph = _graph()
+    successor_id = "polylogue-claude-vintage-live-proof"
+    cast(list[str], graph["known_child_bead_ids"]).append(successor_id)
+    cast(list[dict[str, object]], graph["forcing_dependencies"])[0]["child_bead_ids"] = [successor_id]
+    _rows(ledger)[0]["residual_successor"] = {
+        "bead_id": successor_id,
+        "kind": "named-child-bead",
+    }
+    cast(dict[str, object], ledger["successors"]).pop(successor_id)
 
-    with pytest.raises(IncidentCoverageLedgerError, match="closed implementation bead polylogue-5xxmc"):
-        resolve_incident_coverage(ledger, _graph())
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(ledger, graph)
 
-
-def test_closed_implementation_with_named_child_remains_explicitly_blocked() -> None:
-    result = resolve_default_incident_coverage()
-
-    assert "polylogue-0qfy" in result.closed_implementation_ids
-    assert "polylogue-0qfy" in result.successor_backed_ids
+    assert error.value.diagnostic["error"] == "unknown_successor"
