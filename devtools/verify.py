@@ -1234,6 +1234,7 @@ def _run_pytest_with_heartbeat(
                 and stall_timeout_s > 0
                 and seen_any_progress_event
                 and progress_idle >= stall_timeout_s
+                and xdist_uninterruptible_since is None
             ):
                 termination_reason = (
                     f"pytest reported no test progress for {stall_timeout_s:g}s "

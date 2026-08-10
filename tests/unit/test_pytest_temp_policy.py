@@ -134,6 +134,13 @@ def test_managed_pytest_temp_root_refuses_when_every_candidate_is_full(
         conftest._managed_pytest_temp_root()
 
 
+def test_negative_declared_basetemp_demand_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB", "-1")
+
+    with pytest.raises(verify_runs.PytestResourceError, match="invalid POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB"):
+        verify_runs.pytest_basetemp_required_kb(os.environ)
+
+
 def test_pytest_configure_reports_low_space_as_usage_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

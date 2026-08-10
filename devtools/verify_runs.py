@@ -704,7 +704,10 @@ def pytest_basetemp_required_kb(env: Mapping[str, str]) -> int | None:
     if not raw:
         return None
     try:
-        return max(0, int(raw)) * 1024
+        value_mb = int(raw)
+        if value_mb < 0:
+            raise PytestResourceError(f"invalid {PYTEST_BASETEMP_REQUIRED_MB_ENV}={raw!r}")
+        return value_mb * 1024
     except ValueError as exc:
         raise PytestResourceError(f"invalid {PYTEST_BASETEMP_REQUIRED_MB_ENV}={raw!r}") from exc
 
@@ -792,7 +795,9 @@ def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
             # can safely consume. Keep the normal headroom in addition to the
             # cap so a bounded run cannot fill /dev/shm and strand unrelated
             # processes before the supervisor notices.
-            tmpfs_required_kb = min_free_kb + (required_kb or budget_kb or 0)
+            headroom_kb = pytest_basetemp_min_free_kb(normalized)
+            declared_demand_kb = required_kb if required_kb is not None else (budget_kb or 0)
+            tmpfs_required_kb = headroom_kb + declared_demand_kb
             demand_fits_budget = free_kb is not None and free_kb >= tmpfs_required_kb
             if demand_fits_budget:
                 return shm, "tmpfs opt-in"
