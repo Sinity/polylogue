@@ -74,6 +74,7 @@ ON CONFLICT(artifact_id) DO UPDATE SET
     link_group_key = excluded.link_group_key,
     sidecar_agent_type = excluded.sidecar_agent_type,
     last_observed_at_ms = excluded.last_observed_at_ms
+WHERE excluded.last_observed_at_ms >= raw_artifacts.last_observed_at_ms
 """
 
 

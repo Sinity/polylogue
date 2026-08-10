@@ -575,6 +575,11 @@ CREATE TABLE IF NOT EXISTS raw_authority_artifact_census_checkpoints (
     census_id               TEXT PRIMARY KEY,
     universe_sha256         TEXT NOT NULL CHECK(length(universe_sha256) = 64),
     candidate_count         INTEGER NOT NULL CHECK(candidate_count >= 0),
+    universe_complete       INTEGER NOT NULL DEFAULT 0 CHECK(universe_complete IN (0, 1)),
+    snapshot_max_raw_rowid  INTEGER NOT NULL CHECK(snapshot_max_raw_rowid >= 0),
+    materialized_after_rowid INTEGER NOT NULL DEFAULT 0 CHECK(materialized_after_rowid >= 0),
+    index_generation        TEXT NOT NULL,
+    index_identity_sha256   TEXT NOT NULL CHECK(length(index_identity_sha256) = 64),
     next_after_raw_id       TEXT,
     last_receipt_id         TEXT REFERENCES raw_authority_artifact_census_receipts(receipt_id),
     completed_at_ms         INTEGER,
@@ -584,13 +589,16 @@ CREATE TABLE IF NOT EXISTS raw_authority_artifact_census_checkpoints (
 CREATE TABLE IF NOT EXISTS raw_authority_artifact_census_checkpoint_members (
     census_id               TEXT NOT NULL REFERENCES raw_authority_artifact_census_checkpoints(census_id) ON DELETE CASCADE,
     ordinal                 INTEGER NOT NULL CHECK(ordinal >= 0),
-    raw_id                  TEXT NOT NULL REFERENCES raw_sessions(raw_id),
+    raw_id                  TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     PRIMARY KEY (census_id, raw_id),
     UNIQUE (census_id, ordinal)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_raw_authority_artifact_census_checkpoint_members_page
 ON raw_authority_artifact_census_checkpoint_members(census_id, ordinal);
+
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_raw_authority_census_candidates
+ON raw_sessions(revision_authority, parse_error);
 
 CREATE TABLE IF NOT EXISTS raw_artifacts (
     artifact_id              TEXT PRIMARY KEY,

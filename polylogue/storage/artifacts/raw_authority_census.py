@@ -76,6 +76,7 @@ class RawAuthorityArtifactCensus:
     entries: tuple[RawAuthorityCensusEntry, ...]
     after_raw_id: str | None = None
     has_more: bool | None = None
+    page_next_after_raw_id: str | None = None
 
     @property
     def scanned_count(self) -> int:
@@ -88,6 +89,8 @@ class RawAuthorityArtifactCensus:
     @property
     def next_after_raw_id(self) -> str | None:
         """Return the exclusive cursor for the next bounded page, if any."""
+        if self.has_more is not None:
+            return self.page_next_after_raw_id if self.has_more else None
         if not self.truncated or not self.entries:
             return None
         return self.entries[-1].raw_id

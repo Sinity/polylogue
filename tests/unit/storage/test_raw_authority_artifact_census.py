@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
-from polylogue.core.enums import Provider
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.storage.artifacts import raw_authority_census as census_module
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.artifacts.raw_authority_census import (
@@ -19,7 +19,7 @@ from polylogue.storage.artifacts.raw_authority_census import (
     write_artifact_observations,
 )
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
-from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -339,6 +339,46 @@ def test_census_gives_canonical_duplicate_precedence_over_artifact_path(archive:
     assert report.entries_for(RawAuthorityBucket.ARTIFACT) == ()
     duplicate = report.entries_for(RawAuthorityBucket.TERMINAL_BYTE_DUPLICATE)
     assert [entry.raw_id for entry in duplicate] == ["raw-artifact-duplicate"]
+
+
+def test_artifact_observation_upsert_preserves_newest_acquisition(archive: Path) -> None:
+    payload = _tool_result_payload()
+    with ArchiveStore.open_existing(archive, read_only=False) as store:
+        _write_raw(
+            store,
+            raw_id="raw-newer",
+            provider=Provider.CLAUDE_CODE,
+            payload=payload,
+            source_path="/exports/shared.json",
+        )
+        _write_raw(
+            store,
+            raw_id="raw-older",
+            provider=Provider.CLAUDE_CODE,
+            payload=payload + b" ",
+            source_path="/exports/older.json",
+        )
+        store.commit()
+    newer = ArtifactObservationRecord(
+        observation_id="shared-artifact",
+        raw_id="raw-newer",
+        payload_provider=Provider.CLAUDE_CODE,
+        source_path="/exports/shared.json",
+        source_index=0,
+        artifact_kind="tool_result",
+        classification_reason="newer observation",
+        parse_as_session=False,
+        schema_eligible=False,
+        support_status=ArtifactSupportStatus.RECOGNIZED_UNPARSED,
+        first_observed_at="200",
+        last_observed_at="200",
+    )
+    older = newer.model_copy(update={"raw_id": "raw-older", "last_observed_at": "100"})
+    with sqlite3.connect(archive / "source.db") as conn:
+        write_artifact_observations(conn, (newer, older))
+        assert conn.execute(
+            "SELECT raw_id, last_observed_at_ms FROM raw_artifacts WHERE artifact_id = 'shared-artifact'"
+        ).fetchone() == ("raw-newer", 200)
 
 
 def test_census_passes_the_selected_archive_blob_store_to_inspection(

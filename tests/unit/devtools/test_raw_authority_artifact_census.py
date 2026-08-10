@@ -19,6 +19,7 @@ from polylogue.maintenance.raw_authority_artifact_census import (
     RawAuthorityArtifactCensusError,
     run_raw_authority_artifact_census,
 )
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.raw_authority_census import RawAuthorityBucket
 from polylogue.storage.blob_store import reset_blob_store
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -209,7 +210,7 @@ def test_apply_pages_observations_through_real_backup_gates_and_records_receipts
             stdout=output,
         )
         == 0
-    )
+    ), output.getvalue()
     second_payload = json.loads(output.getvalue())
     assert second_payload["receipt"]["page"] == {"after_raw_id": "raw-artifact", "next_after_raw_id": None}
     with sqlite3.connect(archive / "source.db") as conn:
@@ -289,7 +290,57 @@ def test_apply_refuses_replayed_or_unbound_page_cursor(
         )
     fifth_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="fifth")
     next_census = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=fifth_manifest, limit=1)
-    assert [entry.raw_id for entry in next_census.census.entries] == ["raw-a-added-after-checkpoint"]
+    assert [entry.raw_id for entry in next_census.census.entries] == ["raw-b"]
+
+
+def test_apply_checkpoint_is_bounded_and_refuses_changed_index_authority(
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for raw_id in ("raw-a", "raw-b", "raw-c"):
+        _write_artifact(archive, raw_id=raw_id)
+    first_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="bounded-first")
+    first = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=first_manifest, limit=1)
+    evidence = first.receipt["evidence"]
+    assert isinstance(evidence, dict)
+    checkpoint_evidence = evidence["checkpoint"]
+    assert isinstance(checkpoint_evidence, dict)
+    census_id = checkpoint_evidence["census_id"]
+    assert isinstance(census_id, str)
+    assert first.census.next_after_raw_id == "raw-a"
+    with sqlite3.connect(archive / "source.db") as conn:
+        assert conn.execute(
+            "SELECT candidate_count FROM raw_authority_artifact_census_checkpoints WHERE census_id = ?", (census_id,)
+        ).fetchone() == (2,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_authority_artifact_census_checkpoint_members WHERE census_id = ?", (census_id,)
+        ).fetchone() == (2,)
+    active_index = ArchiveLocation.resolve(archive).active_index_path
+    replacement = tmp_path / "changed-index.db"
+    shutil.copy2(active_index, replacement)
+    replacement.replace(active_index)
+    continuation_manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="bounded-continuation")
+    with pytest.raises(RawAuthorityArtifactCensusError, match="index authority changed"):
+        run_raw_authority_artifact_census(
+            archive,
+            apply=True,
+            backup_manifest=continuation_manifest,
+            census_id=census_id,
+            after_raw_id="raw-a",
+            limit=1,
+        )
+
+
+def test_completed_checkpoint_members_do_not_block_raw_excision(
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_artifact(archive, raw_id="raw-excise")
+    manifest = _real_backup_manifest(archive, tmp_path, monkeypatch, label="excise")
+    completed = run_raw_authority_artifact_census(archive, apply=True, backup_manifest=manifest, limit=1)
+    assert completed.census.next_after_raw_id is None
+    with sqlite3.connect(archive / "source.db") as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("DELETE FROM raw_sessions WHERE raw_id = 'raw-excise'")
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_artifact_census_checkpoint_members").fetchone() == (0,)
 
 
 def test_apply_rejects_receipt_option_before_mutating_source(archive: Path) -> None:
