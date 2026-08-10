@@ -321,7 +321,7 @@ def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_iden
                     else:
                         blocks.append(block)
                 corrupted_messages.append(
-                    message.model_copy(update={"text": message.text.replace(segment, ""), "blocks": blocks})
+                    message.model_copy(update={"text": (message.text or "").replace(segment, ""), "blocks": blocks})
                 )
             corrupted_sessions.append(parsed_session.model_copy(update={"messages": corrupted_messages}))
         return corrupted_sessions

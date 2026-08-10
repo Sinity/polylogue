@@ -4,7 +4,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -193,7 +193,7 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
     registry = _registry()
     archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
     package_receipts = [
-        build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
+        build_schema_inference_receipt(cast(Any, registry), provider=provider, gate_receipt_digest=gate_digest)
         for provider in registry.list_providers()
     ]
     package_receipt = package_receipts[0]
@@ -202,7 +202,7 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
     wire_support = build_wire_support_receipt(registry=registry)
 
     manifest = compile_inferred_corpus_manifest(
-        registry=registry,
+        registry=cast(Any, registry),
         package_receipt=package_receipt.to_payload(),
         wire_support_receipt=wire_support,
         campaign_mode=True,
@@ -262,7 +262,7 @@ def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidati
         read_inferred_corpus_manifest(
             path,
             campaign_mode=True,
-            registry=registry,
+            registry=cast(Any, registry),
             gate_receipt_path=gate_receipt_path,
             archive_root=archive_root,
         )
@@ -272,11 +272,13 @@ def test_explicit_scope_campaign_does_not_re_census_unselected_provider(tmp_path
     base_registry = _registry()
     registry = _RegistryProxy(base_registry)
     archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
-    package_receipt = build_schema_inference_receipt(registry, provider="codex", gate_receipt_digest=gate_digest)
+    package_receipt = build_schema_inference_receipt(
+        cast(Any, registry), provider="codex", gate_receipt_digest=gate_digest
+    )
     wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
     assert wire_support.catalog_scope == "explicit"
     manifest = compile_inferred_corpus_manifest(
-        registry=registry,
+        registry=cast(Any, registry),
         providers=("codex",),
         package_receipt=package_receipt.to_payload(),
         wire_support_receipt=wire_support,
@@ -293,7 +295,7 @@ def test_explicit_scope_campaign_does_not_re_census_unselected_provider(tmp_path
         read_inferred_corpus_manifest(
             path,
             campaign_mode=True,
-            registry=registry,
+            registry=cast(Any, registry),
             gate_receipt_path=gate_receipt_path,
             archive_root=archive_root,
         )

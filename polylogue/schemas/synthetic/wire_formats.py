@@ -1483,13 +1483,13 @@ def _parser_artifact_messages_have_artifact_bound_content(
                 if isinstance(block.text, str)
                 for segment in _parser_artifact_observed_text_segments(block.text)
             )
-            expected_texts = raw_texts_by_identity.get(message.provider_message_id)
-            if expected_texts is not None and not any(
-                _parser_artifact_text_segments_are_covered(expected_texts, candidate)
+            expected_segments = raw_texts_by_identity.get(message.provider_message_id)
+            if expected_segments is not None and not any(
+                _parser_artifact_text_segments_are_covered(expected_segments, candidate)
                 for candidate in (observed_message_text, observed_block_texts)
             ):
                 return False
-            if expected_texts is None:
+            if expected_segments is None:
                 observed_anonymous_texts.update((*observed_message_text, *observed_block_texts))
     return _parser_artifact_text_segments_are_covered(anonymous_raw_texts, tuple(observed_anonymous_texts.elements()))
 
