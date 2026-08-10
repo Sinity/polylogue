@@ -241,12 +241,12 @@ def test_typed_scheduler_receipt_is_authoritative_over_newer_legacy_event(tmp_pa
             "retryable": True,
             "retry_route": "next enabled judgment-automation tick",
             "batch_limit": 200,
-            "considered": 6,
+            "considered": 5,
             "accepted": 2,
             "rejected": 1,
             "escalated": 1,
             "idempotent": 1,
-            "failed": 1,
+            "failed": 0,
             "receipt_persistence_degraded": False,
             "receipt_persistence_recovered": True,
         },
@@ -265,12 +265,12 @@ def test_typed_scheduler_receipt_is_authoritative_over_newer_legacy_event(tmp_pa
     assert health.judgment_scheduler_receipt_retryable is True
     assert health.judgment_scheduler_receipt_retry_route == "next enabled judgment-automation tick"
     assert health.judgment_scheduler_receipt_batch_limit == 200
-    assert health.judgment_scheduler_receipt_considered == 6
+    assert health.judgment_scheduler_receipt_considered == 5
     assert health.judgment_scheduler_receipt_accepted == 2
     assert health.judgment_scheduler_receipt_rejected == 1
     assert health.judgment_scheduler_receipt_escalated == 1
     assert health.judgment_scheduler_receipt_idempotent == 1
-    assert health.judgment_scheduler_receipt_failed == 1
+    assert health.judgment_scheduler_receipt_failed == 0
     assert health.judgment_scheduler_receipt_persistence_degraded is False
     assert health.judgment_scheduler_receipt_persistence_recovered is True
 

@@ -3083,6 +3083,26 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             receipt_reason = queue.get("judgment_scheduler_receipt_reason")
             if receipt_reason is not None:
                 receipt_parts.append(f"reason={receipt_reason}")
+            retryable = queue.get("judgment_scheduler_receipt_retryable")
+            if isinstance(retryable, bool):
+                receipt_parts.append(f"retryable={retryable}")
+            retry_route = queue.get("judgment_scheduler_receipt_retry_route")
+            if retry_route is not None:
+                receipt_parts.append(f"route={retry_route}")
+            batch_limit = queue.get("judgment_scheduler_receipt_batch_limit")
+            if isinstance(batch_limit, int) and not isinstance(batch_limit, bool):
+                receipt_parts.append(f"batch={batch_limit}")
+            counter_parts = []
+            for name in ("considered", "accepted", "rejected", "escalated", "idempotent", "failed"):
+                value = queue.get(f"judgment_scheduler_receipt_{name}")
+                if value is not None:
+                    counter_parts.append(f"{name}={value}")
+            if counter_parts:
+                receipt_parts.append("counts=" + ",".join(counter_parts))
+            degraded = queue.get("judgment_scheduler_receipt_persistence_degraded")
+            recovered = queue.get("judgment_scheduler_receipt_persistence_recovered")
+            if isinstance(degraded, bool) or isinstance(recovered, bool):
+                receipt_parts.append(f"persistence_degraded={degraded};persistence_recovered={recovered}")
             lines.append("  " + "; ".join(receipt_parts))
     live = payload.get("live")
     if isinstance(live, dict):
