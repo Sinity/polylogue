@@ -45,6 +45,7 @@ _RESOLUTION_PRIORITY: dict[SchemaResolutionReason, int] = {
     "exact_structure": 3,
     "bundle_scope": 2,
     "profile_family": 1,
+    "package_catalog": 0,
     "package_default": 0,
 }
 

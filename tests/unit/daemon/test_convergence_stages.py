@@ -7,6 +7,7 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -33,7 +34,9 @@ from polylogue.scenarios import (
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.insights.session import storage as session_storage
+from polylogue.storage.insights.session.repair_assessment import session_insight_status_ready
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
+from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
@@ -1678,7 +1681,7 @@ def test_insights_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) ->
 def test_archive_insights_execute_ids_preserves_millisecond_sort_key(tmp_path: Path) -> None:
     db_path = tmp_path / "index.db"
     session_id = "codex-session:conv-ms"
-    source_sort_key_ms = 1_779_606_000_953
+    source_sort_key_ms = 1_097_440_214_212
     with open_connection(db_path) as conn:
         _seed_index_session(conn, session_id="conv-ms", text="Message with millisecond sort key")
         conn.execute(
@@ -1697,9 +1700,94 @@ def test_archive_insights_execute_ids_preserves_millisecond_sort_key(tmp_path: P
             "SELECT source_sort_key FROM session_profiles WHERE session_id = ?",
             (session_id,),
         ).fetchone()
+        latency_materialization = conn.execute(
+            """
+            SELECT source_sort_key_ms
+            FROM insight_materialization
+            WHERE session_id = ? AND insight_type = 'latency'
+            """,
+            (session_id,),
+        ).fetchone()
         assert profile is not None
         assert profile["source_sort_key"] == pytest.approx(source_sort_key_ms / 1000.0)
+        assert latency_materialization is not None
+        assert latency_materialization["source_sort_key_ms"] == source_sort_key_ms
         assert stages._archive_stale_session_profile_ids(conn, [session_id]) == []
+
+
+def test_archive_insights_execute_ids_propagates_provider_high_water_mark(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    session_id = "codex-session:conv-provider-hwm"
+    provider_hwm_ms = 1_779_606_000_953
+    with open_connection(db_path) as conn:
+        _seed_index_session(conn, session_id="conv-provider-hwm", text="Provider timestamp session")
+        conn.execute(
+            "UPDATE sessions SET updated_at_ms = ? WHERE session_id = ?",
+            (provider_hwm_ms, session_id),
+        )
+        conn.commit()
+
+        assert stages._archive_insights_execute_ids(conn, [session_id])
+
+        latency = conn.execute(
+            """
+            SELECT input_high_water_mark, input_high_water_mark_source
+            FROM session_latency_profiles
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        materialization = conn.execute(
+            """
+            SELECT input_high_water_mark_ms, input_high_water_mark_source
+            FROM insight_materialization
+            WHERE session_id = ? AND insight_type = 'latency'
+            """,
+            (session_id,),
+        ).fetchone()
+
+    assert latency is not None
+    assert latency["input_high_water_mark"] == datetime.fromtimestamp(provider_hwm_ms / 1000, tz=UTC).isoformat()
+    assert latency["input_high_water_mark_source"] == "provider_ts"
+    assert materialization is not None
+    assert materialization["input_high_water_mark_ms"] == provider_hwm_ms
+    assert materialization["input_high_water_mark_source"] == "provider_ts"
+
+
+def test_archive_insights_created_without_updated_stays_ready_after_materialization(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    session_id = "codex-session:conv-created-only"
+    created_at_ms = 1_779_606_000_953
+    with open_connection(db_path) as conn:
+        _seed_index_session(conn, session_id="conv-created-only", text="Created-only session")
+        conn.execute(
+            "UPDATE sessions SET created_at_ms = ?, updated_at_ms = NULL WHERE session_id = ?",
+            (created_at_ms, session_id),
+        )
+        conn.commit()
+
+        assert stages._archive_insights_execute_ids(conn, [session_id])
+
+        latency = conn.execute(
+            "SELECT source_updated_at, source_sort_key FROM session_latency_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert latency is not None
+        assert latency["source_updated_at"] is None
+        assert latency["source_sort_key"] == pytest.approx(created_at_ms / 1000.0)
+        materialization = conn.execute(
+            """
+            SELECT source_updated_at_ms, source_sort_key_ms
+            FROM insight_materialization
+            WHERE session_id = ? AND insight_type = 'latency'
+            """,
+            (session_id,),
+        ).fetchone()
+        assert materialization is not None
+        assert materialization["source_updated_at_ms"] is None
+        assert materialization["source_sort_key_ms"] == created_at_ms
+        assert stages._archive_stale_session_profile_ids(conn, [session_id]) == []
+        assert session_insight_status_ready(session_insight_status_sync(conn))
 
 
 def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.maintenance.schema_inference_gate import (
     run_schema_inference_gate,
     schema_inference_gate_receipt_digest,
@@ -18,7 +19,15 @@ from polylogue.schemas.operator.receipt import (
 )
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.models import SchemaRecord
-from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
+from polylogue.schemas.synthetic.wire_formats import (
+    PROVIDER_WIRE_FORMATS,
+    PROVIDER_WIRE_ROUTES,
+    WireSupportEntry,
+    WireSupportReceipt,
+    build_wire_support_receipt,
+)
+from polylogue.sources.parsers.base_models import ParsedSession
+from tests.infra import inferred_corpus as inferred_corpus_module
 from tests.infra.inferred_corpus import (
     CorpusManifestKey,
     InferredCorpusManifest,
@@ -65,9 +74,10 @@ class _RegistryProxy:
         self.base = base
         self.catalog_overrides: dict[str, object] = {}
         self.schema_overrides: dict[tuple[str, str, str], object] = {}
+        self.provider_order: list[str] | None = None
 
     def list_providers(self) -> list[str]:
-        return self.base.list_providers()
+        return self.provider_order if self.provider_order is not None else self.base.list_providers()
 
     def load_package_catalog(self, provider: str) -> object:
         return self.catalog_overrides.get(provider, self.base.load_package_catalog(provider))
@@ -108,6 +118,389 @@ def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path
     write_inferred_corpus_manifest(manifest, path)
 
     assert read_inferred_corpus_manifest(path) == manifest
+
+
+def test_manifest_can_bind_every_selection_to_the_exact_wire_support_receipt() -> None:
+    registry = _registry()
+    support = build_wire_support_receipt(registry=registry)
+
+    manifest = compile_inferred_corpus_manifest(registry=registry, wire_support_receipt=support)
+
+    assert manifest.entries
+    assert all(entry.unsupported is None for entry in manifest.entries if entry.spec is not None)
+    assert {(entry.key.provider, entry.key.package_version, entry.key.element_kind) for entry in manifest.entries} == {
+        (entry.provider, entry.package_version, entry.element_kind) for entry in support.entries
+    }
+
+
+def test_wire_support_receipt_is_canonical_across_catalog_reordering() -> None:
+    registry = _registry()
+    reordered = _RegistryProxy(registry)
+    reordered.provider_order = list(reversed(registry.list_providers()))
+    for provider in registry.list_providers():
+        catalog = registry.load_package_catalog(provider)
+        assert catalog is not None
+        reordered.catalog_overrides[provider] = replace(
+            catalog,
+            packages=[
+                replace(package, elements=list(reversed(package.elements))) for package in reversed(catalog.packages)
+            ],
+        )
+
+    assert (
+        build_wire_support_receipt(registry=registry).to_dict()
+        == build_wire_support_receipt(registry=reordered).to_dict()
+    )
+
+
+def test_wire_support_receipt_rejects_conflicting_duplicate_identity_at_all_boundaries() -> None:
+    registry = _registry()
+    receipt = build_wire_support_receipt(registry=registry, providers=("codex",))
+    original = receipt.entries[0]
+    conflicting = replace(original, reason="conflicting duplicate")
+
+    with pytest.raises(ValueError, match="duplicate wire support entry key"):
+        WireSupportReceipt(
+            catalog_providers=receipt.catalog_providers,
+            entries=(original, conflicting),
+            missing_routes=receipt.missing_routes,
+            witness_seed=receipt.witness_seed,
+        )
+
+    malformed = object.__new__(WireSupportReceipt)
+    object.__setattr__(malformed, "catalog_providers", receipt.catalog_providers)
+    object.__setattr__(malformed, "entries", (original, conflicting))
+    object.__setattr__(malformed, "missing_routes", receipt.missing_routes)
+    object.__setattr__(malformed, "witness_seed", receipt.witness_seed)
+    with pytest.raises(ValueError, match="duplicate wire support entry key"):
+        compile_inferred_corpus_manifest(registry=registry, wire_support_receipt=malformed)
+
+    manifest = compile_inferred_corpus_manifest(registry=registry, wire_support_receipt=receipt)
+    assert manifest.wire_support_receipt is not None
+    persisted_receipt = cast(dict[str, object], dict(manifest.wire_support_receipt))
+    persisted_entries = list(cast(list[dict[str, object]], persisted_receipt["entries"]))
+    persisted_entries.append(dict(persisted_entries[0], reason="conflicting duplicate"))
+    persisted_receipt["entries"] = persisted_entries
+    persisted_manifest = replace(manifest, wire_support_receipt=cast(JSONDocument, persisted_receipt))
+
+    with pytest.raises(ValueError, match="duplicate wire support entry key"):
+        inferred_corpus_module._wire_support_entry_index(persisted_manifest)
+    with pytest.raises(ValueError, match="duplicate wire support entry key"):
+        InferredCorpusManifest.from_payload(persisted_manifest.to_payload())
+
+
+def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(tmp_path: Path) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipts = [
+        build_schema_inference_receipt(cast(Any, registry), provider=provider, gate_receipt_digest=gate_digest)
+        for provider in registry.list_providers()
+    ]
+    package_receipt = package_receipts[0]
+    for other in package_receipts[1:]:
+        package_receipt = package_receipt.merged_with(other)
+    wire_support = build_wire_support_receipt(registry=registry)
+
+    manifest = compile_inferred_corpus_manifest(
+        registry=cast(Any, registry),
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+
+    antigravity_entries = [entry for entry in manifest.entries if entry.key.provider == "antigravity"]
+    assert antigravity_entries
+    assert all(entry.unsupported is not None for entry in antigravity_entries)
+    assert all(
+        entry.unsupported.reason == "unsupported_wire_route" for entry in antigravity_entries if entry.unsupported
+    )
+
+    path = tmp_path / "all-provider-campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+    restored = read_inferred_corpus_manifest(
+        path,
+        campaign_mode=True,
+        registry=registry,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    assert restored == manifest
+    assert restored.wire_support_receipt == wire_support.to_dict()
+
+
+def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidation(tmp_path: Path) -> None:
+    base_registry = _registry()
+    registry = _RegistryProxy(base_registry)
+    registry.provider_order = ["codex"]
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    providers = tuple(registry.list_providers())
+    package_receipts = [
+        build_schema_inference_receipt(cast(Any, registry), provider=provider, gate_receipt_digest=gate_digest)
+        for provider in providers
+    ]
+    package_receipt = package_receipts[0]
+    for other in package_receipts[1:]:
+        package_receipt = package_receipt.merged_with(other)
+    wire_support = build_wire_support_receipt(registry=registry)
+    assert wire_support.catalog_scope == "registry-default"
+    manifest = compile_inferred_corpus_manifest(
+        registry=cast(Any, registry),
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    path = tmp_path / "all-provider-campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    registry.provider_order = ["codex", "new-unrouted-provider"]
+
+    with pytest.raises(ValueError, match=r"wire-support receipt changed.*catalog_providers.*missing_routes"):
+        read_inferred_corpus_manifest(
+            path,
+            campaign_mode=True,
+            registry=cast(Any, registry),
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
+def test_explicit_scope_campaign_does_not_re_census_unselected_provider(tmp_path: Path) -> None:
+    base_registry = _registry()
+    registry = _RegistryProxy(base_registry)
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipt = build_schema_inference_receipt(
+        cast(Any, registry), provider="codex", gate_receipt_digest=gate_digest
+    )
+    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    assert wire_support.catalog_scope == "explicit"
+    manifest = compile_inferred_corpus_manifest(
+        registry=cast(Any, registry),
+        providers=("codex",),
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    path = tmp_path / "codex-campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    registry.provider_order = [*base_registry.list_providers(), "new-unrouted-provider"]
+
+    assert (
+        read_inferred_corpus_manifest(
+            path,
+            campaign_mode=True,
+            registry=cast(Any, registry),
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+        == manifest
+    )
+
+
+def test_campaign_rejects_a_bound_receipt_with_a_missing_catalog_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    providers = ("claude-ai", "codex")
+    package_receipt = build_schema_inference_receipt(
+        registry,
+        provider=providers[0],
+        gate_receipt_digest=gate_digest,
+    ).merged_with(
+        build_schema_inference_receipt(
+            registry,
+            provider=providers[1],
+            gate_receipt_digest=gate_digest,
+        )
+    )
+    monkeypatch.delitem(PROVIDER_WIRE_ROUTES, "codex")
+    wire_support = build_wire_support_receipt(registry=registry, providers=providers)
+
+    assert wire_support.missing_routes == ("codex",)
+    assert any(entry.status == "supported" for entry in wire_support.entries)
+    with pytest.raises(ValueError, match="explicit synthetic wire route"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=providers,
+            package_receipt=package_receipt.to_payload(),
+            wire_support_receipt=wire_support,
+            campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
+def test_campaign_indexes_persisted_wire_support_entries_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipt = build_schema_inference_receipt(
+        registry,
+        provider="codex",
+        gate_receipt_digest=gate_digest,
+    )
+    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    index_calls = 0
+    payload_calls = 0
+    original_index = inferred_corpus_module._wire_support_entry_index
+    original_payload = inferred_corpus_module._wire_support_entry_from_payload
+
+    def count_index(
+        manifest: InferredCorpusManifest,
+    ) -> dict[tuple[str, str | None, str | None], WireSupportEntry]:
+        nonlocal index_calls
+        index_calls += 1
+        return original_index(manifest)
+
+    def count_payload(payload: object) -> object:
+        nonlocal payload_calls
+        payload_calls += 1
+        return original_payload(cast(dict[str, object], payload))
+
+    monkeypatch.setattr(inferred_corpus_module, "_wire_support_entry_index", count_index)
+    monkeypatch.setattr(inferred_corpus_module, "_wire_support_entry_from_payload", count_payload)
+
+    compile_inferred_corpus_manifest(
+        registry=registry,
+        providers=("codex",),
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+
+    assert index_calls == 1
+    assert payload_calls == len(wire_support.entries)
+
+
+def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipt = build_schema_inference_receipt(
+        registry,
+        provider="codex",
+        gate_receipt_digest=gate_digest,
+    )
+    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        providers=("codex",),
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    path = tmp_path / "campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    from polylogue.sources import dispatch as dispatch_module
+
+    original_parse_payload = dispatch_module.parse_payload
+
+    def drifted_parse_payload(*args: object, **kwargs: object) -> list[ParsedSession]:
+        if args and args[0] == "codex":
+            raise ValueError("simulated parser drift")
+        return original_parse_payload(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", drifted_parse_payload)
+    with pytest.raises(ValueError, match=r"wire-support receipt changed.*changed_fields=.*entries"):
+        read_inferred_corpus_manifest(
+            path,
+            campaign_mode=True,
+            registry=registry,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
+def test_path_campaign_handoff_replays_current_wire_route_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    package_receipt = build_schema_inference_receipt(
+        registry,
+        provider="codex",
+        gate_receipt_digest=gate_digest,
+    )
+    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    manifest = compile_inferred_corpus_manifest(
+        registry=registry,
+        package_receipt=package_receipt.to_payload(),
+        wire_support_receipt=wire_support,
+        providers=("codex",),
+        campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+    path = tmp_path / "campaign.json"
+    write_inferred_corpus_manifest(manifest, path)
+
+    original_build_wire_support_receipt = build_wire_support_receipt
+    replay_count = 0
+
+    def count_wire_replays(
+        *,
+        registry: object | None = None,
+        seed: int = 20260805,
+        providers: Sequence[str] | None = None,
+    ) -> WireSupportReceipt:
+        nonlocal replay_count
+        replay_count += 1
+        return original_build_wire_support_receipt(registry=registry, seed=seed, providers=providers)
+
+    monkeypatch.setattr("tests.infra.inferred_corpus.build_wire_support_receipt", count_wire_replays)
+
+    handoff = build_inferred_corpus_convergence_handoff(
+        path,
+        campaign_mode=True,
+        registry=registry,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
+
+    assert handoff.specs == manifest.supported_specs
+    assert replay_count == 1
+
+
+def test_manifest_refuses_a_selection_missing_from_bound_wire_support_receipt() -> None:
+    registry = _registry()
+    support = build_wire_support_receipt(registry=registry)
+    missing = next(entry for entry in support.entries if entry.status == "supported")
+    reduced_support = replace(
+        support,
+        entries=tuple(
+            entry
+            for entry in support.entries
+            if (entry.provider, entry.package_version, entry.element_kind)
+            != (missing.provider, missing.package_version, missing.element_kind)
+        ),
+    )
+
+    manifest = compile_inferred_corpus_manifest(registry=registry, wire_support_receipt=reduced_support)
+
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (missing.provider, missing.package_version, missing.element_kind)
+    )
+    assert target.spec is None
+    assert target.unsupported is not None
+    assert target.unsupported.reason == "wire_support_selection_unwitnessed"
 
 
 def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) -> None:
@@ -505,6 +898,28 @@ def test_missing_element_schema_becomes_explicit_unsupported_record() -> None:
     )
 
     assert target.spec is None
+    assert target.unsupported is not None
+    assert target.unsupported.reason == "missing_schema"
+
+
+def test_missing_element_schema_precedes_missing_wire_format() -> None:
+    registry = _registry()
+    proxy = _RegistryProxy(registry)
+    target_provider = registry.list_providers()[0]
+    catalog = registry.load_package_catalog(target_provider)
+    assert catalog is not None
+    target_package = catalog.packages[0]
+    target_element = target_package.elements[0]
+    proxy.schema_overrides[(target_provider, target_package.version, target_element.element_kind)] = None
+
+    manifest = compile_inferred_corpus_manifest(registry=proxy, wire_formats={})  # type: ignore[arg-type]
+    target = next(
+        entry
+        for entry in manifest.entries
+        if (entry.key.provider, entry.key.package_version, entry.key.element_kind)
+        == (target_provider, target_package.version, target_element.element_kind)
+    )
+
     assert target.unsupported is not None
     assert target.unsupported.reason == "missing_schema"
 

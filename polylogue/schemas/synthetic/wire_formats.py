@@ -10,11 +10,13 @@ import copy
 import hashlib
 import json
 import re
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast
 
 from polylogue.archive.raw_payload.decode import JSONValue
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Role
 
 if TYPE_CHECKING:
     from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticGenerationBatch
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
 
 WireEncoding: TypeAlias = Literal["json", "jsonl"]
 WireCapabilityStatus: TypeAlias = Literal["supported", "unsupported"]
+WireSupportEntryKey: TypeAlias = tuple[str, str | None, str | None]
 
 
 class UnsupportedSyntheticWireRouteError(ValueError):
@@ -142,6 +145,33 @@ class WireSupportEntry:
         )
 
 
+def wire_support_key(
+    provider: str,
+    package_version: str | None,
+    element_kind: str | None,
+) -> WireSupportEntryKey:
+    """Return the canonical identity used by persisted wire-support entries."""
+
+    return (provider, package_version, element_kind)
+
+
+def wire_support_entry_key(entry: WireSupportEntry) -> WireSupportEntryKey:
+    return wire_support_key(entry.provider, entry.package_version, entry.element_kind)
+
+
+def validate_wire_support_entry_keys(
+    entries: Sequence[WireSupportEntry],
+    *,
+    boundary: str,
+) -> None:
+    seen: set[WireSupportEntryKey] = set()
+    for entry in entries:
+        key = wire_support_entry_key(entry)
+        if key in seen:
+            raise ValueError(f"{boundary} contains duplicate wire support entry key: {key!r}")
+        seen.add(key)
+
+
 @dataclass(frozen=True)
 class WireSupportReceipt:
     """Registry-derived, deterministic support and coverage receipt."""
@@ -149,6 +179,13 @@ class WireSupportReceipt:
     catalog_providers: tuple[str, ...]
     entries: tuple[WireSupportEntry, ...]
     missing_routes: tuple[str, ...]
+    witness_seed: int = 20260805
+    catalog_scope: Literal["registry-default", "explicit"] = "explicit"
+
+    def __post_init__(self) -> None:
+        validate_wire_support_entry_keys(self.entries, boundary="wire support receipt")
+        if self.catalog_scope not in {"registry-default", "explicit"}:
+            raise ValueError(f"wire support receipt has invalid catalog scope: {self.catalog_scope!r}")
 
     @property
     def supported_count(self) -> int:
@@ -169,10 +206,12 @@ class WireSupportReceipt:
     def to_dict(self) -> dict[str, object]:
         return {
             "catalog_providers": list(self.catalog_providers),
+            "catalog_scope": self.catalog_scope,
             "supported_count": self.supported_count,
             "unsupported_count": self.unsupported_count,
             "validated_supported_count": self.validated_supported_count,
             "missing_routes": list(self.missing_routes),
+            "witness_seed": self.witness_seed,
             "complete": self.complete,
             "entries": [
                 {
@@ -255,6 +294,7 @@ PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
 
 # All catalog providers must have a route here.  The unsupported routes
 # are explicit capabilities, not implicit generator fallbacks.
+CATALOG_ELEMENT_UNSUPPORTED_REASON = "catalog element is marked unsupported"
 PROVIDER_WIRE_ROUTES: dict[str, WireRoute] = {
     **{
         provider: WireRoute(status="supported", wire_format=wire_format)
@@ -333,7 +373,12 @@ def _runtime_coverage_path(path: str) -> str:
     return path
 
 
-def _route_nonrepresentable_reasons(provider: str, missing_keywords: Collection[str]) -> dict[str, str]:
+def _route_nonrepresentable_reasons(
+    provider: str,
+    missing_keywords: Collection[str],
+    *,
+    package_version: str,
+) -> dict[str, str]:
     """Prove nodes discarded by a provider's wire normalizer are unreachable."""
     reasons: dict[str, str] = {}
     prefixes: tuple[tuple[str, str], ...]
@@ -382,8 +427,17 @@ def _route_nonrepresentable_reasons(provider: str, missing_keywords: Collection[
         "$.properties.chunkedPrompt.properties.chunks.items[*].properties.text",
         "$.properties.chunkedPrompt.properties.chunks.items[*].properties.createTime",
     }
+    chatgpt_v1_media_prefix = (
+        "$.properties.mapping.additionalProperties.*.properties.message.anyOf[1].properties.content."
+        "properties.parts.items[*].anyOf[1]"
+    )
     for keyword in missing_keywords:
         path = keyword.split("@", 1)[1] if "@" in keyword else "$"
+        if provider == "chatgpt" and package_version == "v1" and path.startswith(chatgpt_v1_media_prefix):
+            reasons[keyword] = (
+                "ChatGPT v1 wire shaping discards only the export-only media branch at this exact package selection"
+            )
+            continue
         if (
             provider == "chatgpt"
             and keyword.startswith("type:null@")
@@ -1022,10 +1076,7 @@ def _parser_artifact_evidence(
                     node_texts = tuple(_normalise_evidence_text(text) for text in _payload_string_values(node))
                     identity_bound = not message_identity or message_identity in node_texts
                     content_bound = normalized in node_texts
-                    structured_content_bound = (
-                        bool(message.blocks) and bool(message_identity) and identity_bound and bool(node_texts)
-                    )
-                    if not identity_bound or not (content_bound or structured_content_bound):
+                    if not identity_bound or not content_bound:
                         continue
                     node_bytes = json.dumps(node, sort_keys=True, separators=(",", ":")).encode("utf-8")
                     digest = hashlib.sha256(node_bytes).hexdigest()
@@ -1041,7 +1092,529 @@ def _parser_artifact_evidence(
     return tuple(evidence)
 
 
-def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20260805) -> WireSupportReceipt:
+def _parser_artifact_message_keys(
+    sessions: Sequence[ParsedSession],
+) -> tuple[str, ...]:
+    """Return the complete conversational identity/content set from parsed output."""
+    keys: list[str] = []
+    for session in sessions:
+        for message in session.messages:
+            if message.provider_message_id:
+                keys.append(f"id:{message.provider_message_id}")
+            elif isinstance(message.text, str) and message.text.strip():
+                keys.append(f"text:{_normalise_evidence_text(message.text)}")
+    return tuple(keys)
+
+
+def _parser_artifact_message_semantic_witnesses(
+    sessions: Sequence[ParsedSession],
+) -> tuple[tuple[str, Role, MaterialOrigin], ...]:
+    """Return parsed identity/text plus authoredness for semantic witnesses."""
+    return tuple(
+        (key, message.role, message.material_origin)
+        for session in sessions
+        for message in session.messages
+        for key in (
+            f"id:{message.provider_message_id}"
+            if message.provider_message_id
+            else f"text:{_normalise_evidence_text(message.text)}"
+            if isinstance(message.text, str) and message.text.strip()
+            else None,
+        )
+        if key is not None
+    )
+
+
+def _parser_artifact_expected_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[str, JSONValue], ...]:
+    """Return the parser-owned raw nodes used for message coverage."""
+    native_payload = payload.get("raw_provider_payload") if isinstance(payload, dict) else None
+    if provider == "claude-ai" and isinstance(native_payload, (dict, list)):
+        nodes = _parser_evidence_nodes(provider, native_payload)
+    elif isinstance(payload, dict):
+        session = payload.get("session")
+        turns = session.get("turns") if isinstance(session, dict) else None
+        if isinstance(turns, list):
+            nodes = tuple(
+                turn
+                for turn in turns
+                if isinstance(turn, dict)
+                and isinstance(turn.get("provider_turn_id"), str)
+                and isinstance(turn.get("role"), str)
+                and isinstance(turn.get("text"), str)
+            )
+        else:
+            nodes = ()
+    else:
+        nodes = ()
+    if (
+        provider != "claude-ai"
+        and isinstance(payload, dict)
+        and isinstance(payload.get("raw_provider_payload"), (dict, list))
+    ):
+        payload = {key: value for key, value in payload.items() if key != "raw_provider_payload"}
+    return nodes or _parser_evidence_nodes(provider, payload)
+
+
+def _parser_artifact_node_identity(provider: str, node: Mapping[str, JSONValue]) -> str | None:
+    """Extract the provider message identity from one parser-owned raw node."""
+    identity: object = None
+    if provider == "chatgpt":
+        message = node.get("message")
+        if isinstance(message, Mapping):
+            identity = message.get("id")
+    if not isinstance(identity, str) or not identity:
+        identity = node.get("provider_turn_id")
+    if not isinstance(identity, str) or not identity:
+        identity = node.get("uuid")
+    if not isinstance(identity, str) or not identity:
+        identity = node.get("id")
+    if not isinstance(identity, str) or not identity:
+        message = node.get("message")
+        if isinstance(message, Mapping):
+            identity = message.get("id")
+    return identity if isinstance(identity, str) and identity else None
+
+
+def _parser_artifact_node_role(provider: str, node: Mapping[str, JSONValue]) -> Role:
+    """Normalize the role asserted by one raw parser-owned message node."""
+    raw_role: object = None
+    if provider == "chatgpt":
+        message = node.get("message")
+        author = message.get("author") if isinstance(message, Mapping) else None
+        raw_role = author.get("role") if isinstance(author, Mapping) else None
+        if not isinstance(raw_role, str) or not raw_role:
+            raw_role = node.get("role")
+    elif provider == "claude-ai":
+        raw_role = node.get("sender")
+    elif provider == "claude-code":
+        message = node.get("message")
+        raw_role = message.get("role") if isinstance(message, Mapping) else node.get("type")
+    else:
+        raw_role = node.get("role")
+    if not isinstance(raw_role, str) or not raw_role:
+        return Role.UNKNOWN
+    try:
+        role = Role.normalize(raw_role)
+    except ValueError:
+        return Role.UNKNOWN
+    if provider in {"claude-ai", "claude-code"} and role is Role.USER:
+        tool_envelope: Mapping[str, JSONValue] = node
+        if provider == "claude-code":
+            nested_message = node.get("message")
+            if isinstance(nested_message, Mapping):
+                tool_envelope = nested_message
+        content = tool_envelope.get("content")
+        if (
+            isinstance(content, list)
+            and content
+            and all(isinstance(item, Mapping) and item.get("type") == "tool_result" for item in content)
+        ):
+            return Role.TOOL
+    return role
+
+
+def _parser_artifact_node_tool_witnesses(
+    provider: str,
+    node: Mapping[str, JSONValue],
+) -> tuple[tuple[BlockType, str, bool | None, int | None], ...]:
+    """Project load-bearing tool identity/outcome fields from a raw node.
+
+    Synthetic routes exercise Claude's shared content-segment protocol for
+    both Claude Code and Codex. A Claude Code background-task acknowledgement
+    deliberately distrusts its immediate ``is_error`` result: the result only
+    reports that the task started, not its terminal outcome. Match that
+    production semantic here instead of treating the intentional downgrade as
+    a parser loss.
+    """
+    if provider not in {"claude-ai", "claude-code", "codex"}:
+        return ()
+    if provider == "claude-code":
+        message = node.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        tool_use_result = node.get("toolUseResult")
+        background_task = (
+            isinstance(tool_use_result, Mapping)
+            and isinstance(tool_use_result.get("backgroundTaskId"), str)
+            and bool(tool_use_result.get("backgroundTaskId"))
+        )
+    elif provider == "codex":
+        content = node.get("content")
+        background_task = False
+    else:
+        content = node.get("content")
+        background_task = False
+    if not isinstance(content, list):
+        return ()
+
+    witnesses: list[tuple[BlockType, str, bool | None, int | None]] = []
+    for item in content:
+        if not isinstance(item, Mapping):
+            continue
+        item_type = item.get("type")
+        if item_type == "tool_use":
+            tool_id = item.get("id")
+            if isinstance(tool_id, str) and tool_id:
+                witnesses.append((BlockType.TOOL_USE, tool_id, None, None))
+        elif item_type == "tool_result":
+            tool_id = item.get("tool_use_id")
+            if not isinstance(tool_id, str) or not tool_id:
+                continue
+            raw_is_error = item.get("is_error")
+            raw_exit_code = item.get("exit_code")
+            is_error = raw_is_error if isinstance(raw_is_error, bool) and not background_task else None
+            exit_code = (
+                raw_exit_code if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool) else None
+            )
+            if background_task:
+                exit_code = None
+            witnesses.append((BlockType.TOOL_RESULT, tool_id, is_error, exit_code))
+    return tuple(witnesses)
+
+
+def _parser_artifact_node_message_type(
+    provider: str,
+    node: Mapping[str, JSONValue],
+) -> MessageType:
+    """Derive the raw node's message type using shared structural semantics."""
+    from polylogue.archive.message.artifacts import classify_block_message_type, classify_text_message_type
+
+    if provider == "claude-code":
+        return MessageType.CONTEXT if node.get("isMeta") else MessageType.MESSAGE
+    if provider == "codex":
+        raw_role = node.get("role")
+        return MessageType.CONTEXT if raw_role in {"system", "developer"} else MessageType.MESSAGE
+    if provider == "chatgpt" and _parser_artifact_node_role(provider, node) is Role.TOOL:
+        return MessageType.TOOL_RESULT
+    block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
+    if block_message_type := classify_block_message_type(block_types):
+        return block_message_type
+    text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+    return classify_text_message_type(text) or MessageType.MESSAGE
+
+
+def _parser_artifact_node_material_origin(
+    provider: str,
+    node: Mapping[str, JSONValue],
+    role: Role,
+) -> MaterialOrigin:
+    """Derive authoredness from raw role, structure, and documented provenance."""
+    from polylogue.archive.message.artifacts import classify_material_origin
+    from polylogue.sources.parsers.base_support import human_authored_override
+
+    message_type = _parser_artifact_node_message_type(provider, node)
+    # Codex message records retain their message type from their role/text;
+    # inline content segments do not reclassify the whole record into a tool
+    # turn.  Its parser makes the same deliberately narrow distinction.
+    block_types = (
+        ()
+        if provider == "codex"
+        else tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
+    )
+    text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+    material_origin = classify_material_origin(
+        role=role,
+        message_type=message_type,
+        text=text,
+        block_types=block_types,
+    )
+    if provider != "claude-code":
+        return human_authored_override(role, message_type, material_origin)
+    if material_origin is not MaterialOrigin.UNKNOWN:
+        return material_origin
+    message = node.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    has_tool_result = isinstance(content, list) and any(
+        isinstance(item, Mapping) and item.get("type") == "tool_result" for item in content
+    )
+    if (
+        node.get("type") == "user"
+        and role is Role.USER
+        and message_type is MessageType.MESSAGE
+        and not node.get("isMeta")
+        and not node.get("isCompactSummary")
+        and node.get("toolUseResult") is None
+        and not has_tool_result
+    ):
+        return MaterialOrigin.HUMAN_AUTHORED
+    return material_origin
+
+
+def _parser_artifact_expected_message_keys(
+    provider: str,
+    payload: JSONValue,
+) -> tuple[str, ...]:
+    """Derive the full conversational identity/content set from one artifact."""
+    keys: list[str] = []
+    for node in _parser_artifact_expected_nodes(provider, payload):
+        identity = _parser_artifact_node_identity(provider, node)
+        if identity is not None:
+            keys.append(f"id:{identity}")
+            continue
+        keys.extend(f"text:{text}" for text in _parser_artifact_node_content_texts(provider, node))
+    return tuple(keys)
+
+
+def _parser_artifact_expected_message_semantic_witnesses(
+    provider: str,
+    payload: JSONValue,
+) -> tuple[tuple[str, Role, MaterialOrigin], ...]:
+    """Derive identity/text and authoredness from the canonical raw witness."""
+    witnesses: list[tuple[str, Role, MaterialOrigin]] = []
+    for node in _parser_artifact_expected_nodes(provider, payload):
+        identity = _parser_artifact_node_identity(provider, node)
+        role = _parser_artifact_node_role(provider, node)
+        material_origin = _parser_artifact_node_material_origin(provider, node, role)
+        if identity is not None:
+            witnesses.append((f"id:{identity}", role, material_origin))
+            continue
+        witnesses.extend(
+            (f"text:{text}", role, material_origin) for text in _parser_artifact_node_content_texts(provider, node)
+        )
+    return tuple(witnesses)
+
+
+def _parser_artifact_expected_tool_witnesses(
+    provider: str,
+    payload: JSONValue,
+) -> tuple[tuple[BlockType, str, bool | None, int | None], ...]:
+    """Collect every raw structured tool assertion owned by this artifact."""
+    return tuple(
+        witness
+        for node in _parser_artifact_expected_nodes(provider, payload)
+        for witness in _parser_artifact_node_tool_witnesses(provider, node)
+    )
+
+
+def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fallback_id: str) -> str | None:
+    """Return the one provider session identity asserted by this wire artifact."""
+    if isinstance(payload, Mapping):
+        native_payload = payload.get("raw_provider_payload")
+        if provider == "claude-ai" and isinstance(native_payload, Mapping):
+            for field in ("uuid", "id", "conversation_id", "conversationId"):
+                session_id = native_payload.get(field)
+                if isinstance(session_id, str) and session_id:
+                    return session_id
+        captured_session = payload.get("session")
+        captured_session_id = (
+            captured_session.get("provider_session_id") if isinstance(captured_session, Mapping) else None
+        )
+        if isinstance(captured_session_id, str) and captured_session_id:
+            return captured_session_id
+        if provider == "chatgpt":
+            for field in ("id", "uuid", "conversation_id", "conversationId"):
+                session_id = payload.get(field)
+                if isinstance(session_id, str) and session_id:
+                    return session_id
+        if provider == "claude-ai":
+            for field in ("uuid", "id", "conversation_id", "conversationId"):
+                session_id = payload.get(field)
+                if isinstance(session_id, str) and session_id:
+                    return session_id
+    if provider == "claude-code" and isinstance(payload, list):
+        session_ids = {
+            session_id
+            for record in payload
+            if isinstance(record, Mapping)
+            for session_id in (record.get("sessionId"),)
+            if isinstance(session_id, str) and session_id
+        }
+        return next(iter(session_ids)) if len(session_ids) == 1 else None
+    return fallback_id
+
+
+def _parser_artifact_has_expected_session_grouping(
+    sessions: Sequence[ParsedSession],
+    provider: str,
+    payload: JSONValue,
+    fallback_id: str,
+) -> bool:
+    """Require this single-session artifact to retain its provider session key."""
+    expected_session_id = _parser_artifact_expected_session_id(provider, payload, fallback_id)
+    return (
+        expected_session_id is not None
+        and len(sessions) == 1
+        and sessions[0].provider_session_id == expected_session_id
+    )
+
+
+def _parser_artifact_tool_witnesses(
+    sessions: Sequence[ParsedSession],
+) -> tuple[tuple[BlockType, str, bool | None, int | None], ...]:
+    """Collect parsed structured tool identity and provider outcome fields."""
+    return tuple(
+        (block.type, block.tool_id, block.is_error, block.exit_code)
+        for session in sessions
+        for message in session.messages
+        for block in message.blocks
+        if block.type in {BlockType.TOOL_USE, BlockType.TOOL_RESULT} and block.tool_id
+    )
+
+
+def _parser_artifact_messages_have_artifact_bound_content(
+    sessions: Sequence[ParsedSession],
+    provider: str,
+    payload: JSONValue,
+) -> bool:
+    """Require every raw text segment to survive on its identified message."""
+    raw_texts_by_identity: dict[str, Counter[str]] = {}
+    anonymous_raw_texts: Counter[str] = Counter()
+    for node in _parser_artifact_expected_nodes(provider, payload):
+        expected_texts = _parser_artifact_node_content_texts(provider, node)
+        if not expected_texts:
+            continue
+        identity = _parser_artifact_node_identity(provider, node)
+        if identity is None:
+            anonymous_raw_texts.update(expected_texts)
+        else:
+            raw_texts_by_identity.setdefault(identity, Counter()).update(expected_texts)
+
+    observed_anonymous_texts: Counter[str] = Counter()
+    for session in sessions:
+        for message in session.messages:
+            observed_message_text = tuple(
+                segment
+                for text in (message.text,)
+                if isinstance(text, str)
+                for segment in _parser_artifact_observed_text_segments(text)
+            )
+            observed_block_texts = tuple(
+                segment
+                for block in message.blocks
+                if isinstance(block.text, str)
+                for segment in _parser_artifact_observed_text_segments(block.text)
+            )
+            expected_segments = raw_texts_by_identity.get(message.provider_message_id)
+            if expected_segments is not None and not any(
+                _parser_artifact_text_segments_are_covered(expected_segments, candidate)
+                for candidate in (observed_message_text, observed_block_texts)
+            ):
+                return False
+            if expected_segments is None:
+                observed_anonymous_texts.update((*observed_message_text, *observed_block_texts))
+    return _parser_artifact_text_segments_are_covered(anonymous_raw_texts, tuple(observed_anonymous_texts.elements()))
+
+
+def _parser_artifact_text_segments_are_covered(
+    expected: Counter[str],
+    observed: Sequence[str],
+) -> bool:
+    """Check every raw segment, including repeated segments, in parser-owned text."""
+    return all(sum(text.count(segment) for text in observed) >= count for segment, count in expected.items())
+
+
+def _parser_artifact_observed_text_segments(text: str) -> tuple[str, ...]:
+    """Expose text embedded in a parser's structured-text serialization."""
+    normalized = _normalise_evidence_text(text)
+    segments = [normalized] if normalized else []
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return tuple(segments)
+    if isinstance(decoded, (dict, list)):
+        segments.extend(
+            normalized_value
+            for value in _payload_string_values(decoded)
+            if (normalized_value := _normalise_evidence_text(value))
+        )
+    return tuple(segments)
+
+
+def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONValue]) -> tuple[str, ...]:
+    """Extract text-bearing message content, excluding structured tool arguments."""
+    if provider == "chatgpt":
+        message = node.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        parts = content.get("parts") if isinstance(content, Mapping) else None
+        values = _payload_string_values(parts) if isinstance(parts, list) else ()
+    elif provider == "codex":
+        content = node.get("content")
+        content_values = (
+            tuple(
+                text
+                for item in content
+                if isinstance(item, Mapping) and item.get("type") in {"input_text", "output_text", "thinking"}
+                for text in (item.get("text"), item.get("thinking"))
+                if isinstance(text, str)
+            )
+            if isinstance(content, list)
+            else ()
+        )
+        message = node.get("message")
+        values = (*content_values, message) if isinstance(message, str) else content_values
+    elif provider in {"claude-ai", "gemini"}:
+        text = node.get("text")
+        values = (text,) if isinstance(text, str) else ()
+    elif provider == "claude-code":
+        message = node.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if isinstance(content, str):
+            values = (content,)
+        elif isinstance(content, list):
+            values = tuple(
+                text
+                for item in content
+                if isinstance(item, Mapping)
+                for text in (
+                    (item.get("text"),)
+                    if item.get("type") == "text"
+                    else (item.get("thinking") or item.get("text"),)
+                    if item.get("type") == "thinking"
+                    else _payload_string_values(item.get("content"))
+                    if item.get("type") == "tool_result"
+                    else ()
+                )
+                if isinstance(text, str)
+            )
+        else:
+            values = ()
+    else:
+        values = ()
+    return tuple(_normalise_evidence_text(value) for value in values if _normalise_evidence_text(value))
+
+
+def _parser_artifact_has_complete_message_coverage(
+    sessions: Sequence[ParsedSession],
+    provider: str,
+    payload: JSONValue,
+    fallback_id: str,
+) -> bool:
+    """Require every parser-relevant generated node to survive parsing."""
+    expected = _parser_artifact_expected_message_keys(provider, payload)
+    observed = _parser_artifact_message_keys(sessions)
+    return (
+        bool(expected)
+        and Counter(expected) == Counter(observed)
+        and _parser_artifact_has_expected_session_grouping(sessions, provider, payload, fallback_id)
+        and _parser_artifact_messages_have_artifact_bound_content(sessions, provider, payload)
+    )
+
+
+def _parser_artifact_has_complete_semantic_coverage(
+    sessions: Sequence[ParsedSession],
+    provider: str,
+    payload: JSONValue,
+    fallback_id: str,
+) -> bool:
+    """Require every raw witness to retain authoredness and tool outcomes."""
+    expected = _parser_artifact_expected_message_semantic_witnesses(provider, payload)
+    observed = _parser_artifact_message_semantic_witnesses(sessions)
+    expected_tools = _parser_artifact_expected_tool_witnesses(provider, payload)
+    observed_tools = _parser_artifact_tool_witnesses(sessions)
+    return (
+        bool(expected)
+        and Counter(expected) == Counter(observed)
+        and Counter(expected_tools) == Counter(observed_tools)
+        and _parser_artifact_has_expected_session_grouping(sessions, provider, payload, fallback_id)
+        and _parser_artifact_messages_have_artifact_bound_content(sessions, provider, payload)
+    )
+
+
+def build_wire_support_receipt(
+    *,
+    registry: object | None = None,
+    seed: int = 20260805,
+    providers: Sequence[str] | None = None,
+) -> WireSupportReceipt:
     """Validate executable routes through the selected schema and parser.
 
     The provider set comes from the package registry.  The parser call is the
@@ -1060,218 +1633,280 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
     from polylogue.schemas.validator import SchemaValidator, ValidationResult
     from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 
-    catalog_providers = tuple(sorted(registry.list_providers()))  # type: ignore[attr-defined]
+    catalog_providers = tuple(
+        sorted(dict.fromkeys(registry.list_providers() if providers is None else providers))  # type: ignore[attr-defined]
+    )
     entries: list[WireSupportEntry] = []
     missing_routes: list[str] = []
     for provider in catalog_providers:
         route = PROVIDER_WIRE_ROUTES.get(provider)
-        package = registry.get_package(provider, version="default")  # type: ignore[attr-defined]
-        package_version = package.version if package is not None else None
-        element_kind = package.default_element_kind if package is not None else None
         if route is None:
             missing_routes.append(provider)
-            entries.append(
-                WireSupportEntry(
-                    provider=provider,
-                    status="unsupported",
-                    reason="no explicit synthetic wire route",
-                    package_version=package_version,
-                    element_kind=element_kind,
-                    schema_valid=None,
-                    parsed_session_count=0,
-                    parsed_message_count=0,
-                    construct_coverage=None,
-                    validation_error="missing route",
-                )
+        catalog = registry.load_package_catalog(provider)  # type: ignore[attr-defined]
+        selections = tuple(
+            (package, element)
+            for package in (catalog.packages if catalog is not None else ())
+            for element in package.elements
+        )
+        selections = tuple(
+            sorted(
+                selections,
+                key=lambda item: (
+                    item[0].version if item[0] is not None else "",
+                    item[1].element_kind if item[1] is not None else "",
+                ),
             )
-            continue
-        if route.status == "unsupported":
-            entries.append(
-                WireSupportEntry(
-                    provider=provider,
-                    status=route.status,
-                    reason=route.reason,
-                    package_version=package_version,
-                    element_kind=element_kind,
-                    schema_valid=None,
-                    parsed_session_count=0,
-                    parsed_message_count=0,
-                    construct_coverage=None,
-                )
-            )
-            continue
+        )
+        if not selections:
+            package = registry.get_package(provider, version="default")  # type: ignore[attr-defined]
+            selections = ((package, None),)
 
-        if package is None or route.wire_format is None:
+        for package, element in selections:
+            package_version = package.version if package is not None else None
+            element_kind = (
+                element.element_kind
+                if element is not None
+                else package.default_element_kind
+                if package is not None
+                else None
+            )
+            if element is not None and not element.supported:
+                entries.append(
+                    WireSupportEntry(
+                        provider=provider,
+                        status="unsupported",
+                        reason=CATALOG_ELEMENT_UNSUPPORTED_REASON,
+                        package_version=package_version,
+                        element_kind=element_kind,
+                        schema_valid=None,
+                        parsed_session_count=0,
+                        parsed_message_count=0,
+                        construct_coverage=None,
+                    )
+                )
+                continue
+            if route is None:
+                entries.append(
+                    WireSupportEntry(
+                        provider=provider,
+                        status="unsupported",
+                        reason="no explicit synthetic wire route",
+                        package_version=package_version,
+                        element_kind=element_kind,
+                        schema_valid=None,
+                        parsed_session_count=0,
+                        parsed_message_count=0,
+                        construct_coverage=None,
+                        validation_error="missing route",
+                    )
+                )
+                continue
+            if route.status == "unsupported":
+                entries.append(
+                    WireSupportEntry(
+                        provider=provider,
+                        status=route.status,
+                        reason=route.reason,
+                        package_version=package_version,
+                        element_kind=element_kind,
+                        schema_valid=None,
+                        parsed_session_count=0,
+                        parsed_message_count=0,
+                        construct_coverage=None,
+                    )
+                )
+                continue
+
+            if package is None or route.wire_format is None or element_kind is None:
+                entries.append(
+                    WireSupportEntry(
+                        provider=provider,
+                        status=route.status,
+                        reason=None,
+                        package_version=package_version,
+                        element_kind=element_kind,
+                        schema_valid=False,
+                        parsed_session_count=0,
+                        parsed_message_count=0,
+                        construct_coverage=None,
+                        validation_error="selected package schema is unavailable",
+                    )
+                )
+                continue
+
+            schema_valid = False
+            parsed_sessions = []
+            payloads: list[JSONValue] = []
+            validation_error: str | None = None
+            selection = None
+            parser_witnesses: list[WireParserWitness] = []
+            parser_errors: list[str] = []
+            try:
+                selection = select_synthetic_schema(
+                    provider,
+                    version=package.version,
+                    element_kind=element_kind,
+                    registry_factory=cast(Any, lambda: registry),
+                )
+                if selection.package_version != package.version or selection.element_kind != element_kind:
+                    raise ValueError(
+                        "synthetic selection identity diverged from receipt package: "
+                        f"{selection.package_version}/{selection.element_kind} != {package.version}/{element_kind}"
+                    )
+                if selection.wire_format != route.wire_format:
+                    raise ValueError("synthetic selection wire format diverged from declared route")
+
+                corpus = SyntheticCorpus.from_selection(selection)
+                raw_items = [
+                    corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed).raw_items[0],
+                    *generate_coverage_witnesses(corpus, seed=seed + 1),
+                ]
+                validator = SchemaValidator(selection.schema, strict=False)
+                validation_results: list[ValidationResult] = []
+                schema_resolution = None
+                if selection.element_kind is not None:
+                    from polylogue.schemas.packages import SchemaResolution
+
+                    schema_resolution = SchemaResolution(
+                        provider=selection.provider,
+                        package_version=selection.package_version,
+                        element_kind=selection.element_kind,
+                        exact_structure_id=None,
+                        bundle_scope=None,
+                        reason="package_catalog",
+                    )
+                for index, raw in enumerate(raw_items):
+                    if route.wire_format.encoding == "jsonl":
+                        payload: JSONValue = [
+                            json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()
+                        ]
+                        payload_items = payload if isinstance(payload, list) else []
+                    else:
+                        payload = json.loads(raw)
+                        payload_items = [payload] if isinstance(payload, (dict, list)) else []
+                    artifact_results = [validator.validate(item) for item in payload_items]
+                    validation_results.extend(artifact_results)
+                    artifact_validation_error = (
+                        "; ".join(error for result in artifact_results for error in result.errors) or None
+                    )
+                    artifact_coverage = construct_coverage(selection.schema, payload_items)
+                    parse_error: str | None = None
+                    artifact_sessions = []
+                    parser_payload: JSONValue = payload
+                    try:
+                        if provider == "chatgpt" and isinstance(payload, dict):
+                            # Validate and account for the complete envelope, but
+                            # keep the optional native subpayload from selecting a
+                            # second schema-shaped tree during parser dispatch.
+                            parser_payload = {
+                                key: value for key, value in payload.items() if key != "raw_provider_payload"
+                            }
+                        parsed_sessions_for_artifact = parse_payload(
+                            provider,
+                            parser_payload,
+                            f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
+                            schema_resolution=schema_resolution,
+                        )
+                        artifact_sessions = require_positive_conversational_evidence(
+                            parsed_sessions_for_artifact,
+                            provider=provider,
+                            source_path=f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
+                        )
+                    except Exception as exc:  # Keep the witness failure in the receipt.
+                        parse_error = f"{type(exc).__name__}: {exc}"
+                    artifact_evidence = _parser_artifact_evidence(
+                        artifact_sessions,
+                        provider,
+                        payload,
+                        f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
+                    )
+                    coverage_error: str | None = None
+                    fallback_id = f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}"
+                    if not _parser_artifact_has_complete_message_coverage(
+                        artifact_sessions, provider, parser_payload, fallback_id
+                    ) or not _parser_artifact_has_complete_semantic_coverage(
+                        artifact_sessions, provider, parser_payload, fallback_id
+                    ):
+                        artifact_evidence = ()
+                        coverage_error = "artifact message coverage is incomplete"
+                    parsed_sessions.extend(artifact_sessions)
+                    artifact_kind: Literal["baseline", "coverage"] = "baseline" if index == 0 else "coverage"
+                    parser_witnesses.append(
+                        WireParserWitness(
+                            index=-1 if index == 0 else index - 1,
+                            exercised_keywords=artifact_coverage.exercised_keywords,
+                            parsed_session_count=len(artifact_sessions),
+                            parsed_message_count=sum(len(session.messages) for session in artifact_sessions),
+                            validation_error=parse_error or artifact_validation_error or coverage_error,
+                            artifact_kind=artifact_kind,
+                            artifact_evidence=artifact_evidence,
+                        )
+                    )
+                    if (
+                        artifact_sessions
+                        and artifact_evidence
+                        and artifact_validation_error is None
+                        and parse_error is None
+                    ):
+                        payloads.extend(payload_items)
+                    if parse_error is not None:
+                        label = "baseline" if index == 0 else f"coverage witness {index - 1}"
+                        parser_errors.append(f"{label} parser: {parse_error}")
+                schema_valid = bool(validation_results) and all(result.is_valid for result in validation_results)
+                if not schema_valid:
+                    parser_errors.append(
+                        "; ".join(error for result in validation_results for error in result.errors)
+                        or "selected package schema rejected generated payload"
+                    )
+            except Exception as exc:  # Receipt records route failures instead of hiding them.
+                validation_error = f"{type(exc).__name__}: {exc}"
+
+            if parser_errors:
+                validation_error = "; ".join((*parser_errors, *((validation_error,) if validation_error else ())))
+
+            if selection is not None:
+                witnessed = construct_coverage(selection.schema, payloads)
+                nonrepresentable_reasons = _route_nonrepresentable_reasons(
+                    provider,
+                    witnessed.missing_keywords,
+                    package_version=package.version,
+                )
+                coverage = construct_coverage(
+                    selection.schema,
+                    payloads,
+                    nonrepresentable_keywords=nonrepresentable_reasons,
+                    nonrepresentable_reasons=nonrepresentable_reasons,
+                )
+            else:
+                coverage = None
             entries.append(
                 WireSupportEntry(
                     provider=provider,
                     status=route.status,
                     reason=None,
-                    package_version=package_version,
-                    element_kind=element_kind,
-                    schema_valid=False,
-                    parsed_session_count=0,
-                    parsed_message_count=0,
-                    construct_coverage=None,
-                    validation_error="selected package schema is unavailable",
+                    package_version=selection.package_version if selection is not None else package_version,
+                    element_kind=selection.element_kind if selection is not None else element_kind,
+                    schema_valid=schema_valid,
+                    parsed_session_count=len(parsed_sessions),
+                    parsed_message_count=sum(len(session.messages) for session in parsed_sessions),
+                    construct_coverage=coverage,
+                    validation_error=validation_error,
+                    parser_witnesses=tuple(parser_witnesses),
                 )
             )
-            continue
-
-        schema_valid = False
-        parsed_sessions = []
-        payloads: list[JSONValue] = []
-        validation_error: str | None = None
-        selection = None
-        parser_witnesses: list[WireParserWitness] = []
-        parser_errors: list[str] = []
-        try:
-            selection = select_synthetic_schema(
-                provider,
-                version="default",
-                element_kind=element_kind,
-                registry_factory=cast(Any, lambda: registry),
-            )
-            if selection.package_version != package.version or selection.element_kind != element_kind:
-                raise ValueError(
-                    "synthetic selection identity diverged from receipt package: "
-                    f"{selection.package_version}/{selection.element_kind} != {package.version}/{element_kind}"
-                )
-            if selection.wire_format != route.wire_format:
-                raise ValueError("synthetic selection wire format diverged from declared route")
-
-            corpus = SyntheticCorpus.from_selection(selection)
-            raw_items = [
-                corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed).raw_items[0],
-                *generate_coverage_witnesses(corpus, seed=seed + 1),
-            ]
-            validator = SchemaValidator(selection.schema, strict=False)
-            validation_results: list[ValidationResult] = []
-            schema_resolution = None
-            if selection.element_kind is not None:
-                from polylogue.schemas.packages import SchemaResolution
-
-                schema_resolution = SchemaResolution(
-                    provider=selection.provider,
-                    package_version=selection.package_version,
-                    element_kind=selection.element_kind,
-                    exact_structure_id=None,
-                    bundle_scope=None,
-                    reason="package_default",
-                )
-            for index, raw in enumerate(raw_items):
-                if route.wire_format.encoding == "jsonl":
-                    payload: JSONValue = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
-                    payload_items = payload if isinstance(payload, list) else []
-                else:
-                    payload = json.loads(raw)
-                    payload_items = [payload] if isinstance(payload, (dict, list)) else []
-                artifact_results = [validator.validate(item) for item in payload_items]
-                validation_results.extend(artifact_results)
-                artifact_validation_error = (
-                    "; ".join(error for result in artifact_results for error in result.errors) or None
-                )
-                artifact_coverage = construct_coverage(selection.schema, payload_items)
-                parse_error: str | None = None
-                artifact_sessions = []
-                try:
-                    parser_payload = payload
-                    if provider == "chatgpt" and isinstance(payload, dict):
-                        # Validate and account for the complete envelope, but
-                        # keep the optional native subpayload from selecting a
-                        # second schema-shaped tree during parser dispatch.
-                        parser_payload = dict(payload)
-                        parser_payload.pop("raw_provider_payload", None)
-                    parsed_sessions_for_artifact = parse_payload(
-                        provider,
-                        parser_payload,
-                        f"synthetic-wire-receipt:{provider}:{index}",
-                        schema_resolution=schema_resolution,
-                    )
-                    artifact_sessions = require_positive_conversational_evidence(
-                        parsed_sessions_for_artifact,
-                        provider=provider,
-                        source_path=f"synthetic-wire-receipt:{provider}:{index}",
-                    )
-                except Exception as exc:  # Keep the witness failure in the receipt.
-                    parse_error = f"{type(exc).__name__}: {exc}"
-                artifact_evidence = _parser_artifact_evidence(
-                    artifact_sessions,
-                    provider,
-                    payload,
-                    f"synthetic-wire-receipt:{provider}:{index}",
-                )
-                parsed_sessions.extend(artifact_sessions)
-                artifact_kind: Literal["baseline", "coverage"] = "baseline" if index == 0 else "coverage"
-                parser_witnesses.append(
-                    WireParserWitness(
-                        index=-1 if index == 0 else index - 1,
-                        exercised_keywords=artifact_coverage.exercised_keywords,
-                        parsed_session_count=len(artifact_sessions),
-                        parsed_message_count=sum(len(session.messages) for session in artifact_sessions),
-                        validation_error=parse_error or artifact_validation_error,
-                        artifact_kind=artifact_kind,
-                        artifact_evidence=artifact_evidence,
-                    )
-                )
-                if (
-                    artifact_sessions
-                    and artifact_evidence
-                    and artifact_validation_error is None
-                    and parse_error is None
-                ):
-                    payloads.extend(payload_items)
-                if parse_error is not None:
-                    label = "baseline" if index == 0 else f"coverage witness {index - 1}"
-                    parser_errors.append(f"{label} parser: {parse_error}")
-            schema_valid = bool(validation_results) and all(result.is_valid for result in validation_results)
-            if not schema_valid:
-                parser_errors.append(
-                    "; ".join(error for result in validation_results for error in result.errors)
-                    or "selected package schema rejected generated payload"
-                )
-        except Exception as exc:  # Receipt records route failures instead of hiding them.
-            validation_error = f"{type(exc).__name__}: {exc}"
-
-        if parser_errors:
-            validation_error = "; ".join(parser_errors)
-
-        if selection is not None:
-            witnessed = construct_coverage(selection.schema, payloads)
-            nonrepresentable_reasons = _route_nonrepresentable_reasons(provider, witnessed.missing_keywords)
-            coverage = construct_coverage(
-                selection.schema,
-                payloads,
-                nonrepresentable_keywords=nonrepresentable_reasons,
-                nonrepresentable_reasons=nonrepresentable_reasons,
-            )
-        else:
-            coverage = None
-        entries.append(
-            WireSupportEntry(
-                provider=provider,
-                status=route.status,
-                reason=None,
-                package_version=selection.package_version if selection is not None else package_version,
-                element_kind=selection.element_kind if selection is not None else element_kind,
-                schema_valid=schema_valid,
-                parsed_session_count=len(parsed_sessions),
-                parsed_message_count=sum(len(session.messages) for session in parsed_sessions),
-                construct_coverage=coverage,
-                validation_error=validation_error,
-                parser_witnesses=tuple(parser_witnesses),
-            )
-        )
 
     return WireSupportReceipt(
         catalog_providers=catalog_providers,
         entries=tuple(entries),
         missing_routes=tuple(sorted(missing_routes)),
+        witness_seed=seed,
+        catalog_scope="registry-default" if providers is None else "explicit",
     )
 
 
 __all__ = [
     "ConstructCoverage",
+    "CATALOG_ELEMENT_UNSUPPORTED_REASON",
     "PROVIDER_WIRE_FORMATS",
     "PROVIDER_WIRE_CAPABILITIES",
     "PROVIDER_WIRE_ROUTES",
@@ -1282,9 +1917,13 @@ __all__ = [
     "WireParserWitness",
     "WireRoute",
     "WireSupportEntry",
+    "WireSupportEntryKey",
     "WireSupportReceipt",
     "UnsupportedSyntheticWireRouteError",
     "build_wire_support_receipt",
+    "validate_wire_support_entry_keys",
+    "wire_support_key",
+    "wire_support_entry_key",
     "construct_coverage",
     "generate_coverage_witnesses",
 ]

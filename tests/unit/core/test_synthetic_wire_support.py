@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from polylogue.config import Source
-from polylogue.core.enums import Provider, Role
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role
 from polylogue.core.json import JSONValue
 from polylogue.schemas import validator as validator_module
 from polylogue.schemas.packages import SchemaResolution
@@ -23,7 +24,7 @@ from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRouteError
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.sources import dispatch as dispatch_module
-from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 
 
@@ -33,13 +34,88 @@ def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> No
 
     assert set(receipt.catalog_providers) == set(registry.list_providers())
     assert not receipt.missing_routes
+    catalog_entries: list[tuple[str, str, str, bool, str]] = []
+    for provider in registry.list_providers():
+        catalog = registry.load_package_catalog(provider)
+        assert catalog is not None
+        for package in catalog.packages:
+            for element in package.elements:
+                catalog_entries.append(
+                    (
+                        provider,
+                        package.version,
+                        element.element_kind,
+                        element.supported,
+                        wire_formats.PROVIDER_WIRE_ROUTES[provider].status,
+                    )
+                )
+    assert {(entry.provider, entry.package_version, entry.element_kind) for entry in receipt.entries} == {
+        (provider, version, element) for provider, version, element, *_rest in catalog_entries
+    }
     assert receipt.supported_count == sum(
-        route.status == "supported" for route in wire_formats.PROVIDER_WIRE_ROUTES.values()
+        supported and route_status == "supported"
+        for _provider, _version, _element, supported, route_status in catalog_entries
     )
     assert receipt.unsupported_count == sum(
-        route.status == "unsupported" for route in wire_formats.PROVIDER_WIRE_ROUTES.values()
+        not supported or route_status == "unsupported"
+        for _provider, _version, _element, supported, route_status in catalog_entries
     )
     assert all(entry.reason for entry in receipt.entries if entry.status == "unsupported")
+
+
+def test_support_receipt_does_not_substitute_a_default_selection() -> None:
+    registry = SchemaRegistry()
+    receipt = wire_formats.build_wire_support_receipt(registry=registry)
+
+    assert all(entry.package_version is not None and entry.element_kind is not None for entry in receipt.entries)
+    assert len(receipt.entries) > len(receipt.catalog_providers)
+
+
+def test_support_receipt_preserves_an_explicitly_empty_provider_selection() -> None:
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=())
+
+    assert receipt.catalog_providers == ()
+    assert receipt.entries == ()
+    assert receipt.missing_routes == ()
+
+
+def test_support_receipt_deduplicates_sorted_provider_selection() -> None:
+    registry = SchemaRegistry()
+    available = registry.list_providers()
+    providers = (available[1], available[0], available[1])
+
+    receipt = wire_formats.build_wire_support_receipt(registry=registry, providers=providers)
+
+    assert receipt.catalog_providers == tuple(sorted(set(providers)))
+    assert len({(entry.provider, entry.package_version, entry.element_kind) for entry in receipt.entries}) == len(
+        receipt.entries
+    )
+
+
+def test_support_receipt_counts_a_missing_route_before_skipping_unsupported_elements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = SchemaRegistry()
+    provider = next(name for name in registry.list_providers() if name in wire_formats.PROVIDER_WIRE_ROUTES)
+    catalog = registry.load_package_catalog(provider)
+    assert catalog is not None
+    unsupported_catalog = replace(
+        catalog,
+        packages=[
+            replace(package, elements=[replace(element, supported=False) for element in package.elements])
+            for package in catalog.packages
+        ],
+    )
+
+    monkeypatch.setattr(registry, "load_package_catalog", lambda _provider: unsupported_catalog)
+    monkeypatch.delitem(wire_formats.PROVIDER_WIRE_ROUTES, provider)
+
+    receipt = wire_formats.build_wire_support_receipt(registry=registry, providers=(provider,))
+
+    assert receipt.missing_routes == (provider,)
+    assert receipt.entries
+    assert all(entry.reason == wire_formats.CATALOG_ELEMENT_UNSUPPORTED_REASON for entry in receipt.entries)
+    assert not receipt.complete
 
 
 def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> None:
@@ -50,13 +126,21 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
     assert all(entry.schema_valid is True for entry in supported)
     assert all(entry.parsed_session_count > 0 for entry in supported)
     assert all(entry.parsed_message_count > 0 for entry in supported)
-    assert all(entry.construct_coverage is not None and entry.construct_coverage.complete for entry in supported)
+    complete_supported = [
+        entry for entry in supported if not (entry.provider == "chatgpt" and entry.package_version == "v1")
+    ]
+    assert all(
+        entry.construct_coverage is not None and entry.construct_coverage.complete for entry in complete_supported
+    )
     assert all(
         any(witness.artifact_kind == "baseline" and witness.healthy for witness in entry.parser_witnesses)
         for entry in supported
     )
     assert all(all(witness.artifact_evidence for witness in entry.parser_witnesses) for entry in supported)
-    assert receipt.complete
+    assert not receipt.complete
+    chatgpt_v1 = next(entry for entry in supported if entry.provider == "chatgpt" and entry.package_version == "v1")
+    assert chatgpt_v1.construct_coverage is not None
+    assert not chatgpt_v1.construct_coverage.complete
 
 
 def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,7 +179,459 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
     assert not receipt.complete
 
 
-@pytest.mark.parametrize("returned_session", ["empty", "unrelated", "metadata"])
+def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+
+    def return_only_first_message(
+        provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        sessions = original_parse_payload(
+            provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if provider == "chatgpt" and fallback_id.endswith(":0"):
+            return [session.model_copy(update={"messages": session.messages[:1]}) for session in sessions]
+        return sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", return_only_first_message)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+
+    entry = next(item for item in receipt.entries if item.package_version == "v1")
+    baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
+    assert baseline.parsed_message_count == 1
+    assert baseline.artifact_evidence == ()
+    assert baseline.validation_error == "artifact message coverage is incomplete"
+    assert not baseline.healthy
+    assert not entry.healthy
+    assert not receipt.complete
+
+
+@pytest.mark.parametrize("provider", sorted(wire_formats.PROVIDER_WIRE_FORMATS))
+def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_every_supported_route(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+
+    def replace_all_but_one_message_body(
+        parsed_provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        sessions = original_parse_payload(
+            parsed_provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if parsed_provider == provider and fallback_id.endswith(":0"):
+            stripped_sessions: list[ParsedSession] = []
+            for session in sessions:
+                retained_body = False
+                messages: list[ParsedMessage] = []
+                for message in session.messages:
+                    has_body = any(
+                        isinstance(text, str) and text.strip()
+                        for text in (message.text, *(block.text for block in message.blocks))
+                    )
+                    if has_body and not retained_body:
+                        retained_body = True
+                        messages.append(message)
+                    else:
+                        messages.append(message.model_copy(update={"text": "", "blocks": []}))
+                stripped_sessions.append(session.model_copy(update={"messages": messages}))
+            return stripped_sessions
+        return sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", replace_all_but_one_message_body)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+
+    supported_entries = [entry for entry in receipt.entries if entry.status == "supported"]
+    assert supported_entries
+    for entry in supported_entries:
+        baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
+        assert baseline.parsed_message_count > 0
+        assert not baseline.artifact_evidence
+        assert baseline.validation_error == "artifact message coverage is incomplete"
+        assert not baseline.healthy
+        assert not entry.healthy
+    assert not receipt.complete
+
+
+def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+    inserted_segment = False
+    dropped_segment = False
+    segment = "parser-witness-segment-that-must-survive"
+
+    def drop_one_text_segment(
+        provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        nonlocal inserted_segment, dropped_segment
+        if provider == "codex" and fallback_id.endswith(":0") and isinstance(payload, list):
+            for record in payload:
+                if not isinstance(record, dict) or not isinstance(record.get("content"), list):
+                    continue
+                record["content"].append({"type": "input_text", "text": segment})
+                inserted_segment = True
+                break
+        sessions = original_parse_payload(
+            provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if provider != "codex" or not fallback_id.endswith(":0"):
+            return sessions
+        corrupted_sessions: list[ParsedSession] = []
+        for parsed_session in sessions:
+            corrupted_messages: list[ParsedMessage] = []
+            for message in parsed_session.messages:
+                blocks = []
+                for block in message.blocks:
+                    if block.text == segment:
+                        dropped_segment = True
+                        blocks.append(block.model_copy(update={"text": ""}))
+                    else:
+                        blocks.append(block)
+                corrupted_messages.append(
+                    message.model_copy(update={"text": (message.text or "").replace(segment, ""), "blocks": blocks})
+                )
+            corrupted_sessions.append(parsed_session.model_copy(update={"messages": corrupted_messages}))
+        return corrupted_sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", drop_one_text_segment)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("codex",))
+
+    assert inserted_segment
+    assert dropped_segment
+    assert not receipt.complete
+    assert any(
+        witness.validation_error == "artifact message coverage is incomplete"
+        for entry in receipt.entries
+        for witness in entry.parser_witnesses
+        if witness.artifact_kind == "baseline"
+    )
+
+
+@pytest.mark.parametrize("provider", sorted(wire_formats.PROVIDER_WIRE_FORMATS))
+@pytest.mark.parametrize("artifact_index", (0, 1))
+def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_route(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    artifact_index: int,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+    mutated_messages = 0
+
+    def corrupt_authoredness(
+        parsed_provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        nonlocal mutated_messages
+        sessions = original_parse_payload(
+            parsed_provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if parsed_provider != provider or not fallback_id.endswith(f":{artifact_index}"):
+            return sessions
+        corrupted_sessions: list[ParsedSession] = []
+        for session in sessions:
+            corrupted_messages: list[ParsedMessage] = []
+            for message in session.messages:
+                mutated_messages += 1
+                corrupted_messages.append(
+                    message.model_copy(
+                        update={
+                            "role": Role.USER if message.role is Role.ASSISTANT else Role.ASSISTANT,
+                            "material_origin": (
+                                MaterialOrigin.HUMAN_AUTHORED
+                                if message.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+                                else MaterialOrigin.ASSISTANT_AUTHORED
+                            ),
+                        }
+                    )
+                )
+            corrupted_sessions.append(session.model_copy(update={"messages": corrupted_messages}))
+        return corrupted_sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", corrupt_authoredness)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+
+    assert mutated_messages > 0
+    supported_entries = [entry for entry in receipt.entries if entry.status == "supported"]
+    assert supported_entries
+    assert any(
+        witness.validation_error == "artifact message coverage is incomplete"
+        for entry in supported_entries
+        for witness in entry.parser_witnesses
+        if witness.index == (-1 if artifact_index == 0 else artifact_index - 1)
+    )
+    assert not receipt.complete
+
+
+@pytest.mark.parametrize("provider", ("claude-code", "codex"))
+@pytest.mark.parametrize("artifact_index", (0, 1))
+def test_parser_witness_tool_identity_loss_is_not_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    artifact_index: int,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+    mutated_blocks = 0
+
+    def drop_tool_identity(
+        parsed_provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        nonlocal mutated_blocks
+        sessions = original_parse_payload(
+            parsed_provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if parsed_provider != provider or not fallback_id.endswith(f":{artifact_index}"):
+            return sessions
+        corrupted_sessions: list[ParsedSession] = []
+        for session in sessions:
+            corrupted_messages: list[ParsedMessage] = []
+            for message in session.messages:
+                corrupted_blocks: list[ParsedContentBlock] = []
+                for block in message.blocks:
+                    if block.type in {BlockType.TOOL_USE, BlockType.TOOL_RESULT} and block.tool_id:
+                        mutated_blocks += 1
+                        corrupted_blocks.append(block.model_copy(update={"tool_id": None}))
+                    else:
+                        corrupted_blocks.append(block)
+                corrupted_messages.append(message.model_copy(update={"blocks": corrupted_blocks}))
+            corrupted_sessions.append(session.model_copy(update={"messages": corrupted_messages}))
+        return corrupted_sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", drop_tool_identity)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+
+    assert mutated_blocks > 0
+    assert not receipt.complete
+    assert any(
+        witness.validation_error == "artifact message coverage is incomplete"
+        for entry in receipt.entries
+        for witness in entry.parser_witnesses
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "artifact_index"),
+    (("claude-code", 0), ("claude-code", 2), ("codex", 0), ("codex", 1)),
+)
+def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    artifact_index: int,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+    mutated_outcomes = 0
+
+    def corrupt_structured_tool_outcome(
+        parsed_provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        nonlocal mutated_outcomes
+        if parsed_provider == provider and fallback_id.endswith(f":{artifact_index}") and isinstance(payload, list):
+            injected_outcome = False
+            for record in payload:
+                if not isinstance(record, dict):
+                    continue
+                container = record.get("message") if provider == "claude-code" else record
+                content = container.get("content") if isinstance(container, dict) else None
+                if not isinstance(content, list):
+                    continue
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_result":
+                        item["is_error"] = False
+                        injected_outcome = True
+                        break
+                if injected_outcome:
+                    break
+            if not injected_outcome:
+                for record in payload:
+                    if not isinstance(record, dict):
+                        continue
+                    container = record.get("message") if provider == "claude-code" else record
+                    content = container.get("content") if isinstance(container, dict) else None
+                    if not isinstance(content, list):
+                        continue
+                    tool_use = next(
+                        (
+                            item
+                            for item in content
+                            if isinstance(item, dict)
+                            and item.get("type") == "tool_use"
+                            and isinstance(item.get("id"), str)
+                        ),
+                        None,
+                    )
+                    if isinstance(tool_use, dict):
+                        content.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use["id"],
+                                "content": "synthetic structured outcome",
+                                "is_error": False,
+                            }
+                        )
+                        break
+        sessions = original_parse_payload(
+            parsed_provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if parsed_provider != provider or not fallback_id.endswith(f":{artifact_index}"):
+            return sessions
+        corrupted_sessions: list[ParsedSession] = []
+        for session in sessions:
+            corrupted_messages: list[ParsedMessage] = []
+            for message in session.messages:
+                corrupted_blocks: list[ParsedContentBlock] = []
+                for block in message.blocks:
+                    if block.type is BlockType.TOOL_RESULT and (
+                        block.is_error is not None or block.exit_code is not None
+                    ):
+                        mutated_outcomes += 1
+                        corrupted_blocks.append(
+                            block.model_copy(
+                                update={
+                                    "is_error": (not block.is_error) if block.is_error is not None else True,
+                                    "exit_code": (block.exit_code or 0) + 1 if block.exit_code is not None else None,
+                                }
+                            )
+                        )
+                    else:
+                        corrupted_blocks.append(block)
+                corrupted_messages.append(message.model_copy(update={"blocks": corrupted_blocks}))
+            corrupted_sessions.append(session.model_copy(update={"messages": corrupted_messages}))
+        return corrupted_sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", corrupt_structured_tool_outcome)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+
+    assert mutated_outcomes > 0
+    assert not receipt.complete
+    assert any(
+        witness.validation_error == "artifact message coverage is incomplete"
+        for entry in receipt.entries
+        for witness in entry.parser_witnesses
+    )
+
+
+@pytest.mark.parametrize("provider", sorted(wire_formats.PROVIDER_WIRE_FORMATS))
+def test_parser_witness_rejects_messages_rehomed_to_another_raw_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+    rehomed_sessions = 0
+
+    def rehome_to_message_id(
+        parsed_provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        nonlocal rehomed_sessions
+        sessions = original_parse_payload(
+            parsed_provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+        if parsed_provider != provider or not fallback_id.endswith(":0"):
+            return sessions
+        corrupted_sessions: list[ParsedSession] = []
+        for session in sessions:
+            foreign_raw_identity = next(
+                (
+                    message.provider_message_id or message.text
+                    for message in session.messages
+                    if message.provider_message_id or (isinstance(message.text, str) and message.text)
+                ),
+                None,
+            )
+            if foreign_raw_identity is None or foreign_raw_identity == session.provider_session_id:
+                corrupted_sessions.append(session)
+                continue
+            rehomed_sessions += 1
+            corrupted_sessions.append(session.model_copy(update={"provider_session_id": foreign_raw_identity}))
+        return corrupted_sessions
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", rehome_to_message_id)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+
+    assert rehomed_sessions > 0
+    assert not receipt.complete
+    assert any(
+        witness.artifact_kind == "baseline" and witness.validation_error == "artifact message coverage is incomplete"
+        for entry in receipt.entries
+        for witness in entry.parser_witnesses
+    )
+
+
+@pytest.mark.parametrize("returned_session", ["empty", "unrelated", "metadata", "id_only"])
 def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
     monkeypatch: pytest.MonkeyPatch,
     returned_session: str,
@@ -127,6 +663,27 @@ def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
                                 provider_message_id=metadata_id,
                                 role=Role.ASSISTANT,
                                 text=metadata_text,
+                            )
+                        ],
+                    )
+                ]
+            if returned_session == "id_only":
+                payload_record = payload if isinstance(payload, Mapping) else {}
+                metadata_id = str(payload_record.get("id", "metadata-session"))
+                return [
+                    ParsedSession(
+                        source_name=Provider.CHATGPT,
+                        provider_session_id=metadata_id,
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id=metadata_id,
+                                role=Role.ASSISTANT,
+                                blocks=[
+                                    ParsedContentBlock(
+                                        type=BlockType.TEXT,
+                                        text="invented content absent from this artifact",
+                                    )
+                                ],
                             )
                         ],
                     )
@@ -496,6 +1053,52 @@ def test_claude_code_route_only_waives_unrepresentable_nested_content() -> None:
         "$.properties.message.properties.content.anyOf[1].items[*].properties.content.anyOf[1]" in keyword
         for keyword in entry.construct_coverage.nonrepresentable_keywords
     )
+
+
+def test_chatgpt_v1_media_waiver_does_not_hide_parser_relevant_omissions() -> None:
+    registry = SchemaRegistry()
+    selection = select_synthetic_schema("chatgpt", version="v1", registry_factory=lambda: registry)
+    corpus = SyntheticCorpus.from_selection(selection)
+    payload = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=20260805).raw_items[0]
+    payloads: tuple[JSONValue, ...] = (json.loads(payload),)
+    witnessed = wire_formats.construct_coverage(selection.schema, payloads)
+    parser_relevant = next(
+        keyword
+        for keyword in witnessed.missing_keywords
+        if keyword.startswith("type:null@") and ".properties.message.anyOf[0]" in keyword
+    )
+    reasons = wire_formats._route_nonrepresentable_reasons(
+        "chatgpt",
+        witnessed.missing_keywords,
+        package_version="v1",
+    )
+    media = next(
+        keyword
+        for keyword in witnessed.missing_keywords
+        if ".properties.content.properties.parts.items[*].anyOf[1]" in keyword
+    )
+
+    assert media in reasons
+    assert parser_relevant not in reasons
+    final = wire_formats.construct_coverage(
+        selection.schema,
+        payloads,
+        nonrepresentable_keywords=reasons,
+        nonrepresentable_reasons=reasons,
+    )
+    assert parser_relevant in final.missing_keywords
+    assert not final.complete
+
+    receipt = wire_formats.build_wire_support_receipt(registry=registry)
+    receipt_entry = next(
+        entry
+        for entry in receipt.entries
+        if (entry.provider, entry.package_version, entry.element_kind) == ("chatgpt", "v1", selection.element_kind)
+    )
+    assert receipt_entry.construct_coverage is not None
+    assert parser_relevant in receipt_entry.construct_coverage.missing_keywords
+    assert not receipt_entry.healthy
+    assert not receipt.complete
 
 
 def test_unmatched_union_does_not_count_as_exercised() -> None:

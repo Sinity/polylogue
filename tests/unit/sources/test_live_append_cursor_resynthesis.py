@@ -90,6 +90,14 @@ def test_append_plan_resynthesizes_lost_cursor_from_durable_full_head(tmp_path: 
     appended = _codex_message("grown-after-reset")
     source.write_bytes(baseline + appended)
     _seed_native_session(tmp_path, session_id=session_id)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?",
+                ("unrelated-raw-id",),
+            ).fetchone()[0]
+            == 0
+        )
 
     cursor = CursorStore(tmp_path / "ops.db")
     assert cursor.get_record(source) is None  # the ops.db cursor is genuinely gone

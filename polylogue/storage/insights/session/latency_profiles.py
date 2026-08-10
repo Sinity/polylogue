@@ -60,12 +60,14 @@ def build_session_latency_profile_record(
         )
         if part
     )
+    source_updated_at = profile.updated_at
+    source_sort_timestamp = source_updated_at or profile.created_at
     return SessionLatencyProfileRecord(
         session_id=SessionId(str(session.id)),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=built_at,
-        source_updated_at=_iso_datetime(session.updated_at),
-        source_sort_key=float(session.updated_at.timestamp()) if session.updated_at is not None else None,
+        source_updated_at=_iso_datetime(source_updated_at),
+        source_sort_key=float(source_sort_timestamp.timestamp()) if source_sort_timestamp is not None else None,
         input_high_water_mark=input_high_water_mark,
         input_high_water_mark_source=input_high_water_mark_source,
         input_row_count=input_row_count,

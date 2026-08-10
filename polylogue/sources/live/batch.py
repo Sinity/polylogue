@@ -55,6 +55,7 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
     RawFailureEvidenceKind,
 )
+from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -352,6 +353,67 @@ LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 LiveBatchSyncRunner = Callable[..., Awaitable[Any]]
 P = ParamSpec("P")
 T = TypeVar("T")
+
+
+@dataclass(frozen=True, slots=True)
+class AppendCapabilityReceipt:
+    """Production append-route capability for one resolved wire selection."""
+
+    provider: str
+    package_version: str
+    element_kind: str
+    status: Literal["supported", "unsupported"]
+    reason: str | None
+    capability_source: str = "LiveBatchProcessor.append"
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "provider": self.provider,
+            "package_version": self.package_version,
+            "element_kind": self.element_kind,
+            "operation": "append_prefix",
+            "status": self.status,
+            "reason": self.reason,
+            "capability_source": self.capability_source,
+        }
+
+
+_APPEND_CAPABLE_PROVIDER_VALUES = frozenset({Provider.CODEX.value, Provider.CLAUDE_CODE.value})
+
+
+def append_capability_receipt(
+    *,
+    provider: str,
+    package_version: str,
+    element_kind: str,
+    stable_session_identity: bool,
+) -> AppendCapabilityReceipt:
+    """Resolve append support from the live route's identity contract."""
+    if provider not in _APPEND_CAPABLE_PROVIDER_VALUES:
+        return AppendCapabilityReceipt(
+            provider=provider,
+            package_version=package_version,
+            element_kind=element_kind,
+            status="unsupported",
+            reason="live append route supports only Codex and Claude Code JSONL identity contracts",
+        )
+    if not stable_session_identity:
+        return AppendCapabilityReceipt(
+            provider=provider,
+            package_version=package_version,
+            element_kind=element_kind,
+            status="unsupported",
+            reason="append delta requires a stable persisted session identity",
+        )
+    return AppendCapabilityReceipt(
+        provider=provider,
+        package_version=package_version,
+        element_kind=element_kind,
+        status="supported",
+        reason=None,
+    )
+
+
 _ARCHIVE_RUNTIME_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 _ARCHIVE_NATIVE_WRITE_TIERS = "source,index"
 _FULL_CAPTURE_PREFIX_PROOF_ATTEMPTS = 2
@@ -3575,10 +3637,22 @@ class LiveBatchProcessor:
         NEW writes going forward, per polylogue-u19l's scope.
         """
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
-        if provider is Provider.CODEX:
-            identity = self._existing_provider_session_id(path)
-            if identity is None:
+        if provider in {Provider.CODEX, Provider.CLAUDE_CODE}:
+            identity = self._existing_provider_session_id(
+                path,
+                expected_origin=origin_from_provider(provider).value,
+            )
+            capability = append_capability_receipt(
+                provider=provider.value,
+                package_version="live",
+                element_kind="session_record_stream",
+                stable_session_identity=identity is not None,
+            )
+            if capability.status != "supported":
                 return None
+        else:
+            identity = None
+        if provider is Provider.CODEX:
             # A Codex append-mode delta is the file's tail bytes only -- the
             # real `session_meta` header that carries native-session identity
             # was already consumed by an earlier full/append observation and
@@ -3597,20 +3671,67 @@ class LiveBatchProcessor:
                 "line and carried as native_id_hint, not spliced into hashed bytes",
             )
             return payload, identity
-        if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(path, payload):
+        if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(
+            path, payload, existing_id=identity
+        ):
             return None
         return payload, None
 
-    def _existing_provider_session_id(self, path: Path) -> str | None:
-        identity = self._existing_archive_session_native_id(path)
+    def _existing_provider_session_id(self, path: Path, *, expected_origin: str) -> str | None:
+        identity = self._existing_archive_session_native_id(path, expected_origin=expected_origin)
         if identity is not None:
             return identity
+        if expected_origin != Origin.CODEX_SESSION.value:
+            return None
         codex_identity = self._codex_session_meta_native_id(path)
         if codex_identity is None:
+            return None
+        # An index-only identity recovery is valid when the source tier has no
+        # row for this path.  It is not valid when the path is already owned by
+        # another origin: accepting the Codex id from the index in that case
+        # would turn a mixed-origin path collision into an append match.
+        if self._source_path_has_conflicting_origin(path, expected_origin=expected_origin):
             return None
         if self._archive_has_native_session("codex-session", codex_identity):
             return codex_identity
         return None
+
+    def _source_path_has_conflicting_origin(self, path: Path, *, expected_origin: str) -> bool:
+        """Reject a raw path whose source or joined indexed origin disagrees."""
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        source_db = archive_root / "source.db"
+        index_db = ArchiveLocation.resolve(archive_root).active_index_path
+        if not source_db.exists() or not index_db.exists():
+            return False
+        try:
+            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            try:
+                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM source_tier.raw_sessions AS r
+                    LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
+                    WHERE r.source_path = ?
+                      AND (r.origin <> ? OR (s.session_id IS NOT NULL AND s.origin <> ?))
+                    LIMIT 1
+                    """,
+                    (str(path), expected_origin, expected_origin),
+                ).fetchone()
+                conn.execute("DETACH DATABASE source_tier")
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            # This query protects an append from adopting another session's
+            # native id. An unavailable ownership view is unsafe to treat as
+            # unowned, so defer instead of using the global Codex fallback.
+            logger.warning(
+                "live.watcher: source-path ownership view unavailable for %s; refusing Codex identity fallback: %s",
+                path,
+                exc,
+            )
+            return True
+        return row is not None
 
     def _codex_session_meta_native_id(self, path: Path) -> str | None:
         try:
@@ -3643,8 +3764,8 @@ class LiveBatchProcessor:
                 row = conn.execute(
                     """
                     SELECT 1
-                    FROM sessions
-                    WHERE origin = ? AND native_id = ?
+                    FROM sessions AS s
+                    WHERE s.origin = ? AND s.native_id = ?
                     LIMIT 1
                     """,
                     (origin, native_id),
@@ -3655,7 +3776,7 @@ class LiveBatchProcessor:
             return False
         return row is not None
 
-    def _existing_archive_session_native_id(self, path: Path) -> str | None:
+    def _existing_archive_session_native_id(self, path: Path, *, expected_origin: str) -> str | None:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         index_db = ArchiveLocation.resolve(archive_root).active_index_path
         source_db = archive_root / "source.db"
@@ -3670,11 +3791,11 @@ class LiveBatchProcessor:
                     SELECT s.native_id
                     FROM sessions AS s
                     JOIN source_tier.raw_sessions AS r ON r.raw_id = s.raw_id
-                    WHERE r.source_path = ?
+                    WHERE s.origin = ? AND r.origin = ? AND r.source_path = ?
                     ORDER BY s.sort_key_ms DESC, s.created_at_ms DESC, s.session_id DESC
                     LIMIT 1
                     """,
-                    (str(path),),
+                    (expected_origin, expected_origin, str(path)),
                 ).fetchone()
                 conn.execute("DETACH DATABASE source_tier")
             finally:
@@ -3686,8 +3807,9 @@ class LiveBatchProcessor:
         value = row[0]
         return value if isinstance(value, str) and value.strip() else None
 
-    def _claude_code_tail_matches_existing_identity(self, path: Path, payload: bytes) -> bool:
-        existing_id = self._existing_provider_session_id(path)
+    def _claude_code_tail_matches_existing_identity(
+        self, path: Path, payload: bytes, *, existing_id: str | None
+    ) -> bool:
         if existing_id is None:
             return False
         session_ids: set[str] = set()
@@ -3835,5 +3957,20 @@ class LiveBatchProcessor:
 
 
 # fmt: off
-__all__ = ["LiveBatchMetrics", "LiveBatchProcessor", "_FullIngestResult", "_LARGE_FULL_PARSE_PROGRESS_BYTES", "_MAX_APPEND_PLAN_PAYLOAD_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_FILES", "_STREAMING_FULL_INGEST_BYTES", "_full_ingest_worker_count", "_full_parse_progress_groups", "fingerprint_file", "last_complete_newline_from_tail"]
+__all__ = [
+    "AppendCapabilityReceipt",
+    "LiveBatchMetrics",
+    "LiveBatchProcessor",
+    "_FullIngestResult",
+    "_LARGE_FULL_PARSE_PROGRESS_BYTES",
+    "_MAX_APPEND_PLAN_PAYLOAD_BYTES",
+    "_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES",
+    "_SMALL_FULL_PARSE_PROGRESS_MAX_FILES",
+    "_STREAMING_FULL_INGEST_BYTES",
+    "_full_ingest_worker_count",
+    "_full_parse_progress_groups",
+    "append_capability_receipt",
+    "fingerprint_file",
+    "last_complete_newline_from_tail",
+]
 # fmt: on

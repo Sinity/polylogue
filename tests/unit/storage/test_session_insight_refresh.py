@@ -89,6 +89,48 @@ def test_rebuild_session_insights_preserves_null_thread_sort_key(tmp_path: Path)
     assert row["source_sort_key_ms"] is None
 
 
+def test_latency_materialization_uses_latency_record_fallback_sort_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _current_index_db(tmp_path, "latency-fallback-stamp")
+    session_id = _sid("latency-fallback", "codex-session")
+    created_at_ms = 1_700_000_000_123
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session("latency-fallback", source_name="codex", title="Created-only"),
+            messages=[make_message("latency-fallback:msg-1", "latency-fallback", text="hello")],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            "UPDATE sessions SET created_at_ms = ?, updated_at_ms = NULL WHERE session_id = ?",
+            (created_at_ms, session_id),
+        )
+        conn.commit()
+
+        original_builder = rebuild_mod.__dict__["build_session_profile_record"]
+
+        def profile_without_sort_key(*args: object, **kwargs: object) -> object:
+            record = original_builder(*args, **kwargs)
+            return record.model_copy(update={"source_sort_key": None})
+
+        monkeypatch.setitem(rebuild_mod.__dict__, "build_session_profile_record", profile_without_sort_key)
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
+
+        materialization = conn.execute(
+            """
+            SELECT source_sort_key_ms
+            FROM insight_materialization
+            WHERE session_id = ? AND insight_type = 'latency'
+            """,
+            (session_id,),
+        ).fetchone()
+
+    assert materialization is not None
+    assert materialization[0] == created_at_ms
+
+
 @pytest.mark.asyncio
 async def test_apply_session_insight_session_updates_async_batches_hydrated_sessions(
     tmp_path: Path,
@@ -1204,10 +1246,11 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
         conn.execute(
             """
             UPDATE sessions
-            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
+            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?,
+                created_at_ms = ?, updated_at_ms = NULL
             WHERE session_id = ?
             """,
-            (50, 1234, 7, 3, session_id),
+            (50, 1234, 7, 3, 1_700_000_000_000, session_id),
         )
         conn.commit()
 
@@ -1225,6 +1268,12 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
             (session_id,),
         ).fetchone()
         assert profile is not None
+        latency = conn.execute(
+            "SELECT source_updated_at, source_sort_key, input_high_water_mark FROM session_latency_profiles "
+            "WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert latency is not None
         work_events_row = conn.execute(
             "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
             (session_id,),
@@ -1247,6 +1296,12 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
     assert profile["message_count"] == 50
     assert profile["word_count"] == 1234
     assert profile["tool_use_count"] == 7
+    assert profile["source_updated_at"] is None
+    assert profile["source_sort_key"] == pytest.approx(1_700_000_000.0)
+    assert profile["input_high_water_mark"] is None
+    assert latency["source_updated_at"] is None
+    assert latency["source_sort_key"] == pytest.approx(1_700_000_000.0)
+    assert latency["input_high_water_mark"] is None
     assert "large_session_bounded" in profile["inference_payload_json"]
     assert "large_session_bounded" in profile["enrichment_payload_json"]
     assert work_events == 0
