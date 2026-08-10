@@ -223,6 +223,10 @@ def _seed_isolated_canary(
     )
     assert receipt.status == "replayed"
     backfill_historical_revision_evidence(root)
+    # The final backfill can change durable source revision evidence. Refresh
+    # the fixture receipt only after that mutation so later canary routes see
+    # the same source snapshot the production preflight validates.
+    write_valid_rebuild_receipt(root, receipt_path)
 
 
 def _write_real_unreviewed_canary_report(
