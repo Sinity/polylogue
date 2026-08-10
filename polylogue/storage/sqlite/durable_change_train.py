@@ -1126,6 +1126,10 @@ def _refresh_released_source_train_continuity_locked(
 
     _require_nonempty(operation_id, label="source mutation operation id")
     _require_nonempty(evidence_ref, label="source continuity evidence ref")
+    if pre_mutation_evidence.tier is not ArchiveTier.SOURCE:
+        raise DurableSourceContinuitySemanticError(
+            "source continuity refresh requires source-tier pre-mutation evidence"
+        )
     if not mutation_receipt.is_file() or mutation_receipt.is_symlink():
         raise DurableChangeTrainError("source mutation receipt is not a real file")
     if not backup_manifest.is_file() or backup_manifest.is_symlink():
