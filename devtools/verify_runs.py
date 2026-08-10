@@ -18,7 +18,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,7 @@ PYTEST_HOST_RESERVE_KB = 512 * 1024
 MAX_ADAPTIVE_PYTEST_WORKERS = 12
 PYTEST_BASETEMP_MIN_FREE_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB"
 DEFAULT_PYTEST_BASETEMP_MIN_FREE_MB = 1024
+PYTEST_BASETEMP_REQUIRED_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB"
 
 
 class PytestResourceError(RuntimeError):
@@ -56,13 +57,21 @@ class PytestRuntimePolicy:
     tmpfs_budget_mb: int
     workers: int
     memory_full_avg10: float
+    basetemp_root: str | None = None
+    basetemp_label: str | None = None
+    basetemp_required_mb: int | None = None
+    basetemp_free_mb: int | None = None
 
-    def to_dict(self) -> dict[str, int | float]:
+    def to_dict(self) -> dict[str, int | float | str | None]:
         return {
             "available_mb": round(self.available_kb / 1024),
             "tmpfs_budget_mb": self.tmpfs_budget_mb,
             "workers": self.workers,
             "memory_full_avg10": self.memory_full_avg10,
+            "basetemp_root": self.basetemp_root,
+            "basetemp_label": self.basetemp_label,
+            "basetemp_required_mb": self.basetemp_required_mb,
+            "basetemp_free_mb": self.basetemp_free_mb,
         }
 
 
@@ -463,6 +472,19 @@ def _process_identity(pid: int) -> str:
         return f"{pid}:unknown"
 
 
+def _process_environ_value(pid: int, key: str) -> str | None:
+    """Read one same-user process environment value for role attribution."""
+    try:
+        rows = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    prefix = key.encode() + b"="
+    for row in rows:
+        if row.startswith(prefix):
+            return row[len(prefix) :].decode(errors="replace") or None
+    return None
+
+
 def _cpu_seconds(pid: int) -> float | None:
     try:
         raw = Path(f"/proc/{pid}/stat").read_text()
@@ -618,7 +640,20 @@ def apply_managed_pytest_runtime_policy(env: Mapping[str, str]) -> tuple[dict[st
         policy = adaptive_pytest_runtime_policy()
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "1"
         normalized.setdefault(PYTEST_TMPFS_MAX_MB_ENV, str(policy.tmpfs_budget_mb))
-    resolve_pytest_basetemp_root(normalized)
+    selected_root, selected_label = resolve_pytest_basetemp_root(normalized)
+    if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and selected_root != PYTEST_TMPFS_ROOT:
+        normalized["POLYLOGUE_PYTEST_BASETEMP_ROOT"] = str(selected_root)
+        normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
+    if policy is not None:
+        free_kb = _headroom_kb(selected_root)
+        required_kb = pytest_basetemp_required_kb(normalized)
+        policy = replace(
+            policy,
+            basetemp_root=str(selected_root),
+            basetemp_label=selected_label,
+            basetemp_required_mb=round(required_kb / 1024) if required_kb is not None else None,
+            basetemp_free_mb=round(free_kb / 1024) if free_kb is not None else None,
+        )
     return normalized, policy
 
 
@@ -661,6 +696,17 @@ def pytest_basetemp_min_free_kb(env: Mapping[str, str]) -> int:
         with contextlib.suppress(ValueError):
             return max(0, int(raw)) * 1024
     return DEFAULT_PYTEST_BASETEMP_MIN_FREE_MB * 1024
+
+
+def pytest_basetemp_required_kb(env: Mapping[str, str]) -> int | None:
+    """Return declared peak basetemp demand for this run, when known."""
+    raw = env.get(PYTEST_BASETEMP_REQUIRED_MB_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0, int(raw)) * 1024
+    except ValueError as exc:
+        raise PytestResourceError(f"invalid {PYTEST_BASETEMP_REQUIRED_MB_ENV}={raw!r}") from exc
 
 
 def pytest_basetemp_known_roots(env: Mapping[str, str] | None = None) -> tuple[Path, ...]:
@@ -723,7 +769,8 @@ def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
     free space, and the requirement, instead of letting an unrelated command
     fail three layers away with a bare ``OSError: [Errno 28]``.
     """
-    min_free_kb = pytest_basetemp_min_free_kb(env)
+    required_kb = pytest_basetemp_required_kb(env)
+    min_free_kb = max(pytest_basetemp_min_free_kb(env), required_kb or 0)
     normalized = normalize_pytest_basetemp_env(env)
     checked: list[str] = []
 
@@ -740,9 +787,16 @@ def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
         shm = PYTEST_TMPFS_ROOT
         if _is_tmpfs_dir(shm):
             free_kb = _headroom_kb(shm)
-            if free_kb is not None and free_kb >= min_free_kb:
+            budget_kb = pytest_tmpfs_budget_kb(normalized)
+            # The budget is a cap for the run, not the amount of free space we
+            # can safely consume. Keep the normal headroom in addition to the
+            # cap so a bounded run cannot fill /dev/shm and strand unrelated
+            # processes before the supervisor notices.
+            tmpfs_required_kb = min_free_kb + (required_kb or budget_kb or 0)
+            demand_fits_budget = free_kb is not None and free_kb >= tmpfs_required_kb
+            if demand_fits_budget:
                 return shm, "tmpfs opt-in"
-            checked.append(_describe_candidate(shm, "tmpfs opt-in", free_kb, min_free_kb))
+            checked.append(_describe_candidate(shm, "tmpfs opt-in", free_kb, tmpfs_required_kb))
 
     if DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
         free_kb = _headroom_kb(DEFAULT_PYTEST_BASETEMP_ROOT)
@@ -869,6 +923,8 @@ class ResourceSampler:
         total_swap_pss = 0
         swap_pss_available = False
         total_cpu = 0.0
+        xdist_worker_count = 0
+        xdist_uninterruptible_count = 0
         for pid in pids:
             status = _status_values(pid)
             rss = int(status.get("rss_kb") or 0)
@@ -879,6 +935,11 @@ class ResourceSampler:
             swap_pss = smaps.get("SwapPss")
             cpu = _cpu_seconds(pid)
             process_identity = _process_identity(pid)
+            worker_id = _process_environ_value(pid, "PYTEST_XDIST_WORKER")
+            if worker_id is not None:
+                xdist_worker_count += 1
+                if str(status.get("state") or "").startswith("D"):
+                    xdist_uninterruptible_count += 1
             process_io = _process_io_bytes(pid)
             io_high_water = self._process_io_high_water.setdefault(process_identity, {})
             for key, value in process_io.items():
@@ -902,6 +963,7 @@ class ResourceSampler:
                 {
                     "pid": pid,
                     "process_identity": process_identity,
+                    "xdist_worker_id": worker_id,
                     "state": status.get("state"),
                     "rss_kb": rss,
                     "pss_kb": pss,
@@ -933,6 +995,11 @@ class ResourceSampler:
             "tree_write_bytes": cumulative_io["write_bytes"],
             "tree_cancelled_write_bytes": cumulative_io["cancelled_write_bytes"],
             "tree_cpu_s": round(total_cpu, 4),
+            "xdist_worker_count": xdist_worker_count,
+            "xdist_uninterruptible_count": xdist_uninterruptible_count,
+            "all_xdist_workers_uninterruptible": (
+                xdist_worker_count > 0 and xdist_worker_count == xdist_uninterruptible_count
+            ),
             "host_mem_available_kb": meminfo.get("MemAvailable"),
             "host_mem_total_kb": meminfo.get("MemTotal"),
             "host_swap_free_kb": meminfo.get("SwapFree"),
@@ -1011,6 +1078,9 @@ class ResourceSampler:
             "cgroup_read_bytes_delta": delta("cgroup_read_bytes"),
             "cgroup_write_bytes_delta": delta("cgroup_write_bytes"),
             "peak_process_count": self.peak_process_count,
+            "last_xdist_worker_count": last.get("xdist_worker_count"),
+            "last_xdist_uninterruptible_count": last.get("xdist_uninterruptible_count"),
+            "last_all_xdist_workers_uninterruptible": last.get("all_xdist_workers_uninterruptible"),
             "first_resource_sample": self.first_sample,
             "last_resource_sample": self.last_sample,
         }
@@ -1053,3 +1123,25 @@ def classify_pytest_result(
     if progress_event == "terminated":
         return "pytest_terminated"
     return "pytest_failed"
+
+
+def xdist_uninterruptible_stall_reason(
+    sample: Mapping[str, Any], *, started_at: float | None, now: float, timeout_s: float
+) -> str | None:
+    """Classify an xdist process tree wedged in uninterruptible I/O sleep.
+
+    A heartbeat or controller output is not proof that tests are progressing:
+    all workers can be blocked in SQLite/filesystem I/O while the controller
+    remains alive.  This helper deliberately requires every observed xdist
+    worker to be in ``D`` state and a complete stall interval before returning
+    a termination reason.
+    """
+    if sample.get("all_xdist_workers_uninterruptible") is not True:
+        return None
+    if started_at is None or timeout_s <= 0 or now - started_at < timeout_s:
+        return None
+    worker_count = sample.get("xdist_worker_count")
+    return (
+        "pytest xdist workers remained in uninterruptible I/O sleep for "
+        f"{now - started_at:.0f}s ({worker_count} workers; likely SQLite/filesystem stall)"
+    )

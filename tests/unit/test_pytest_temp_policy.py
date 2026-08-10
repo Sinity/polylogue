@@ -94,6 +94,31 @@ def test_managed_pytest_temp_root_uses_tmpfs_when_requested_and_it_has_headroom(
     assert label == "tmpfs opt-in"
 
 
+def test_managed_pytest_temp_root_uses_scratch_when_tmpfs_budget_leaves_no_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _make_real_candidates(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        verify_runs,
+        "_fs_usage",
+        lambda path: {"used_kb": 0, "free_kb": 1_500 * 1024} if path in (shm, scratch.parent) else None,
+    )
+    monkeypatch.delenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", raising=False)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_TMPFS", "1")
+    monkeypatch.setenv("POLYLOGUE_PYTEST_TMPFS_MAX_MB", "512")
+
+    root, label = verify_runs.resolve_pytest_basetemp_root(
+        {
+            "POLYLOGUE_PYTEST_TMPFS": "1",
+            "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+        }
+    )
+
+    assert root == scratch
+    assert label == "scratch"
+
+
 def test_managed_pytest_temp_root_refuses_when_every_candidate_is_full(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -80,6 +80,7 @@ from devtools.verify_runs import (
     pytest_basetemp_path,
     pytest_tmpfs_budget_kb,
     resolve_pytest_basetemp_root,
+    xdist_uninterruptible_stall_reason,
 )
 
 
@@ -1351,6 +1352,36 @@ def test_resource_sampler_records_process_tree_sample(tmp_path: Path) -> None:
     assert "peak_tree_swap_pss_kb" in summary
     assert "tree_read_bytes_delta" in summary
     assert "tree_write_bytes_delta" in summary
+
+
+def test_xdist_uninterruptible_stall_requires_a_complete_timeout() -> None:
+    sample = {
+        "xdist_worker_count": 6,
+        "xdist_uninterruptible_count": 6,
+        "all_xdist_workers_uninterruptible": True,
+    }
+
+    assert xdist_uninterruptible_stall_reason(sample, started_at=10.0, now=19.0, timeout_s=10.0) is None
+    reason = xdist_uninterruptible_stall_reason(sample, started_at=10.0, now=20.1, timeout_s=10.0)
+    assert reason is not None
+    assert "6 workers" in reason
+    assert "uninterruptible I/O sleep" in reason
+
+
+def test_xdist_uninterruptible_stall_ignores_partial_or_moving_workers() -> None:
+    assert (
+        xdist_uninterruptible_stall_reason(
+            {
+                "xdist_worker_count": 6,
+                "xdist_uninterruptible_count": 5,
+                "all_xdist_workers_uninterruptible": False,
+            },
+            started_at=10.0,
+            now=100.0,
+            timeout_s=10.0,
+        )
+        is None
+    )
 
 
 def test_resource_sampler_accounts_memory_swap_and_io_deltas(
