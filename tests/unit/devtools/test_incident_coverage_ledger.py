@@ -151,6 +151,28 @@ def test_red_mutation_must_be_declared_by_its_fixture() -> None:
     assert error.value.diagnostic["error"] == "unknown_mutation"
 
 
+def test_route_and_fixture_registries_are_executable() -> None:
+    ledger = _ledger()
+    routes = cast(dict[str, dict[str, object]], ledger["routes"])
+    routes["reindex-campaign"]["registry"] = "MISSING"
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(ledger, _graph())
+
+    assert error.value.diagnostic["error"] == "registry_entry_missing"
+
+
+def test_forcing_edge_topology_is_load_bearing() -> None:
+    graph = _graph()
+    dependencies = cast(list[dict[str, object]], graph["forcing_dependencies"])
+    dependencies[1]["child_bead_ids"] = []
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(_ledger(), graph)
+
+    assert error.value.diagnostic["error"] == "campaign_graph_mismatch"
+
+
 def test_unknown_dependency_kind_is_structured_and_blocking(tmp_path: Path) -> None:
     def change_dependency_kind(records: dict[str, dict[str, object]]) -> None:
         target = records["polylogue-818fy"]
@@ -206,8 +228,8 @@ def test_receipt_owner_must_match_the_row_that_uses_it() -> None:
     with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(ledger, _graph())
 
-    assert error.value.diagnostic["error"] == "receipt_owner_mismatch"
-    assert error.value.diagnostic["expected_owner"] == "polylogue-a7xr.25"
+    assert error.value.diagnostic["error"] == "receipt_registry_mismatch"
+    assert error.value.diagnostic["owner_bead_id"] == "polylogue-7zp4"
 
 
 def test_successor_source_and_parent_are_resolved() -> None:
@@ -222,9 +244,10 @@ def test_successor_source_and_parent_are_resolved() -> None:
         "kind": "named-child-bead",
     }
 
-    result = resolve_incident_coverage(ledger, graph)
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        resolve_incident_coverage(ledger, graph)
 
-    assert result.successor_backed_ids == ("polylogue-a7xr.25",)
+    assert error.value.diagnostic["error"] == "campaign_graph_mismatch"
 
 
 def test_missing_successor_catalog_entry_is_blocking() -> None:
@@ -242,4 +265,4 @@ def test_missing_successor_catalog_entry_is_blocking() -> None:
     with pytest.raises(IncidentCoverageLedgerError) as error:
         resolve_incident_coverage(ledger, graph)
 
-    assert error.value.diagnostic["error"] == "unknown_successor"
+    assert error.value.diagnostic["error"] == "campaign_graph_mismatch"

@@ -15,201 +15,229 @@
       "kind": "campaign-graph",
       "source": "tests/fixtures/reindex_incident_coverage/campaign_graph.json",
       "mutation_ids": [
-        "mutation-polylogue-a7xr-25",
-        "mutation-polylogue-reindex-source-remediation",
-        "mutation-polylogue-xselt",
-        "mutation-polylogue-6k0na",
-        "mutation-polylogue-a7gmk",
-        "mutation-polylogue-byte-supersession-live-proof",
-        "mutation-polylogue-cursor-authority-live-proof",
-        "mutation-polylogue-cursor-authority-reconcile-implementation",
-        "mutation-polylogue-dyica",
-        "mutation-polylogue-excluded-cursor-live-proof",
-        "mutation-polylogue-hook-reconciliation-apply-proof",
-        "mutation-polylogue-raw-dedupe-apply-proof",
-        "mutation-polylogue-reindex-preflight-authorization",
-        "mutation-polylogue-s8s54",
-        "mutation-polylogue-stalled-cursor-live-proof",
-        "mutation-polylogue-uecir",
-        "mutation-polylogue-xeck9",
-        "mutation-polylogue-0qfy",
-        "mutation-polylogue-7zp4",
-        "mutation-polylogue-gysk3",
-        "mutation-polylogue-slshy",
-        "mutation-polylogue-uqwd",
+        "mutation-a7xr-25",
         "mutation-polylogue-052vs",
+        "mutation-polylogue-0qfy",
+        "mutation-polylogue-0v4tn",
+        "mutation-polylogue-1fijp",
         "mutation-polylogue-1xc-8",
+        "mutation-polylogue-2qrx",
+        "mutation-polylogue-2qx",
         "mutation-polylogue-2qx-3",
         "mutation-polylogue-2tfug",
+        "mutation-polylogue-3m3de",
+        "mutation-polylogue-4987i",
+        "mutation-polylogue-4v2d3",
         "mutation-polylogue-5q2u",
+        "mutation-polylogue-6753s",
         "mutation-polylogue-6bebe",
+        "mutation-polylogue-6k0na",
         "mutation-polylogue-6krh",
+        "mutation-polylogue-7zp4",
+        "mutation-polylogue-84ake",
         "mutation-polylogue-8ac0",
         "mutation-polylogue-9kc0",
         "mutation-polylogue-9qnzy",
+        "mutation-polylogue-a7gmk",
+        "mutation-polylogue-a7xr-25",
         "mutation-polylogue-aex0",
+        "mutation-polylogue-amrpx",
         "mutation-polylogue-b5l-1",
+        "mutation-polylogue-byte-supersession-live-proof",
         "mutation-polylogue-c831",
+        "mutation-polylogue-canonical-snapshot",
         "mutation-polylogue-cc4k",
         "mutation-polylogue-cijx-2",
+        "mutation-polylogue-cursor-authority-live-proof",
+        "mutation-polylogue-cursor-authority-reconcile-implementation",
+        "mutation-polylogue-dcrmm",
         "mutation-polylogue-ds4b4",
+        "mutation-polylogue-dudtn",
+        "mutation-polylogue-dyica",
         "mutation-polylogue-e98k",
+        "mutation-polylogue-ehzfn",
+        "mutation-polylogue-eqq02",
         "mutation-polylogue-es7b",
+        "mutation-polylogue-excluded-cursor-live-proof",
+        "mutation-polylogue-ey4ro",
         "mutation-polylogue-f47j",
+        "mutation-polylogue-g8v5z",
         "mutation-polylogue-gxig",
+        "mutation-polylogue-gysk3",
         "mutation-polylogue-h57ic",
         "mutation-polylogue-h7y0j",
         "mutation-polylogue-hjwr",
+        "mutation-polylogue-hook-reconciliation-apply-proof",
         "mutation-polylogue-i3zo",
+        "mutation-polylogue-in24n",
+        "mutation-polylogue-incident-coverage-ledger",
+        "mutation-polylogue-inygw",
         "mutation-polylogue-iuyr",
+        "mutation-polylogue-ix5r",
         "mutation-polylogue-k8wv",
         "mutation-polylogue-kmqwm",
         "mutation-polylogue-ksgg",
         "mutation-polylogue-lb39z",
         "mutation-polylogue-lkrc",
+        "mutation-polylogue-lr6dx",
         "mutation-polylogue-lyv4",
+        "mutation-polylogue-mvcbi",
+        "mutation-polylogue-nhbvf",
+        "mutation-polylogue-o8c3m",
+        "mutation-polylogue-ohkfy",
+        "mutation-polylogue-omsw",
+        "mutation-polylogue-pr-scope-contract",
         "mutation-polylogue-qhk8z",
+        "mutation-polylogue-r9xsj",
+        "mutation-polylogue-raw-dedupe-apply-proof",
+        "mutation-polylogue-reindex-preflight-authorization",
+        "mutation-polylogue-reindex-proof-edge-correction",
+        "mutation-polylogue-reindex-registry-two-plane-subset",
+        "mutation-polylogue-reindex-source-remediation",
+        "mutation-polylogue-rrxe4",
+        "mutation-polylogue-s8s54",
+        "mutation-polylogue-slshy",
+        "mutation-polylogue-stalled-cursor-live-proof",
         "mutation-polylogue-swqu",
+        "mutation-polylogue-t0m73",
         "mutation-polylogue-tnqqt",
         "mutation-polylogue-tu1f",
         "mutation-polylogue-tw4ar",
+        "mutation-polylogue-uecir",
+        "mutation-polylogue-un60n",
+        "mutation-polylogue-uqwd",
         "mutation-polylogue-vp2ky",
         "mutation-polylogue-w6hql",
+        "mutation-polylogue-xeck9",
+        "mutation-polylogue-xselt",
+        "mutation-polylogue-yazae",
         "mutation-polylogue-yla8",
         "mutation-polylogue-z22ml",
-        "mutation-polylogue-zoek0",
-        "mutation-polylogue-6753s",
-        "mutation-polylogue-ix5r",
-        "mutation-polylogue-nhbvf",
         "mutation-polylogue-zm4w8",
-        "mutation-polylogue-eqq02",
-        "mutation-polylogue-incident-coverage-ledger",
-        "mutation-polylogue-pr-scope-contract",
-        "mutation-polylogue-reindex-proof-edge-correction",
-        "mutation-polylogue-2qrx",
-        "mutation-polylogue-1fijp",
-        "mutation-polylogue-dcrmm",
-        "mutation-polylogue-dudtn",
-        "mutation-polylogue-3m3de",
-        "mutation-polylogue-4987i",
-        "mutation-polylogue-mvcbi",
-        "mutation-polylogue-o8c3m",
-        "mutation-polylogue-omsw",
-        "mutation-polylogue-r9xsj",
-        "mutation-polylogue-lr6dx",
-        "mutation-polylogue-ey4ro",
-        "mutation-polylogue-ohkfy",
-        "mutation-polylogue-t0m73",
-        "mutation-polylogue-inygw",
-        "mutation-polylogue-0v4tn",
-        "mutation-polylogue-84ake",
-        "mutation-polylogue-2qx",
-        "mutation-polylogue-rrxe4",
-        "mutation-polylogue-yazae",
-        "mutation-polylogue-in24n",
-        "mutation-polylogue-reindex-registry-two-plane-subset",
-        "mutation-polylogue-4v2d3",
-        "mutation-polylogue-amrpx",
-        "mutation-polylogue-canonical-snapshot",
-        "mutation-polylogue-ehzfn",
-        "mutation-polylogue-un60n",
-        "mutation-polylogue-g8v5z",
-        "mutation-a7xr-25",
+        "mutation-polylogue-zoek0",
         "mutation-reindex-source-remediation",
         "mutation-xselt"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.campaign_graph"
     },
     "campaign-corpus": {
       "kind": "real-campaign-corpus",
       "source": "tests/infra/reindex_campaign.py",
       "mutation_ids": [
-        "mutation-campaign-corpus",
-        "mutation-a7xr-25"
-      ]
+        "mutation-a7xr-25",
+        "mutation-campaign-corpus"
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.campaign_corpus"
     },
     "canary-corpus": {
       "kind": "canary-selection",
       "source": "tests/infra/reindex_differential.py",
       "mutation_ids": [
         "mutation-canary-corpus"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.canary_corpus"
     },
     "vintage-reorder": {
       "kind": "vintage-reorder",
       "source": "tests/infra/reindex_campaign.py",
       "mutation_ids": [
         "mutation-vintage-reorder"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.vintage_reorder"
     },
     "lifecycle-anchor-drift": {
       "kind": "lifecycle-anchor-drift",
       "source": "tests/infra/reindex_campaign.py",
       "mutation_ids": [
         "mutation-lifecycle-anchor-drift"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.lifecycle_anchor_drift"
     },
     "origin-matrix": {
       "kind": "origin-matrix",
       "source": "tests/infra/reindex_campaign.py",
       "mutation_ids": [
         "mutation-origin-matrix"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.origin_matrix"
     },
     "raw-authority-census": {
       "kind": "raw-authority-census",
       "source": "tests/unit/storage/test_raw_authority_ledger.py",
       "mutation_ids": [
         "mutation-raw-authority-census"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.raw_authority_census"
     },
     "sidecar-admission": {
       "kind": "sidecar-admission",
       "source": "tests/infra/reindex_campaign.py",
       "mutation_ids": [
         "mutation-sidecar-admission"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.sidecar_admission"
     },
     "drive-revision": {
       "kind": "drive-revision",
       "source": "tests/unit/sources/test_drive_gateway.py",
       "mutation_ids": [
         "mutation-drive-revision"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.drive_revision"
     },
     "lineage-corpus": {
       "kind": "lineage-corpus",
       "source": "tests/infra/reindex_campaign.py",
       "mutation_ids": [
         "mutation-lineage-corpus"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.lineage_corpus"
     },
     "derived-model": {
       "kind": "derived-model",
       "source": "tests/infra/reindex_differential.py",
       "mutation_ids": [
         "mutation-derived-model"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.derived_model"
     },
     "title-census": {
       "kind": "title-census",
       "source": "tests/unit/maintenance/test_reindex_campaign.py",
       "mutation_ids": [
         "mutation-title-census"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.title_census"
     },
     "parser-replay": {
       "kind": "parser-replay",
       "source": "tests/unit/maintenance/test_reindex_campaign.py",
       "mutation_ids": [
         "mutation-parser-replay"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.parser_replay"
     },
     "excluded-cursor-proof": {
       "kind": "candidate-live-compatible",
       "source": "tests/infra/excluded_cursor_live_proof.py",
       "mutation_ids": [
         "mutation-excluded-cursor-proof"
-      ]
+      ],
+      "mutation_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "mutation_registry": "MUTATION_REGISTRIES.excluded_cursor_proof"
     }
   },
   "checks": {
@@ -341,271 +369,361 @@
       "kind": "live-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-5xxmc",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "live-proof-7zp4": {
       "kind": "live-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-7zp4",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "live-proof-gzgyl": {
       "kind": "live-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-gzgyl",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "live-proof-mvcbi": {
       "kind": "live-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-mvcbi",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "live-proof-qsagp": {
       "kind": "live-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-qsagp",
-      "source": "tests/infra/reindex_differential.py"
+      "source": "tests/infra/reindex_differential.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "excluded-cursor-proof-receipt": {
       "kind": "proof-receipt",
       "status": "recorded",
       "owner_bead_id": "polylogue-ix5r",
-      "source": "docs/evidence/polylogue-excluded-cursor-live-proof-2026-08-06.json"
+      "source": "docs/evidence/polylogue-excluded-cursor-live-proof-2026-08-06.json",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-6k0na": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-6k0na",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-xeck9": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-xeck9",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-0qfy": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-0qfy",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-7zp4": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-7zp4",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-gysk3": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-gysk3",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-052vs": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-052vs",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-1xc-8": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-1xc.8",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-2qx-3": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-2qx.3",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-8ac0": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-8ac0",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-9kc0": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-9kc0",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-c831": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-c831",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-cc4k": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-cc4k",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-gxig": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-gxig",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-h57ic": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-h57ic",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-h7y0j": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-h7y0j",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-hjwr": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-hjwr",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-i3zo": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-i3zo",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-kmqwm": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-kmqwm",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-lb39z": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-lb39z",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-lyv4": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-lyv4",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-qhk8z": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-qhk8z",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-swqu": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-swqu",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-z22ml": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-z22ml",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-zoek0": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-zoek0",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-6753s": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-6753s",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-ix5r": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-ix5r",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-nhbvf": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-nhbvf",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-zm4w8": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-zm4w8",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-eqq02": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-eqq02",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-reindex-proof-edge-correction": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-reindex-proof-edge-correction",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-2qrx": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-2qrx",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-dcrmm": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-dcrmm",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-dudtn": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-dudtn",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-mvcbi": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-mvcbi",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-o8c3m": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-o8c3m",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-84ake": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-84ake",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-amrpx": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-amrpx",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-canonical-snapshot": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-canonical-snapshot",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     },
     "implementation-proof-polylogue-ehzfn": {
       "kind": "implementation-proof",
       "status": "recorded",
       "owner_bead_id": "polylogue-ehzfn",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "tests/infra/reindex_campaign.py",
+      "registry_source": "tests/fixtures/reindex_incident_coverage/registries.py",
+      "registry": "RECEIPT_PRODUCERS"
     }
   },
   "successors": {
@@ -3696,11 +3814,13 @@
   "routes": {
     "reindex-campaign": {
       "kind": "campaign-route",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "devtools/incident_coverage_ledger.py",
+      "registry": "ROUTE_REGISTRY"
     },
     "reindex-final-proof": {
       "kind": "final-proof-route",
-      "source": "tests/infra/reindex_campaign.py"
+      "source": "devtools/incident_coverage_ledger.py",
+      "registry": "ROUTE_REGISTRY"
     }
   }
 }
