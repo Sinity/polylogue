@@ -123,6 +123,8 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Query-Action Workflows Design](design/query-action-workflows.md) | Historical design pointer for the workflow contract. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
+| [Content, Identity, and Lineage Architecture](plans/content-identity-lineage-design.md) | Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority. |
+| [Bead Readiness Audit](plans/bead-readiness-audit-implementation-cluster.md) | Execution-readiness audit for the implementation-cluster Beads and their verification boundaries. |
 | [Analysis Rigor](design/analysis-rigor.md) | Rigor mechanisms for agent claims: population validity and comparative judgment. |
 | [Prefix-Blob Reclamation](design/prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes. |
 | [Convergence Simplification Inventory](design/convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign (polylogue-m6tp). |
@@ -148,6 +150,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
 | [Query Pipeline Substrate Plan](plans/query-pipeline-substrate.md) | Historical/active query pipeline design plan. |
+| [Nine-Bead Decision Adjudication](plans/decision-adjudication-kea7p-avna-cijx-uh6c-rxdo9-ze5-dx1-fie-ca4.md) | Implementation decisions and dependency graph for nine architecture Beads. |
 | [Semantic Card Tool Map](generated/semantic-card-tool-map.md) | Generated map from semantic cards to tools. |
 
 ## Contributor Workflow

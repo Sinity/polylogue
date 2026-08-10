@@ -419,6 +419,18 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "Content, Identity, and Lineage Architecture",
+        "plans/content-identity-lineage-design.md",
+        "Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority.",
+        "design",
+    ),
+    _entry(
+        "Bead Readiness Audit",
+        "plans/bead-readiness-audit-implementation-cluster.md",
+        "Execution-readiness audit for the implementation-cluster Beads and their verification boundaries.",
+        "design",
+    ),
+    _entry(
         "Analysis Rigor",
         "design/analysis-rigor.md",
         "Rigor mechanisms for agent claims: population validity and comparative judgment.",
@@ -504,6 +516,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Query Pipeline Substrate Plan",
         "plans/query-pipeline-substrate.md",
         "Historical/active query pipeline design plan.",
+        "archive",
+    ),
+    _entry(
+        "Nine-Bead Decision Adjudication",
+        "plans/decision-adjudication-kea7p-avna-cijx-uh6c-rxdo9-ze5-dx1-fie-ca4.md",
+        "Implementation decisions and dependency graph for nine architecture Beads.",
         "archive",
     ),
     _entry(
