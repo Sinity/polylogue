@@ -15,7 +15,7 @@ from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.sources.parsers.hermes_state import looks_like_state_db_path
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 
 _SCHEMA_REGISTRY = SchemaRegistry()
@@ -149,8 +149,7 @@ def _is_hermes_state_db_candidate(record: RawSessionRecord) -> bool:
     return provider is Provider.HERMES and source_suffix in {".db", ".sqlite", ".sqlite3"}
 
 
-def _inspect_payload_envelope(record: RawSessionRecord) -> RawPayloadEnvelope:
-    blob_store = get_blob_store()
+def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore) -> RawPayloadEnvelope:
     blob_ref = _record_blob_ref(record)
     blob_path = blob_store.blob_path(blob_ref)
     # SQLite recognition needs a filesystem path. Passing the retained blob,
@@ -158,7 +157,7 @@ def _inspect_payload_envelope(record: RawSessionRecord) -> RawPayloadEnvelope:
     # durable observation describes the exact acquired bytes.
     if _is_hermes_state_db_candidate(record):
         return _build_payload_envelope(blob_path, record, sqlite_immutable=True)
-    prefix = _inspection_prefix(record)
+    prefix = _inspection_prefix(record, blob_store=blob_store)
     try:
         envelope = _build_payload_envelope(prefix, record)
     except Exception:
@@ -215,13 +214,13 @@ _INSPECTION_PREFIX_BYTES = 64 * 1024  # 64 KB — enough to classify any format
 _FULL_JSON_INSPECTION_MAX_BYTES = 8 * 1024 * 1024  # 8 MB — bounded fallback for large JSON documents
 
 
-def _inspection_prefix(record: RawSessionRecord) -> bytes:
+def _inspection_prefix(record: RawSessionRecord, *, blob_store: BlobStore | None = None) -> bytes:
     """Extract a small prefix of raw content sufficient for classification.
 
     Reads only the first 64 KB from the blob store — multi-GB files are
     never loaded into memory.
     """
-    blob_store = get_blob_store()
+    blob_store = blob_store or get_blob_store()
     prefix = blob_store.read_prefix(_record_blob_ref(record), _INSPECTION_PREFIX_BYTES)
     normalized = (record.source_path or "").lower()
     is_jsonl = normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
@@ -247,7 +246,7 @@ def _should_retry_full_json_inspection(record: RawSessionRecord, *, wire_format:
     return _full_json_inspection_allowed(record) and wire_format == "jsonl"
 
 
-def _full_scan_malformed_jsonl(record: RawSessionRecord) -> tuple[int, bool]:
+def _full_scan_malformed_jsonl(record: RawSessionRecord, *, blob_store: BlobStore | None = None) -> tuple[int, bool]:
     """Stream the entire blob to count malformed JSONL lines.
 
     The prefix-based classification only inspects the first 64 KB, so malformed
@@ -262,7 +261,8 @@ def _full_scan_malformed_jsonl(record: RawSessionRecord) -> tuple[int, bool]:
     """
     from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
 
-    blob_path = get_blob_store().blob_path(record.blob_hash or record.raw_id)
+    blob_store = blob_store or get_blob_store()
+    blob_path = blob_store.blob_path(record.blob_hash or record.raw_id)
     try:
         _samples, malformed_lines, _detail = _sample_jsonl_payload_with_detail(
             blob_path,
@@ -282,6 +282,7 @@ def _stream_loss_accounting(
     *,
     wire_format: str | None,
     prefix_malformed_lines: int,
+    blob_store: BlobStore | None = None,
 ) -> tuple[int, bool]:
     """Return ``(malformed_lines, partial_decode)`` for a stream artifact.
 
@@ -302,19 +303,20 @@ def _stream_loss_accounting(
         # Reaching the success branch with malformed lines means valid records
         # decoded too, so any loss here is partial.
         return prefix_malformed_lines, prefix_malformed_lines > 0
-    malformed_lines, had_valid_records = _full_scan_malformed_jsonl(record)
+    malformed_lines, had_valid_records = _full_scan_malformed_jsonl(record, blob_store=blob_store)
     if malformed_lines == 0:
         return malformed_lines, False
     return malformed_lines, had_valid_records
 
 
-def inspect_raw_artifact(record: RawSessionRecord) -> ArtifactObservationRecord:
+def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | None = None) -> ArtifactObservationRecord:
     """Inspect one raw record into a durable artifact observation.
 
     Uses only a small prefix of raw_content for classification — never
     decodes the full payload. This keeps memory bounded regardless of
     file size (a 1.5 GB JSONL file is classified from its first line).
     """
+    resolved_blob_store = blob_store or get_blob_store()
     provider_hint = _normalize_payload_provider_hint(record)
     provider_token = provider_hint or record.source_name or ""
     bundle_scope = derive_bundle_scope(provider_token, record.source_path)
@@ -327,7 +329,7 @@ def inspect_raw_artifact(record: RawSessionRecord) -> ArtifactObservationRecord:
     registry = _SCHEMA_REGISTRY
 
     try:
-        envelope = _inspect_payload_envelope(record)
+        envelope = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
         payload_provider = envelope.provider
         resolution: SchemaResolution | None = None
         has_supported_resolution = False
@@ -339,6 +341,7 @@ def inspect_raw_artifact(record: RawSessionRecord) -> ArtifactObservationRecord:
             record,
             wire_format=envelope.wire_format,
             prefix_malformed_lines=envelope.malformed_jsonl_lines,
+            blob_store=resolved_blob_store,
         )
 
         if envelope.artifact.parse_as_session and envelope.artifact.schema_eligible and malformed_jsonl_lines == 0:

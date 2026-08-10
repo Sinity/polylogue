@@ -25,12 +25,21 @@ def _upsert_artifact_observation(
     conn: sqlite3.Connection,
     record: ArtifactObservationRecord,
 ) -> bool:
-    exists = conn.execute(
-        "SELECT 1 FROM raw_artifacts WHERE artifact_id = ?",
-        (record.observation_id,),
-    ).fetchone()
-    conn.execute(RAW_ARTIFACT_UPSERT_SQL, artifact_observation_params(record))
-    return exists is None
+    cursor = conn.execute(RAW_ARTIFACT_UPSERT_SQL, artifact_observation_params(record))
+    return cursor.rowcount == 1
+
+
+def upsert_artifact_observations(
+    conn: sqlite3.Connection,
+    records: Sequence[ArtifactObservationRecord],
+) -> int:
+    """Upsert a caller-selected observation batch without committing.
+
+    The raw-authority census uses this narrow primitive so its apply path can
+    hold one source-tier transaction and prove that no raw authority or blob
+    relation was touched. Callers own transaction boundaries.
+    """
+    return sum(_upsert_artifact_observation(conn, record) for record in records)
 
 
 def materialize_artifact_observations(
@@ -115,4 +124,5 @@ __all__ = [
     "ensure_artifact_observations",
     "materialize_artifact_observations",
     "materialize_artifact_observations_for_raw_ids",
+    "upsert_artifact_observations",
 ]

@@ -166,7 +166,7 @@ def test_only_flags_quarantined_no_lsk_raws_byte_identical_to_an_indexed_twin(tm
     assert plan.duplicate_bytes == len(duplicate_payload)
 
 
-def test_limit_caps_scanned_rows(tmp_path: Path) -> None:
+def test_limit_pages_scanned_rows_by_exclusive_raw_id_cursor(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
 
@@ -183,9 +183,11 @@ def test_limit_caps_scanned_rows(tmp_path: Path) -> None:
     source_conn = sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)
     index_conn = sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)
     try:
-        plan = plan_byte_duplicate_supersession(source_conn, index_conn, limit=2)
+        first_page = plan_byte_duplicate_supersession(source_conn, index_conn, limit=2)
+        second_page = plan_byte_duplicate_supersession(source_conn, index_conn, limit=2, after_raw_id="raw-1")
     finally:
         source_conn.close()
         index_conn.close()
 
-    assert plan.scanned_count == 2
+    assert first_page.scanned_count == 2
+    assert second_page.scanned_count == 1

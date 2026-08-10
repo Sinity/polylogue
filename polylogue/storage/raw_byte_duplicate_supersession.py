@@ -53,6 +53,7 @@ actuator in this family (``raw_live_source_reconciliation_apply``,
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 
@@ -96,6 +97,8 @@ def plan_byte_duplicate_supersession(
     index_conn: sqlite3.Connection,
     *,
     limit: int | None = None,
+    after_raw_id: str | None = None,
+    raw_ids: Sequence[str] | None = None,
 ) -> ByteDuplicateSupersessionPlan:
     """Read-only: classify quarantined, logical-key-less raws against already-indexed twins.
 
@@ -108,18 +111,30 @@ def plan_byte_duplicate_supersession(
     source_conn.row_factory = sqlite3.Row
     index_conn.row_factory = sqlite3.Row
     try:
+        if raw_ids is not None and limit is not None:
+            raise ValueError("raw_ids cannot be combined with limit")
         query = """
             SELECT raw_id, blob_hash, blob_size
             FROM raw_sessions
             WHERE revision_authority = 'quarantined'
               AND logical_source_key IS NULL
               AND parse_error IS NULL
-            ORDER BY raw_id
         """
-        params: tuple[object, ...] = ()
+        params: list[object] = []
+        if raw_ids is not None:
+            selected = tuple(dict.fromkeys(raw_ids))
+            if not selected:
+                return ByteDuplicateSupersessionPlan(scanned_count=0, duplicates=(), novel_count=0)
+            placeholders = ", ".join("?" for _ in selected)
+            query += f" AND raw_id IN ({placeholders})"
+            params.extend(selected)
+        elif after_raw_id is not None:
+            query += " AND raw_id > ?"
+            params.append(after_raw_id)
+        query += " ORDER BY raw_id"
         if limit is not None:
             query += " LIMIT ?"
-            params = (limit,)
+            params.append(limit)
         candidate_rows = source_conn.execute(query, params).fetchall()
         if not candidate_rows:
             return ByteDuplicateSupersessionPlan(scanned_count=0, duplicates=(), novel_count=0)
