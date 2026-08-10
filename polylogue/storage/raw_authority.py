@@ -73,6 +73,7 @@ RAW_AUTHORITY_CENSUS_PLAN_RETENTION = 8
 RAW_AUTHORITY_CENSUS_HEADER_RETENTION = 256
 logger = get_logger(__name__)
 
+
 def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | None:
     """Validate and normalize the durable logical-key receipt payload.
 
@@ -107,6 +108,7 @@ _RESET_LEDGER_TABLES_CHILD_FIRST = (
     "raw_authority_plans",
     "raw_authority_censuses",
 )
+
 
 @dataclass(frozen=True, slots=True)
 class RawAuthorityCensusResetCounts:
