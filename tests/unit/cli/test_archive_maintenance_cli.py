@@ -2621,7 +2621,7 @@ def test_missing_tier_initialization_closes_directory_after_publication_descript
     owner = acquire_durable_archive_ownership(root, owner_id="publication-close-test")
     try:
         with monkeypatch.context() as scoped:
-            scoped.setattr(durable_change_train.os, "open", record_publication_open)
+            scoped.setattr("polylogue.operations.durable_change_train.os.open", record_publication_open)
             scoped.setattr(durable_change_train, "_close_publication_descriptor", fail_publication_close)
             with pytest.raises(DurablePublicationError) as raised:
                 initialize_missing_durable_tier(

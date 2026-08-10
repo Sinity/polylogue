@@ -110,8 +110,11 @@ def test_ownership_metadata_write_failure_closes_lock_descriptor(
         closed.append(descriptor)
         real_close(descriptor)
 
-    monkeypatch.setattr(archive_identity.os, "close", record_close)
-    monkeypatch.setattr(archive_identity.os, "fsync", lambda _descriptor: (_ for _ in ()).throw(OSError("disk full")))
+    monkeypatch.setattr("polylogue.storage.archive_identity.os.close", record_close)
+    monkeypatch.setattr(
+        "polylogue.storage.archive_identity.os.fsync",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("disk full")),
+    )
 
     with pytest.raises(ArchiveOwnershipError, match="cannot record archive ownership lock owner"):
         OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
