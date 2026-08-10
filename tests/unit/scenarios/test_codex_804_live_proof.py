@@ -385,7 +385,11 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
 
     transaction = store.create_transaction(
         source_snapshot=rebuild_source_evidence_snapshot(root),
-        pass_byte_budget=64 * 1024 * 1024,
+        # The proof must spend one bounded restart pass on the complete
+        # synthetic corpus. A small production budget would make every retry
+        # re-enter frozen replay for the same 804-revision cohort, turning a
+        # restart proof into an unbounded terminal-stage stress loop.
+        pass_byte_budget=whale_component_bytes + 1,
     )
     operation_id = transaction.operation_id
     assert transaction.status == "running"
@@ -540,20 +544,18 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 root = Path(sys.argv[1])
 operation_id = sys.argv[2]
 receipt = Path(sys.argv[3])
-for _ in range(200):
-    result = rebuild_index_from_source_sync(
-        RebuildIndexRequest(
-            archive_root=root,
-            operation_id=operation_id,
-            promote=False,
-            schema_inference_receipt_path=receipt,
-        )
+result = rebuild_index_from_source_sync(
+    RebuildIndexRequest(
+        archive_root=root,
+        operation_id=operation_id,
+        promote=False,
+        schema_inference_receipt_path=receipt,
+        raw_batch_size=804,
     )
-    if result.status == "replayed" and result.materialized:
-        print(result.generation["generation_id"])
-        break
-else:
-    raise SystemExit("persisted rebuild did not reach replayed")
+)
+if result.status != "replayed" or not result.materialized:
+    raise SystemExit(f"bounded restart did not reach replayed: {result.status!r}")
+print(result.generation["generation_id"])
 """
     replay_trace_path = tmp_path / "rebuild-replay-trace.jsonl"
     resumed_process = subprocess.run(
@@ -625,6 +627,7 @@ result = rebuild_index_from_source_sync(
         operation_id=operation_id,
         promote=False,
         schema_inference_receipt_path=receipt,
+        raw_batch_size=804,
     )
 )
 print(json.dumps({"status": result.status, "generation_id": result.generation["generation_id"]}))
