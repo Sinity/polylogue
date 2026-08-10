@@ -1798,6 +1798,39 @@ def _archive_assertion_candidate_queue_health(
                         judgment_scheduler_receipt_at_ms = int(receipt_row[0])
                         if receipt_is_valid and isinstance(receipt_payload, dict):
                             judgment_scheduler_receipt_reason = str(receipt_payload["reason"])
+                            judgment_scheduler_receipt_retryable = bool(receipt_payload["retryable"])
+                            judgment_scheduler_receipt_retry_route = str(receipt_payload["retry_route"])
+                            judgment_scheduler_receipt_batch_limit = int(receipt_payload["batch_limit"])
+                            counter_names = (
+                                "considered",
+                                "accepted",
+                                "rejected",
+                                "escalated",
+                                "idempotent",
+                                "failed",
+                            )
+                            if all(name in receipt_payload for name in counter_names):
+                                for name in counter_names:
+                                    value = receipt_payload[name]
+                                    if isinstance(value, int) and not isinstance(value, bool):
+                                        if name == "considered":
+                                            judgment_scheduler_receipt_considered = value
+                                        elif name == "accepted":
+                                            judgment_scheduler_receipt_accepted = value
+                                        elif name == "rejected":
+                                            judgment_scheduler_receipt_rejected = value
+                                        elif name == "escalated":
+                                            judgment_scheduler_receipt_escalated = value
+                                        elif name == "idempotent":
+                                            judgment_scheduler_receipt_idempotent = value
+                                        elif name == "failed":
+                                            judgment_scheduler_receipt_failed = value
+                            judgment_scheduler_receipt_persistence_degraded = bool(
+                                receipt_payload["receipt_persistence_degraded"]
+                            )
+                            judgment_scheduler_receipt_persistence_recovered = bool(
+                                receipt_payload["receipt_persistence_recovered"]
+                            )
             finally:
                 ops_conn.close()
         except sqlite3.Error as exc:

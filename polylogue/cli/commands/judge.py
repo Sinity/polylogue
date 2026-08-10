@@ -263,6 +263,12 @@ def _render_queue_health(payload: AssertionCandidateQueueHealthPayload, output_f
             f"idempotent={payload.judgment_scheduler_receipt_idempotent or 0}, "
             f"failed={payload.judgment_scheduler_receipt_failed or 0}"
         )
+        if payload.judgment_scheduler_receipt_persistence_degraded is not None:
+            click.echo(
+                "  receipt persistence: "
+                f"degraded={payload.judgment_scheduler_receipt_persistence_degraded}; "
+                f"recovered={payload.judgment_scheduler_receipt_persistence_recovered}"
+            )
     click.echo(f"  retention: {payload.retention_outcome}")
     for caveat in payload.caveats:
         click.echo(f"  caveat: {caveat}")
