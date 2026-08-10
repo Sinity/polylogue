@@ -674,7 +674,9 @@ def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
 
 
 def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
-    result = cli_runner.invoke(click_cli, ["--plain", "read", "--help"], catch_exceptions=False)
+    result = cli_runner.invoke(
+        click_cli, ["--plain", "read", "--view", "context-image", "--help"], catch_exceptions=False
+    )
 
     assert result.exit_code == 0
     assert "Options:" not in result.output
@@ -682,8 +684,8 @@ def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
     assert "Delivery and format:" in result.output
     assert "Cardinality and pagination:" in result.output
     assert "Context-image projection:" in result.output
-    assert "Context and neighbor views:" in result.output
-    assert "Correlation view:" in result.output
+    assert "Context and neighbor views:" not in result.output
+    assert "Correlation view:" not in result.output
     assert "Other options:" in result.output
     assert "--views" in result.output
     assert "--render" in result.output
@@ -691,7 +693,21 @@ def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
     assert "--render-layout" in result.output
     assert "--timestamps" in result.output
     assert "--max-tokens" in result.output
-    assert "--repo-path" in result.output
+    assert "--max-sessions" in result.output
+    assert "--repo-path" not in result.output
+
+
+def test_read_does_not_restore_post_verb_json_alias(cli_runner: CliRunner) -> None:
+    """polylogue-zok3: the public read route keeps JSON explicit via --format."""
+
+    result = cli_runner.invoke(
+        click_cli,
+        ["--plain", "read", "--view", "transcript", "--json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "Move --json before `read`" in result.output
 
 
 def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:

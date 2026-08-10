@@ -518,28 +518,22 @@ def test_read_spec_moves_standalone_neighbor_options_to_projection_policy() -> N
 
 
 def test_read_spec_records_context_image_selector_fields() -> None:
+    """polylogue-zok3: query predicates survive the public format/to route."""
+
     runner = CliRunner()
     result = runner.invoke(
         cli,
         [
             "--plain",
+            "find",
+            "repo:github.com/Sinity/polylogue origin:claude-code-session since:2026-06-01 until:2026-06-30 cwd:/workspace/polylogue route contracts",
             "read",
             "--view",
             "context-image",
             "--format",
             "json",
-            "--project-path",
-            "/workspace/polylogue",
-            "--project-repo",
-            "github.com/Sinity/polylogue",
-            "--query",
-            "route contracts",
-            "--context-origin",
-            "claude-code-session",
-            "--since",
-            "2026-06-01",
-            "--until",
-            "2026-06-30",
+            "--to",
+            "stdout",
             "--max-sessions",
             "3",
             "--spec",
@@ -551,7 +545,7 @@ def test_read_spec_records_context_image_selector_fields() -> None:
     payload = json.loads(result.output)
     assert payload["selection"] == {
         "refs": [],
-        "query": "route contracts",
+        "query": "repo:github.com/Sinity/polylogue origin:claude-code-session since:2026-06-01 until:2026-06-30 cwd:/workspace/polylogue route contracts",
         "origin": "claude-code-session",
         "since": "2026-06-01",
         "until": "2026-06-30",
@@ -575,13 +569,13 @@ def test_read_spec_records_context_image_redaction_policy() -> None:
         cli,
         [
             "--plain",
+            "find",
+            "route contracts",
             "read",
             "--view",
             "context-image",
             "--format",
             "json",
-            "--query",
-            "route contracts",
             "--no-redact",
             "--spec",
         ],
@@ -599,13 +593,13 @@ def test_read_spec_records_context_image_assertion_policy() -> None:
         cli,
         [
             "--plain",
+            "find",
+            "route contracts",
             "read",
             "--view",
             "context-image",
             "--format",
             "json",
-            "--query",
-            "route contracts",
             "--include-assertions",
             "--spec",
         ],

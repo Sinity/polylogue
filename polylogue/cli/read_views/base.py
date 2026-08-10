@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
-from polylogue.cli.read_view_registry import ReadViewSessionPolicy
+from polylogue.cli.read_view_registry import READ_VIEW_GLOBAL_OPTION_NAMES, ReadViewSessionPolicy
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -147,7 +147,9 @@ class ReadViewHandler:
                     f"read --view {self.view_id} does not support --format {invocation.output_format}. "
                     f"Supported formats: {supported}."
                 )
-        unsupported_options = sorted(invocation.explicit_options - self.accepted_options)
+        unsupported_options = sorted(
+            invocation.explicit_options - self.accepted_options - READ_VIEW_GLOBAL_OPTION_NAMES
+        )
         if unsupported_options:
             options = ", ".join(f"--{option.replace('_', '-')}" for option in unsupported_options)
             raise click.UsageError(f"read --view {self.view_id} does not use {options}.")

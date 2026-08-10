@@ -27,7 +27,11 @@ from polylogue.archive.viewport import (
     read_view_choices,
     read_view_profile_payloads,
 )
-from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, read_view_option_names
+from polylogue.cli.read_view_registry import (
+    READ_VIEW_GLOBAL_OPTION_NAMES,
+    READ_VIEW_HANDLER_METADATA,
+    read_view_option_names,
+)
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 
@@ -401,12 +405,6 @@ def _read_view_option_values(
     offset: int,
     full: bool,
     related_limit: int,
-    project_path: str | None,
-    project_repo: str | None,
-    since: str | None,
-    until: str | None,
-    context_origin: str | None,
-    context_query: str | None,
     max_sessions: int,
     no_redact: bool,
     window_hours: int,
@@ -422,12 +420,6 @@ def _read_view_option_values(
         "offset": offset,
         "full": full,
         "related_limit": related_limit,
-        "project_path": project_path,
-        "project_repo": project_repo,
-        "since": since,
-        "until": until,
-        "context_origin": context_origin,
-        "context_query": context_query,
         "max_sessions": max_sessions,
         "no_redact": no_redact,
         "window_hours": window_hours,
@@ -516,6 +508,63 @@ def _selected_read_view(ctx: click.Context) -> str | None:
     if isinstance(value, str) and value in READ_VIEW_PROFILE_BY_ID:
         return value
     return None
+
+
+def _read_views_from_value(value: object) -> tuple[str, ...]:
+    """Normalize the selected ``--view`` value for surface ownership checks."""
+
+    if not isinstance(value, str):
+        return ("summary",)
+    views = tuple(token.strip() for token in value.split(",") if token.strip())
+    return views or ("summary",)
+
+
+def _read_views_from_args(args: list[str]) -> tuple[str, ...]:
+    """Read ``--view`` before Click parses the command-specific options."""
+
+    for index, arg in enumerate(args):
+        if arg.startswith("--view="):
+            return _read_views_from_value(arg.split("=", 1)[1])
+        if arg == "--view" or arg == "-v":
+            if index + 1 < len(args):
+                return _read_views_from_value(args[index + 1])
+            break
+    return ("summary",)
+
+
+def _read_view_specific_option_names(views: tuple[str, ...]) -> frozenset[str]:
+    """Return the option names admitted by the selected view composition."""
+
+    return (
+        frozenset(
+            option_name
+            for view in views
+            for option_name in READ_VIEW_HANDLER_METADATA.get(
+                view, READ_VIEW_HANDLER_METADATA["summary"]
+            ).accepted_options
+        )
+        - READ_VIEW_GLOBAL_OPTION_NAMES
+    )
+
+
+def _read_option_name_by_flag(command: click.Command) -> dict[str, str]:
+    options: dict[str, str] = {}
+    for param in command.params:
+        if not isinstance(param, click.Option) or param.name is None:
+            continue
+        for option in (*param.opts, *param.secondary_opts):
+            options[option] = param.name
+    return options
+
+
+def _read_option_value_arity(command: click.Command) -> dict[str, int]:
+    arity: dict[str, int] = {}
+    for param in command.params:
+        if not isinstance(param, click.Option) or param.is_flag:
+            continue
+        for option in (*param.opts, *param.secondary_opts):
+            arity[option] = param.nargs if param.nargs > 0 else 1
+    return arity
 
 
 def _complete_read_format(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
@@ -633,6 +682,14 @@ def _build_read_projection_spec(
     )
     query_spec = request.query_spec()
     origin = query_spec.origins[0] if len(query_spec.origins) == 1 else None
+    project_path = selection_project_path if selection_project_path is not None else query_spec.cwd_prefix
+    project_repo = (
+        selection_project_repo
+        if selection_project_repo is not None
+        else query_spec.repo_names[0]
+        if len(query_spec.repo_names) == 1
+        else None
+    )
     return projection_from_views(
         views,
         format=effective_format,
@@ -645,8 +702,8 @@ def _build_read_projection_spec(
         origin=selection_origin if selection_origin is not None else origin,
         since=selection_since if selection_since is not None else query_spec.since,
         until=selection_until if selection_until is not None else query_spec.until,
-        project_path=selection_project_path,
-        project_repo=selection_project_repo,
+        project_path=project_path,
+        project_repo=project_repo,
         limit=selection_limit,
         edge_limit=edge_limit,
         body_limit=body_limit,
@@ -708,20 +765,7 @@ _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
     (
         "Context-image projection",
-        frozenset(
-            {
-                "project_path",
-                "project_repo",
-                "since",
-                "until",
-                "context_origin",
-                "context_query",
-                "max_sessions",
-                "max_tokens",
-                "include_assertions",
-                "no_redact",
-            }
-        ),
+        frozenset({"max_sessions", "no_redact"}),
     ),
     ("Context and neighbor views", frozenset({"related_limit", "window_hours"})),
     ("Correlation view", frozenset({"repo_path", "since_hours", "confidence_threshold", "github_api"})),
@@ -731,11 +775,51 @@ _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
 class _ReadCommand(click.Command):
     """Click command with read-option help grouped by ownership."""
 
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        """Reject view flags before Click can accept an unrelated namespace."""
+
+        views = _read_views_from_args(args)
+        ctx.meta["polylogue_read_views"] = views
+        allowed = _read_view_specific_option_names(views)
+        option_names = _read_option_name_by_flag(self)
+        arity = _read_option_value_arity(self)
+        index = 0
+        while index < len(args):
+            raw = args[index]
+            option = raw.split("=", 1)[0] if raw.startswith("--") else raw
+            name = option_names.get(option)
+            if name in read_view_option_names() and name not in allowed and name not in READ_VIEW_GLOBAL_OPTION_NAMES:
+                raise click.UsageError(f"read --view {','.join(views)} does not expose --{name.replace('_', '-')}.")
+            index += 1 + arity.get(option, 0)
+        return super().parse_args(ctx, args)
+
+    def shell_complete(self, ctx: click.Context, incomplete: str) -> list[CompletionItem]:
+        """Complete only options admitted by the selected view composition."""
+
+        items = super().shell_complete(ctx, incomplete)
+        if not incomplete.startswith("-"):
+            return items
+        views = ctx.meta.get("polylogue_read_views") or _read_views_from_value(ctx.params.get("view", "summary"))
+        allowed = _read_view_specific_option_names(views)
+        option_names = _read_option_name_by_flag(self)
+        return [
+            item
+            for item in items
+            if (name := option_names.get(item.value)) is None
+            or name not in read_view_option_names()
+            or name in allowed
+            or name in READ_VIEW_GLOBAL_OPTION_NAMES
+        ]
+
     def format_options(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        views = ctx.meta.get("polylogue_read_views") or _read_views_from_value(ctx.params.get("view", "summary"))
+        allowed = _read_view_specific_option_names(views)
         grouped: dict[str, list[tuple[str, str]]] = {heading: [] for heading, _ in _READ_HELP_OPTION_GROUPS}
         other: list[tuple[str, str]] = []
 
         for param in self.get_params(ctx):
+            if param.name in read_view_option_names() - READ_VIEW_GLOBAL_OPTION_NAMES and param.name not in allowed:
+                continue
             record = param.get_help_record(ctx)
             if record is None:
                 continue
@@ -903,12 +987,6 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
     show_default=True,
     help="Number of related sessions to include (--view context).",
 )
-@click.option("--project-path", default=None, help="Filter by cwd prefix pattern (--view context-image).")
-@click.option("--project-repo", default=None, help="Filter by git repo URL or name (--view context-image).")
-@click.option("--since", default=None, help="Start date, ISO 8601 (--view context-image).")
-@click.option("--until", default=None, help="End date, ISO 8601 (--view context-image).")
-@click.option("--context-origin", "context_origin", default=None, help="Source-origin filter (--view context-image).")
-@click.option("--query", "context_query", default=None, help="Free-text query (--view context-image).")
 @click.option(
     "--max-sessions", type=int, default=5, show_default=True, help="Max sessions, 1-20 (--view context-image)."
 )
@@ -951,12 +1029,6 @@ def read_verb(
     confidence_threshold: float,
     github_api: bool,
     related_limit: int,
-    project_path: str | None,
-    project_repo: str | None,
-    since: str | None,
-    until: str | None,
-    context_origin: str | None,
-    context_query: str | None,
     max_sessions: int,
     max_tokens: int | None,
     include_assertions: bool,
@@ -983,7 +1055,7 @@ def read_verb(
         polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
         polylogue find id:abc then read --view context --related-limit 5
         polylogue find 'cost tracking' then read --view context-image --max-sessions 5
-        polylogue read --view context-image --project-repo github.com/Sinity/polylogue --since 2026-01-01
+        polylogue find 'repo:github.com/Sinity/polylogue since:2026-01-01' then read --view context-image
         polylogue read --views
         polylogue read --views --format json
         polylogue find 'repo:polylogue' then read --view temporal,chronicle --spec
@@ -1052,29 +1124,7 @@ def read_verb(
     projection_neighbor_window_hours = window_hours if len(view_tokens) == 1 and view_tokens[0] == "neighbors" else None
     uses_context_image_selector = "context-image" in view_tokens
     context_image_max_sessions = min(max_sessions, limit) if limit is not None else max_sessions
-    spec_selection_limit: int | None
-    spec_selection_query: str | None
-    spec_selection_origin: str | None
-    spec_selection_since: str | None
-    spec_selection_until: str | None
-    spec_selection_project_path: str | None
-    spec_selection_project_repo: str | None
-    if uses_context_image_selector:
-        spec_selection_limit = context_image_max_sessions
-        spec_selection_query = context_query
-        spec_selection_origin = context_origin
-        spec_selection_since = since
-        spec_selection_until = until
-        spec_selection_project_path = project_path
-        spec_selection_project_repo = project_repo
-    else:
-        spec_selection_limit = selection_limit
-        spec_selection_query = None
-        spec_selection_origin = None
-        spec_selection_since = None
-        spec_selection_until = None
-        spec_selection_project_path = None
-        spec_selection_project_repo = None
+    spec_selection_limit = context_image_max_sessions if uses_context_image_selector else selection_limit
     if show_spec:
         spec = _build_read_projection_spec(
             request,
@@ -1086,12 +1136,6 @@ def read_verb(
             selection_limit=spec_selection_limit,
             render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
             timestamp_policy=timestamp_policy,
-            selection_query=spec_selection_query,
-            selection_origin=spec_selection_origin,
-            selection_since=spec_selection_since,
-            selection_until=spec_selection_until,
-            selection_project_path=spec_selection_project_path,
-            selection_project_repo=spec_selection_project_repo,
             edge_limit=projection_edge_limit,
             body_limit=projection_body_limit,
             body_offset=projection_body_offset,
@@ -1193,12 +1237,6 @@ def read_verb(
             selection_limit=spec_selection_limit if uses_context_image_selector else limit,
             render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
             timestamp_policy=timestamp_policy,
-            selection_query=spec_selection_query,
-            selection_origin=spec_selection_origin,
-            selection_since=spec_selection_since,
-            selection_until=spec_selection_until,
-            selection_project_path=spec_selection_project_path,
-            selection_project_repo=spec_selection_project_repo,
             redact_paths=not no_redact,
             include_assertions=include_assertions,
         )
@@ -1209,12 +1247,6 @@ def read_verb(
             max_tokens=max_tokens,
             include_assertions=include_assertions,
             max_sessions=context_image_max_sessions,
-            project_path=project_path,
-            project_repo=project_repo,
-            since=since,
-            until=until,
-            context_origin=context_origin,
-            context_query=context_query,
             no_redact=no_redact,
             output_format=output_format,
             destination=destination,
@@ -1293,12 +1325,6 @@ def read_verb(
                     offset=offset,
                     full=full,
                     related_limit=related_limit,
-                    project_path=project_path,
-                    project_repo=project_repo,
-                    since=since,
-                    until=until,
-                    context_origin=context_origin,
-                    context_query=context_query,
                     max_sessions=max_sessions,
                     no_redact=no_redact,
                     window_hours=window_hours,
@@ -2376,12 +2402,6 @@ def run_read_context_image(
     max_tokens: int | None,
     include_assertions: bool,
     max_sessions: int,
-    project_path: str | None,
-    project_repo: str | None,
-    since: str | None,
-    until: str | None,
-    context_origin: str | None,
-    context_query: str | None,
     no_redact: bool,
     output_format: str | None,
     destination: str,
@@ -2404,6 +2424,13 @@ def run_read_context_image(
 
     poly = env.polylogue
     redact = not no_redact
+    query_spec = request.query_spec()
+    project_path = query_spec.cwd_prefix
+    project_repo = query_spec.repo_names[0] if len(query_spec.repo_names) == 1 else None
+    since = query_spec.since
+    until = query_spec.until
+    context_origin = query_spec.origins[0] if len(query_spec.origins) == 1 else None
+    context_query = _read_query_text(request)
     limit = max(1, min(max_sessions, 20))
     session_ids = _resolve_query_action_session_ids(env, request, limit=limit, first_only=first_only)
     projection_spec = _projection_spec_with_resolved_session_refs(projection_spec, tuple(session_ids))
