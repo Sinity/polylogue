@@ -68,7 +68,6 @@ from typing import Any
 
 from devtools.testmon_state import (
     TestmonSeedStamp,
-    attempt_is_checkout_bound,
     refresh_stamp,
     stamp_from_attempt,
     validate_stamp,
@@ -158,10 +157,16 @@ def decide_testmon_bootstrap(
             local_attempt = json.loads(local_seed_attempt.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             local_attempt = None
-        if isinstance(local_attempt, Mapping) and attempt_is_checkout_bound(
-            local_attempt,
-            checkout_root=local_root,
-            protocol_version=protocol_version,
+        if (
+            isinstance(local_attempt, Mapping)
+            and stamp_from_attempt(
+                local_attempt,
+                local_testmon_data,
+                checkout_root=local_root,
+                protocol_version=protocol_version,
+                published_marker=False,
+            )
+            is not None
         ):
             return BootstrapDecision(False, "local .cache/testmon already has a checkout-bound selection attempt")
     if not main_testmon_data.is_file():
@@ -421,7 +426,8 @@ def bootstrap_testmon_seed_files(
         ):
             return False
         staged_attempt_path: Path | None = None
-        if decision.main_seed_attempt is not None and decision.selection_only:
+        publishes_selection_attempt = decision.main_seed_attempt is not None and decision.selection_only
+        if publishes_selection_attempt:
             assert local_seed_attempt is not None
             source_attempt = json.loads(decision.main_seed_attempt.read_text(encoding="utf-8"))
             if not isinstance(source_attempt, dict):
@@ -467,7 +473,7 @@ def bootstrap_testmon_seed_files(
             (local_testmon_data, staged_data),
             (destination_artifact / "run.json", staged_artifact / "run.json"),
             (destination_root / ".cache" / "verify" / "current-run.json", staged_current_run),
-            (local_seed_stamp, None if decision.selection_only else staged_stamp),
+            (local_seed_stamp, None if publishes_selection_attempt else staged_stamp),
         ]
         if local_seed_attempt is not None:
             publication_files.append((local_seed_attempt, staged_attempt_path))
@@ -515,6 +521,7 @@ def maybe_bootstrap_testmon_seed(
     *,
     testmon_data_relpath: str = TESTMON_DATA_RELPATH,
     seed_stamp_relpath: str = TESTMON_SEED_STAMP_RELPATH,
+    seed_attempt_relpath: str = TESTMON_SEED_ATTEMPT_RELPATH,
     protocol_version: int,
 ) -> str | None:
     """Bootstrap `repo_root`'s testmon seed from its main checkout if warranted.
@@ -533,10 +540,10 @@ def maybe_bootstrap_testmon_seed(
         return None
     local_testmon_data = repo_root / testmon_data_relpath
     local_seed_stamp = repo_root / seed_stamp_relpath
-    local_seed_attempt = repo_root / TESTMON_SEED_ATTEMPT_RELPATH
+    local_seed_attempt = repo_root / seed_attempt_relpath
     main_testmon_data = main_checkout / testmon_data_relpath
     main_seed_stamp = main_checkout / seed_stamp_relpath
-    main_seed_attempt = main_checkout / TESTMON_SEED_ATTEMPT_RELPATH
+    main_seed_attempt = main_checkout / seed_attempt_relpath
     decision = decide_testmon_bootstrap(
         is_linked_worktree=is_linked_worktree,
         local_testmon_data=local_testmon_data,
@@ -561,8 +568,8 @@ def maybe_bootstrap_testmon_seed(
     )
     if not stamped:
         return (
-            f"verify: bootstrapped pytest-testmon seed into {local_testmon_data.parent}, "
-            "but could not record its checkout provenance"
+            f"verify: refused pytest-testmon bootstrap into {local_testmon_data.parent}; "
+            "no local state was published because provenance validation failed"
         )
     if decision.main_seed_attempt is not None and decision.selection_only:
         return (
