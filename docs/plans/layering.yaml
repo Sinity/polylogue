@@ -37,7 +37,7 @@ writer_modules:
           interruption: atomic
       entrypoints:
         [admit_raw_and_parsed_result, admit_raw_artifact_blob_ref, admit_raw_artifact_payload,
-        apply_raw_membership_classification, apply_raw_revision_replay, bind_raw_revision,
+        apply_raw_membership_classification, apply_raw_revision_replay,
         classify_raw_revision_cohort_for_frozen_candidate,
         classify_raw_revision_cohort_for_live_watch, classify_raw_revision_cohort_for_rebuild_repair,
         finalize_raw_parse_state,
