@@ -31,7 +31,6 @@ import selectors
 import shlex
 import shutil
 import signal
-import sqlite3
 import stat
 import subprocess
 import sys
@@ -59,6 +58,19 @@ from devtools.pytest_supervisor import (
     write_termination_request,
 )
 from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
+from devtools.testmon_state import (
+    BindingMode,
+    GraphStatus,
+    TerminalAuthorization,
+    TestmonBinding,
+    TestmonSeedStamp,
+    VerificationScope,
+    inspect_testmon_database,
+    refresh_stamp,
+    stamp_from_attempt,
+    testmon_runtime_identity,
+    validate_stamp,
+)
 from devtools.verify_runs import (
     CURRENT_CONTAINMENT_PATH,
     CURRENT_EVENTS_DIR,
@@ -94,6 +106,17 @@ from polylogue.scenarios.workload import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _anchor_verification_paths() -> None:
+    """Use the checkout root for relative verification state when invoked inside it."""
+    current = Path.cwd().resolve()
+    try:
+        current.relative_to(ROOT.resolve())
+    except ValueError:
+        return
+    os.chdir(ROOT)
+
 
 # ── mypy daemon probe ──────────────────────────────────────────────
 
@@ -190,7 +213,7 @@ TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
 TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
-TESTMON_SEED_PROTOCOL_VERSION = 3
+TESTMON_SEED_PROTOCOL_VERSION = 5
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -212,7 +235,6 @@ DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
-DEFAULT_TESTMON_WORKERS = "4"
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -1673,7 +1695,7 @@ def _run(
             last_resource_sample=last_resource_row,
             tmpfs_budget_mb=pytest_tmpfs_budget_mb,
             basetemp_cleanup=basetemp_cleanup,
-            concurrency=runtime_policy.workers if runtime_policy is not None else 1,
+            concurrency=_pytest_command_concurrency(cmd),
         )
         metadata["workload_receipt"] = workload_receipt
         if artifacts is not None:
@@ -1890,7 +1912,7 @@ def build_verify_steps(
             else:
                 pytest_cmd.append("--testmon-noselect")
                 label = "pytest seed-testmon"
-            pytest_cmd.extend(_pytest_worker_args(default="4"))
+            pytest_cmd.extend(_pytest_worker_args(maximum=4))
             steps.append((label, pytest_cmd))
         elif full_pytest:
             # #1775: the full diagnostic runs as two lanes. The bulk lane keeps
@@ -1905,7 +1927,7 @@ def build_verify_steps(
                 *pytest_cmd,
                 "-m",
                 f"({base_marker}) and not load_sensitive and not tui",
-                *_pytest_worker_args(default="4"),
+                *_pytest_worker_args(),
             ]
             steps.append(("pytest full (parallel)", bulk_cmd))
 
@@ -1922,8 +1944,7 @@ def build_verify_steps(
             isolated_cmd.extend(["-m", f"({base_marker}) and (load_sensitive or tui)", "-p", "no:randomly", "-n", "0"])
             steps.append(("pytest load-sensitive (isolated)", isolated_cmd))
         else:
-            default_workers = DEFAULT_TESTMON_WORKERS
-            pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args(default=default_workers)])
+            pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args()])
             pytest_cmd.append("--testmon-forceselect")
             label = "pytest testmon (broad)" if broad_testmon else "pytest testmon"
             steps.append((label, pytest_cmd))
@@ -1937,6 +1958,19 @@ def build_verify_steps(
         steps.append(("lab policy docs-drift", _devtools_cmd("lab policy docs-drift")))
         steps.append(
             ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
+        )
+        steps.append(("lab policy acceptance-contracts", _devtools_cmd("lab policy acceptance-contracts")))
+        steps.append(
+            (
+                "lab policy acceptance-contract-reconcile",
+                _devtools_cmd("lab policy acceptance-contract-reconcile"),
+            )
+        )
+        steps.append(
+            (
+                "lab policy acceptance-contract-apply",
+                _devtools_cmd("lab policy acceptance-contract-apply"),
+            )
         )
         # backlog-hygiene and bead-graph are corpus-wide backlog-debt scans
         # (findings scale with the total count of open Beads issues, not
@@ -2000,6 +2034,17 @@ def _git_head() -> str | None:
     return None
 
 
+def _git_committed_tree() -> str | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
 def _stamp_head() -> None:
     head = _git_head()
     if head is None:
@@ -2022,9 +2067,24 @@ def _file_fingerprint(path: Path) -> str:
     return h.hexdigest()
 
 
-def _pytest_worker_args(*, default: str) -> list[str]:
-    del default
-    return ["-n", str(adaptive_pytest_worker_count(os.environ))]
+def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
+    """Return the managed worker count, optionally capped for a bounded lane."""
+    workers = adaptive_pytest_worker_count(os.environ)
+    if maximum is not None:
+        workers = min(workers, maximum)
+    return ["-n", str(workers)]
+
+
+def _pytest_command_concurrency(cmd: Sequence[str]) -> int:
+    """Return the worker count actually requested by the final pytest command."""
+    for index in range(len(cmd) - 2, -1, -1):
+        if cmd[index] != "-n":
+            continue
+        try:
+            return max(1, int(cmd[index + 1]))
+        except ValueError:
+            return 1
+    return 1
 
 
 _BROAD_TESTMON_CHANGED_PATHS = {
@@ -2072,18 +2132,21 @@ def _testmon_coverage_identity(executable_paths: Sequence[str]) -> dict[str, Any
 def _matching_testmon_coverage(executable_paths: Sequence[str]) -> str | None:
     """Return the receipt kind proving that zero new selection is legitimate."""
     identity = _testmon_coverage_identity(executable_paths)
-    seed = _read_json_artifact(TESTMON_SEED_STAMP)
-    if isinstance(seed, dict):
-        seed_identity = seed.get("identity")
-        if (
-            seed.get("protocol_version") == TESTMON_SEED_PROTOCOL_VERSION
-            and seed.get("status") == "complete"
-            and isinstance(seed_identity, dict)
-            and seed_identity.get("worktree_fingerprint") == identity["worktree_fingerprint"]
-        ):
-            return "complete_seed"
     affected = _read_json_artifact(TESTMON_AFFECTED_STAMP)
-    if isinstance(affected, dict) and affected.get("identity") == identity:
+    selected_count = affected.get("selected_count") if isinstance(affected, dict) else None
+    if (
+        isinstance(affected, dict)
+        and affected.get("protocol_version") == 1
+        and affected.get("status") == "complete"
+        and isinstance(affected.get("timestamp"), str)
+        and bool(affected.get("timestamp"))
+        and isinstance(affected.get("run_id"), str)
+        and bool(affected.get("run_id"))
+        and isinstance(selected_count, int)
+        and not isinstance(selected_count, bool)
+        and selected_count > 0
+        and affected.get("identity") == identity
+    ):
         return "successful_affected_run"
     return None
 
@@ -2111,36 +2174,37 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
         "to create .cache/testmon/testmondata and .cache/testmon/seed.json "
         "before using the default affected-test path.\n"
     )
-    if not TESTMON_DATA.exists() or not TESTMON_SEED_STAMP.exists():
+    if not TESTMON_DATA.exists():
         return seed_message
-    try:
-        stamp = json.loads(TESTMON_SEED_STAMP.read_text())
-    except (OSError, json.JSONDecodeError):
+    if not TESTMON_SEED_STAMP.exists():
+        attempt = _read_testmon_seed_attempt()
+        if (
+            attempt is not None
+            and stamp_from_attempt(
+                attempt,
+                TESTMON_DATA,
+                checkout_root=ROOT,
+                protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+                published_marker=False,
+            )
+            is not None
+        ):
+            sys.stderr.write(
+                "verify: using a validated complete pytest-testmon graph from a red seed attempt; "
+                "the release baseline remains red.\n"
+            )
+            return None
+        return seed_message
+    stamp = validate_stamp(
+        TESTMON_SEED_STAMP,
+        TESTMON_DATA,
+        checkout_root=ROOT,
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+    )
+    if stamp is None:
         return (
-            "verify: pytest-testmon seed stamp is unreadable; run `devtools verify --seed-testmon` "
-            "to refresh .cache/testmon/testmondata and .cache/testmon/seed.json.\n"
-        )
-    if not isinstance(stamp, dict):
-        return (
-            "verify: pytest-testmon seed stamp has an invalid shape; run `devtools verify --seed-testmon` "
-            "to refresh .cache/testmon/testmondata and .cache/testmon/seed.json.\n"
-        )
-    if stamp.get("protocol_version") != TESTMON_SEED_PROTOCOL_VERSION or stamp.get("status") != "complete":
-        return (
-            "verify: pytest-testmon has no validated complete seed receipt; run "
-            "`devtools verify --seed-testmon` to resume or rebuild the dependency baseline.\n"
-        )
-    current_head = _git_head()
-    stamped_head = stamp.get("git_head")
-    if current_head is not None and stamped_head != current_head:
-        sys.stderr.write(
-            "verify: pytest-testmon seed was recorded for a different git head; "
-            "continuing with the existing dependency database and recording affected-test evidence.\n"
-        )
-    if stamp.get("testmon_data") != _file_fingerprint(TESTMON_DATA):
-        sys.stderr.write(
-            "verify: pytest-testmon database changed after the seed stamp; "
-            "continuing because testmon updates its dependency database during normal affected runs.\n"
+            "verify: pytest-testmon seed state is unreadable, stale, malformed, or not graph-complete; run "
+            "`devtools verify --seed-testmon` to rebuild the dependency baseline.\n"
         )
     return None
 
@@ -2200,13 +2264,28 @@ def _worktree_fingerprint() -> str:
     return digest.hexdigest()
 
 
-def _testmon_seed_identity(*, git_head: str | None, skip_slow: bool, lab: bool) -> dict[str, Any]:
+def _testmon_seed_identity(
+    *,
+    git_head: str | None,
+    git_tree: str | None = None,
+    skip_slow: bool,
+    lab: bool,
+    terminal_authorization: str | None = None,
+) -> dict[str, Any]:
+    runtime_identity = testmon_runtime_identity(ROOT)
+    if runtime_identity is None:
+        raise RuntimeError("could not identify the active dependency environment and pytest harness")
+    dependency_environment, pytest_harness = runtime_identity
     return {
         "git_head": git_head,
+        "git_tree": git_tree,
         "worktree_fingerprint": _worktree_fingerprint(),
         "python": sys.version,
         "skip_slow": skip_slow,
         "lab": lab,
+        "terminal_authorization": terminal_authorization,
+        "dependency_environment": dependency_environment,
+        "pytest_harness": pytest_harness,
     }
 
 
@@ -2215,29 +2294,121 @@ def _read_testmon_seed_attempt() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _flatten_seed_outcomes(attempt: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Flatten outcomes from every interrupted attempt, newest result winning."""
+    if attempt is None:
+        return []
+    flattened: dict[str, dict[str, Any]] = {}
+    for field in ("prior_node_outcomes", "node_outcomes"):
+        raw = attempt.get(field)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str) and item["nodeid"]:
+                flattened[item["nodeid"]] = dict(item)
+    return [flattened[nodeid] for nodeid in sorted(flattened)]
+
+
+def _testmon_release_baseline_permission() -> bool | None:
+    """Return release permission for current testmon state, or ``None`` when not applicable."""
+    if TESTMON_SEED_STAMP.exists():
+        stamp = validate_stamp(
+            TESTMON_SEED_STAMP,
+            TESTMON_DATA,
+            checkout_root=ROOT,
+            protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+        )
+        return stamp.release_baseline_allowed if stamp is not None else False
+    attempt = _read_testmon_seed_attempt()
+    if attempt is None:
+        return False
+    stamp = stamp_from_attempt(
+        attempt,
+        TESTMON_DATA,
+        checkout_root=ROOT,
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+        published_marker=False,
+    )
+    return stamp.release_baseline_allowed if stamp is not None else False
+
+
+def _safe_testmon_artifact_dir(raw: object, *, require_run_root: bool = False) -> Path | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = Path(raw)
+    checkout_root = Path.cwd().resolve()
+    if require_run_root and path.is_absolute():
+        return None
+    resolved = (path if path.is_absolute() else checkout_root / path).resolve()
+    try:
+        resolved.relative_to(checkout_root)
+        if require_run_root:
+            resolved.relative_to((checkout_root / ".cache" / "verify" / "runs").resolve())
+    except ValueError:
+        return None
+    return resolved
+
+
 def _testmon_seed_expected_nodeids(attempt: Mapping[str, Any]) -> list[str]:
     """Recover the seed ledger, including after an abrupt outer-run exit."""
     expected = attempt.get("expected_nodeids")
-    if isinstance(expected, list) and expected and all(isinstance(nodeid, str) for nodeid in expected):
+    if isinstance(expected, list) and expected:
+        if (
+            any(not isinstance(nodeid, str) or not nodeid for nodeid in expected)
+            or len(set(expected)) != len(expected)
+            or not isinstance(attempt.get("expected_count"), int)
+            or isinstance(attempt.get("expected_count"), bool)
+            or attempt.get("expected_count") != len(expected)
+            or not isinstance(attempt.get("expected_digest"), str)
+            or attempt.get("expected_digest") != hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest()
+        ):
+            return []
         return list(expected)
 
-    artifact_dir_raw = attempt.get("artifact_dir")
-    if not isinstance(artifact_dir_raw, str):
+    artifact_dir = _safe_testmon_artifact_dir(attempt.get("artifact_dir"), require_run_root=True)
+    if artifact_dir is None:
         return []
-    artifact_dir = Path(artifact_dir_raw)
     for selection_path in sorted(artifact_dir.glob("steps/*/selection.json")):
         selection = _read_json_artifact(selection_path)
-        if not isinstance(selection, dict) or int(selection.get("selected_nodeids_omitted") or 0) != 0:
+        if not isinstance(selection, dict):
+            continue
+        omitted = selection.get("selected_nodeids_omitted")
+        selected_count = selection.get("selected_count")
+        if (
+            not isinstance(omitted, int)
+            or isinstance(omitted, bool)
+            or omitted != 0
+            or not isinstance(selected_count, int)
+            or isinstance(selected_count, bool)
+        ):
             continue
         selected = selection.get("selected_nodeids")
-        if isinstance(selected, list) and selected and all(isinstance(nodeid, str) for nodeid in selected):
+        if (
+            isinstance(selected, list)
+            and selected
+            and all(isinstance(nodeid, str) and nodeid for nodeid in selected)
+            and len(set(selected)) == len(selected)
+            and selected_count == len(selected)
+        ):
             return list(selected)
     return []
 
 
 def _testmon_seed_resume_contract(identity: Mapping[str, Any]) -> dict[str, Any]:
     """Return inputs that change which corpus a seed promises to cover."""
-    return {key: identity.get(key) for key in ("worktree_fingerprint", "python", "skip_slow", "lab")}
+    return {
+        key: identity.get(key)
+        for key in (
+            "git_tree",
+            "worktree_fingerprint",
+            "python",
+            "skip_slow",
+            "lab",
+            "terminal_authorization",
+            "dependency_environment",
+            "pytest_harness",
+        )
+    }
 
 
 def _testmon_seed_can_resume(identity: Mapping[str, Any]) -> bool:
@@ -2245,11 +2416,14 @@ def _testmon_seed_can_resume(identity: Mapping[str, Any]) -> bool:
     if attempt is None or not TESTMON_DATA.exists():
         return False
     prior_identity = attempt.get("identity")
+    contract = _testmon_seed_resume_contract(identity)
     return (
         attempt.get("protocol_version") == TESTMON_SEED_PROTOCOL_VERSION
         and attempt.get("status") in {"running", "incomplete"}
         and isinstance(prior_identity, dict)
-        and _testmon_seed_resume_contract(prior_identity) == _testmon_seed_resume_contract(identity)
+        and isinstance(contract["git_tree"], str)
+        and bool(contract["git_tree"])
+        and _testmon_seed_resume_contract(prior_identity) == contract
         and bool(_testmon_seed_expected_nodeids(attempt))
     )
 
@@ -2262,6 +2436,7 @@ def _prepare_testmon_seed_attempt(
 ) -> dict[str, Any]:
     prior = _read_testmon_seed_attempt() if resume else None
     expected = _testmon_seed_expected_nodeids(prior) if prior is not None else []
+    prior_outcomes = _flatten_seed_outcomes(prior)
     payload = {
         "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
         "status": "running",
@@ -2269,61 +2444,46 @@ def _prepare_testmon_seed_attempt(
         "resume": resume,
         "expected_nodeids": expected,
         "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
+        "prior_node_outcomes": prior_outcomes,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "run_id": run.run_id,
         "artifact_dir": str(run.relative_run_dir),
         "testmon_data_before": _file_fingerprint(TESTMON_DATA),
+        "binding": TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict(),
     }
     TESTMON_SEED_STAMP.unlink(missing_ok=True)
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
     return payload
 
 
+def _testmon_seed_terminal_authorized(prepared: Mapping[str, Any]) -> bool:
+    identity = prepared.get("identity")
+    return (
+        isinstance(identity, Mapping)
+        and identity.get("skip_slow") is True
+        and identity.get("terminal_authorization") == TerminalAuthorization.NARROW_TERMINAL.value
+    )
+
+
 def _testmon_database_state(expected_nodeids: Sequence[str]) -> dict[str, Any]:
-    if not TESTMON_DATA.exists():
-        return {
-            "recorded_count": 0,
-            "failed_count": 0,
-            "missing_nodeids": list(expected_nodeids),
-            "failed_nodeids": [],
-            "node_outcomes": dict.fromkeys(expected_nodeids, "missing"),
-            "error": "missing",
-        }
-    try:
-        with sqlite3.connect(TESTMON_DATA) as conn:
-            rows = conn.execute(
-                """
-                SELECT current.test_name, current.failed
-                FROM test_execution AS current
-                JOIN (
-                    SELECT test_name, MAX(id) AS latest_id
-                    FROM test_execution
-                    GROUP BY test_name
-                ) AS latest ON latest.latest_id = current.id
-                """
-            ).fetchall()
-    except sqlite3.Error as exc:
-        return {
-            "recorded_count": 0,
-            "failed_count": 0,
-            "missing_nodeids": list(expected_nodeids),
-            "failed_nodeids": [],
-            "node_outcomes": dict.fromkeys(expected_nodeids, "missing"),
-            "error": str(exc),
-        }
-    recorded = {str(name): bool(failed) for name, failed in rows}
+    graph = inspect_testmon_database(TESTMON_DATA, expected_nodeids)
     expected = set(expected_nodeids)
-    failed = sorted(nodeid for nodeid in expected if recorded.get(nodeid) is True)
+    failed = list(graph.failed_nodeids)
     return {
-        "recorded_count": len(recorded),
-        "failed_count": sum(recorded.values()),
-        "missing_nodeids": sorted(expected - recorded.keys()),
+        "recorded_count": graph.recorded_count,
+        "failed_count": len(failed),
+        "dependency_edge_count": graph.dependency_edge_count,
+        "missing_nodeids": list(graph.missing_nodeids),
         "failed_nodeids": failed,
         "node_outcomes": {
-            nodeid: ("failed" if recorded.get(nodeid) is True else "passed" if nodeid in recorded else "missing")
+            nodeid: ("failed" if nodeid in failed else "passed" if nodeid not in graph.missing_nodeids else "missing")
             for nodeid in sorted(expected)
         },
-        "error": None,
+        "error": graph.error,
+        "graph_status": graph.status.value,
+        "orphan_execution_edges": graph.orphan_execution_edges,
+        "orphan_fingerprint_edges": graph.orphan_fingerprint_edges,
     }
 
 
@@ -2333,6 +2493,8 @@ def _seed_node_outcomes_from_events(
     expected_nodeids: Sequence[str],
     database: Mapping[str, Any],
     pytest_step: Mapping[str, Any] | None,
+    use_database_fallback: bool = True,
+    prior_node_outcomes: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Classify every promised seed node into one explicit terminal state."""
     reports: dict[str, list[dict[str, Any]]] = {}
@@ -2378,6 +2540,8 @@ def _seed_node_outcomes_from_events(
             outcome, reason = "passed", "test call passed"
         elif any(report.get("outcome") == "skipped" for report in call_reports):
             outcome, reason = "skipped", "test call skipped"
+        elif any(report.get("outcome") == "skipped" for report in node_reports):
+            outcome, reason = "skipped", "test setup or teardown skipped"
         elif nodeid in started and nodeid not in finished and "timeout" in diagnosis:
             outcome, reason = "timeout", "supervisor timed out while node was active"
         elif nodeid in started and nodeid not in finished and "worker" in diagnosis:
@@ -2388,10 +2552,17 @@ def _seed_node_outcomes_from_events(
             and any(marker in diagnosis for marker in ("interrupt", "signal", "terminated"))
         ):
             outcome, reason = "interrupted", "run ended while node was active"
-        elif recorded.get(nodeid) == "passed":
+        elif use_database_fallback and recorded.get(nodeid) == "passed":
             outcome, reason = "passed", "testmon database recorded success"
-        elif recorded.get(nodeid) == "failed":
+        elif use_database_fallback and recorded.get(nodeid) == "failed":
             outcome, reason = "failed", "testmon database recorded failure"
+        elif prior_node_outcomes is not None and nodeid in prior_node_outcomes:
+            prior = prior_node_outcomes[nodeid]
+            prior_outcome = prior.get("outcome")
+            if prior_outcome in {"passed", "failed", "error", "skipped"}:
+                outcome, reason = str(prior_outcome), "terminal outcome carried from the prior seed attempt"
+            else:
+                outcome, reason = "missing", "prior seed attempt has no terminal outcome"
         else:
             outcome, reason = "missing", "no terminal report or testmon execution row"
         results.append(
@@ -2426,46 +2597,122 @@ def _finalize_testmon_seed_attempt(
     selection: dict[str, Any] = {}
     events_path: Path | None = None
     if pytest_step is not None:
-        artifact_dir_raw = pytest_step.get("artifact_dir")
-        if isinstance(artifact_dir_raw, str):
-            artifact_dir = Path(artifact_dir_raw)
+        artifact_dir = _safe_testmon_artifact_dir(pytest_step.get("artifact_dir"))
+        if artifact_dir is not None:
             selection_payload = _read_json_artifact(artifact_dir / "selection.json")
             if isinstance(selection_payload, dict):
                 selection = selection_payload
             events_path = artifact_dir / "events.jsonl"
 
-    expected_raw = prepared.get("expected_nodeids") if prepared.get("resume") else selection.get("selected_nodeids")
-    expected = [str(nodeid) for nodeid in expected_raw] if isinstance(expected_raw, list) else []
-    omitted = int(selection.get("selected_nodeids_omitted") or 0)
+    raw_omitted = selection.get("selected_nodeids_omitted")
+    raw_selected_count = selection.get("selected_count")
+    selected_nodeids = selection.get("selected_nodeids")
+    selection_valid = (
+        isinstance(raw_omitted, int)
+        and not isinstance(raw_omitted, bool)
+        and raw_omitted >= 0
+        and isinstance(raw_selected_count, int)
+        and not isinstance(raw_selected_count, bool)
+        and isinstance(selected_nodeids, list)
+        and all(isinstance(nodeid, str) and nodeid for nodeid in selected_nodeids)
+        and len(set(selected_nodeids)) == len(selected_nodeids)
+        and raw_selected_count == len(selected_nodeids)
+    )
+    expected_raw = prepared.get("expected_nodeids") if prepared.get("resume") else selected_nodeids
+    expected = list(expected_raw) if isinstance(expected_raw, list) else []
+    omitted = raw_omitted if selection_valid else 1
     database = _testmon_database_state(expected)
     node_outcomes = _seed_node_outcomes_from_events(
         events_path or Path(".missing-testmon-events"),
         expected_nodeids=expected,
         database=database,
         pytest_step=pytest_step,
+        use_database_fallback=False,
+        prior_node_outcomes={
+            str(item["nodeid"]): item
+            for item in prepared.get("prior_node_outcomes", [])
+            if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
+        },
     )
     unsuccessful_nodeids = [
         str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
     ]
-    complete = (
+    green_complete = (
         exit_code == 0
         and bool(expected)
-        and (bool(prepared.get("resume")) or omitted == 0)
+        and selection_valid
+        and omitted == 0
         and database["error"] is None
+        and database["graph_status"] == "complete"
         and not database["missing_nodeids"]
         and not database["failed_nodeids"]
+        and database["orphan_execution_edges"] == 0
+        and database["orphan_fingerprint_edges"] == 0
         and not unsuccessful_nodeids
     )
+    identity = prepared.get("identity")
+    narrow_terminal = isinstance(identity, Mapping) and identity.get("skip_slow") is True
+    terminal_authorized = _testmon_seed_terminal_authorized(prepared)
+    release_eligible = green_complete and (not narrow_terminal or terminal_authorized)
+    seed_scope = (
+        VerificationScope.NARROW_TERMINAL.value if narrow_terminal else VerificationScope.RELEASE_BASELINE.value
+    )
+    attempt_candidate = {
+        **dict(prepared),
+        "status": "complete" if release_eligible else "reusable",
+        "exit_code": exit_code,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
+        "selection": {
+            **selection,
+            # A resumed run inherits the complete collection ledger from its
+            # original selection. The current pytest step may select only a
+            # subset while it repairs missing graph edges.
+            "selected_count": len(expected)
+            if prepared.get("resume") and selection_valid
+            else selection.get("selected_count"),
+            "selected_nodeids_omitted": 0 if prepared.get("resume") and selection_valid else omitted,
+        },
+        "node_outcomes": node_outcomes,
+        "identity": prepared.get("identity"),
+        "run_id": prepared.get("run_id"),
+        "artifact_dir": prepared.get("artifact_dir"),
+        "testmon_data": _file_fingerprint(TESTMON_DATA),
+        "verification_scope": seed_scope,
+        "terminal_authorization": (TerminalAuthorization.NARROW_TERMINAL.value if terminal_authorized else None),
+        "release_baseline_allowed": release_eligible,
+    }
+    reusable_stamp = stamp_from_attempt(
+        attempt_candidate,
+        TESTMON_DATA,
+        checkout_root=Path.cwd(),
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+    )
+    reusable = reusable_stamp is not None
+    release_permission = bool(
+        reusable
+        and reusable_stamp is not None
+        and reusable_stamp.release_baseline_allowed
+        and (not narrow_terminal or terminal_authorized)
+    )
+    attempt_status = "complete" if green_complete and release_permission else "reusable" if reusable else "incomplete"
     payload = {
         **dict(prepared),
-        "status": "complete" if complete else "incomplete",
+        "status": attempt_status,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "exit_code": exit_code,
         "expected_nodeids": expected,
         "expected_count": len(expected),
         "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
         "selection": {
-            key: selection.get(key)
+            key: (
+                len(expected)
+                if key == "selected_count" and prepared.get("resume") and selection_valid
+                else 0
+                if key == "selected_nodeids_omitted" and prepared.get("resume") and selection_valid
+                else selection.get(key)
+            )
             for key in (
                 "selected_count",
                 "deselected_count",
@@ -2487,28 +2734,94 @@ def _finalize_testmon_seed_attempt(
         "unsuccessful_nodeids": unsuccessful_nodeids,
         "testmon_data": _file_fingerprint(TESTMON_DATA),
         "pytest_step": dict(pytest_step) if pytest_step is not None else None,
+        "binding": TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict(),
+        "verification_scope": seed_scope,
+        "terminal_authorization": (TerminalAuthorization.NARROW_TERMINAL.value if terminal_authorized else None),
     }
+    payload["release_baseline_allowed"] = release_permission
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
-    if complete:
-        stamp = {
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "complete",
-            "timestamp": payload["finished_at"],
-            "checkout_root": str(ROOT.resolve()),
-            "git_head": dict(prepared["identity"]).get("git_head"),
-            "identity": prepared["identity"],
-            "expected_count": payload["expected_count"],
-            "expected_digest": payload["expected_digest"],
-            "testmon_data": payload["testmon_data"],
-            "database": {
-                "recorded_count": database["recorded_count"],
-                "failed_count": database["failed_count"],
-            },
-            "run_id": payload["run_id"],
-            "artifact_dir": payload["artifact_dir"],
-        }
-        _atomic_write_json(TESTMON_SEED_STAMP, stamp)
+    if release_permission and reusable_stamp is not None:
+        _atomic_write_json(TESTMON_SEED_STAMP, reusable_stamp.as_dict())
+    else:
+        TESTMON_SEED_STAMP.unlink(missing_ok=True)
     return payload
+
+
+def _refresh_testmon_selection_attempt(
+    *,
+    step: Mapping[str, Any],
+    run: VerifyRun,
+    exit_code: int,
+) -> None:
+    """Refresh a reusable red graph after every completed affected run."""
+    attempt = _read_testmon_seed_attempt()
+    if attempt is None or attempt.get("release_baseline_allowed") is True:
+        return
+    expected = _testmon_seed_expected_nodeids(attempt)
+    if not expected:
+        return
+    database = _testmon_database_state(expected)
+    artifact_dir = _safe_testmon_artifact_dir(step.get("artifact_dir"))
+    events_path = artifact_dir / "events.jsonl" if artifact_dir is not None else Path(".missing-testmon-events")
+    prior = {
+        str(item["nodeid"]): item
+        for item in attempt.get("node_outcomes", [])
+        if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
+    }
+    node_outcomes = _seed_node_outcomes_from_events(
+        events_path,
+        expected_nodeids=expected,
+        database=database,
+        pytest_step=step,
+        use_database_fallback=False,
+        prior_node_outcomes=prior,
+    )
+    graph_complete = (
+        database.get("graph_status") == GraphStatus.COMPLETE.value
+        and not database.get("missing_nodeids")
+        and database.get("error") is None
+        and database.get("orphan_execution_edges") == 0
+        and database.get("orphan_fingerprint_edges") == 0
+    )
+    terminal = all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+    prior_selection = attempt.get("selection")
+    payload = {
+        **attempt,
+        "status": "reusable" if graph_complete and terminal else "incomplete",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "exit_code": exit_code,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
+        "selection": {
+            **(dict(prior_selection) if isinstance(prior_selection, Mapping) else {}),
+            "selected_count": len(expected),
+            "selected_nodeids_omitted": 0,
+        },
+        "database": database,
+        "node_outcomes": node_outcomes,
+        "node_outcome_counts": dict(
+            sorted(
+                {
+                    outcome: sum(1 for item in node_outcomes if item.get("outcome") == outcome)
+                    for outcome in {str(item.get("outcome")) for item in node_outcomes}
+                }.items()
+            )
+        ),
+        "unsuccessful_nodeids": [
+            str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
+        ],
+        "testmon_data": _file_fingerprint(TESTMON_DATA),
+        "run_id": run.run_id,
+        "artifact_dir": str(run.relative_run_dir),
+        "pytest_step": dict(step),
+        "release_baseline_allowed": False,
+        "verification_scope": VerificationScope.AFFECTED.value,
+    }
+    raw_binding = attempt.get("binding")
+    if not isinstance(raw_binding, Mapping):
+        payload["binding"] = TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict()
+    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
 
 
 # ── main ────────────────────────────────────────────────────────────
@@ -2533,6 +2846,11 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-slow", action="store_true", help="Exclude @pytest.mark.slow tests from the pytest step."
     )
     parser.add_argument(
+        "--terminal-authorization",
+        choices=[TerminalAuthorization.NARROW_TERMINAL.value],
+        help="Typed authorization for a narrow terminal verification that skips slow tests.",
+    )
+    parser.add_argument(
         "--lab",
         action="store_true",
         help=(
@@ -2544,6 +2862,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
+    _anchor_verification_paths()
     bootstrap_message = maybe_bootstrap_testmon_seed(
         ROOT,
         protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
@@ -2581,6 +2900,8 @@ def main(argv: list[str] | None = None) -> int:
         tier = "testmon"
 
     full_pytest = bool(args.all or args.full)
+    if args.terminal_authorization is not None and not ((full_pytest or args.seed_testmon) and args.skip_slow):
+        parser.error("--terminal-authorization requires --all, --full, or --seed-testmon with --skip-slow")
     preflight_error = _testmon_preflight(
         seed_testmon=bool(args.seed_testmon),
         full_pytest=full_pytest,
@@ -2604,11 +2925,22 @@ def main(argv: list[str] | None = None) -> int:
     resume_testmon_seed = False
     prepared_seed_attempt: dict[str, Any] | None = None
     if args.seed_testmon:
-        seed_identity = _testmon_seed_identity(
-            git_head=head,
-            skip_slow=bool(args.skip_slow),
-            lab=bool(args.lab),
-        )
+        try:
+            seed_identity = _testmon_seed_identity(
+                git_head=head,
+                git_tree=_git_committed_tree(),
+                skip_slow=bool(args.skip_slow),
+                lab=bool(args.lab),
+                terminal_authorization=args.terminal_authorization,
+            )
+        except RuntimeError as exc:
+            sys.stderr.write(f"verify: {exc}\n")
+            verify_run.finish(
+                exit_code=125,
+                duration_s=time.monotonic() - t0,
+                diagnosis="testmon_environment_identity_unavailable",
+            )
+            return 125
         resume_testmon_seed = _testmon_seed_can_resume(seed_identity)
         prepared_seed_attempt = _prepare_testmon_seed_attempt(
             identity=seed_identity,
@@ -2649,6 +2981,19 @@ def main(argv: list[str] | None = None) -> int:
             _warn_low_memory()  # check again right before the heavy step
         rc, elapsed, metadata = _run(label, cmd, run=verify_run)
         if rc == 0 and label in {"pytest testmon", "pytest testmon (broad)"}:
+            raw_stamp = _read_json_artifact(TESTMON_SEED_STAMP)
+            try:
+                current_stamp = (
+                    TestmonSeedStamp.from_mapping(raw_stamp, protocol_version=TESTMON_SEED_PROTOCOL_VERSION)
+                    if isinstance(raw_stamp, Mapping)
+                    else None
+                )
+            except ValueError:
+                current_stamp = None
+            if current_stamp is not None:
+                refreshed_stamp = refresh_stamp(current_stamp, TESTMON_DATA)
+                if refreshed_stamp is not None:
+                    _atomic_write_json(TESTMON_SEED_STAMP, refreshed_stamp.as_dict())
             executable_paths = _changed_executable_paths()
             selected_count = metadata.get("selected_count")
             if selected_count == 0 and executable_paths:
@@ -2673,6 +3018,8 @@ def main(argv: list[str] | None = None) -> int:
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         step_results.append(step_result)
+        if label in {"pytest testmon", "pytest testmon (broad)"} and not args.seed_testmon and not full_pytest:
+            _refresh_testmon_selection_attempt(step=step_result, run=verify_run, exit_code=rc)
         if rc != 0:
             exit_code = rc
             if _stop_after_failed_step(label):
@@ -2721,8 +3068,36 @@ def main(argv: list[str] | None = None) -> int:
             "resume": seed_receipt["resume"],
             "expected_count": seed_receipt["expected_count"],
             "attempt_path": str(TESTMON_SEED_ATTEMPT),
-            "stamp_path": str(TESTMON_SEED_STAMP) if seed_receipt["status"] == "complete" else None,
+            "stamp_path": str(TESTMON_SEED_STAMP) if seed_receipt["release_baseline_allowed"] else None,
+            "release_baseline_allowed": seed_receipt["release_baseline_allowed"],
         }
+
+    if args.quick or args.commit:
+        verification_scope = VerificationScope.NON_TEST
+        release_baseline_allowed: bool | None = None
+    elif full_pytest or args.seed_testmon:
+        narrow_terminal = bool(args.skip_slow)
+        authorized_narrow_terminal = args.terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
+        verification_scope = (
+            VerificationScope.NARROW_TERMINAL if narrow_terminal else VerificationScope.RELEASE_BASELINE
+        )
+        if full_pytest:
+            release_baseline_allowed = exit_code == 0 and (not narrow_terminal or authorized_narrow_terminal)
+        else:
+            release_baseline_allowed = _testmon_release_baseline_permission() and (
+                not narrow_terminal or authorized_narrow_terminal
+            )
+    else:
+        verification_scope = VerificationScope.AFFECTED
+        release_baseline_allowed = _testmon_release_baseline_permission()
+    history_entry["verification_scope"] = verification_scope.value
+    history_entry["release_baseline_allowed"] = release_baseline_allowed
+    history_entry["terminal_authorization"] = args.terminal_authorization
+    if release_baseline_allowed is False and tier in {"testmon", "lab", "seed-testmon"}:
+        sys.stderr.write(
+            "verify: affected-test selection is usable, but the current testmon state does not grant "
+            "release-baseline permission.\n"
+        )
 
     if use_json:
         _print_json(history_entry)

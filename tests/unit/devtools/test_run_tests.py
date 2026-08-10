@@ -68,6 +68,8 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     assert captured["run"].run_id
     assert captured["run"]._payload["git_head"] == "abc123"
     assert isinstance(captured["run"]._payload["git_dirty"], bool)
+    assert captured["run"]._payload["verification_scope"] == "affected"
+    assert captured["run"]._payload["release_baseline_allowed"] is False
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:

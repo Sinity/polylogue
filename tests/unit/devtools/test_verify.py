@@ -11,7 +11,27 @@ from unittest.mock import patch
 
 import pytest
 
-from devtools import verify_runs
+from devtools import verify, verify_runs
+from devtools.testmon_state import (
+    BaselineStatus,
+    BindingMode,
+    CollectionStatus,
+    GraphInspection,
+    GraphStatus,
+    file_fingerprint,
+)
+from devtools.testmon_state import (
+    TestmonBinding as _TestmonBinding,
+)
+from devtools.testmon_state import (
+    TestmonIdentity as _TestmonIdentity,
+)
+from devtools.testmon_state import (
+    TestmonSeedStamp as _TestmonSeedStamp,
+)
+from devtools.testmon_state import (
+    testmon_runtime_identity as _testmon_runtime_identity,
+)
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
@@ -25,7 +45,9 @@ from devtools.verify import (
     TESTMON_SEED_ATTEMPT,
     TESTMON_SEED_PROTOCOL_VERSION,
     TESTMON_SEED_STAMP,
+    _anchor_verification_paths,
     _finalize_testmon_seed_attempt,
+    _flatten_seed_outcomes,
     _format_completion_notification,
     _matching_testmon_coverage,
     _parse_pytest_test_count,
@@ -72,6 +94,78 @@ def _pytest_marker_expr(command: list[str]) -> str:
     assert marker_indexes
     assert marker_indexes[-1] + 1 < len(command)
     return command[marker_indexes[-1] + 1]
+
+
+def _testmon_runtime_identity_fields(checkout_root: Path = ROOT) -> dict[str, str]:
+    runtime_identity = _testmon_runtime_identity(checkout_root)
+    assert runtime_identity is not None
+    dependency_environment, pytest_harness = runtime_identity
+    return {"dependency_environment": dependency_environment, "pytest_harness": pytest_harness}
+
+
+def _write_real_testmon_state(nodeids: tuple[str, ...] = ("tests/test_a.py::test_one",)) -> Path:
+    TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(TESTMON_DATA) as conn:
+        conn.execute("CREATE TABLE environment (id INTEGER PRIMARY KEY, environment_name TEXT)")
+        conn.execute("CREATE TABLE file_fp (id INTEGER PRIMARY KEY, filename TEXT, fsha TEXT)")
+        conn.execute("CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT, failed INTEGER)")
+        conn.execute("CREATE TABLE test_execution_file_fp (test_execution_id INTEGER, fingerprint_id INTEGER)")
+        for index, nodeid in enumerate(nodeids, start=1):
+            conn.execute("INSERT INTO file_fp(id, filename, fsha) VALUES (?, ?, ?)", (index, nodeid, f"sha-{index}"))
+            conn.execute("INSERT INTO test_execution(id, test_name, failed) VALUES (?, ?, 0)", (index, nodeid))
+            conn.execute("INSERT INTO test_execution_file_fp VALUES (?, ?)", (index, index))
+    stamp = _TestmonSeedStamp(
+        TESTMON_SEED_PROTOCOL_VERSION,
+        CollectionStatus.COMPLETE,
+        nodeids,
+        0,
+        BaselineStatus.GREEN,
+        True,
+        0,
+        GraphInspection(GraphStatus.COMPLETE, len(nodeids), len(nodeids), (), 0, 0, None, ()),
+        _TestmonIdentity(
+            "current-head",
+            "covered",
+            "python",
+            True,
+            False,
+            None,
+            "narrow-terminal",
+            **_testmon_runtime_identity_fields(),
+        ),
+        _TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())),
+        file_fingerprint(TESTMON_DATA),
+        "seed",
+        ".cache/verify/runs/seed",
+    )
+    TESTMON_SEED_STAMP.parent.mkdir(parents=True, exist_ok=True)
+    artifact_dir = ROOT / ".cache" / "verify" / "runs" / "seed"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "seed",
+                "checkout_root": str(ROOT.resolve()),
+                "artifact_dir": ".cache/verify/runs/seed",
+            }
+        )
+    )
+    TESTMON_SEED_STAMP.write_text(json.dumps(stamp.as_dict()))
+    return TESTMON_DATA
+
+
+def _write_run_receipt(root: Path, run_id: str) -> None:
+    artifact_dir = root / ".cache" / "verify" / "runs" / run_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "checkout_root": str(root.resolve()),
+                "artifact_dir": f".cache/verify/runs/{run_id}",
+            }
+        )
+    )
 
 
 def test_quick_verify_omits_pytest() -> None:
@@ -161,7 +255,18 @@ def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "-n" in command
-    assert command[command.index("-n") + 1] == "8"
+    assert command[command.index("-n") + 1] == "4"
+
+
+def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 12)
+
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, seed_testmon=True)
+
+    label, command = steps[-1]
+    assert label == "pytest seed-testmon"
+    assert command[command.index("-n") + 1] == "4"
 
 
 def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:
@@ -344,52 +449,26 @@ def test_testmon_preflight_requires_seed_stamp(tmp_path: Path, monkeypatch: pyte
 
 def test_testmon_preflight_accepts_seeded_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    TESTMON_DATA.parent.mkdir(parents=True)
-    TESTMON_DATA.write_text("seeded")
-    seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
-    seed_stamp.parent.mkdir(parents=True, exist_ok=True)
-    seed_stamp.write_text(
-        json.dumps(
-            {
-                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                "status": "complete",
-                "git_head": "current-head",
-                "testmon_data": hashlib.sha256(b"seeded").hexdigest(),
-            }
-        )
-    )
-    monkeypatch.setattr("devtools.verify._git_head", lambda: "current-head")
+    _write_real_testmon_state()
 
     assert _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is None
 
 
-def test_testmon_preflight_warns_on_stale_git_head(
+def test_testmon_preflight_rejects_stale_database_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    TESTMON_DATA.parent.mkdir(parents=True)
-    TESTMON_DATA.write_text("seeded")
-    seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
-    seed_stamp.parent.mkdir(parents=True, exist_ok=True)
-    seed_stamp.write_text(
-        json.dumps(
-            {
-                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                "status": "complete",
-                "git_head": "old-head",
-                "testmon_data": hashlib.sha256(b"seeded").hexdigest(),
-            }
-        )
-    )
-    monkeypatch.setattr("devtools.verify._git_head", lambda: "current-head")
+    _write_real_testmon_state()
+    TESTMON_DATA.write_bytes(TESTMON_DATA.read_bytes() + b"stale")
 
     message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
 
-    assert message is None
-    assert "different git head" in capsys.readouterr().err
+    assert message is not None
+    assert "stale" in message
+    assert capsys.readouterr().err == ""
 
 
-def test_testmon_preflight_warns_on_database_fingerprint_drift(
+def test_testmon_preflight_rejects_malformed_sqlite_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -401,18 +480,16 @@ def test_testmon_preflight_warns_on_database_fingerprint_drift(
         json.dumps(
             {
                 "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                "status": "complete",
-                "git_head": "current-head",
-                "testmon_data": hashlib.sha256(b"seeded").hexdigest(),
+                "status": "usable",
             }
         )
     )
-    monkeypatch.setattr("devtools.verify._git_head", lambda: "current-head")
 
     message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
 
-    assert message is None
-    assert "database changed" in capsys.readouterr().err
+    assert message is not None
+    assert "stale" in message or "malformed" in message
+    assert capsys.readouterr().err == ""
 
 
 def test_testmon_preflight_rejects_incomplete_seed_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -434,7 +511,7 @@ def test_testmon_preflight_rejects_incomplete_seed_receipt(tmp_path: Path, monke
     message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
 
     assert message is not None
-    assert "no validated complete seed receipt" in message
+    assert "stale" in message or "malformed" in message
 
 
 def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -443,10 +520,12 @@ def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pyte
     TESTMON_DATA.write_text("partial")
     identity = {
         "git_head": "head",
+        "git_tree": "tree-hash",
         "worktree_fingerprint": "tree",
         "python": "3.13",
         "skip_slow": True,
         "lab": False,
+        "terminal_authorization": None,
     }
     TESTMON_SEED_ATTEMPT.write_text(
         json.dumps(
@@ -455,14 +534,81 @@ def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pyte
                 "status": "incomplete",
                 "identity": identity,
                 "expected_nodeids": ["tests/unit/test_example.py::test_one"],
+                "expected_count": 1,
+                "expected_digest": hashlib.sha256(b"tests/unit/test_example.py::test_one").hexdigest(),
+                "run_id": "interrupted",
+                "started_at": "2026-08-05T12:00:00+00:00",
+                "testmon_data_before": "partial",
             }
         )
     )
 
     assert _testmon_seed_can_resume(identity) is True
-    assert _testmon_seed_can_resume({**identity, "git_head": "other"}) is True
+    assert _testmon_seed_can_resume({**identity, "git_head": "other", "git_tree": "tree-hash"}) is True
+    assert _testmon_seed_can_resume({**identity, "git_tree": "different-tree"}) is False
     assert _testmon_seed_can_resume({**identity, "worktree_fingerprint": "changed"}) is False
     assert _testmon_seed_can_resume({**identity, "skip_slow": False}) is False
+
+
+def test_two_interrupted_resumes_flatten_all_carried_outcomes(tmp_path: Path) -> None:
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.chdir(tmp_path)
+    try:
+        expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
+        TESTMON_DATA.parent.mkdir(parents=True)
+        TESTMON_DATA.write_text("partial")
+        identity = {
+            "git_head": "head",
+            "git_tree": "tree-hash",
+            "worktree_fingerprint": "tree",
+            "python": "3.13",
+            "skip_slow": False,
+            "lab": False,
+            "terminal_authorization": None,
+        }
+        TESTMON_SEED_ATTEMPT.write_text(
+            json.dumps(
+                {
+                    "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                    "status": "incomplete",
+                    "identity": identity,
+                    "expected_nodeids": expected,
+                    "expected_count": len(expected),
+                    "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
+                    "node_outcomes": [{"nodeid": expected[0], "outcome": "passed"}],
+                }
+            )
+        )
+        first = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="head", root=tmp_path)
+        _prepare_testmon_seed_attempt(identity=identity, run=first, resume=True)
+        first_payload = json.loads(TESTMON_SEED_ATTEMPT.read_text())
+        first_payload["status"] = "incomplete"
+        first_payload["node_outcomes"] = [{"nodeid": expected[1], "outcome": "passed"}]
+        TESTMON_SEED_ATTEMPT.write_text(json.dumps(first_payload))
+
+        second = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="head", root=tmp_path)
+        prepared = _prepare_testmon_seed_attempt(identity=identity, run=second, resume=True)
+
+        assert {item["nodeid"] for item in prepared["prior_node_outcomes"]} == set(expected)
+        assert {item["outcome"] for item in prepared["prior_node_outcomes"]} == {"passed"}
+        assert _flatten_seed_outcomes(prepared) == prepared["prior_node_outcomes"]
+    finally:
+        monkeypatch.undo()
+
+
+def test_focused_run_can_record_typed_affected_scope(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+
+    payload = run.finish(
+        exit_code=0,
+        duration_s=0.1,
+        verification_scope="affected",
+        release_baseline_allowed=False,
+    )
+
+    assert payload["verification_scope"] == "affected"
+    assert payload["release_baseline_allowed"] is False
+    assert json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text()) == payload
 
 
 def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -473,7 +619,62 @@ def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, mo
     step_dir = artifact_dir / "steps" / "17-pytest-seed-testmon"
     step_dir.mkdir(parents=True)
     expected = ["tests/unit/test_example.py::test_one"]
-    (step_dir / "selection.json").write_text(json.dumps({"selected_nodeids": expected, "selected_nodeids_omitted": 0}))
+    (step_dir / "selection.json").write_text(
+        json.dumps({"selected_nodeids": expected, "selected_nodeids_omitted": 0, "selected_count": 1})
+    )
+    identity = {
+        "git_head": "head",
+        "git_tree": "tree-hash",
+        "worktree_fingerprint": "tree",
+        "python": "3.13",
+        "skip_slow": True,
+        "lab": False,
+        "terminal_authorization": None,
+    }
+    TESTMON_SEED_ATTEMPT.write_text(
+        json.dumps(
+            {
+                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                "status": "running",
+                "identity": identity,
+                "expected_nodeids": [],
+                "artifact_dir": str(artifact_dir.relative_to(tmp_path)),
+            }
+        )
+    )
+
+    assert _testmon_seed_can_resume({**identity, "git_head": "fixed", "git_tree": "tree-hash"}) is True
+
+    run = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="fixed")
+    prepared = _prepare_testmon_seed_attempt(
+        identity={**identity, "git_head": "fixed", "git_tree": "tree-hash"}, run=run, resume=True
+    )
+
+    assert prepared["expected_nodeids"] == expected
+    assert prepared["expected_count"] == 1
+    assert prepared["expected_digest"] == hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest()
+    persisted = json.loads(TESTMON_SEED_ATTEMPT.read_text())
+    assert persisted["expected_digest"] == prepared["expected_digest"]
+
+
+def test_seed_resume_rejects_selection_artifact_outside_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_text("partial")
+    outside = tmp_path.parent / "outside-testmon-artifacts"
+    step_dir = outside / "steps" / "17-pytest-seed-testmon"
+    step_dir.mkdir(parents=True)
+    (step_dir / "selection.json").write_text(
+        json.dumps(
+            {
+                "selected_nodeids": ["tests/unit/test_example.py::test_one"],
+                "selected_nodeids_omitted": 0,
+                "selected_count": 1,
+            }
+        )
+    )
     identity = {
         "git_head": "head",
         "worktree_fingerprint": "tree",
@@ -488,18 +689,84 @@ def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, mo
                 "status": "running",
                 "identity": identity,
                 "expected_nodeids": [],
-                "artifact_dir": str(artifact_dir),
+                "artifact_dir": str(outside),
             }
         )
     )
 
-    assert _testmon_seed_can_resume({**identity, "git_head": "fixed"}) is True
+    assert _testmon_seed_can_resume(identity) is False
 
-    run = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="fixed")
-    prepared = _prepare_testmon_seed_attempt(identity={**identity, "git_head": "fixed"}, run=run, resume=True)
 
-    assert prepared["expected_nodeids"] == expected
-    assert prepared["expected_count"] == 1
+def test_resumed_seed_does_not_reuse_an_unexecuted_database_row(tmp_path: Path) -> None:
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.chdir(tmp_path)
+    try:
+        expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir()
+        (artifact_dir / "selection.json").write_text(
+            json.dumps({"selected_count": 1, "selected_nodeids": [expected[0]], "selected_nodeids_omitted": 0})
+        )
+        (artifact_dir / "events.jsonl").write_text(
+            json.dumps({"event": "test_report", "nodeid": expected[0], "when": "call", "outcome": "passed"}) + "\n"
+        )
+        TESTMON_DATA.parent.mkdir(parents=True)
+        with sqlite3.connect(TESTMON_DATA) as connection:
+            connection.execute("create table environment (id integer primary key, environment_name text)")
+            connection.execute("create table file_fp (id integer primary key, filename text, fsha text)")
+            connection.execute("create table test_execution (id integer primary key, test_name text, failed integer)")
+            connection.execute(
+                "create table test_execution_file_fp (test_execution_id integer, fingerprint_id integer)"
+            )
+            connection.executemany("insert into test_execution values (?, ?, 0)", [(1, expected[0]), (2, expected[1])])
+            connection.executemany("insert into file_fp values (?, ?, ?)", [(1, "a.py", "a"), (2, "b.py", "b")])
+            connection.executemany("insert into test_execution_file_fp values (?, ?)", [(1, 1), (2, 2)])
+        prepared = {
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {
+                "git_head": "head",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": False,
+                "lab": False,
+                **_testmon_runtime_identity_fields(Path.cwd()),
+            },
+            "resume": True,
+            "expected_nodeids": expected,
+            "run_id": "resume",
+            "artifact_dir": ".cache/verify/runs/resume",
+        }
+        _write_run_receipt(tmp_path, "resume")
+
+        receipt = _finalize_testmon_seed_attempt(
+            prepared=prepared,
+            step_results=[{"name": "pytest seed-testmon (resume)", "artifact_dir": str(artifact_dir)}],
+            exit_code=0,
+        )
+
+        assert receipt["status"] == "incomplete"
+        assert {item["nodeid"]: item["outcome"] for item in receipt["node_outcomes"]} == {
+            expected[0]: "passed",
+            expected[1]: "missing",
+        }
+
+        (artifact_dir / "selection.json").write_text(json.dumps({}))
+        (artifact_dir / "events.jsonl").write_text(
+            "\n".join(
+                json.dumps({"event": "test_report", "nodeid": nodeid, "when": "call", "outcome": "passed"})
+                for nodeid in expected
+            )
+            + "\n"
+        )
+        missing_selection = _finalize_testmon_seed_attempt(
+            prepared=prepared,
+            step_results=[{"name": "pytest seed-testmon (resume)", "artifact_dir": str(artifact_dir)}],
+            exit_code=0,
+        )
+        assert missing_selection["status"] == "incomplete"
+    finally:
+        monkeypatch.undo()
 
 
 def test_testmon_database_state_reports_missing_and_failed_nodes(
@@ -508,13 +775,21 @@ def test_testmon_database_state_reports_missing_and_failed_nodes(
     monkeypatch.chdir(tmp_path)
     TESTMON_DATA.parent.mkdir(parents=True)
     with sqlite3.connect(TESTMON_DATA) as conn:
+        conn.execute("CREATE TABLE environment (id INTEGER PRIMARY KEY, environment_name TEXT)")
+        conn.execute("CREATE TABLE file_fp (id INTEGER PRIMARY KEY, filename TEXT, fsha TEXT)")
         conn.execute(
             "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, failed INTEGER NOT NULL)"
         )
+        conn.execute("CREATE TABLE test_execution_file_fp (test_execution_id INTEGER, fingerprint_id INTEGER)")
         conn.executemany(
             "INSERT INTO test_execution(test_name, failed) VALUES (?, ?)",
             [("tests/test_a.py::test_ok", 0), ("tests/test_b.py::test_failed", 1)],
         )
+        conn.executemany(
+            "INSERT INTO file_fp(id, filename, fsha) VALUES (?, ?, ?)",
+            [(1, "a.py", "a"), (2, "b.py", "b")],
+        )
+        conn.executemany("INSERT INTO test_execution_file_fp VALUES (?, ?)", [(1, 1), (2, 2)])
 
     state = _testmon_database_state(
         ["tests/test_a.py::test_ok", "tests/test_b.py::test_failed", "tests/test_c.py::test_missing"]
@@ -599,23 +874,42 @@ def test_seed_receipt_classifies_every_node_terminal_outcome(
     (artifact_dir / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
     TESTMON_DATA.parent.mkdir(parents=True)
     with sqlite3.connect(TESTMON_DATA) as conn:
+        conn.execute("CREATE TABLE environment (id INTEGER PRIMARY KEY, environment_name TEXT)")
+        conn.execute("CREATE TABLE file_fp (id INTEGER PRIMARY KEY, filename TEXT, fsha TEXT)")
         conn.execute(
             "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, failed INTEGER NOT NULL)"
         )
+        conn.execute("CREATE TABLE test_execution_file_fp (test_execution_id INTEGER, fingerprint_id INTEGER)")
         conn.executemany(
             "INSERT INTO test_execution(test_name, failed) VALUES (?, ?)",
             [(nodeid, int(nodeid != expected[0])) for nodeid in expected[:-1]],
         )
+        conn.executemany(
+            "INSERT INTO file_fp(id, filename, fsha) VALUES (?, ?, ?)",
+            [(index, f"file-{index}.py", f"sha-{index}") for index, _nodeid in enumerate(expected[:-1], start=1)],
+        )
+        conn.executemany(
+            "INSERT INTO test_execution_file_fp VALUES (?, ?)",
+            [(index, index) for index, _nodeid in enumerate(expected[:-1], start=1)],
+        )
 
+    _write_run_receipt(tmp_path, "run-mixed")
     receipt = _finalize_testmon_seed_attempt(
         prepared={
             "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
             "status": "running",
-            "identity": {"git_head": "head"},
+            "identity": {
+                "git_head": "head",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": False,
+                "lab": False,
+                **_testmon_runtime_identity_fields(Path.cwd()),
+            },
             "resume": False,
             "expected_nodeids": [],
             "run_id": "run-mixed",
-            "artifact_dir": str(tmp_path / "run-mixed"),
+            "artifact_dir": ".cache/verify/runs/run-mixed",
         },
         step_results=[
             {
@@ -661,6 +955,65 @@ def test_seed_node_outcomes_preserve_interrupted_active_node(tmp_path: Path) -> 
     assert outcomes[0]["outcome"] == "interrupted"
 
 
+def test_seed_node_outcomes_accept_setup_skip_as_terminal_skip(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": "tests/test_a.py::test_setup_skip",
+                "when": "setup",
+                "outcome": "skipped",
+            }
+        )
+        + "\n"
+    )
+
+    outcomes = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=["tests/test_a.py::test_setup_skip"],
+        database={"node_outcomes": {"tests/test_a.py::test_setup_skip": "missing"}},
+        pytest_step={},
+        use_database_fallback=False,
+    )
+
+    assert outcomes == [
+        {
+            "nodeid": "tests/test_a.py::test_setup_skip",
+            "outcome": "skipped",
+            "reason": "test setup or teardown skipped",
+            "started": False,
+            "finished": False,
+            "phases": [{"when": "setup", "outcome": "skipped", "duration_s": None}],
+        }
+    ]
+
+
+def test_resumed_seed_carries_forward_prior_terminal_outcome(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps(
+            {"event": "test_report", "nodeid": "tests/test_a.py::test_repaired", "when": "call", "outcome": "passed"}
+        )
+        + "\n"
+    )
+    outcomes = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=["tests/test_a.py::test_repaired", "tests/test_b.py::test_prior"],
+        database={"node_outcomes": {"tests/test_b.py::test_prior": "passed"}},
+        pytest_step={},
+        use_database_fallback=False,
+        prior_node_outcomes={
+            "tests/test_b.py::test_prior": {"nodeid": "tests/test_b.py::test_prior", "outcome": "passed"}
+        },
+    )
+
+    assert {item["nodeid"]: item["outcome"] for item in outcomes} == {
+        "tests/test_a.py::test_repaired": "passed",
+        "tests/test_b.py::test_prior": "passed",
+    }
+
+
 def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     artifact_dir = tmp_path / "artifacts"
@@ -676,26 +1029,52 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
             }
         )
     )
-    (artifact_dir / "events.jsonl").write_text("")
+    (artifact_dir / "events.jsonl").write_text(
+        "".join(
+            json.dumps({"event": "test_report", "nodeid": nodeid, "when": "call", "outcome": "passed"}) + "\n"
+            for nodeid in expected
+        )
+    )
     TESTMON_DATA.parent.mkdir(parents=True)
     with sqlite3.connect(TESTMON_DATA) as conn:
+        conn.execute("CREATE TABLE environment (id INTEGER PRIMARY KEY, environment_name TEXT)")
+        conn.execute("CREATE TABLE file_fp (id INTEGER PRIMARY KEY, filename TEXT, fsha TEXT)")
         conn.execute(
             "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, failed INTEGER NOT NULL)"
         )
+        conn.execute("CREATE TABLE test_execution_file_fp (test_execution_id INTEGER, fingerprint_id INTEGER)")
         conn.executemany(
             "INSERT INTO test_execution(test_name, failed) VALUES (?, 0)",
             [(nodeid,) for nodeid in expected],
         )
+        conn.executemany(
+            "INSERT INTO file_fp(id, filename, fsha) VALUES (?, ?, ?)",
+            [(index, f"file-{index}.py", f"sha-{index}") for index, _nodeid in enumerate(expected, start=1)],
+        )
+        conn.executemany(
+            "INSERT INTO test_execution_file_fp VALUES (?, ?)",
+            [(index, index) for index, _nodeid in enumerate(expected, start=1)],
+        )
 
+    _write_run_receipt(tmp_path, "run-1")
+    _write_run_receipt(tmp_path, "run-stale-db")
+    _write_run_receipt(tmp_path, "run-orphaned")
     receipt = _finalize_testmon_seed_attempt(
         prepared={
             "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
             "status": "running",
-            "identity": {"git_head": "head"},
+            "identity": {
+                "git_head": "head",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": False,
+                "lab": False,
+                **_testmon_runtime_identity_fields(Path.cwd()),
+            },
             "resume": False,
             "expected_nodeids": [],
             "run_id": "run-1",
-            "artifact_dir": str(tmp_path / "run-1"),
+            "artifact_dir": ".cache/verify/runs/run-1",
         },
         step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 0}],
         exit_code=0,
@@ -704,8 +1083,176 @@ def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, mon
     assert receipt["status"] == "complete"
     assert receipt["expected_count"] == 2
     stamp = json.loads((tmp_path / ".cache" / "testmon" / "seed.json").read_text())
-    assert stamp["status"] == "complete"
-    assert stamp["expected_count"] == 2
+    assert stamp["status"] == "usable"
+    assert stamp["collection"]["expected_count"] == 2
+
+    _write_run_receipt(tmp_path, "run-authorized")
+    authorized_receipt = _finalize_testmon_seed_attempt(
+        prepared={
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {
+                "git_head": "head",
+                "git_tree": "tree-hash",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": True,
+                "lab": False,
+                "terminal_authorization": "narrow-terminal",
+                **_testmon_runtime_identity_fields(Path.cwd()),
+            },
+            "resume": False,
+            "expected_nodeids": [],
+            "run_id": "run-authorized",
+            "artifact_dir": ".cache/verify/runs/run-authorized",
+        },
+        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 0}],
+        exit_code=0,
+    )
+    assert authorized_receipt["status"] == "complete"
+    assert authorized_receipt["release_baseline_allowed"] is True
+
+    _write_run_receipt(tmp_path, "run-red")
+    with sqlite3.connect(TESTMON_DATA) as connection:
+        connection.execute("update test_execution set failed = 1 where test_name = ?", (expected[0],))
+    red_receipt = _finalize_testmon_seed_attempt(
+        prepared={
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {
+                "git_head": "head",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": False,
+                "lab": False,
+                **_testmon_runtime_identity_fields(Path.cwd()),
+            },
+            "resume": False,
+            "expected_nodeids": [],
+            "run_id": "run-red",
+            "artifact_dir": ".cache/verify/runs/run-red",
+        },
+        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 1}],
+        exit_code=1,
+    )
+    assert red_receipt["status"] == "reusable"
+    assert red_receipt["release_baseline_allowed"] is False
+    persisted_attempt = json.loads((tmp_path / ".cache" / "testmon" / "seed-attempt.json").read_text())
+    assert persisted_attempt["release_baseline_allowed"] is False
+    assert not (tmp_path / ".cache" / "testmon" / "seed.json").exists()
+
+    (artifact_dir / "events.jsonl").write_text("")
+    stale_database = _finalize_testmon_seed_attempt(
+        prepared={
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {
+                "git_head": "head",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": True,
+                "lab": False,
+            },
+            "resume": False,
+            "expected_nodeids": [],
+            "run_id": "run-stale-db",
+            "artifact_dir": ".cache/verify/runs/run-stale-db",
+        },
+        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir)}],
+        exit_code=0,
+    )
+    assert stale_database["status"] == "incomplete"
+
+    with sqlite3.connect(TESTMON_DATA) as connection:
+        connection.execute("insert into test_execution_file_fp values (999, 1)")
+    orphaned = _finalize_testmon_seed_attempt(
+        prepared={
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {
+                "git_head": "head",
+                "worktree_fingerprint": "tree",
+                "python": "python",
+                "skip_slow": True,
+                "lab": False,
+            },
+            "resume": False,
+            "expected_nodeids": [],
+            "run_id": "run-orphaned",
+            "artifact_dir": ".cache/verify/runs/run-orphaned",
+        },
+        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir)}],
+        exit_code=0,
+    )
+    assert orphaned["status"] == "incomplete"
+
+
+def test_resumed_seed_persists_full_selection_before_stamp_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "selection.json").write_text(
+        json.dumps({"selected_count": 1, "selected_nodeids": [expected[0]], "selected_nodeids_omitted": 0})
+    )
+    (artifact_dir / "events.jsonl").write_text(
+        json.dumps({"event": "test_report", "nodeid": expected[0], "when": "call", "outcome": "passed"}) + "\n"
+    )
+    TESTMON_DATA.parent.mkdir(parents=True)
+    with sqlite3.connect(TESTMON_DATA) as connection:
+        connection.execute("create table environment (id integer primary key, environment_name text)")
+        connection.execute("create table file_fp (id integer primary key, filename text, fsha text)")
+        connection.execute("create table test_execution (id integer primary key, test_name text, failed integer)")
+        connection.execute("create table test_execution_file_fp (test_execution_id integer, fingerprint_id integer)")
+        connection.executemany("insert into test_execution values (?, ?, 0)", [(1, expected[0]), (2, expected[1])])
+        connection.executemany("insert into file_fp values (?, ?, ?)", [(1, "a.py", "a"), (2, "b.py", "b")])
+        connection.executemany("insert into test_execution_file_fp values (?, ?)", [(1, 1), (2, 2)])
+    _write_run_receipt(tmp_path, "resumed")
+    prepared = {
+        "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+        "status": "running",
+        "identity": {
+            "git_head": "head",
+            "git_tree": "tree-hash",
+            "worktree_fingerprint": "tree",
+            "python": "python",
+            "skip_slow": False,
+            "lab": False,
+            "terminal_authorization": None,
+            **_testmon_runtime_identity_fields(Path.cwd()),
+        },
+        "resume": True,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
+        "prior_node_outcomes": [{"nodeid": expected[1], "outcome": "passed"}],
+        "run_id": "resumed",
+        "artifact_dir": ".cache/verify/runs/resumed",
+    }
+    original_write = verify._atomic_write_json
+
+    def crash_before_stamp(path: Path, payload: object) -> None:
+        if path == TESTMON_SEED_STAMP:
+            raise RuntimeError("simulated crash before seed publication")
+        assert isinstance(payload, dict)
+        original_write(path, payload)
+
+    with patch("devtools.verify._atomic_write_json", side_effect=crash_before_stamp):
+        with pytest.raises(RuntimeError, match="before seed publication"):
+            _finalize_testmon_seed_attempt(
+                prepared=prepared,
+                step_results=[{"name": "pytest seed-testmon (resume)", "artifact_dir": str(artifact_dir)}],
+                exit_code=0,
+            )
+
+    persisted = json.loads(TESTMON_SEED_ATTEMPT.read_text())
+    assert persisted["status"] == "complete"
+    assert persisted["expected_count"] == len(expected)
+    assert persisted["selection"]["selected_count"] == len(expected)
+    assert persisted["selection"]["selected_nodeids_omitted"] == 0
+    assert not TESTMON_SEED_STAMP.exists()
 
 
 def test_classify_late_sigterm_after_pytest_success_summary() -> None:
@@ -1166,6 +1713,27 @@ def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     assert metadata["basetemp_cleanup"] == str(cleaned)
 
 
+def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+
+    class UncappedPolicy:
+        workers = 12
+
+        def to_dict(self) -> dict[str, int]:
+            return {"workers": self.workers}
+
+    with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, UncappedPolicy())),
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, metadata = _run("pytest seed-testmon", ["pytest", "--testmon", "-n", "4"])
+
+    assert rc == 0
+    assert metadata["pytest_runtime_policy"] == {"workers": 12}
+    assert metadata["workload_receipt"]["spec"]["concurrency"] == 4
+
+
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_ROOT", "/stale/main")
     monkeypatch.setenv("POLYLOGUE_REPO_ROOT", "/stale/main")
@@ -1579,6 +2147,36 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
     assert '"exit_code": 1' in payload
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected_scope", "expected_permission"),
+    [
+        (["--all", "--skip-slow"], "narrow-terminal", False),
+        (["--all", "--skip-slow", "--terminal-authorization", "narrow-terminal"], "narrow-terminal", True),
+    ],
+)
+def test_verify_main_types_skip_slow_terminal_authority(
+    capsys: pytest.CaptureFixture[str], argv: list[str], expected_scope: str, expected_permission: bool
+) -> None:
+    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
+        del label, command, kwargs
+        return 0, 0.01, {}
+
+    with (
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest full", ["pytest"])]),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main([*argv, "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verification_scope"] == expected_scope
+    assert payload["release_baseline_allowed"] is expected_permission
+    assert payload["terminal_authorization"] == ("narrow-terminal" if expected_permission else None)
+
+
 def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.CaptureFixture[str]) -> None:
     with (
         patch("devtools.verify.build_verify_steps", side_effect=PytestResourceError("only 0.50 GiB available")),
@@ -1591,6 +2189,16 @@ def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.Ca
     assert rc == 125
     run.assert_not_called()
     assert "only 0.50 GiB available" in capsys.readouterr().err
+
+
+def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT / "devtools")
+
+    _anchor_verification_paths()
+
+    assert Path.cwd() == ROOT.resolve()
 
 
 def test_verify_rejects_zero_testmon_selection_for_executable_change(
@@ -1646,19 +2254,8 @@ def test_verify_accepts_zero_testmon_selection_after_matching_coverage(
 
 def test_testmon_coverage_receipts_are_content_exact() -> None:
     paths = ("polylogue/example.py",)
-    TESTMON_SEED_STAMP.parent.mkdir(parents=True, exist_ok=True)
-    TESTMON_SEED_STAMP.write_text(
-        json.dumps(
-            {
-                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                "status": "complete",
-                "identity": {"worktree_fingerprint": "covered"},
-            }
-        )
-    )
-
-    with patch("devtools.verify._worktree_fingerprint", return_value="covered"):
-        assert _matching_testmon_coverage(paths) == "complete_seed"
+    _write_real_testmon_state()
+    assert _matching_testmon_coverage(paths) is None
 
     TESTMON_SEED_STAMP.unlink()
     with patch("devtools.verify._worktree_fingerprint", return_value="affected"):
@@ -1672,6 +2269,10 @@ def test_testmon_coverage_receipts_are_content_exact() -> None:
         assert _matching_testmon_coverage(("polylogue/other.py",)) is None
 
     with patch("devtools.verify._worktree_fingerprint", return_value="changed"):
+        assert _matching_testmon_coverage(paths) is None
+
+    TESTMON_AFFECTED_STAMP.write_text(json.dumps({"identity": {"worktree_fingerprint": "affected"}}))
+    with patch("devtools.verify._worktree_fingerprint", return_value="affected"):
         assert _matching_testmon_coverage(paths) is None
 
 

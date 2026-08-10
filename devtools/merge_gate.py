@@ -79,6 +79,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import pr_scope
+from devtools.testmon_state import TerminalAuthorization, VerificationScope
 
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
@@ -218,6 +219,42 @@ def _command_skips_tests(command: str) -> bool:
     return not any(marker in lowered for marker in _LOOKS_LIKE_TESTS_MARKERS)
 
 
+def _release_baseline_permission(stdout: str) -> bool | None:
+    """Read the structured verify decision when the command emitted one."""
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("release_baseline_allowed")
+    return value if isinstance(value, bool) else None
+
+
+def _verification_scope(stdout: str) -> str | None:
+    """Read the typed verification scope from a structured verify receipt."""
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("verification_scope")
+    return value if value in {scope.value for scope in VerificationScope} else None
+
+
+def _terminal_authorization(stdout: str) -> str | None:
+    """Read the typed terminal authorization from a structured receipt."""
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("terminal_authorization")
+    return value if value in {authorization.value for authorization in TerminalAuthorization} else None
+
+
 def cmd_record(pr: int, command: str) -> int:
     info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft"])
     head_sha = info["headRefOid"]
@@ -272,6 +309,9 @@ def cmd_record(pr: int, command: str) -> int:
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
+        "verification_scope": _verification_scope(result.stdout),
+        "release_baseline_allowed": _release_baseline_permission(result.stdout),
+        "terminal_authorization": _terminal_authorization(result.stdout),
         "exit_code": result.returncode,
         "duration_s": duration_s,
         "recorded_at": time.time(),
@@ -478,6 +518,21 @@ def cmd_check(
             if receipt.get("exit_code", 1) != 0:
                 verdict.ok = False
                 verdict.reasons.append(f"receipt exit_code is {receipt.get('exit_code')}, not 0")
+            verification_scope = receipt.get("verification_scope")
+            if verification_scope not in {scope.value for scope in VerificationScope}:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "verification receipt lacks a valid typed verification_scope; command text cannot grant authority"
+                )
+            release_allowed = receipt.get("release_baseline_allowed")
+            if not isinstance(release_allowed, bool):
+                verdict.ok = False
+                verdict.reasons.append("verification receipt lacks typed release_baseline_allowed permission")
+            if verification_scope == VerificationScope.RELEASE_BASELINE.value and release_allowed is not True:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "release-baseline verification receipt does not grant release_baseline_allowed=true"
+                )
             if receipt.get("skips_tests"):
                 verdict.reasons.append(
                     f"advisory: receipt command {receipt.get('command')!r} does not look like it ran tests "

@@ -4,6 +4,7 @@ import json
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -80,7 +81,11 @@ def _fake_run(
             return MagicMock(returncode=0, stdout=local_head_sha + "\n", stderr="")
         if cmd[:2] == ["git", "status"]:
             return MagicMock(returncode=0, stdout=" M dirty.py\n" if dirty else "", stderr="")
-        return MagicMock(returncode=local_exit, stdout="ok\n", stderr="")
+        return MagicMock(
+            returncode=local_exit,
+            stdout=json.dumps({"verification_scope": "affected", "release_baseline_allowed": False}),
+            stderr="",
+        )
 
     return _run
 
@@ -101,6 +106,63 @@ def test_record_persists_receipt_keyed_to_current_head_sha(monkeypatch: pytest.M
     assert receipt["pr_scope_digest"]
     assert receipt["exit_code"] == 0
     assert receipt["skips_tests"] is False
+
+
+@pytest.mark.parametrize("command", ["devtools verify", "devtools verify --lab", "devtools verify --json --skip-slow"])
+def test_check_accepts_affected_receipt_without_release_baseline_permission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view, command=command)
+    receipt_path = merge_gate._receipt_path(42)
+    receipt = json.loads(receipt_path.read_text())
+    receipt["release_baseline_allowed"] = False
+    receipt_path.write_text(json.dumps(receipt))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 0
+
+
+@pytest.mark.parametrize(
+    "command", ["devtools verify --all", "devtools verify --full", "devtools verify --seed-testmon"]
+)
+def test_check_blocks_full_receipt_without_release_baseline_permission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view, command=command)
+    receipt_path = merge_gate._receipt_path(42)
+    receipt = json.loads(receipt_path.read_text())
+    receipt["verification_scope"] = "release-baseline"
+    receipt["release_baseline_allowed"] = False
+    receipt_path.write_text(json.dumps(receipt))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
+
+
+def test_record_consumes_structured_verify_release_permission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view: dict[str, object] = {"headRefOid": "abc123", "headRefName": "feature/x"}
+    base = cast(Callable[..., MagicMock], _fake_run(pr_view, [], local_head_sha="abc123"))
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:2] in (["git", "rev-parse"], ["git", "status"]):
+            return base(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return base(cmd, **kwargs)
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps({"verification_scope": "affected", "release_baseline_allowed": False}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    assert merge_gate.cmd_record(42, "devtools verify") == 0
+    receipt = json.loads(merge_gate._receipt_path(42).read_text())
+    assert receipt["release_baseline_allowed"] is False
 
 
 def test_record_captures_nonzero_local_command_exit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -196,6 +258,22 @@ def test_check_ok_when_receipt_fresh_and_matches_head_with_no_late_comments(
     exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
 
     assert exit_code == 0
+
+
+def test_check_rejects_command_text_without_typed_scope_or_permission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view, command="devtools verify --all")
+    receipt_path = merge_gate._receipt_path(42)
+    receipt = json.loads(receipt_path.read_text())
+    receipt["verification_scope"] = None
+    receipt["release_baseline_allowed"] = True
+    receipt_path.write_text(json.dumps(receipt))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
 
 
 @pytest.mark.parametrize(

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
 import os
 import sys
 import time
@@ -135,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
 
     selection = list(sys.argv[1:] if argv is None else argv)
+    use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable
     # flag; it is meaningless for a streamed test run, so drop it before pytest.
     selection = [arg for arg in selection if arg != "--json"]
@@ -162,7 +164,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         started = time.monotonic()
         rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
-        run.finish(exit_code=rc, duration_s=time.monotonic() - started, diagnosis=metadata.get("diagnosis"))
+        payload = run.finish(
+            exit_code=rc,
+            duration_s=time.monotonic() - started,
+            diagnosis=metadata.get("diagnosis"),
+            verification_scope="affected",
+            release_baseline_allowed=False,
+        )
+    if use_json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
     sys.stderr.write(
         f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
         f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} containment={PYTEST_CONTAINMENT_PATH} "

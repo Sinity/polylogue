@@ -254,13 +254,26 @@ class VerifyRun:
                 break
         self.write()
 
-    def finish(self, *, exit_code: int, duration_s: float, diagnosis: str | None = None) -> dict[str, Any]:
+    def finish(
+        self,
+        *,
+        exit_code: int,
+        duration_s: float,
+        diagnosis: str | None = None,
+        verification_scope: str | None = None,
+        release_baseline_allowed: bool | None = None,
+        terminal_authorization: str | None = None,
+    ) -> dict[str, Any]:
         self._payload["finished_at"] = utc_now()
         self._payload["duration_s"] = round(duration_s, 2)
         self._payload["exit_code"] = int(exit_code)
         self._payload["status"] = "success" if exit_code == 0 else "failed"
         if diagnosis:
             self._payload["diagnosis"] = diagnosis
+        if verification_scope is not None:
+            self._payload["verification_scope"] = verification_scope
+            self._payload["release_baseline_allowed"] = release_baseline_allowed
+            self._payload["terminal_authorization"] = terminal_authorization
         self.write()
         return dict(self._payload)
 

@@ -9,6 +9,7 @@ point at a different checkout than the one a tool is actually invoked from
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import pytest
 
 import devtools.click_dispatch as click_dispatch
 import devtools.run_tests as run_tests
+import devtools.testmon_state as testmon_state
 import devtools.verify as verify
 import polylogue
 from devtools.checkout_guard import (
@@ -183,10 +185,63 @@ def _write_in_progress_seed_attempt(root: Path, *, status: str = "running", **ov
         "artifact_dir": ".cache/verify/runs/seed-testmon-20260805T120000Z",
         "testmon_data_before": "missing",
     }
+    if status == "reusable":
+        nodeid = "tests/test.py::test_one"
+        runtime_identity = testmon_state.testmon_runtime_identity(root)
+        assert runtime_identity is not None
+        dependency_environment, pytest_harness = runtime_identity
+        payload.update(
+            {
+                "identity": {
+                    "git_head": "head",
+                    "worktree_fingerprint": "fingerprint",
+                    "python": "3.14",
+                    "skip_slow": True,
+                    "lab": False,
+                    "dependency_environment": dependency_environment,
+                    "pytest_harness": pytest_harness,
+                },
+                "expected_nodeids": [nodeid],
+                "expected_count": 1,
+                "expected_digest": hashlib.sha256(nodeid.encode()).hexdigest(),
+                "selection": {"selected_count": 1, "selected_nodeids_omitted": 0},
+                "node_outcomes": [{"nodeid": nodeid, "outcome": "failed"}],
+                "exit_code": 1,
+                "testmon_data": "fingerprint",
+                "release_baseline_allowed": False,
+                "verification_scope": "affected",
+                "binding": {
+                    "mode": "exact",
+                    "checkout_root": str(root.resolve()),
+                    "source_checkout_root": None,
+                },
+            }
+        )
     payload.update(overrides)
     attempt = root / ".cache" / "testmon" / "seed-attempt.json"
     attempt.parent.mkdir(parents=True, exist_ok=True)
     attempt.write_text(json.dumps(payload))
+    if status == "reusable":
+        run_dir = root / ".cache" / "verify" / "runs" / str(payload["run_id"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "run.json").write_text(
+            json.dumps(
+                {
+                    "run_id": payload["run_id"],
+                    "checkout_root": str(root.resolve()),
+                    "artifact_dir": f".cache/verify/runs/{payload['run_id']}",
+                }
+            )
+        )
+        (root / ".cache" / "verify" / "current-run.json").write_text(
+            json.dumps(
+                {
+                    "run_id": payload["run_id"],
+                    "checkout_root": str(root.resolve()),
+                    "artifact_dir": f".cache/verify/runs/{payload['run_id']}",
+                }
+            )
+        )
     return attempt
 
 
@@ -215,6 +270,26 @@ def test_checkout_environment_fingerprint_accepts_current_in_progress_seed_attem
     fingerprint = assert_polylogue_matches_checkout(
         root,
         context="seed-testmon bootstrap",
+        python_executable=root / ".venv" / "bin" / "python",
+    )
+
+    assert fingerprint.clean
+    assert fingerprint.testmon_state_origin is None
+    assert attempt.is_file()
+
+
+def test_checkout_environment_fingerprint_accepts_finalized_selection_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    attempt = _write_in_progress_seed_attempt(root, status="reusable")
+    (root / ".cache" / "testmon" / "testmondata").write_text("complete graph")
+    package_path = root / "polylogue" / "__init__.py"
+    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
+
+    fingerprint = assert_polylogue_matches_checkout(
+        root,
+        context="affected selection",
         python_executable=root / ".venv" / "bin" / "python",
     )
 
