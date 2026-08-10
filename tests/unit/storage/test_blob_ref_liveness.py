@@ -173,26 +173,8 @@ def test_default_dry_run_does_not_acquire_the_archive_writer_lease(
 
 def test_legacy_hook_payload_ref_is_rekeyable_not_a_delete_candidate(tmp_path: Path) -> None:
     archive_root = _source_archive(tmp_path)
-    blob_hash = b"h" * 32
-    source_path = "/legacy-hook.jsonl"
-    native_id = "tool-call-1"
-    legacy_ref_id = deterministic_raw_session_id("codex-session", source_path, 0, blob_hash, native_id)
     with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_hook_events (
-                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
-            ) VALUES ('hook-legacy', 'codex-session', ?, ?, 'PostToolUse', '{}', 1)
-            """,
-            (native_id, source_path),
-        )
-        conn.execute(
-            """
-            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
-            VALUES (?, ?, 'raw_payload', ?, 1, 1)
-            """,
-            (blob_hash, legacy_ref_id, source_path),
-        )
+        legacy_ref_id = _seed_legacy_hook_ref(conn)
         classification = classify_blob_ref_liveness(conn)
 
     assert classification.rekeyable_hook_payload_count == 1
@@ -200,51 +182,67 @@ def test_legacy_hook_payload_ref_is_rekeyable_not_a_delete_candidate(tmp_path: P
     assert all(candidate.ref_id != legacy_ref_id for candidate in classification.candidates)
 
 
-def test_liveness_stage_fails_closed_when_hook_match_build_is_interrupted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The production liveness stage must not retain a prior candidate table after an interrupted match build."""
-
-    archive_root = _source_archive(tmp_path)
+def _seed_legacy_hook_ref(conn: sqlite3.Connection) -> str:
     blob_hash = b"h" * 32
     source_path = "/legacy-hook.jsonl"
     native_id = "tool-call-1"
     legacy_ref_id = deterministic_raw_session_id("codex-session", source_path, 0, blob_hash, native_id)
+    conn.execute(
+        """
+        INSERT INTO raw_hook_events (
+            hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
+        ) VALUES ('hook-legacy', 'codex-session', ?, ?, 'PostToolUse', '{}', 1)
+        """,
+        (native_id, source_path),
+    )
+    conn.execute(
+        """
+        INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+        VALUES (?, ?, 'raw_payload', ?, 1, 1)
+        """,
+        (blob_hash, legacy_ref_id, source_path),
+    )
+    return legacy_ref_id
+
+
+def _seed_liveness_candidate_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TEMP TABLE blob_ref_liveness_candidates (
+            blob_hash BLOB NOT NULL,
+            ref_type TEXT NOT NULL,
+            ref_id TEXT NOT NULL,
+            source_path TEXT,
+            size_bytes INTEGER NOT NULL,
+            acquired_at_ms INTEGER NOT NULL,
+            referent_table TEXT NOT NULL,
+            referent_column TEXT NOT NULL,
+            PRIMARY KEY (blob_hash, ref_type, ref_id)
+        ) STRICT
+        """
+    )
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    (
+        *(f"created:{table}" for table in hook_payload_ref_reconciliation._STAGE_TABLES),
+        "population_began",
+    ),
+)
+def test_liveness_route_discards_failed_match_stage_then_rebuilds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkpoint: str
+) -> None:
+    """The real liveness route cannot retain or reuse a failed match stage."""
+
+    archive_root = _source_archive(tmp_path)
     with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_hook_events (
-                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
-            ) VALUES ('hook-legacy', 'codex-session', ?, ?, 'PostToolUse', '{}', 1)
-            """,
-            (native_id, source_path),
-        )
-        conn.execute(
-            """
-            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
-            VALUES (?, ?, 'raw_payload', ?, 1, 1)
-            """,
-            (blob_hash, legacy_ref_id, source_path),
-        )
-        conn.execute(
-            """
-            CREATE TEMP TABLE blob_ref_liveness_candidates (
-                blob_hash BLOB NOT NULL,
-                ref_type TEXT NOT NULL,
-                ref_id TEXT NOT NULL,
-                source_path TEXT,
-                size_bytes INTEGER NOT NULL,
-                acquired_at_ms INTEGER NOT NULL,
-                referent_table TEXT NOT NULL,
-                referent_column TEXT NOT NULL,
-                PRIMARY KEY (blob_hash, ref_type, ref_id)
-            ) STRICT
-            """
-        )
+        legacy_ref_id = _seed_legacy_hook_ref(conn)
+        _seed_liveness_candidate_table(conn)
 
         def inject_interruption(event: str) -> None:
-            if event == "population_began":
-                raise RuntimeError("injected match-stage interruption")
+            if event == checkpoint:
+                raise RuntimeError(f"injected match-stage interruption at {event}")
 
         def fail_after_population(connection: sqlite3.Connection) -> tuple[int, int, int, int]:
             return hook_payload_ref_reconciliation._create_match_stage(connection, failure_injector=inject_interruption)
@@ -255,9 +253,16 @@ def test_liveness_stage_fails_closed_when_hook_match_build_is_interrupted(
             stage_blob_ref_liveness(conn)
 
         remaining = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_temp_master WHERE type = 'table'")}
+        assert not remaining.intersection(hook_payload_ref_reconciliation._STAGE_TABLES)
+        assert "blob_ref_liveness_candidates" not in remaining
 
-    assert "blob_ref_liveness_candidates" not in remaining
-    assert not remaining.intersection(hook_payload_ref_reconciliation._STAGE_TABLES)
+        monkeypatch.setattr(
+            blob_ref_liveness, "_create_match_stage", hook_payload_ref_reconciliation._create_match_stage
+        )
+        rebuilt = stage_blob_ref_liveness(conn, sample_limit=0)
+
+        assert rebuilt.classification.rekeyable_hook_payload_count == 1
+        assert all(candidate.ref_id != legacy_ref_id for candidate in rebuilt.candidates(conn))
 
 
 def test_apply_requires_backup_and_receipt_before_mutation(tmp_path: Path) -> None:
