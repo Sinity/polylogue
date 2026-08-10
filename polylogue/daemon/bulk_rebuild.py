@@ -406,7 +406,8 @@ async def run_daemon_bulk_rebuild_pass(
         if os.environ.get(MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV, "").strip()
         else None
     )
-    transaction = await asyncio.to_thread(
+    transaction = await daemon_write_coordinator().run_sync(
+        "maintenance.bulk_rebuild_admission",
         resolve_or_start_daemon_bulk_rebuild_transaction,
         root,
         schema_inference_receipt_path=receipt_path,

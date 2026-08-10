@@ -810,6 +810,15 @@ def upsert_annotation_assertion(
         ) from exc
 
     existing = read_assertion_envelope(conn, assertion_id)
+    effective_scope_ref = normalized_batch_ref
+    if (
+        existing is not None
+        and effective_scope_ref is None
+        and normalized_target_ref.startswith("message:")
+        and existing.scope_ref is not None
+        and existing.scope_ref.startswith("session:")
+    ):
+        effective_scope_ref = existing.scope_ref
     if existing is not None and normalized_batch_ref is not None:
         existing_inputs = _immutable_annotation_inputs(
             scope_ref=existing.scope_ref,
@@ -847,7 +856,7 @@ def upsert_annotation_assertion(
         assertion_id=assertion_id,
         target_ref=normalized_target_ref,
         kind=AssertionKind.ANNOTATION,
-        scope_ref=normalized_batch_ref,
+        scope_ref=effective_scope_ref,
         key=row_key,
         value=stamped_value,
         body_text=body_text,

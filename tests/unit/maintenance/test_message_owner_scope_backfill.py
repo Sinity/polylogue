@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
@@ -18,6 +19,7 @@ from polylogue.annotations.schema import AnnotationField, AnnotationSchema, Anno
 from polylogue.annotations.write import assertion_id_for_schema_annotation, upsert_annotation_assertion
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.daemon import bulk_rebuild
 from polylogue.maintenance.message_owner_scope_backfill import (
@@ -887,6 +889,65 @@ def test_daemon_bulk_rebuild_resolves_completed_message_owner_receipt(
     transaction = bulk_rebuild.resolve_or_start_daemon_bulk_rebuild_transaction(root)
 
     assert transaction.operation_id == bulk_rebuild.DAEMON_BULK_REBUILD_OPERATION_ID
+
+
+def test_daemon_bulk_rebuild_serializes_admission_with_candidate_creation(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real daemon pass acquires its writer lease before transaction admission.
+
+    Anti-vacuity: moving resolver execution back to ``asyncio.to_thread`` leaves
+    this coordinator record empty while preserving the rest of the pass.
+    """
+
+    root, _ = _seed_opaque_archive(workspace_env)
+    calls: list[str] = []
+
+    class Coordinator:
+        async def run_sync(self, actor: str, function: object, /, *args: object, **kwargs: object) -> object:
+            calls.append(actor)
+            assert callable(function)
+            return function(*args, **kwargs)
+
+    monkeypatch.setattr("polylogue.daemon.write_coordinator.daemon_write_coordinator", lambda: Coordinator())
+    monkeypatch.setattr(
+        bulk_rebuild,
+        "resolve_or_start_daemon_bulk_rebuild_transaction",
+        lambda *_args, **_kwargs: type("Transaction", (), {"status": "promoted"})(),
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.schema_inference_gate.resolve_schema_inference_receipt_reference", lambda _root: None
+    )
+
+    result = asyncio.run(
+        bulk_rebuild.run_daemon_bulk_rebuild_pass(
+            config=Config(archive_root=root, render_root=root, sources=[]),
+            parse_stage=cast(Any, None),
+            max_payload_bytes=1,
+        )
+    )
+
+    assert result is None
+    assert calls == ["maintenance.bulk_rebuild_admission"]
+
+
+def test_completed_retry_reports_missing_backup_manifest_as_domain_error(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _seed_opaque_archive(workspace_env)
+    plan_path, backup, receipt = _plan_and_paths(tmp_path, root)
+    backup.parent.mkdir()
+    backup.write_text("backup", encoding="utf-8")
+    _allow_backup(monkeypatch)
+    apply_message_owner_scope_backfill(
+        root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+    )
+    backup.unlink()
+
+    with pytest.raises(MessageOwnerScopeBackfillError, match="could not read message-owner backfill backup manifest"):
+        apply_message_owner_scope_backfill(
+            root, plan_path=plan_path, backup_manifest=backup, receipt_path=receipt, dry_run=False
+        )
 
 
 def test_partial_no_promote_rebuild_skips_archive_wide_candidate_owner_proof(

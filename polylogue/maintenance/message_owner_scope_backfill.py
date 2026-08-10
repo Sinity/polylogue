@@ -509,8 +509,11 @@ def _load_plan(path: Path) -> MessageOwnerScopeBackfillPlan:
 
 
 def _manifest_identity(path: Path) -> dict[str, object]:
-    manifest = path / "manifest.json" if path.is_dir() else path
-    data = manifest.read_bytes()
+    try:
+        manifest = path / "manifest.json" if path.is_dir() else path
+        data = manifest.read_bytes()
+    except OSError as exc:
+        raise MessageOwnerScopeBackfillError(f"could not read message-owner backfill backup manifest: {path}") from exc
     return {"path": str(manifest.resolve()), "sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
 
 
