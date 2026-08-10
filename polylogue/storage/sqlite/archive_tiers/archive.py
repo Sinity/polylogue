@@ -1650,6 +1650,10 @@ class InactiveCandidateDurableWriteError(RuntimeError):
     """An inactive generation attempted to mutate read-through durable state."""
 
 
+class ReadOnlyArchiveError(RuntimeError):
+    """A read-only archive evidence store received a mutation request."""
+
+
 class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
     """Read frozen blob bytes while refusing candidate publication attempts."""
 
@@ -1748,17 +1752,22 @@ class ArchiveStore:
         source_tier_acquisition: bool = False,
         frozen_source_validation: bool = False,
         frozen_index_path: Path | None = None,
+        opened_index_fd: int | None = None,
     ) -> None:
         if source_tier_acquisition and read_only:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
         if frozen_source_validation and (not read_only or owned_inactive_generation is not None):
             raise ValueError("frozen source validation requires a read-only active archive")
-        if frozen_index_path is not None and not frozen_source_validation:
-            raise ValueError("a frozen index path is valid only for frozen source validation")
+        if frozen_index_path is not None and not read_only:
+            raise ValueError("a pinned index path is valid only for read-only archive access")
+        if opened_index_fd is not None and not read_only:
+            raise ValueError("an opened index descriptor is valid only for read-only archive access")
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_source_validation = frozen_source_validation
         self._frozen_index_path = frozen_index_path
+        self._opened_index_fd = opened_index_fd
+        self._pinned_read = frozen_index_path is not None
         self._inactive_candidate_durable_read_only = owned_inactive_generation is not None or frozen_source_validation
         self._active_writer_lease = None
         if not read_only:
@@ -1828,6 +1837,7 @@ class ArchiveStore:
                 initialize=initialize and not source_tier_acquisition and owned_inactive_generation is None,
                 read_only=read_only,
                 read_timeout=read_timeout,
+                opened_index_fd=opened_index_fd,
                 # polylogue-623q: only ever True for a write connection against
                 # an OWNED INACTIVE generation -- never read until promoted,
                 # discarded wholesale on any failure -- so it is safe to open
@@ -1853,6 +1863,7 @@ class ArchiveStore:
         read_only: bool,
         read_timeout: float,
         bulk_build_profile: bool = False,
+        opened_index_fd: int | None = None,
     ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
@@ -1861,6 +1872,8 @@ class ArchiveStore:
         self.user_db_path = archive_root / "user.db"
         self.ops_db_path = archive_root / "ops.db"
         self._read_only = read_only
+        if opened_index_fd is not None and not read_only:
+            raise ValueError("an opened index descriptor is valid only for read-only archive access")
         # Attribute type declarations shared by every open mode (the
         # source-tier acquisition branch below returns early, so inference
         # from a single assignment site would otherwise mistype these).
@@ -1908,10 +1921,12 @@ class ArchiveStore:
             return
         if initialize:
             initialize_active_archive_root(archive_root)
-        if read_only and not self._frozen_source_validation:
-            self._ensure_read_runtime_indexes()
         if read_only:
-            self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True, timeout=read_timeout)
+            self._conn = open_readonly_connection(
+                self.index_db_path,
+                timeout=read_timeout,
+                opened_main_fd=opened_index_fd,
+            )
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
             self._conn = (
@@ -1929,11 +1944,10 @@ class ArchiveStore:
             self._conn.execute(statement)
         if read_only:
             self._conn.execute(f"PRAGMA busy_timeout = {max(0, int(read_timeout * 1000))}")
-        else:
+        elif not self._pinned_read:
             # Fresh-bootstrap and same-version reopen both skip runtime-index
             # ensure elsewhere (initialize_archive_tier only replays DDL once,
-            # at current_version==0; the read-only path has its own ensure in
-            # _ensure_read_runtime_indexes). Owned inactive generations (bulk
+            # at current_version==0. Owned inactive generations (bulk
             # rebuilds, revision backfill) open exactly this write connection
             # and nothing else, so without this call a generation could run
             # its whole lifetime — including prefix-tail dependent rewrites —
@@ -1950,16 +1964,41 @@ class ArchiveStore:
             self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
         self._attach_user_tier_if_present()
 
+    def _require_writable(self, operation: str) -> None:
+        """Reject mutations before they can open or use a writable tier."""
+        if self._read_only:
+            raise ReadOnlyArchiveError(f"read-only archive evidence cannot {operation}")
+
     @classmethod
-    def open_existing(cls, archive_root: Path, *, read_only: bool = True, read_timeout: float = 5.0) -> ArchiveStore:
+    def open_existing(
+        cls,
+        archive_root: Path,
+        *,
+        read_only: bool = True,
+        read_timeout: float = 5.0,
+        index_path: Path | None = None,
+        opened_main_fd: int | None = None,
+    ) -> ArchiveStore:
         """Open archive tier files.
 
         Read-only opens never bootstrap missing tiers; read/status surfaces must
         not create an empty archive and then report it as usable. Writers opt
-        into bootstrap by passing ``read_only=False``.
+        into bootstrap by passing ``read_only=False``. Read-only evidence tools
+        may pass an already-resolved ``index_path`` to remain pinned to one
+        physical generation across an active-pointer promotion. An opened main
+        descriptor can additionally bind the index connection to that inode.
         """
+        if index_path is not None and not read_only:
+            raise ValueError("index_path is valid only for read-only archive access")
         initialize = not read_only
-        return cls(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
+        return cls(
+            archive_root,
+            initialize=initialize,
+            read_only=read_only,
+            read_timeout=read_timeout,
+            frozen_index_path=index_path,
+            opened_index_fd=opened_main_fd,
+        )
 
     @classmethod
     def open_source_tier_acquisition(cls, archive_root: Path) -> ArchiveStore:
@@ -2007,22 +2046,6 @@ class ArchiveStore:
             for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
         )
 
-    def _ensure_read_runtime_indexes(self) -> None:
-        """Best-effort performance-index ensure before opening the read connection."""
-        if not self.index_db_path.exists():
-            return
-        try:
-            with closing(sqlite3.connect(self.index_db_path)) as conn:
-                current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-                if current_version != archive_tier_spec(ArchiveTier.INDEX).version:
-                    return
-                for statement in WRITE_CONNECTION_PRAGMA_STATEMENTS:
-                    conn.execute(statement)
-                ensure_runtime_indexes_sync(conn)
-                conn.commit()
-        except sqlite3.Error:
-            return
-
     def set_read_progress_guard(self, guard: Callable[[], int], *, n_opcodes: int = 2000) -> None:
         """Install a SQLite progress handler on the index read connection.
 
@@ -2059,9 +2082,9 @@ class ArchiveStore:
         self._conn.interrupt()
 
     def _ensure_source_conn(self) -> sqlite3.Connection:
-        """Return the persistent source.db write connection, opening it lazily."""
+        """Return the persistent source.db connection, opening it lazily."""
         if self._source_conn is None:
-            if self._inactive_candidate_durable_read_only:
+            if self._read_only or self._inactive_candidate_durable_read_only:
                 conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
                 conn.execute("PRAGMA query_only = ON")
             else:
@@ -2072,6 +2095,7 @@ class ArchiveStore:
 
     def _open_user_write_connection(self, *, initialize: bool = False) -> sqlite3.Connection:
         """Open user.db for mutation unless this store is an inactive candidate."""
+        self._require_writable("mutate user.db")
         if self._inactive_candidate_durable_read_only:
             raise InactiveCandidateDurableWriteError(
                 "inactive candidate generations may read frozen user assertions but may not mutate user.db"
@@ -2086,6 +2110,7 @@ class ArchiveStore:
         Raw ingest writes commit source references promptly to consume
         publication receipts; bulk cadence applies to the derived index.
         """
+        self._require_writable("commit archive writes")
         self._conn.commit()
         self._consume_index_blob_receipts()
         self._flush_pending_raw_parse_states()
@@ -2117,6 +2142,7 @@ class ArchiveStore:
 
     def write_parsed(self, session: ParsedSession, *, content_hash: str | None = None) -> str:
         """Write a parsed session to index.db."""
+        self._require_writable("write index.db")
         acquired, refs = self._preacquire_attachment_blobs(
             session,
             source_path=f"session:{session.provider_session_id}",
@@ -2286,6 +2312,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
         finalize_raw_parse: bool = True,
     ) -> tuple[str, str]:
+        self._require_writable("write source.db and index.db")
         return write_raw_and_parsed(
             self,
             session,
@@ -2316,6 +2343,7 @@ class ArchiveStore:
         revision: RawRevisionEnvelope | None = None,
         post_parse: bool = False,
     ) -> str:
+        self._require_writable("write source.db raw evidence")
         return write_raw_payload(
             self,
             provider=provider,
@@ -2351,6 +2379,7 @@ class ArchiveStore:
         but NO ``raw_sessions`` row, so a hook can never materialize into a
         standalone empty session (polylogue-31r1).
         """
+        self._require_writable("write source.db hook evidence")
         if self._blob_publisher is None:
             raise RuntimeError("raw archive writes require a writable archive publisher")
         raw_hash, _raw_size = self._blob_publisher.write_from_bytes(payload)
@@ -2378,6 +2407,7 @@ class ArchiveStore:
 
     def delete_hook_event(self, hook_event_id: str) -> bool:
         """Delete a hook event and its source-tier payload reference."""
+        self._require_writable("delete source.db hook evidence")
         return delete_source_hook_event(self._ensure_source_conn(), hook_event_id)
 
     def write_raw_blob_ref(
@@ -2395,6 +2425,7 @@ class ArchiveStore:
         revision: RawRevisionEnvelope | None = None,
         post_parse: bool = False,
     ) -> str:
+        self._require_writable("write source.db blob reference")
         return write_raw_blob_ref(
             self,
             provider=provider,
@@ -2426,6 +2457,7 @@ class ArchiveStore:
 
         See :func:`polylogue.storage.sqlite.archive_tiers.revision_governance.admit_raw_artifact_payload`.
         """
+        self._require_writable("admit source.db artifact")
         return admit_raw_artifact_payload(
             self,
             provider=provider,
@@ -2452,6 +2484,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
     ) -> RawAdmissionResult:
         """Route a prepublished non-conversational blob through typed admission."""
+        self._require_writable("admit source.db artifact blob reference")
         return admit_raw_artifact_blob_ref(
             self,
             provider=provider,
@@ -2479,6 +2512,7 @@ class ArchiveStore:
         finalize_raw_parse: bool = True,
         revision_authoritative: bool = False,
     ) -> tuple[str, str]:
+        self._require_writable("write retained source.db and index.db evidence")
         return write_parsed_for_retained_raw(
             self,
             session,
@@ -2507,6 +2541,7 @@ class ArchiveStore:
         finalize_raw_parse: bool = True,
         revision_authoritative: bool = False,
     ) -> ArchiveRawParsedWriteResult:
+        self._require_writable("write retained source.db and index.db evidence")
         return write_parsed_for_retained_raw_result(
             self,
             session,
@@ -2522,9 +2557,11 @@ class ArchiveStore:
         )
 
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True) -> None:
+        self._require_writable("bind source.db revision")
         return bind_raw_revision(self, raw_id, revision, manage_transaction=manage_transaction)
 
     def release_provisional_full_revisions(self, raw_ids: Sequence[str]) -> None:
+        self._require_writable("release source.db revisions")
         return release_provisional_full_revisions(self, raw_ids)
 
     def raw_full_revision_generation(self, logical_source_key: str) -> int:
@@ -2550,6 +2587,7 @@ class ArchiveStore:
         *,
         manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
+        self._require_writable("classify source.db revision authority")
         return classify_raw_revision_cohort_for_rebuild_repair(
             self,
             logical_source_key,
@@ -2577,6 +2615,7 @@ class ArchiveStore:
         *,
         manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
+        self._require_writable("classify source.db revision authority")
         return classify_raw_revision_cohort_for_live_watch(
             self,
             logical_source_key,
@@ -2659,6 +2698,7 @@ class ArchiveStore:
         retire_full_revision_governance: bool = False,
         manage_transaction: bool = True,
     ) -> None:
+        self._require_writable("replace source.db membership census")
         return replace_raw_membership_census(
             self,
             raw_id,
@@ -2725,6 +2765,7 @@ class ArchiveStore:
         raw_ids: Sequence[str],
         sessions: Sequence[ParsedSession],
     ) -> None:
+        self._require_writable("defer source.db revision adoption")
         return defer_raw_revision_adoption(self, logical_source_key, raw_ids, sessions)
 
     def apply_raw_revision_replay(
@@ -2742,6 +2783,7 @@ class ArchiveStore:
         skip_already_applied: bool = False,
         prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
+        self._require_writable("apply source.db revision replay")
         return apply_raw_revision_replay(
             self,
             plan,
@@ -2772,6 +2814,7 @@ class ArchiveStore:
         bulk_build: bool = False,
         defer_fts: bool = False,
     ) -> str | None:
+        self._require_writable("apply source.db membership classification")
         return apply_raw_membership_classification(
             self,
             logical_source_key,
@@ -2788,6 +2831,7 @@ class ArchiveStore:
         )
 
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
+        self._require_writable("finalize source.db parse state")
         return finalize_raw_parse_state(self, raw_id, state=state)
 
     def mark_raw_parse_failed(
@@ -2798,6 +2842,7 @@ class ArchiveStore:
         error: BaseException,
         preserve_existing_failure_evidence: bool = False,
     ) -> None:
+        self._require_writable("mark source.db parse failure")
         return mark_raw_parse_failed(
             self,
             raw_id,
@@ -2816,6 +2861,7 @@ class ArchiveStore:
         acquired_at_ms: int,
         kind: RawFailureEvidenceKind,
     ) -> None:
+        self._require_writable("record source.db failure evidence")
         return record_raw_failure_evidence(
             self,
             raw_id,
@@ -2827,6 +2873,7 @@ class ArchiveStore:
         )
 
     def mark_raw_parse_succeeded(self, raw_id: str, *, provider: Provider) -> None:
+        self._require_writable("mark source.db parse success")
         return mark_raw_parse_succeeded(self, raw_id, provider=provider)
 
     def _flush_pending_raw_parse_states(self) -> None:
@@ -2887,6 +2934,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
         finalize_raw_parse: bool = True,
     ) -> ArchiveRawParsedWriteResult:
+        self._require_writable("write source.db and index.db evidence")
         return write_raw_and_parsed_result(
             self,
             session,
@@ -2926,6 +2974,7 @@ class ArchiveStore:
         ``logical_source_key``); use :meth:`write_raw_and_parsed_result` for
         callers with revision-chain/dedup semantics of their own.
         """
+        self._require_writable("admit source.db and index.db evidence")
         return admit_raw_and_parsed_result(
             self,
             session,
@@ -2959,6 +3008,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
         finalize_raw_parse: bool = True,
     ) -> tuple[str, str]:
+        self._require_writable("write source.db blob and index.db evidence")
         return write_raw_blob_and_parsed(
             self,
             session,
@@ -2991,6 +3041,7 @@ class ArchiveStore:
         blob_publication_receipt_id: str | None = None,
         finalize_raw_parse: bool = True,
     ) -> ArchiveRawParsedWriteResult:
+        self._require_writable("write source.db blob and index.db evidence")
         return write_raw_blob_and_parsed_result(
             self,
             session,
@@ -4510,6 +4561,7 @@ class ArchiveStore:
 
     def rebuild_index(self) -> int:
         """Rebuild the block FTS index from index.db blocks."""
+        self._require_writable("rebuild index.db")
         rebuilt_rows = rebuild_archive_messages_fts(self._conn)
         self._conn.commit()
         return rebuilt_rows
@@ -4570,6 +4622,7 @@ class ArchiveStore:
 
     def remove_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
         """Mark user tag assertions deleted and return deleted row count."""
+        self._require_writable("delete user.db tags")
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids or not self.user_db_path.exists():
             return 0
@@ -6155,6 +6208,7 @@ class ArchiveStore:
         left ungated deliberately rather than folding a third guard in for a
         cost that was never implicated by the incident.
         """
+        self._require_writable("delete index.db sessions")
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids:
             return 0

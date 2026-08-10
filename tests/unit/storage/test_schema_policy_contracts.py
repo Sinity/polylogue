@@ -180,8 +180,8 @@ def test_matching_version_database_ensures_runtime_indexes(tmp_path: Path) -> No
         conn.close()
 
 
-def test_read_only_archive_open_ensures_runtime_indexes(tmp_path: Path) -> None:
-    """Read surfaces should not wait for a later write to gain runtime indexes."""
+def test_read_only_archive_open_does_not_ensure_runtime_indexes(tmp_path: Path) -> None:
+    """Read surfaces must not mutate an existing index to gain runtime indexes."""
     initialize_active_archive_root(tmp_path)
     index_db = tmp_path / "index.db"
     conn = sqlite3.connect(index_db)
@@ -201,9 +201,55 @@ def test_read_only_archive_open_ensures_runtime_indexes(tmp_path: Path) -> None:
             ("messages", "idx_messages_message_type"),
             ("messages", "idx_messages_material_origin"),
         ):
-            assert any(row[1] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
+            assert not any(row[1] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
     finally:
         conn.close()
+
+
+def test_pinned_read_only_archive_open_does_not_mutate_physical_index_after_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A promoted active pointer cannot make a pinned read repair old evidence.
+
+    The caller resolves the old physical index, then an ownership transition
+    promotes a different generation before the production ``open_existing``
+    initialization path runs. The path must not reach the write-time runtime
+    index helper or mutate the now-inactive physical generation.
+    """
+    old_root = tmp_path / "old-generation"
+    new_root = tmp_path / "new-generation"
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(old_root)
+    initialize_active_archive_root(new_root)
+    archive_root.mkdir()
+    old_index = (old_root / "index.db").resolve()
+    new_index = (new_root / "index.db").resolve()
+    with sqlite3.connect(old_index) as conn:
+        conn.execute("CREATE TABLE pinned_evidence (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO pinned_evidence VALUES ('old physical index')")
+        conn.execute("DROP INDEX idx_messages_message_type")
+        conn.commit()
+        assert not any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
+
+    active_index = archive_root / "index.db"
+    active_index.symlink_to(old_index)
+    pinned_index = active_index.resolve(strict=True)
+    active_index.unlink()
+    active_index.symlink_to(new_index)
+
+    def fail_if_write_time_indexes_run(_conn: sqlite3.Connection) -> None:
+        pytest.fail("pinned read entered the write-time runtime-index DDL path")
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ensure_runtime_indexes_sync",
+        fail_if_write_time_indexes_run,
+    )
+    with ArchiveStore.open_existing(archive_root, index_path=pinned_index) as archive:
+        assert archive._read_only is True
+        assert tuple(archive._conn.execute("SELECT value FROM pinned_evidence").fetchone()) == ("old physical index",)
+
+    with sqlite3.connect(old_index) as conn:
+        assert not any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
 
 
 def test_read_only_archive_open_does_not_bootstrap_missing_tiers(tmp_path: Path) -> None:

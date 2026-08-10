@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 from hashlib import sha256
 from pathlib import Path
+from types import TracebackType
 
 import pytest
 
@@ -27,7 +30,13 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
 )
 from polylogue.storage.sqlite.action_relation import action_relation_select_sql
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveQueryUnitAggregateRow, ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive import (
+    ArchiveQueryUnitAggregateRow,
+    ArchiveStore,
+    ReadOnlyArchiveError,
+)
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_metadata,
     assertion_id_for_session_tag,
@@ -36,6 +45,64 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 from polylogue.surfaces.payloads import ActionQueryRowPayload
 from tests.infra.identity import archive_message_id
 from tests.infra.workload_artifacts import build_seeded_archive
+
+
+def test_active_archive_root_creation_is_private_under_permissive_umask(tmp_path: Path) -> None:
+    root = tmp_path / "private-archive"
+    previous_umask = os.umask(0)
+    try:
+        initialize_active_archive_root(root)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+
+
+def test_active_archive_root_refuses_replacement_after_acquiring_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bootstrap must not create tiers in a root its ownership token does not cover."""
+    from polylogue.storage import archive_identity
+    from polylogue.storage.archive_identity import ArchiveOwnershipError
+
+    root = tmp_path / "archive"
+    moved_root = tmp_path / "archive-owned"
+    root.mkdir()
+    real_acquire = archive_identity.OwnedArchiveLocation.acquire
+
+    class ReplaceAfterAcquire:
+        def __init__(self, owned: archive_identity.OwnedArchiveLocation) -> None:
+            self._owned = owned
+
+        def __enter__(self) -> archive_identity.OwnedArchiveLocation:
+            owned = self._owned.__enter__()
+            root.rename(moved_root)
+            root.mkdir()
+            return owned
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            self._owned.__exit__(exc_type, exc, traceback)
+
+    def acquire_then_replace(
+        location: archive_identity.ArchiveLocation,
+        *,
+        owner_id: str | None = None,
+        allow_reentrant: bool = False,
+    ) -> ReplaceAfterAcquire:
+        return ReplaceAfterAcquire(real_acquire(location, owner_id=owner_id, allow_reentrant=allow_reentrant))
+
+    monkeypatch.setattr(archive_identity.OwnedArchiveLocation, "acquire", acquire_then_replace)
+
+    with pytest.raises(ArchiveOwnershipError, match="archive root changed during ownership validation"):
+        initialize_active_archive_root(root)
+
+    assert not (root / "source.db").exists()
+    assert not (root / ".maintenance-state").exists()
 
 
 def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_path: Path) -> None:
@@ -72,6 +139,83 @@ def test_open_existing_read_timeout_updates_busy_timeout(tmp_path: Path) -> None
         busy_timeout_ms = facade._conn.execute("PRAGMA busy_timeout").fetchone()[0]
 
     assert busy_timeout_ms == 250
+
+
+def test_pinned_read_only_store_blocks_all_archive_tier_mutations(tmp_path: Path) -> None:
+    """Pinned evidence reads never open writable source, index, or user tiers."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-pinned-read-only",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="pinned evidence")],
+            )
+        ],
+    )
+    hook_event_id = "pinned-hook-event"
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        session_id = archive.write_parsed(session)
+        archive.add_user_tags((session_id,), ("pinned",))
+        archive.write_hook_event(
+            provider=Provider.CODEX,
+            payload=b'{"event":"PostToolUse"}',
+            source_path="hooks/pinned.jsonl",
+            acquired_at_ms=1_700_000_000_000,
+            hook_event=ArchiveHookEvent(
+                hook_event_id=hook_event_id,
+                origin=Origin.CODEX_SESSION,
+                source_path="hooks/pinned.jsonl",
+                event_type="PostToolUse",
+                payload={"event": "PostToolUse"},
+                observed_at_ms=1_700_000_000_000,
+                native_id="pinned-hook-native",
+                session_native_id="codex-pinned-read-only",
+            ),
+        )
+
+    def durable_counts() -> tuple[int, int, int, int, int]:
+        with sqlite3.connect(root / "source.db") as source:
+            source_counts = (
+                int(source.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0]),
+                int(source.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0]),
+            )
+        with sqlite3.connect(root / "user.db") as user:
+            user_count = int(user.execute("SELECT COUNT(*) FROM assertions").fetchone()[0])
+        with sqlite3.connect(root / "index.db") as index:
+            index_counts = (
+                int(index.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]),
+                int(index.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]),
+            )
+        return (*source_counts, user_count, *index_counts)
+
+    before = durable_counts()
+    index_path = (root / "index.db").resolve()
+    with ArchiveStore.open_existing(root, read_only=True, index_path=index_path) as archive:
+        assert archive.read_session(session_id).session_id == session_id
+        assert archive.list_user_tags() == {"pinned": 1}
+        hook_summary = archive.hook_event_summary_for_session(session_id)
+        assert hook_summary is not None
+        assert hook_summary["total"] == 1
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.delete_hook_event(hook_event_id)
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.add_user_tags((session_id,), ("blocked",))
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.delete_sessions((session_id,))
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.rebuild_index()
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.commit()
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:codex-pinned-read-only")
+        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
+            archive.classify_raw_revision_cohort_for_live_watch("codex-session:codex-pinned-read-only")
+
+    assert durable_counts() == before
 
 
 def test_archive_tiers_archive_facade_sorts_search_matches(tmp_path: Path) -> None:

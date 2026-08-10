@@ -2118,6 +2118,12 @@ async def run_daemon_services(
     global _daemon_lifecycle, _pidfile_path
     _process_start.started_at_wall()
     archive_root_path = Path(archive_root())
+    # The ownership proof is descriptor-backed and therefore requires an
+    # existing root. A daemon is also the production first-run entry point, so
+    # create an otherwise absent configured root before identity/ownership
+    # validation rather than making fresh service startup depend on a separate
+    # bootstrap invocation.
+    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
     from polylogue.storage.archive_identity import assert_writable_archive_identity
 
     # Identity precedes schema checks, pidfiles, HTTP startup, and every other

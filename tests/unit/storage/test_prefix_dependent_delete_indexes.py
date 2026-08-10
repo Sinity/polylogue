@@ -12,13 +12,11 @@ DDL addition was not accompanied by an ``ArchiveTier.INDEX`` version bump
 reached the current version *before* that DDL addition landed never replays
 the DDL again (``initialize_archive_database`` only re-applies DDL for
 OPS/USER tiers on a same-version reopen) and only reads the index in via one
-of the "ensure" call sites. The read-only path
-(``ArchiveStore._ensure_read_runtime_indexes``) already had that ensure call;
-the write-mode path did not -- meaning every ``ArchiveStore`` write open,
-including ``open_owned_inactive_generation`` (used by bulk rebuilds/revision
-backfill), could run its entire lifetime against an index.db missing these
-indexes. This module asserts both the DDL-level index shape and the
-write-open retrofit fix.
+of the "ensure" call sites. Read-only opens deliberately do not repair the
+selected file, while every write-mode open, including
+``open_owned_inactive_generation`` (used by bulk rebuilds/revision backfill),
+retrofits the runtime indexes. This module asserts both the DDL-level index
+shape and the write-open retrofit fix.
 """
 
 from __future__ import annotations

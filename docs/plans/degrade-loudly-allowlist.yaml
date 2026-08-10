@@ -451,13 +451,6 @@ entries:
   - Exception
   occurrence: 0
   reason: 'See repair_empty_sessions: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
-- path: polylogue/storage/sqlite/archive_tiers/archive.py
-  function: <module>._ensure_read_runtime_indexes
-  exceptions:
-  - Error
-  occurrence: 0
-  reason: Explicitly documented "best-effort performance-index ensure" (see the function's own docstring)
-    -- not correctness-affecting.
 - path: polylogue/storage/sqlite/archive_tiers/archive_plan.py
   function: <module>._read_user_version
   exceptions:

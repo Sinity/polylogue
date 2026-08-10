@@ -5,7 +5,9 @@ import hashlib
 import itertools
 import json
 import os
+import shutil
 import sqlite3
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -20,6 +22,7 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
 from polylogue.maintenance.replay import rebuild_index_from_source
+from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
@@ -30,6 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitAction, ArchiveInitPlan
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
@@ -431,6 +435,10 @@ def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:
     archive_root = cli_workspace["archive_root"]
     for name in _ARCHIVE_TIERS:
         (archive_root / name).unlink(missing_ok=True)
+    shutil.rmtree(
+        archive_root / ".maintenance-state" / "durable-change-trains",
+        ignore_errors=True,
+    )
 
 
 def _write_gc_candidate(cli_workspace: dict[str, Path], blob_hash: str) -> Path:
@@ -510,6 +518,37 @@ def _create_user_v3(path: Path) -> None:
             PRAGMA user_version = 3;
             """
         )
+    _refresh_fresh_bootstrap_marker(path.parent)
+
+
+def _refresh_fresh_bootstrap_marker(archive_root: Path) -> None:
+    """Rebind a fixture bootstrap receipt after deliberate durable-tier edits."""
+    marker = archive_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    assert marker.is_file(), f"fixture must carry a fresh bootstrap marker: {marker}"
+    from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+
+    marker.unlink()
+    _record_fresh_durable_bootstrap(archive_root)
+
+
+def _freeze_rebuild_fixture_source(archive_root: Path, *, expected_raws: int) -> None:
+    """Census fixture raws, then record their explicit single-revision decision."""
+    census = census_historical_revision_evidence(archive_root)
+    assert census.scanned == expected_raws
+    assert census.classified_full == expected_raws
+    with sqlite3.connect(archive_root / "source.db") as source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET revision_authority = 'byte_proven',
+                revision_kind = 'full',
+                source_revision = raw_id,
+                baseline_raw_id = raw_id,
+                predecessor_raw_id = NULL,
+                acquisition_generation = 0
+            """
+        )
+        source.commit()
 
 
 def _run_verified_backup_cli(cli_runner: CliRunner, output_dir: Path, *, profile: str) -> Path:
@@ -1517,6 +1556,7 @@ def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
         conn.execute("CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
         conn.execute("PRAGMA user_version = 1")
         conn.commit()
+    _refresh_fresh_bootstrap_marker(cli_workspace["archive_root"])
 
     result = cli_runner.invoke(
         cli,
@@ -2139,9 +2179,7 @@ def test_rebuild_index_preflight_reports_durable_schema_currency(
 ) -> None:
     root = cli_workspace["archive_root"]
     with sqlite3.connect(root / "source.db") as conn:
-        conn.execute("DROP INDEX idx_raw_failure_disposition_receipts_disposed_at")
-        conn.execute("DROP TABLE raw_failure_disposition_receipts")
-        conn.execute("PRAGMA user_version = 28")
+        conn.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION - 1}")
 
     result = cli_runner.invoke(
         cli,
@@ -2155,16 +2193,20 @@ def test_rebuild_index_preflight_reports_durable_schema_currency(
     assert payload["status"] == "blocked"
     assert [tier["tier"] for tier in payload["tiers"]] == ["audit", "source", "user"]
     assert payload["blocking_tiers"][0]["tier"] == "source"
-    assert payload["blocking_tiers"][0]["actual_user_version"] == 28
-    assert payload["blocking_tiers"][0]["expected_user_version"] == 29
+    assert payload["blocking_tiers"][0]["actual_user_version"] == SOURCE_SCHEMA_VERSION - 1
+    assert payload["blocking_tiers"][0]["expected_user_version"] == SOURCE_SCHEMA_VERSION
     assert "migrate or deploy before rebuilding" in result.stderr
 
 
 def test_migrate_tier_cli_initializes_only_an_absent_durable_tier(
     cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    blob_root = cli_workspace["archive_root"] / "blob"
+    blob_root.mkdir()
+    assert blob_root.is_dir()
+    assert not any(blob_root.iterdir())
     audit_db = cli_workspace["archive_root"] / "audit.db"
-    audit_db.unlink()
 
     result = cli_runner.invoke(
         cli,
@@ -2222,8 +2264,8 @@ def test_migrate_tier_cli_missing_initialization_refuses_an_existing_tier(
 def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_replacement(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _stage_uninitialized_archive(cli_workspace)
     audit_db = cli_workspace["archive_root"] / "audit.db"
-    audit_db.unlink()
     raced_bytes = b"concurrent durable owner\n"
     real_link = os.link
 
@@ -2235,7 +2277,12 @@ def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_repl
         dst_dir_fd: int | None = None,
         follow_symlinks: bool = True,
     ) -> None:
-        Path(destination).write_bytes(raced_bytes)
+        assert dst_dir_fd is not None
+        target_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dst_dir_fd)
+        try:
+            os.write(target_fd, raced_bytes)
+        finally:
+            os.close(target_fd)
         real_link(
             source,
             destination,
@@ -2267,33 +2314,25 @@ def test_migrate_tier_cli_missing_initialization_loses_publish_race_without_repl
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
 
 
-def test_migrate_tier_cli_exposes_no_named_staging_inode_before_publication(
+def test_migrate_tier_cli_rejects_archive_directory_swap_before_publication(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    audit_db = cli_workspace["archive_root"] / "audit.db"
-    audit_db.unlink()
-    real_link = os.link
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    moved_root = root.with_name("archive-moved")
+    swapped = False
 
-    def assert_no_named_stage_before_publish(
-        source: os.PathLike[str] | str,
-        destination: os.PathLike[str] | str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
-        assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
-        real_link(
-            source,
-            destination,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
+    def swap_after_archive_ownership(_root: Path) -> str:
+        nonlocal swapped
+        if not swapped:
+            root.rename(moved_root)
+            root.mkdir()
+            swapped = True
+        return "proof:daemon-stopped"
 
     monkeypatch.setattr(
-        "polylogue.operations.durable_change_train.os.link",
-        assert_no_named_stage_before_publish,
+        "polylogue.cli.commands.maintenance._migrate_tier._require_stopped_daemon",
+        swap_after_archive_ownership,
     )
 
     result = cli_runner.invoke(
@@ -2311,11 +2350,888 @@ def test_migrate_tier_cli_exposes_no_named_staging_inode_before_publication(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0, result.output
-    with sqlite3.connect(audit_db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
-        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert result.exit_code == 1
+    assert "changed during validation" in json.loads(result.stdout)["error"]
+    assert not (root / "audit.db").exists()
+    assert not (moved_root / "audit.db").exists()
+
+
+def test_migrate_tier_cli_wraps_non_collision_publication_error(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+
+    def fail_link(*_args: object, **_kwargs: object) -> None:
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.link", fail_link)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert f"cannot initialize missing audit tier: anonymous durable publication failed: {audit_db}" in error
+    assert not audit_db.exists()
+
+
+@pytest.mark.parametrize("failure_stage", ["image_fsync", "directory_open", "directory_fsync"])
+def test_migrate_tier_cli_cleans_up_after_publication_failure(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    """The real publication route leaves no owned target after a failure."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    module_name = "polylogue.operations.durable_change_train"
+
+    real_fsync = os.fsync
+    real_open = os.open
+    publication_descriptor: int | None = None
+
+    def fail_fsync(descriptor: int) -> None:
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        if failure_stage == "image_fsync" and descriptor == publication_descriptor:
+            raise OSError(f"{failure_stage} failed")
+        if failure_stage == "directory_fsync" and is_directory:
+            raise OSError(f"{failure_stage} failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(f"{module_name}.os.fsync", fail_fsync)
+    dup_failure_armed = False
+
+    from polylogue.cli.commands.maintenance import _migrate_tier
+
+    real_require_stopped_daemon = _migrate_tier._require_stopped_daemon
+
+    def arm_dup_failure(path: Path) -> str:
+        nonlocal dup_failure_armed
+        dup_failure_armed = True
+        return real_require_stopped_daemon(path)
+
+    monkeypatch.setattr(_migrate_tier, "_require_stopped_daemon", arm_dup_failure)
+
+    def record_publication_open(
+        file: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal publication_descriptor
+        descriptor = real_open(file, flags, mode, dir_fd=dir_fd)
+        tmpfile_flag = getattr(os, "O_TMPFILE", 0)
+        if tmpfile_flag and (flags & tmpfile_flag) == tmpfile_flag:
+            publication_descriptor = descriptor
+        return descriptor
+
+    monkeypatch.setattr(f"{module_name}.os.open", record_publication_open)
+
+    real_dup = os.dup
+
+    def fail_directory_dup(descriptor: int) -> int:
+        if failure_stage == "directory_open" and dup_failure_armed:
+            raise OSError("directory open failed")
+        return real_dup(descriptor)
+
+    monkeypatch.setattr(f"{module_name}.os.dup", fail_directory_dup)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert f"cannot publish audit tier at {audit_db}" in json.loads(result.stdout)["error"]
+    if failure_stage == "directory_fsync":
+        assert audit_db.exists()
+    else:
+        assert not audit_db.exists()
+
+
+def test_migrate_tier_cli_serializes_cleanup_fsync_uncertainty(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cleanup fsync fault is durable-recovery uncertainty, not a lost note."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    real_stat = os.stat
+    published_stat_calls = 0
+
+    def fail_published_stat(
+        file: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal published_stat_calls
+        if file == "audit.db" and dir_fd is not None:
+            published_stat_calls += 1
+            if published_stat_calls == 2:
+                raise OSError("published identity fault")
+        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    real_fsync = os.fsync
+
+    def fail_cleanup_fsync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("cleanup fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", fail_published_stat)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_cleanup_fsync)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["durable_recovery"] == {
+        "code": "cleanup_not_atomic",
+        "detail": (
+            f"published durable tier remains after publication failure; cleanup deferred because no conditional "
+            f"inode removal is available: {audit_db}"
+        ),
+        "state": "uncertain",
+        "target": str(audit_db),
+    }
+    assert audit_db.exists()
+
+
+def test_migrate_tier_cli_plain_output_reports_uncertain_durable_recovery(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    from polylogue.cli.commands.maintenance import _migrate_tier
+    from polylogue.operations.durable_change_train import DurableCleanupOutcome, DurablePublicationError
+
+    cleanup = DurableCleanupOutcome(
+        "uncertain",
+        "cleanup_not_atomic",
+        str(cli_workspace["archive_root"] / "audit.db"),
+        "publication target requires manual inspection",
+    )
+
+    def refuse_initialization(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        raise DurablePublicationError("publication blocked", cleanup=cleanup)
+
+    monkeypatch.setattr(_migrate_tier, "initialize_missing_durable_tier", refuse_initialization)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "plain",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert (
+        "Durable recovery required (cleanup_not_atomic): publication target requires manual inspection" in result.output
+    )
+
+
+def test_missing_tier_initialization_closes_directory_after_publication_descriptor_close_failure(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    from polylogue.operations import durable_change_train
+    from polylogue.operations.durable_change_train import (
+        DurablePublicationError,
+        acquire_durable_archive_ownership,
+        initialize_missing_durable_tier,
+    )
+
+    publication_descriptor: int | None = None
+    publication_close_failed = False
+    directory_closed = False
+    real_open = os.open
+    real_close = os.close
+
+    def record_publication_open(
+        file: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal publication_descriptor
+        descriptor = real_open(file, flags, mode, dir_fd=dir_fd)
+        tmpfile_flag = getattr(os, "O_TMPFILE", 0)
+        if tmpfile_flag and (flags & tmpfile_flag) == tmpfile_flag:
+            publication_descriptor = descriptor
+        return descriptor
+
+    def fail_publication_close(descriptor: int) -> None:
+        nonlocal directory_closed, publication_close_failed
+        if descriptor == publication_descriptor and not publication_close_failed:
+            publication_close_failed = True
+            raise OSError("publication close failed")
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_closed = True
+        real_close(descriptor)
+
+    owner = acquire_durable_archive_ownership(root, owner_id="publication-close-test")
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr("polylogue.operations.durable_change_train.os.open", record_publication_open)
+            scoped.setattr(durable_change_train, "_close_publication_descriptor", fail_publication_close)
+            with pytest.raises(DurablePublicationError) as raised:
+                initialize_missing_durable_tier(
+                    root / "audit.db",
+                    ArchiveTier.AUDIT,
+                    directory_fd=owner.directory_fd,
+                )
+    finally:
+        if publication_descriptor is not None and publication_close_failed:
+            real_close(publication_descriptor)
+        owner.release()
+
+    assert directory_closed is True
+    assert raised.value.cleanup is not None
+    assert raised.value.cleanup.state == "uncertain"
+
+
+def test_migrate_tier_cli_serializes_target_absent_cleanup(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vanished publication target is reported distinctly from cleanup uncertainty."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    real_stat = os.stat
+    published_stat_calls = 0
+
+    def remove_target_before_cleanup_stat(
+        file: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal published_stat_calls
+        if file == "audit.db" and dir_fd is not None:
+            published_stat_calls += 1
+            if published_stat_calls == 3:
+                audit_db.unlink()
+        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    real_fsync = os.fsync
+    directory_fsyncs = 0
+
+    def fail_after_publish(descriptor: int) -> None:
+        nonlocal directory_fsyncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsyncs += 1
+            if directory_fsyncs == 1:
+                raise OSError("publication fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", remove_target_before_cleanup_stat)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_after_publish)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["durable_recovery"] == {
+        "code": None,
+        "detail": None,
+        "state": "target_absent",
+        "target": str(audit_db),
+    }
+
+
+def test_migrate_tier_cli_preserves_replacement_during_checked_leaf_cleanup(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cleanup mutation swaps in a foreign leaf before the checked unlink."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    foreign = root / "foreign-audit.db"
+    real_stat = os.stat
+    published_stat_calls = 0
+
+    def replace_target_before_checked_unlink(
+        file: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal published_stat_calls
+        if file == "audit.db" and dir_fd is not None:
+            published_stat_calls += 1
+            if published_stat_calls == 3:
+                audit_db.unlink()
+                foreign.write_bytes(b"foreign target")
+                foreign.rename(audit_db)
+        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    real_fsync = os.fsync
+    directory_fsyncs = 0
+
+    def fail_after_publish(descriptor: int) -> None:
+        nonlocal directory_fsyncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsyncs += 1
+            if directory_fsyncs == 1:
+                raise OSError("publication fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", replace_target_before_checked_unlink)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_after_publish)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["durable_recovery"]["code"] == "leaf_replaced"
+    assert audit_db.read_bytes() == b"foreign target"
+
+
+def test_migrate_tier_cli_preserves_replacement_after_cleanup_final_check(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cleanup rename must not unlink a leaf swapped after its final check."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    rename_calls = 0
+
+    def reject_unsafe_cleanup_rename(
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal rename_calls
+        rename_calls += 1
+        raise AssertionError(f"unsafe cleanup rename attempted: {source} -> {destination}")
+
+    real_fsync = os.fsync
+    directory_fsyncs = 0
+
+    def fail_after_publish(descriptor: int) -> None:
+        nonlocal directory_fsyncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsyncs += 1
+            if directory_fsyncs == 1:
+                raise OSError("publication fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.rename", reject_unsafe_cleanup_rename)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_after_publish)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["durable_recovery"]["code"] == "cleanup_not_atomic"
+    assert audit_db.exists()
+    assert rename_calls == 0
+
+
+def test_migrate_tier_cli_serializes_cleanup_inspection_uncertainty(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup inspection failure remains typed while the publication error survives."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    real_stat = os.stat
+    target_stat_calls = 0
+
+    def fail_cleanup_inspection(
+        file: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal target_stat_calls
+        if file == "audit.db" and dir_fd is not None:
+            target_stat_calls += 1
+            if target_stat_calls == 3:
+                raise OSError("cleanup inspection fault")
+        return real_stat(file, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    real_fsync = os.fsync
+    directory_fsyncs = 0
+
+    def fail_after_publish(descriptor: int) -> None:
+        nonlocal directory_fsyncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_fsyncs += 1
+            if directory_fsyncs == 1:
+                raise OSError("publication fsync fault")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", fail_cleanup_inspection)
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", fail_after_publish)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert "cannot publish audit tier" in payload["error"]
+    assert payload["durable_recovery"]["code"] == "leaf_inspection_failed"
+    assert "could not inspect published durable tier" in payload["durable_recovery"]["detail"]
+    assert audit_db.exists()
+
+
+def test_migrate_tier_cli_fails_closed_when_anonymous_publication_is_unavailable(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    audit_db = cli_workspace["archive_root"] / "audit.db"
+    monkeypatch.setattr(os, "O_TMPFILE", 0, raising=False)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "filesystem does not support O_TMPFILE" in json.loads(result.stdout)["error"]
+    assert not audit_db.exists()
     assert not list(audit_db.parent.glob(".audit.db.initialize-*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("missing_name", "sibling_name"),
+    [("source.db", "user.db"), ("user.db", "source.db"), ("audit.db", "source.db")],
+)
+def test_migrate_tier_cli_refuses_to_initialize_a_tier_in_an_established_archive(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    missing_name: str,
+    sibling_name: str,
+) -> None:
+    root = cli_workspace["archive_root"]
+    missing = root / missing_name
+    missing.unlink()
+    before = missing.exists()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            missing.stem,
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "established archive" in json.loads(result.stdout)["error"]
+    assert missing.exists() is before
+    assert (root / sibling_name).exists()
+
+
+@pytest.mark.parametrize("missing_name", ["source.db", "user.db"])
+@pytest.mark.parametrize(
+    "retained_evidence",
+    [
+        "index.db",
+        ".index-generations",
+        ".index-rebuild-transactions",
+        "source-continuity-pending",
+        "source-continuity-refreshes",
+        "operation.json",
+        "failures.jsonl",
+    ],
+)
+def test_migrate_tier_cli_missing_initialization_refuses_retained_archive_evidence(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, missing_name: str, retained_evidence: str
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    missing_path = root / missing_name
+    retained_path = root / retained_evidence
+    if retained_evidence == "index.db":
+        retained_path.touch()
+    elif retained_evidence in {"source-continuity-pending", "source-continuity-refreshes"}:
+        retained_path = root / ".maintenance-state" / retained_evidence
+        retained_path.mkdir(parents=True)
+        (retained_path / "intent.json").write_text("{}", encoding="utf-8")
+    elif retained_evidence in {"operation.json", "failures.jsonl"}:
+        retained_path = root / ".maintenance-state" / retained_evidence
+        retained_path.parent.mkdir(parents=True, exist_ok=True)
+        retained_path.write_text("{}", encoding="utf-8")
+    else:
+        retained_path.mkdir(parents=True)
+        (retained_path / "retained.json").write_text("{}", encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            missing_path.stem,
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "established archive" in json.loads(result.stdout)["error"]
+    assert retained_path.exists()
+    assert not missing_path.exists()
+
+
+def test_migrate_tier_cli_rechecks_adoption_evidence_before_publication(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A maintenance record appearing during image build must block the visible link."""
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    audit_db = root / "audit.db"
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    real_initialize = bootstrap.initialize_archive_tier
+
+    def establish_archive_during_build(connection: sqlite3.Connection, tier: ArchiveTier) -> None:
+        real_initialize(connection, tier)
+        maintenance_state = root / ".maintenance-state"
+        maintenance_state.mkdir(exist_ok=True)
+        (maintenance_state / "failures.jsonl").write_text('{"operation":"interrupted"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(bootstrap, "initialize_archive_tier", establish_archive_during_build)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "established archive" in json.loads(result.stdout)["error"]
+    assert (root / ".maintenance-state" / "failures.jsonl").exists()
+    assert not audit_db.exists()
+
+
+@pytest.mark.parametrize("blob_state", ["nonempty-directory", "regular-file"])
+def test_migrate_tier_cli_missing_initialization_refuses_retained_blob_evidence(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, blob_state: str
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    blob_root = cli_workspace["archive_root"] / "blob"
+    blob_root.mkdir()
+    if blob_state == "nonempty-directory":
+        (blob_root / "retained-entry").write_bytes(b"retained")
+    else:
+        blob_root.rmdir()
+        blob_root.write_bytes(b"malformed blob store")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "established archive" in json.loads(result.stdout)["error"]
+    assert not (cli_workspace["archive_root"] / "audit.db").exists()
+
+
+@pytest.mark.parametrize("marker_name", [".bootstrap", ".bootstrap.pending"])
+def test_migrate_tier_cli_missing_initialization_refuses_bootstrap_markers(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, marker_name: str
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    marker_root = cli_workspace["archive_root"] / ".maintenance-state" / "durable-change-trains"
+    marker_root.mkdir(parents=True)
+    (marker_root / marker_name).write_text("marker", encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert "established archive" in error
+    assert str(marker_root / marker_name) in error
+    assert not (cli_workspace["archive_root"] / "audit.db").exists()
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_blob_inspection_failure(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    blob_root = root / "blob"
+    blob_root.mkdir()
+    blob_identity = blob_root.stat()
+    real_listdir = os.listdir
+
+    def fail_blob_inspection(candidate: int | os.PathLike[str] | str) -> list[str]:
+        if isinstance(candidate, int):
+            candidate_metadata = os.fstat(candidate)
+            if (candidate_metadata.st_dev, candidate_metadata.st_ino) == (blob_identity.st_dev, blob_identity.st_ino):
+                raise OSError("blob inspection failed")
+        return real_listdir(candidate)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.listdir", fail_blob_inspection)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "cannot inspect retained blob path" in json.loads(result.stdout)["error"]
+    assert not (root / "audit.db").exists()
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_marker_inspection_failure(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    marker_root = root / ".maintenance-state" / "durable-change-trains"
+    marker_root.mkdir(parents=True)
+    real_stat = os.stat
+
+    def fail_marker_inspection(
+        candidate: os.PathLike[str] | str,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        if candidate == ".maintenance-state/durable-change-trains" and dir_fd is not None:
+            raise OSError("marker inspection failed")
+        return real_stat(candidate, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.stat", fail_marker_inspection)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "cannot inspect durable change-train adoption marker" in json.loads(result.stdout)["error"]
+    assert not (root / "audit.db").exists()
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_dangling_active_pointer(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    pointer = root / ".index-active-pointer"
+    pointer.symlink_to(root / ".index-generations" / "missing" / "index.db")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert "established archive" in error
+    assert str(pointer) in error
+    assert not (root / "audit.db").exists()
+
+
+def test_migrate_tier_cli_missing_initialization_refuses_malformed_train_marker(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    marker = root / ".maintenance-state" / "durable-change-trains"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("not a marker directory", encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert "established archive" in error
+    assert str(marker) in error
+    assert not (root / "audit.db").exists()
 
 
 def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
@@ -2337,8 +3253,8 @@ def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(
     assert not (root / ".index-generations").exists()
 
 
-def test_rebuild_index_empty_source_preserves_plain_receipt_output_after_guard(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+def test_rebuild_index_empty_source_preserves_plain_receipt_output_without_schema_receipt(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
 ) -> None:
     """The real empty receipt must render without replay-only counter keys.
 
@@ -2346,8 +3262,6 @@ def test_rebuild_index_empty_source_preserves_plain_receipt_output_after_guard(
     formatter and raises KeyError before this exact plain output is emitted.
     """
     root = cli_workspace["archive_root"]
-    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
-    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
     result = cli_runner.invoke(
         cli,
@@ -2583,6 +3497,7 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
             """
         )
         source.commit()
+    _freeze_rebuild_fixture_source(root, expected_raws=2)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
@@ -2591,7 +3506,7 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
         ["--plain", "ops", "maintenance", "rebuild-index", "--raw-batch-size", "1", "--output-format", "json"],
         catch_exceptions=False,
     )
-    assert first.exit_code == 0
+    assert first.exit_code == 0, first.output
     # This pass now also replays a raw page through the shared
     # revision-backfill machinery, which logs "backfill stage timings" to
     # stderr on every call (see the sibling terminal-promotion test for the
@@ -2679,6 +3594,7 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
             """
         )
         source.commit()
+    _freeze_rebuild_fixture_source(root, expected_raws=2)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
@@ -2687,7 +3603,7 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
         ["--plain", "ops", "maintenance", "rebuild-index", "--raw-batch-size", "1", "--output-format", "json"],
         catch_exceptions=False,
     )
-    assert first.exit_code == 0
+    assert first.exit_code == 0, first.output
     # This pass now also replays a raw page through the shared
     # revision-backfill machinery, which logs "backfill stage timings" to
     # stderr on every call (see the sibling terminal-promotion test for the
@@ -2752,6 +3668,7 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+    _freeze_rebuild_fixture_source(root, expected_raws=2)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     first = cli_runner.invoke(
@@ -2769,7 +3686,7 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
         ],
         catch_exceptions=False,
     )
-    assert first.exit_code == 0
+    assert first.exit_code == 0, first.output
     # This pass now also replays a raw page through the shared
     # revision-backfill machinery, which logs "backfill stage timings" to
     # stderr on every call (see the sibling terminal-promotion test for the
@@ -2862,6 +3779,7 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
             source_path="deadline.jsonl",
             acquired_at_ms=1,
         )
+    _freeze_rebuild_fixture_source(root, expected_raws=1)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
     # `monkeypatch.setattr("polylogue.maintenance.rebuild_index.time.time", ...)`
@@ -2898,7 +3816,7 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
             ],
             catch_exceptions=False,
         )
-    assert first.exit_code == 0
+    assert first.exit_code == 0, first.output
     # This pass replays a raw page through the shared revision-backfill
     # machinery, which logs "backfill stage timings" to stderr on every
     # call; `.stdout` is the actual `--output-format json` contract

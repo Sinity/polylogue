@@ -130,6 +130,19 @@ def test_missing_receipt_fails_before_lease_and_candidate_mutation(tmp_path: Pat
     assert not (root / ".index-generations").exists()
 
 
+def test_nonempty_source_still_requires_schema_inference_receipt_after_ownership(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root, count=1)
+
+    with pytest.raises(RuntimeError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+
+    assert not (root / ".index-generations").exists()
+    assert not list((root / ".index-rebuild-transactions").glob("*.json"))
+
+
 def test_receipt_reference_policy_fails_before_candidate_mutation(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     _seed(root, count=1)
@@ -234,9 +247,9 @@ def test_nonresumable_rebuild_persists_refreshed_inventory_evidence_after_detect
     original_select = rebuild_index_module.select_rebuild_raw_ids
     inventory_calls_before_refresh: int | None = None
 
-    def select_then_touch(request: RebuildIndexRequest) -> tuple[int, list[str], int]:
+    def select_then_touch(request: RebuildIndexRequest, **kwargs: object) -> tuple[int, list[str], int]:
         nonlocal inventory_calls_before_refresh
-        selected = original_select(request)
+        selected = original_select(request, **kwargs)  # type: ignore[arg-type]
         stat = external_path.stat()
         os.utime(external_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         inventory_calls_before_refresh = full_inventory_calls
@@ -442,6 +455,39 @@ def test_invalid_resume_marks_transaction_stale_without_repairing_active_anchor(
         )
 
     assert (anchor.read_bytes() if anchor.exists() else None) == expected_anchor
+    checkpoint = IndexGenerationStore.for_archive_root(root, repair_anchor=False).load_transaction(
+        transaction.operation_id
+    )
+    assert checkpoint.status == "stale"
+
+
+def test_invalid_empty_source_resume_cannot_return_success_or_remain_resumable(tmp_path: Path) -> None:
+    """Initial resume admission still retires an operation when source is empty.
+
+    Anti-vacuity: the production offline rebuild route is given a real
+    ``IndexRebuildTransaction`` and an invalid explicit receipt. The old
+    early ``empty-source`` return leaves that transaction resumable and makes
+    this assertion fail.
+    """
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    store = IndexGenerationStore.for_archive_root(root)
+    transaction = store.create_transaction(
+        source_snapshot=rebuild_source_evidence_snapshot(root),
+        operation_id="invalid-empty-source-resume",
+    )
+    receipt_path = tmp_path / "invalid-receipt.json"
+    receipt_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(rebuild_index_module.RebuildProvenanceError, match="schema-inference preflight gate failed"):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=receipt_path,
+                operation_id=transaction.operation_id,
+            )
+        )
+
     checkpoint = IndexGenerationStore.for_archive_root(root, repair_anchor=False).load_transaction(
         transaction.operation_id
     )

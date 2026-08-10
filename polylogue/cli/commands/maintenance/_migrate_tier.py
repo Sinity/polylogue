@@ -24,6 +24,7 @@ import click
 
 from polylogue.operations.durable_change_train import (
     ArchiveOwnershipError,
+    DurablePublicationError,
     acquire_durable_archive_ownership,
     execute_durable_change_train,
     initialize_missing_durable_tier,
@@ -88,7 +89,11 @@ def migrate_tier_command(
         with acquire_durable_archive_ownership(path.parent, owner_id=f"migrate-tier:{os.getpid()}") as archive_owner:
             stopped_daemon_evidence_ref = _require_stopped_daemon(path.parent)
             if initialize_missing:
-                initialized_version = initialize_missing_durable_tier(path, archive_tier)
+                initialized_version = initialize_missing_durable_tier(
+                    path,
+                    archive_tier,
+                    directory_fd=archive_owner.directory_fd,
+                )
                 initialized = True
                 execution = None
             else:
@@ -111,6 +116,9 @@ def migrate_tier_command(
                         "backup_manifest": str(backup_manifest) if backup_manifest is not None else None,
                         "stopped_daemon_evidence_ref": stopped_daemon_evidence_ref,
                         "error": str(exc),
+                        "durable_recovery": (
+                            exc.cleanup.as_dict() if isinstance(exc, DurablePublicationError) and exc.cleanup else None
+                        ),
                     },
                     indent=2,
                     sort_keys=True,
@@ -118,6 +126,13 @@ def migrate_tier_command(
             )
         else:
             click.echo(f"Migration blocked for {tier}: {exc}", err=True)
+            if isinstance(exc, DurablePublicationError) and exc.cleanup is not None:
+                cleanup = exc.cleanup
+                if cleanup.state == "uncertain":
+                    click.echo(
+                        f"Durable recovery required ({cleanup.code}): {cleanup.detail}",
+                        err=True,
+                    )
         raise SystemExit(1) from exc
 
     result = execution.migration_result if execution is not None else None

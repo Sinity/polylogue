@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import os
 from pathlib import Path
 
 import pytest
 
+import polylogue.storage.archive_identity as archive_identity
 from polylogue.storage.archive_identity import (
     ArchiveIdentity,
     ArchiveIdentityConflictError,
@@ -78,6 +80,46 @@ def test_resolve_active_index_path_rejects_malformed_pointer(tmp_path: Path, poi
         ArchiveLocation.resolve(root)
     with pytest.raises(ArchiveLocationError, match="invalid active index pointer"):
         resolve_active_index_path(root)
+
+
+def test_archive_location_rejects_undecodable_active_pointer(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / ".index-active-pointer").write_bytes(b"\xff")
+
+    with pytest.raises(ArchiveLocationError, match="cannot read active index pointer"):
+        ArchiveLocation.resolve(root)
+
+
+def test_lock_holder_pid_ignores_undecodable_owner_metadata(tmp_path: Path) -> None:
+    lock_path = tmp_path / ".archive-ownership.lock"
+    lock_path.write_bytes(b"\xff")
+
+    assert archive_identity._lock_holder_pid(lock_path) is None
+
+
+def test_ownership_metadata_write_failure_closes_lock_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    closed: list[int] = []
+    real_close = os.close
+
+    def record_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr("polylogue.storage.archive_identity.os.close", record_close)
+    monkeypatch.setattr(
+        "polylogue.storage.archive_identity.os.fsync",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(ArchiveOwnershipError, match="cannot record archive ownership lock owner"):
+        OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+
+    assert closed
 
 
 def test_split_roots_sharing_durable_tiers_reject_distinct_indexes_before_mutation(tmp_path: Path) -> None:
@@ -161,6 +203,35 @@ def test_missing_index_cannot_bypass_split_root_preflight(tmp_path: Path, missin
     assert not (missing_root / "index.db").exists()
 
 
+def test_owned_location_rejects_hardlinked_lock_before_truncate(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    external_lock = tmp_path / "external-lock"
+    external_lock.write_bytes(b"preserve me")
+    lock_path = root / ".archive-ownership.lock"
+    lock_path.hardlink_to(external_lock)
+
+    with pytest.raises(ArchiveOwnershipError, match="link count"):
+        OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+
+    assert external_lock.read_bytes() == b"preserve me"
+    assert lock_path.read_bytes() == b"preserve me"
+
+
+@pytest.mark.parametrize("object_kind", ["directory", "fifo"])
+def test_owned_location_rejects_nonregular_lock_without_blocking(tmp_path: Path, object_kind: str) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    lock_path = root / ".archive-ownership.lock"
+    if object_kind == "directory":
+        lock_path.mkdir()
+    else:
+        os.mkfifo(lock_path)
+
+    with pytest.raises(ArchiveOwnershipError, match="lock"):
+        OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+
+
 def test_owned_location_rejects_concurrent_acquire_before_any_sqlite_file_exists(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     root.mkdir()
@@ -178,6 +249,69 @@ def test_owned_location_rejects_concurrent_acquire_before_any_sqlite_file_exists
 
     for name in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
         assert not (root / name).exists(), f"{name} must not exist: ownership must fail before SQLite opens"
+
+
+def test_owned_location_rejects_archive_root_replacement_during_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lease must retain the root inode it validated, not a replacement pathname."""
+    root = tmp_path / "archive"
+    moved_root = tmp_path / "moved-archive"
+    root.mkdir()
+    location = ArchiveLocation.resolve(root)
+    real_open = os.open
+    swapped = False
+
+    def swap_after_root_open(
+        file: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        descriptor = real_open(file, flags, mode, dir_fd=dir_fd)
+        if not swapped and dir_fd is None and Path(file) == root and flags & getattr(os, "O_DIRECTORY", 0):
+            root.rename(moved_root)
+            root.mkdir()
+            swapped = True
+        return descriptor
+
+    monkeypatch.setattr("polylogue.storage.archive_identity.os.open", swap_after_root_open)
+    with pytest.raises(ArchiveOwnershipError, match="archive root changed"):
+        OwnedArchiveLocation.acquire(location)
+
+    assert swapped is True
+    assert not (root / ".archive-ownership.lock").exists()
+    assert not (moved_root / ".archive-ownership.lock").exists()
+
+
+def test_owned_location_rejects_lock_path_rebound_after_flock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The acquired flock must still be reachable at the canonical lock path."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    lock_path = root / ".archive-ownership.lock"
+    displaced_lock = root / ".archive-ownership.displaced"
+    replacement_lock = root / ".archive-ownership.replacement"
+    replacement_lock.write_text("foreign owner", encoding="utf-8")
+    real_flock = fcntl.flock
+    rebound = False
+
+    def rebind_after_lock(fd: int, operation: int) -> None:
+        nonlocal rebound
+        real_flock(fd, operation)
+        if not rebound and operation & fcntl.LOCK_EX:
+            lock_path.rename(displaced_lock)
+            replacement_lock.rename(lock_path)
+            rebound = True
+
+    monkeypatch.setattr("polylogue.storage.archive_identity.fcntl.flock", rebind_after_lock)
+
+    with pytest.raises(ArchiveOwnershipError, match="pathname changed"):
+        OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
+
+    assert rebound is True
+    assert lock_path.read_text(encoding="utf-8") == "foreign owner"
 
 
 def test_owned_location_reclaims_lock_left_by_dead_process(tmp_path: Path) -> None:

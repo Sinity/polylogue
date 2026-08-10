@@ -14,6 +14,7 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
 
+from devtools.index_snapshot import data_version, open_index_file_set, snapshot_identity, snapshot_index_file_set
 from polylogue.config import Config, get_config
 from polylogue.insights.affordance_usage import (
     DEFAULT_FAMILY_PATTERNS,
@@ -37,6 +38,14 @@ from polylogue.insights.affordance_usage import (
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
+_data_version = data_version
+_snapshot_identity = snapshot_identity
+_snapshot_observation = snapshot_index_file_set
+
+
+class _DivergentSelectedIndexError(RuntimeError):
+    """The product route opened a physical index other than the selected evidence."""
+
 
 @dataclass(frozen=True, slots=True)
 class AffordanceUsageArgs:
@@ -48,6 +57,7 @@ class AffordanceUsageArgs:
     sample_limit: int
     json: bool
     all_time: bool
+    index_db: Path | None = None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -56,6 +66,12 @@ def _parser() -> argparse.ArgumentParser:
         description="Analyze agent affordance/tool usage from archive tool-use rows.",
     )
     parser.add_argument("--archive-root", type=Path, default=None, help="Override the active archive root.")
+    parser.add_argument(
+        "--index-db",
+        type=Path,
+        default=None,
+        help="Read a specific candidate/live index database instead of <archive-root>/index.db.",
+    )
     parser.add_argument("--out-dir", type=Path, default=None, help="Write CSV artifacts and report JSON.")
     parser.add_argument("--days", type=int, default=7, help="Recent window in days for adoption-sensitive counts.")
     parser.add_argument(
@@ -190,6 +206,9 @@ def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
         "artifact": "agent-affordance-usage",
         "updated_at": report["captured_at"],
         "archive_root": report["archive_root"],
+        "evidence_root": report["evidence_root"],
+        "index_db": report["index_db"],
+        "snapshot_identity": report["snapshot_identity"],
         "index_schema_version": report["index_schema_version"],
         "claim": (
             "Polylogue can compare agent affordance usage across normalized action evidence "
@@ -860,12 +879,20 @@ def _try_product_detail_report(
     args: AffordanceUsageArgs,
     config: Config,
     conn: Connection,
+    opened_main_fd: int,
     recent_cutoff_ms: int,
     effective_detail_patterns: tuple[str, ...],
 ) -> dict[str, Any] | None:
     if not effective_detail_patterns or args.family:
         return None
     try:
+        selected_index_db = config.db_path.resolve(strict=True)
+        if selected_index_db != (config.archive_root / "index.db").resolve():
+            # ArchiveStore opens exactly <archive-root>/index.db. Any other
+            # selected candidate, including a sibling file in the same root, must
+            # stay on the direct read-only SQLite fallback so its counts and
+            # snapshot identity cannot describe different databases.
+            return None
         from polylogue.insights.tool_usage import ToolUsageInsightQuery
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     except Exception:
@@ -883,7 +910,16 @@ def _try_product_detail_report(
     since_ms = None if args.all_time else recent_cutoff_ms
     action_scope = "product-action-evidence-all-time" if args.all_time else "product-action-evidence-recent-window"
     try:
-        with ArchiveStore.open_existing(config.archive_root) as archive:
+        with ArchiveStore.open_existing(
+            config.archive_root,
+            index_path=selected_index_db,
+            opened_main_fd=opened_main_fd,
+        ) as archive:
+            opened_index_db = Path(archive.index_db_path).resolve(strict=True)
+            if opened_index_db != selected_index_db:
+                raise _DivergentSelectedIndexError(
+                    "ArchiveStore opened a different physical index than the selected affordance evidence database"
+                )
             merged_rows: dict[tuple[str, str, str, str, str, str], dict[str, object]] = {}
             for family, patterns in pattern_groups.items():
                 rows = archive.list_tool_action_evidence_count_rows(
@@ -910,6 +946,8 @@ def _try_product_detail_report(
                     bucket["normalized_tool_name"] = str(
                         bucket.get("normalized_tool_name") or f"{family}/command-detail"
                     )
+    except _DivergentSelectedIndexError:
+        raise
     except Exception:
         return None
     rows = sorted(
@@ -1177,13 +1215,38 @@ def _all_time_action_rows(
 
 def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
-    index_db = config.db_path
+    index_db = (args.index_db or config.db_path).expanduser().resolve()
+    config = Config(
+        archive_root=config.archive_root,
+        render_root=config.render_root,
+        sources=config.sources,
+        db_path=index_db,
+        drive_config=config.drive_config,
+        index_config=config.index_config,
+    )
     where_sql, where_params = _where_for_filters(args.family, args.detail_pattern, alias="a")
     effective_tool_patterns = _clean_patterns(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS))
     effective_detail_patterns = _clean_patterns(args.detail_pattern)
     recent_cutoff_ms = _recent_cutoff_ms(args.days)
-    conn = open_readonly_connection(index_db)
+    opened_index_files = open_index_file_set(index_db)
+    opened_file_set = opened_index_files.__enter__()
+    opened_main_fd = opened_file_set.main_fd
+    conn: Connection | None = None
+    observer: Connection | None = None
     try:
+        conn = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
+        opened_file_set.capture_sidecars(index_db)
+        observer = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
+        assert conn is not None
+        observer_data_version_before = _data_version(observer)
+        opened_file_set.capture_sidecars(index_db)
+        conn.execute("BEGIN")
+        index_schema_version = _user_version(conn)
+        snapshot_before = _snapshot_observation(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=dict(opened_file_set.sidecar_fds),
+        )
         origin_counts = _rows(
             conn,
             "SELECT origin, COUNT(*) AS sessions FROM sessions GROUP BY origin ORDER BY sessions DESC",
@@ -1192,6 +1255,7 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
             args=args,
             config=config,
             conn=conn,
+            opened_main_fd=opened_main_fd,
             recent_cutoff_ms=recent_cutoff_ms,
             effective_detail_patterns=effective_detail_patterns,
         )
@@ -1262,7 +1326,7 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
                 "command": "devtools workspace affordance-usage",
                 "archive_root": str(config.archive_root),
                 "index_db": str(index_db),
-                "index_schema_version": _user_version(conn),
+                "index_schema_version": index_schema_version,
                 "patterns": list(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS)),
                 "detail_patterns": list(args.detail_pattern),
                 "action_scope": action_scope,
@@ -1280,8 +1344,29 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         surface_summary = _surface_inventory_summary(surface_inventory)
         report["surface_inventory"] = surface_inventory
         report["surface_inventory_summary"] = surface_summary
+        opened_file_set.capture_sidecars(index_db)
+        snapshot_after = _snapshot_observation(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=dict(opened_file_set.sidecar_fds),
+        )
+        observer_data_version_after = _data_version(observer)
     finally:
-        conn.close()
+        if observer is not None:
+            observer.close()
+        if conn is not None:
+            conn.close()
+        opened_index_files.__exit__(None, None, None)
+    report["archive_root"] = str(config.archive_root)
+    report["evidence_root"] = str(index_db.parent)
+    report["index_db"] = str(index_db)
+    report["snapshot_identity"] = _snapshot_identity(
+        index_db,
+        snapshot_before,
+        snapshot_after,
+        observer_data_version_before=observer_data_version_before,
+        observer_data_version_after=observer_data_version_after,
+    )
     if args.out_dir is not None:
         out_dir = args.out_dir.expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1316,7 +1401,11 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "# Agent Affordance Usage",
         "",
         f"Generated: {report['captured_at']}",
-        f"Archive root: `{report['archive_root']}`",
+        f"Configured archive root: `{report['archive_root']}`",
+        f"Evidence root: `{report['evidence_root']}`",
+        f"Evidence index: `{report['index_db']}`",
+        f"Evidence snapshot SHA-256: `{report['snapshot_identity']['sha256']}`",
+        f"Evidence snapshot stable: `{str(report['snapshot_identity']['stable']).lower()}`",
         f"Index schema: v{report['index_schema_version']}",
         f"Action scope: `{report['action_scope']}`",
         "",
@@ -1385,6 +1474,7 @@ def main(argv: list[str] | None = None) -> int:
         report = build_report(
             AffordanceUsageArgs(
                 archive_root=parsed.archive_root,
+                index_db=parsed.index_db,
                 out_dir=parsed.out_dir,
                 days=parsed.days,
                 family=tuple(parsed.family or ()),

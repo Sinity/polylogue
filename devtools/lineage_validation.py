@@ -13,9 +13,14 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
 
+from devtools.index_snapshot import data_version, open_index_file_set, snapshot_identity, snapshot_index_file_set
 from polylogue.config import Config, get_config
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+_data_version = data_version
+_snapshot_identity = snapshot_index_file_set
+_snapshot_report_identity = snapshot_identity
 
 SUPPORTED_PREFIX_ORIGINS = frozenset({"codex-session", "claude-code-session"})
 REQUIRED_SESSION_LINK_COLUMNS = frozenset({"branch_point_message_id", "inheritance"})
@@ -23,7 +28,19 @@ REQUIRED_TOPOLOGY_LINK_COLUMNS = frozenset(
     {"dst_native_id", "evidence_json", "link_type", "method", "resolved_dst_session_id", "status"}
 )
 TOPOLOGY_EFFECTIVE_STATES = frozenset({"resolved", "unresolved", "repaired", "quarantined"})
-_SNAPSHOT_HASH_CHUNK_BYTES = 1024 * 1024
+_EFFECTIVE_UNRESOLVED_LINK_PREDICATE = """
+    l.resolved_dst_session_id IS NULL
+    AND COALESCE(NULLIF(TRIM(l.status), ''), 'unresolved') = 'unresolved'
+    AND NOT EXISTS (
+        SELECT 1
+        FROM session_links resolved
+        WHERE resolved.src_session_id = l.src_session_id
+          AND resolved.inheritance = 'prefix-sharing'
+          AND resolved.resolved_dst_session_id IS NOT NULL
+          AND resolved.branch_point_message_id IS NOT NULL
+          AND COALESCE(NULLIF(TRIM(resolved.status), ''), 'unresolved') != 'quarantined'
+    )
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,42 +52,6 @@ class LineageValidationArgs:
     json: bool
     sample_unresolved: int = 20
     index_db: Path | None = None
-
-
-def _snapshot_identity(index_db: Path) -> dict[str, Any]:
-    """Describe the database files that make up one read-only index snapshot."""
-    paths = [index_db, Path(f"{index_db}-wal"), Path(f"{index_db}-shm"), Path(f"{index_db}-journal")]
-    files: list[dict[str, Any]] = []
-    for path in paths:
-        if not path.is_file():
-            files.append({"path": str(path), "present": False})
-            continue
-        stat = path.stat()
-        digest = _file_sha256(path)
-        files.append(
-            {
-                "path": str(path),
-                "present": True,
-                "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
-                "inode": stat.st_ino,
-                "sha256": digest,
-            }
-        )
-    encoded = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return {
-        "index_db": str(index_db),
-        "files": files,
-        "sha256": hashlib.sha256(encoded).hexdigest(),
-    }
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(_SNAPSHOT_HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -127,12 +108,6 @@ def _config_with_archive_root(config: Config, archive_root: Path | None) -> Conf
 
 def _user_version(conn: Connection) -> int:
     row = conn.execute("PRAGMA user_version").fetchone()
-    return int(row[0]) if row else 0
-
-
-def _data_version(conn: Connection) -> int:
-    """Return this observer connection's external-commit generation."""
-    row = conn.execute("PRAGMA data_version").fetchone()
     return int(row[0]) if row else 0
 
 
@@ -328,9 +303,17 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
           AND COALESCE(NULLIF(TRIM(status), ''), 'unresolved') = 'unresolved'
         """,
     )
+    effective_unresolved_count = _scalar_int(
+        conn,
+        f"""
+        SELECT COUNT(*)
+        FROM session_links l
+        WHERE {_EFFECTIVE_UNRESOLVED_LINK_PREDICATE}
+        """,
+    )
     rows = _rows(
         conn,
-        """
+        f"""
         SELECT l.src_session_id AS session_id,
                l.dst_origin AS parent_origin,
                l.dst_native_id AS parent_native_id,
@@ -338,8 +321,7 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
                COUNT(DISTINCT m.message_id) AS stored_messages
         FROM session_links l
         LEFT JOIN messages m ON m.session_id = l.src_session_id
-        WHERE l.resolved_dst_session_id IS NULL
-          AND COALESCE(NULLIF(TRIM(l.status), ''), 'unresolved') = 'unresolved'
+        WHERE {_EFFECTIVE_UNRESOLVED_LINK_PREDICATE}
         GROUP BY l.src_session_id, l.dst_origin, l.dst_native_id, l.link_type
         ORDER BY l.src_session_id, l.dst_origin, l.dst_native_id, l.link_type
         LIMIT ?
@@ -374,7 +356,7 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
             }
         )
     unsafe = sum(1 for row in samples if row.get("read_status") != "safe")
-    if unresolved_count == 0:
+    if effective_unresolved_count == 0:
         status = "not_applicable"
         safe = True
     elif not samples:
@@ -389,6 +371,7 @@ def _topology_read_sample(conn: Connection, *, limit: int) -> dict[str, Any]:
     return {
         "requested": limit,
         "unresolved_count": unresolved_count,
+        "effective_unresolved_count": effective_unresolved_count,
         "sampled": len(samples),
         "status": status,
         "safe": safe,
@@ -431,9 +414,11 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
             "quarantined_with_resolved_parent_count": 0,
             "quarantined_with_stale_projection_count": 0,
             "unresolved_count": 0,
+            "effective_unresolved_count": 0,
             "unresolved_read_sample": {
                 "requested": sample_unresolved,
                 "unresolved_count": 0,
+                "effective_unresolved_count": 0,
                 "sampled": 0,
                 "status": "not_observed",
                 "safe": False,
@@ -532,6 +517,7 @@ def census_topology_links(conn: Connection, *, sample_unresolved: int = 20) -> d
         "quarantined_with_resolved_parent_count": quarantined_with_resolved_parent_count,
         "quarantined_with_stale_projection_count": quarantined_with_stale_projection_count,
         "unresolved_count": unresolved_read_sample["unresolved_count"],
+        "effective_unresolved_count": unresolved_read_sample["effective_unresolved_count"],
         "unresolved_read_sample": unresolved_read_sample,
     }
 
@@ -717,6 +703,8 @@ def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
         "artifact": "lineage-validation",
         "updated_at": report["captured_at"],
         "archive_root": report["archive_root"],
+        "index_db": report["index_db"],
+        "snapshot_identity": report["snapshot_identity"],
         "index_schema_version": report["index_schema_version"],
         "claim": (
             "Polylogue can emit a read-only lineage validation artifact that separates physical stored "
@@ -764,6 +752,11 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "",
         "Generated by `devtools workspace lineage-validation`.",
         "",
+        f"Configured archive root: `{report['archive_root']}`",
+        f"Evidence index: `{report['index_db']}`",
+        f"Evidence snapshot SHA-256: `{report['snapshot_identity']['sha256']}`",
+        f"Evidence snapshot stable: `{str(report['snapshot_identity']['stable']).lower()}`",
+        "",
         "This artifact is the current read-only gate for deciding whether archive",
         "cardinality numbers can be cited externally without conflating physical",
         "stored sessions/messages with logical composed sessions.",
@@ -800,17 +793,28 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
 def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
     index_db = (args.index_db or config.db_path).expanduser().resolve()
-    conn = open_readonly_connection(index_db)
+    opened_index_files = open_index_file_set(index_db)
+    opened_file_set = opened_index_files.__enter__()
+    opened_main_fd = opened_file_set.main_fd
+    conn: Connection | None = None
     observer: Connection | None = None
     try:
-        observer = open_readonly_connection(index_db)
+        conn = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
+        opened_file_set.capture_sidecars(index_db)
+        observer = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
+        assert conn is not None
         observer_data_version_before = _data_version(observer)
+        opened_file_set.capture_sidecars(index_db)
         conn.execute("BEGIN")
         # BEGIN is deferred. Force the first SQLite read before hashing WAL
         # sidecars so this census's own reader mark cannot make a quiescent
         # snapshot appear to change between the before and after identities.
         index_schema_version = _user_version(conn)
-        snapshot_before = _snapshot_identity(index_db)
+        snapshot_before = _snapshot_identity(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=dict(opened_file_set.sidecar_fds),
+        )
         link_columns = _table_columns(conn, "session_links")
         missing_link_columns = sorted(REQUIRED_SESSION_LINK_COLUMNS - link_columns)
         physical_sessions = _count(conn, "sessions")
@@ -893,30 +897,34 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
                     f"{topology['quarantined_with_stale_projection_count']} quarantined topology links retain a parent projection"
                 )
             if topology["unresolved_read_sample"]["status"] == "not_observed":
+                effective_count = int(topology["effective_unresolved_count"])
+                link_word = "link was" if effective_count == 1 else "links were"
                 reasons.append(
-                    f"{topology['unresolved_count']} unresolved-parent links were not exercised through the reader"
+                    f"{effective_count} effective unresolved-parent {link_word} not exercised through the reader"
                 )
             elif topology["unresolved_read_sample"]["status"] == "unsafe":
                 reasons.append("sampled unresolved-parent reads did not remain child-local")
 
-        snapshot_after = _snapshot_identity(index_db)
+        opened_file_set.capture_sidecars(index_db)
+        snapshot_after = _snapshot_identity(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=dict(opened_file_set.sidecar_fds),
+        )
         observer_data_version_after = _data_version(observer)
-        file_set_stable = snapshot_before["sha256"] == snapshot_after["sha256"]
-        no_concurrent_commits = observer_data_version_before == observer_data_version_after
-        snapshot_stable = file_set_stable and no_concurrent_commits
-        if not file_set_stable:
+        snapshot_identity = _snapshot_report_identity(
+            index_db,
+            snapshot_before,
+            snapshot_after,
+            observer_data_version_before=observer_data_version_before,
+            observer_data_version_after=observer_data_version_after,
+        )
+        if not snapshot_identity["observation_complete"]:
+            reasons.append("index file-set observation was incomplete")
+        if not snapshot_identity["file_set_stable"]:
             reasons.append("index file set changed during the read-only census")
-        if not no_concurrent_commits:
+        if not snapshot_identity["no_concurrent_commits"]:
             reasons.append("index received a concurrent commit during the read-only census")
-        snapshot_identity = {
-            "before": snapshot_before,
-            "after": snapshot_after,
-            "file_set_stable": file_set_stable,
-            "observer_data_version_before": observer_data_version_before,
-            "observer_data_version_after": observer_data_version_after,
-            "no_concurrent_commits": no_concurrent_commits,
-            "stable": snapshot_stable,
-        }
         report: dict[str, Any] = {
             "report_version": 2,
             "captured_at": datetime.now(UTC).isoformat(),
@@ -945,10 +953,12 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
         }
         report["receipt_sha256"] = _receipt_sha256(report)
     finally:
-        conn.rollback()
-        conn.close()
+        if conn is not None:
+            conn.rollback()
+            conn.close()
         if observer is not None:
             observer.close()
+        opened_index_files.__exit__(None, None, None)
 
     if args.out_dir is not None:
         _write_artifacts(args.out_dir, report)

@@ -15,6 +15,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -182,6 +183,7 @@ def _args(
     out_dir: Path | None = None,
     *,
     index_db: Path | None = None,
+    sample_unresolved: int = 10,
 ) -> lineage_validation.LineageValidationArgs:
     return lineage_validation.LineageValidationArgs(
         archive_root=archive_root,
@@ -190,6 +192,7 @@ def _args(
         max_sample_stored_messages=500,
         json=True,
         index_db=index_db,
+        sample_unresolved=sample_unresolved,
     )
 
 
@@ -308,6 +311,8 @@ def test_lineage_validation_samples_distinct_unresolved_edges_without_multiplyin
                  resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
             VALUES ('orphan', 'codex-session', 'missing-parent', 'subagent', NULL,
                     NULL, 'parent-tool-use-id', '{}', NULL, 'spawned-fresh')
+            ,('child', 'codex-session', 'alternate-parent', 'continuation', NULL,
+              NULL, 'parser-parent', '{}', NULL, 'spawned-fresh')
             """
         )
         conn.commit()
@@ -316,11 +321,67 @@ def test_lineage_validation_samples_distinct_unresolved_edges_without_multiplyin
 
     sample = report["lineage"]["topology"]["unresolved_read_sample"]
     assert sample["safe"] is True
+    assert sample["unresolved_count"] == 3
+    assert sample["effective_unresolved_count"] == 2
     assert sample["sampled"] == 2
+    assert {row["session_id"] for row in sample["rows"]} == {"orphan"}
     assert {row["link_type"] for row in sample["rows"]} == {"continuation", "subagent"}
     assert {row["stored_messages"] for row in sample["rows"]} == {1}
     assert {row["served_messages"] for row in sample["rows"]} == {1}
     assert report["verdict"]["external_counts_citable"] is True
+
+
+def test_lineage_validation_treats_only_alternate_unresolved_edges_as_not_applicable(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_links
+                (src_session_id, dst_origin, dst_native_id, link_type, status,
+                 resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
+            VALUES ('child', 'codex-session', 'alternate-parent', 'continuation', NULL,
+                    NULL, 'parser-parent', '{}', NULL, 'spawned-fresh')
+            """
+        )
+        conn.commit()
+
+    report = lineage_validation.build_report(_args(archive_root))
+
+    topology = report["lineage"]["topology"]
+    sample = topology["unresolved_read_sample"]
+    assert topology["unresolved_count"] == 1
+    assert topology["effective_unresolved_count"] == 0
+    assert sample["unresolved_count"] == 1
+    assert sample["effective_unresolved_count"] == 0
+    assert sample["sampled"] == 0
+    assert sample["status"] == "not_applicable"
+    assert sample["safe"] is True
+    assert report["verdict"]["external_counts_citable"] is True
+
+
+def test_lineage_validation_samples_unresolved_edge_when_resolved_edge_does_not_compose(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_links
+                (src_session_id, dst_origin, dst_native_id, link_type, status,
+                 resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
+            VALUES ('fresh', 'claude-code-session', 'missing-parent', 'subagent', NULL,
+                    NULL, 'parent-tool-use-id', '{}', NULL, 'spawned-fresh')
+            """
+        )
+        conn.commit()
+
+    report = lineage_validation.build_report(_args(archive_root))
+
+    sample = report["lineage"]["topology"]["unresolved_read_sample"]
+    assert sample["effective_unresolved_count"] == 1
+    assert sample["sampled"] == 1
+    assert sample["status"] == "safe"
+    assert sample["rows"][0]["session_id"] == "fresh"
 
 
 def test_lineage_validation_proves_writer_candidate_and_snapshot_identity(tmp_path: Path) -> None:
@@ -339,7 +400,12 @@ def test_lineage_validation_proves_writer_candidate_and_snapshot_identity(tmp_pa
     assert topology["unresolved_read_sample"]["sampled"] == 1
     assert report["index_db"] == str(db.resolve())
     assert report["snapshot_identity"]["stable"] is True
-    assert report["snapshot_identity"]["before"]["sha256"] == report["snapshot_identity"]["after"]["sha256"]
+    snapshot_identity = report["snapshot_identity"]
+    assert snapshot_identity["before"]["index_db"] == str(db.resolve())
+    assert snapshot_identity["after"]["index_db"] == str(db.resolve())
+    assert snapshot_identity["before"]["path"] == str(db.resolve())
+    assert snapshot_identity["after"]["path"] == str(db.resolve())
+    assert snapshot_identity["before"]["sha256"] == snapshot_identity["after"]["sha256"]
 
 
 def test_lineage_validation_rejects_unobserved_unresolved_reader_sample(tmp_path: Path) -> None:
@@ -360,7 +426,27 @@ def test_lineage_validation_rejects_unobserved_unresolved_reader_sample(tmp_path
     assert sample["status"] == "not_observed"
     assert sample["safe"] is False
     assert report["verdict"]["external_counts_citable"] is False
-    assert "1 unresolved-parent links were not exercised through the reader" in report["verdict"]["reasons"]
+    assert "1 effective unresolved-parent link was not exercised through the reader" in report["verdict"]["reasons"]
+
+
+def test_lineage_validation_uses_plural_unresolved_reader_reason_for_multiple_links(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root, with_unresolved=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_links
+                (src_session_id, dst_origin, dst_native_id, link_type, status,
+                 resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
+            VALUES ('orphan', 'codex-session', 'another-missing-parent', 'continuation', NULL,
+                    NULL, 'parser-parent', '{}', NULL, 'spawned-fresh')
+            """
+        )
+        conn.commit()
+
+    report = lineage_validation.build_report(_args(archive_root, sample_unresolved=0))
+
+    assert "2 effective unresolved-parent links were not exercised through the reader" in report["verdict"]["reasons"]
 
 
 @pytest.mark.frozen_clock_modules("devtools.lineage_validation")
@@ -415,13 +501,22 @@ def test_lineage_validation_rejects_commit_between_reader_snapshot_and_file_hash
     original_snapshot_identity = lineage_validation._snapshot_identity
     snapshot_calls = 0
 
-    def commit_before_first_file_hash(index_db: Path) -> dict[str, object]:
+    def commit_before_first_file_hash(
+        index_db: Path,
+        *,
+        opened_main_fd: int | None = None,
+        opened_sidecar_fds: dict[str, int] | None = None,
+    ) -> dict[str, object]:
         nonlocal snapshot_calls
         if snapshot_calls == 0:
             writer.execute("UPDATE session_links SET method = 'concurrent' WHERE src_session_id = 'child'")
             writer.commit()
         snapshot_calls += 1
-        return original_snapshot_identity(index_db)
+        return original_snapshot_identity(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=opened_sidecar_fds,
+        )
 
     monkeypatch.setattr(lineage_validation, "_snapshot_identity", commit_before_first_file_hash)
     try:
@@ -436,6 +531,148 @@ def test_lineage_validation_rejects_commit_between_reader_snapshot_and_file_hash
     assert identity["stable"] is False
     assert report["verdict"]["external_counts_citable"] is False
     assert "index received a concurrent commit during the read-only census" in report["verdict"]["reasons"]
+
+
+def test_lineage_validation_rejects_unlinked_selected_index_as_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An open SQLite handle does not make an unlinked evidence path citable."""
+    archive_root = tmp_path / "archive"
+    db = _make_index_db(archive_root)
+    original_snapshot_identity = lineage_validation._snapshot_identity
+    unlinked = False
+
+    def unlink_before_observation(
+        index_db: Path,
+        *,
+        opened_main_fd: int | None = None,
+        opened_sidecar_fds: dict[str, int] | None = None,
+    ) -> dict[str, object]:
+        nonlocal unlinked
+        if not unlinked:
+            index_db.unlink()
+            unlinked = True
+        return original_snapshot_identity(
+            index_db,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=opened_sidecar_fds,
+        )
+
+    monkeypatch.setattr(lineage_validation, "_snapshot_identity", unlink_before_observation)
+    report = lineage_validation.build_report(_args(archive_root))
+
+    identity = report["snapshot_identity"]
+    assert report["index_db"] == str(db.resolve())
+    assert identity["before"]["present"] is False
+    assert identity["after"]["present"] is False
+    assert identity["before"]["observation_complete"] is False
+    assert identity["after"]["observation_complete"] is False
+    assert identity["observation_complete"] is False
+    assert identity["stable"] is False
+    assert report["verdict"]["external_counts_citable"] is False
+    assert "index file-set observation was incomplete" in report["verdict"]["reasons"]
+
+
+def test_lineage_validation_rejects_selected_index_replacement_after_reader_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    replacement_root = tmp_path / "replacement"
+    real_open = open_readonly_connection
+    opened_readers = 0
+
+    def replace_after_reader_open(path: Path, *, opened_main_fd: int | None = None) -> sqlite3.Connection:
+        nonlocal opened_readers
+        connection = real_open(path, opened_main_fd=opened_main_fd)
+        opened_readers += 1
+        if opened_readers == 2:
+            replacement_db = _make_index_db(replacement_root)
+            selected_db.unlink()
+            replacement_db.replace(selected_db)
+        return connection
+
+    monkeypatch.setattr(lineage_validation, "open_readonly_connection", replace_after_reader_open)
+
+    with pytest.raises(RuntimeError, match="selected index path was replaced"):
+        lineage_validation.build_report(_args(archive_root))
+
+
+def test_lineage_validation_reader_stays_on_opened_inode_across_path_replacement_and_restoration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production reader must use the inode opened before the pathname mutation."""
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    replacement_root = tmp_path / "replacement"
+    original_path = tmp_path / "original-index.db"
+    real_open = open_readonly_connection
+    swapped = False
+
+    def replace_before_reader_open(path: Path, *, opened_main_fd: int | None = None) -> sqlite3.Connection:
+        nonlocal swapped
+        if not swapped:
+            replacement_db = _make_index_db(replacement_root)
+            with sqlite3.connect(replacement_db) as replacement:
+                replacement.execute("DELETE FROM sessions")
+                replacement.execute("DELETE FROM messages")
+                replacement.execute("DELETE FROM blocks")
+                replacement.execute("DELETE FROM session_links")
+                replacement.execute("DELETE FROM session_profiles")
+                replacement.commit()
+            selected_db.rename(original_path)
+            replacement_db.rename(selected_db)
+            connection = real_open(path, opened_main_fd=opened_main_fd)
+            selected_db.rename(replacement_db)
+            original_path.rename(selected_db)
+            swapped = True
+            return connection
+        return real_open(path, opened_main_fd=opened_main_fd)
+
+    monkeypatch.setattr(lineage_validation, "open_readonly_connection", replace_before_reader_open)
+    report = lineage_validation.build_report(_args(archive_root))
+
+    assert swapped is True
+    assert report["counts"]["physical_sessions"] == 3
+    assert report["snapshot_identity"]["stable"] is True
+
+
+def test_lineage_validation_captures_reader_created_sqlite_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lineage evidence adopts sidecars created by the second SQLite reader."""
+    archive_root = tmp_path / "archive"
+    selected_db = _make_index_db(archive_root)
+    real_snapshot = lineage_validation._snapshot_identity
+    snapshot_calls = 0
+
+    def create_sidecars_before_after_snapshot(
+        path: Path,
+        *,
+        opened_main_fd: int | None = None,
+        opened_sidecar_fds: dict[str, int] | None = None,
+    ) -> dict[str, object]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 2:
+            for suffix in ("-wal", "-shm", "-journal"):
+                Path(f"{path}{suffix}").write_bytes(b"created after reader open")
+        return real_snapshot(
+            path,
+            opened_main_fd=opened_main_fd,
+            opened_sidecar_fds=opened_sidecar_fds,
+        )
+
+    monkeypatch.setattr(lineage_validation, "_snapshot_identity", create_sidecars_before_after_snapshot)
+    monkeypatch.setattr(lineage_validation, "_data_version", lambda _connection: 1)
+    report = lineage_validation.build_report(_args(archive_root, index_db=selected_db))
+
+    before_files = {Path(row["path"]).name: row for row in report["snapshot_identity"]["before"]["files"]}
+    after_files = {Path(row["path"]).name: row for row in report["snapshot_identity"]["after"]["files"]}
+    assert all(not before_files[f"index.db{suffix}"]["present"] for suffix in ("-wal", "-shm", "-journal"))
+    assert all(after_files[f"index.db{suffix}"]["present"] for suffix in ("-wal", "-shm", "-journal"))
+    assert report["snapshot_identity"]["stable"] is False
 
 
 def test_lineage_validation_rejects_budget_exhaustion_as_cycle_proof(tmp_path: Path) -> None:
@@ -556,6 +793,23 @@ def test_lineage_validation_writes_demo_artifacts(tmp_path: Path) -> None:
     assert summary["artifact"] == "lineage-validation"
     assert summary["proof_report"]["external_counts_citable"] is True
     assert "external counts citable: `true`" in readme
+
+
+def test_lineage_validation_artifacts_attribute_selected_index(tmp_path: Path) -> None:
+    configured_root = tmp_path / "configured"
+    candidate_root = tmp_path / "candidate"
+    _make_index_db(configured_root)
+    candidate_db = _make_index_db(candidate_root)
+    out_dir = tmp_path / "out"
+
+    report = lineage_validation.build_report(_args(configured_root, out_dir, index_db=candidate_db))
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    readme = (out_dir / "README.md").read_text(encoding="utf-8")
+    assert summary["index_db"] == report["index_db"] == str(candidate_db.resolve())
+    assert summary["snapshot_identity"] == report["snapshot_identity"]
+    assert f"Evidence index: `{candidate_db.resolve()}`" in readme
+    assert f"Evidence snapshot SHA-256: `{report['snapshot_identity']['sha256']}`" in readme
 
 
 def test_lineage_validation_command_registered() -> None:

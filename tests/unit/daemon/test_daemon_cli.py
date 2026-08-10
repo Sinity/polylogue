@@ -6,6 +6,7 @@ import functools
 import inspect
 import os
 import sqlite3
+import stat
 import threading
 import time
 from pathlib import Path
@@ -120,7 +121,7 @@ def test_polylogued_status_json_reports_daemon_components(
             ],
         )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     payload = loads(result.output)
     assert isinstance(payload, dict)
     live = cast(JSONDocument, payload["live"])
@@ -138,7 +139,7 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
     with patch("polylogue.daemon.status.default_sources", return_value=sources):
         result = CliRunner().invoke(main, ["status"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "Polylogue daemon" in result.output
     assert "Live sources: 1/1 available" in result.output
     assert f"exists: {tmp_path} (available)" in result.output
@@ -302,7 +303,7 @@ def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None
     ):
         result = CliRunner().invoke(main, ["status"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "Storage: archive_file_set (source, index); missing embeddings, user, ops" in result.output
 
 
@@ -3478,6 +3479,46 @@ def test_daemon_startup_reconciles_trains_before_schema_probe(tmp_path: Path, mo
     assert not (tmp_path / "daemon.pid").exists()
 
 
+def test_daemon_startup_creates_missing_archive_root_before_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live daemon route must own a first-run root, not require a prior bootstrap."""
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "first-run-archive"
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+
+    def stop_after_ownership(root: Path) -> tuple[Path, ...]:
+        assert root == archive
+        assert archive.is_dir()
+        raise RuntimeError("owned first-run archive")
+
+    monkeypatch.setattr(
+        "polylogue.operations.durable_change_train.reconcile_durable_change_trains_on_startup",
+        stop_after_ownership,
+    )
+
+    previous_umask = os.umask(0)
+    try:
+        with pytest.raises(RuntimeError, match="owned first-run archive"):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    debounce_s=1.0,
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                )
+            )
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o700
+    assert (archive / ".archive-ownership.lock").exists()
+
+
 def test_run_daemon_services_checks_archive_identity_before_component_startup(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.storage.archive_identity import ArchiveIdentityConflictError
@@ -4185,9 +4226,11 @@ def test_bulk_rebuild_routing_resumable_transaction_drives_pass_even_below_thres
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: True
-    )
+
+    async def resumable_transaction_in_flight() -> bool:
+        return True
+
+    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", resumable_transaction_in_flight)
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fake_run_pass)
 
     counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
@@ -4212,9 +4255,11 @@ def test_bulk_rebuild_routing_pass_failure_never_propagates(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: True
-    )
+
+    async def resumable_transaction_in_flight() -> bool:
+        return True
+
+    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", resumable_transaction_in_flight)
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fail_run_pass)
 
     counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
@@ -4230,18 +4275,32 @@ def test_daemon_bulk_rebuild_transaction_in_flight_delegates(
     from polylogue.daemon import cli as daemon_cli
 
     seen_roots: list[Path] = []
+    validated_receipts: list[tuple[Path, Path]] = []
+    receipt_path = tmp_path / "schema-inference-receipt.json"
 
     def fake_has_resumable(root: Path) -> bool:
         seen_roots.append(root)
         return True
 
+    def validate_receipt(root: Path, receipt: Path) -> dict[str, object]:
+        validated_receipts.append((root, receipt))
+        return {}
+
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.maintenance.schema_inference_gate.resolve_schema_inference_receipt_reference",
+        lambda _root: receipt_path,
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.schema_inference_gate.validate_schema_inference_receipt", validate_receipt
+    )
     monkeypatch.setattr(
         "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fake_has_resumable
     )
 
     assert asyncio.run(daemon_cli._daemon_bulk_rebuild_transaction_in_flight()) is True
     assert seen_roots == [tmp_path]
+    assert validated_receipts == [(tmp_path, receipt_path)]
 
 
 def test_periodic_raw_materialization_convergence_suppresses_trickle_while_bulk_rebuild_in_flight(

@@ -301,6 +301,23 @@ def _mark_rebuild_transaction_stale_after_provenance_failure(
         error.add_note(f"could not persist stale rebuild transaction: {checkpoint_error}")
 
 
+def _retire_empty_source_resume_transaction(root: Path, operation_id: str) -> None:
+    """Retire a resumable transaction when its source archive is now empty."""
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    store = IndexGenerationStore.for_archive_root(root, repair_anchor=False)
+    transaction = _reconcile_active_generation_transaction(store, store.load_transaction(operation_id))
+    if transaction.status in {"promoted", "promoted-attestation-failed", "stale"}:
+        raise RuntimeError(
+            f"rebuild operation {transaction.operation_id} is {transaction.status}; start a new operation"
+        )
+    store.checkpoint_transaction(
+        transaction,
+        status="stale",
+        error="rebuild source is empty; resumable transaction cannot continue",
+    )
+
+
 def _validate_before_derived_state(
     provenance: RebuildProvenanceContext,
     *,
@@ -1210,6 +1227,23 @@ def count_source_raw_sessions(root: Path) -> int:
     return int(row[0]) if row is not None else 0
 
 
+def _empty_source_receipt(root: Path, consumed_evidence: dict[str, object]) -> RebuildIndexReceipt:
+    return RebuildIndexReceipt(
+        archive_root=str(root),
+        raw_session_count=0,
+        selected_raw_count=0,
+        skipped_by_blob_limit_count=0,
+        status="empty-source",
+        materialized=False,
+        materialization={},
+        generation={},
+        readiness={},
+        replay={},
+        operation=_operation_evidence(root, generation=None, transaction=None, recovery_state="empty-source"),
+        consumed_evidence=consumed_evidence,
+    )
+
+
 def total_source_blob_bytes(root: Path) -> int:
     """Total blob payload the rebuild has to replay, for progress and ETA.
 
@@ -1276,10 +1310,11 @@ def filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb:
     return [str(row[0]) for row in rows]
 
 
-def select_rebuild_raw_ids(request: RebuildIndexRequest) -> tuple[int, list[str], int]:
+def select_rebuild_raw_ids(request: RebuildIndexRequest, *, raw_count: int | None = None) -> tuple[int, list[str], int]:
     """Select source rows deterministically before the replay starts."""
     root = request.archive_root
-    raw_count = count_source_raw_sessions(root)
+    if raw_count is None:
+        raw_count = count_source_raw_sessions(root)
     raw_ids = (
         list(dict.fromkeys(request.raw_ids))
         if request.raw_ids
@@ -1322,24 +1357,27 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     # validation rather than accidentally reusing another archive/pass.
     _ACTIVE_EXTERNAL_INVENTORY_TOKEN.set(None)
     require_rebuild_schema_currency(root)
+    pre_ownership_raw_count = count_source_raw_sessions(root)
+    receipt_free_empty_probe = request.operation_id is None and pre_ownership_raw_count == 0
     initial_provenance_error: RebuildProvenanceError | None = None
-    try:
-        consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
-    except RebuildProvenanceError as exc:
-        if request.operation_id is None:
-            raise
-        # A resumable operation may need to be retired because this admission
-        # failed, but that lifecycle mutation must wait until both ownership
-        # boundaries are held. Control-flow exceptions are intentionally not
-        # caught here and therefore never change resumability.
-        initial_provenance_error = exc
-        consumed_evidence = {}
+    consumed_evidence: dict[str, object] = {}
+    if not receipt_free_empty_probe:
+        try:
+            consumed_evidence = _validate_rebuild_provenance_receipt(root, request.schema_inference_receipt_path)
+        except RebuildProvenanceError as exc:
+            if request.operation_id is None:
+                raise
+            # A resumable operation may need to be retired because this admission
+            # failed, but that lifecycle mutation must wait until both ownership
+            # boundaries are held. Control-flow exceptions are intentionally not
+            # caught here and therefore never change resumability.
+            initial_provenance_error = exc
     location = ArchiveLocation.resolve(root)
     # The joined raw-frontier projection is rooted at the co-located active
     # index. A split-root canary intentionally points that index elsewhere and
     # validates the selected active generation through its own receipt-bound
     # route below, so a missing root/index.db must not masquerade as raw debt.
-    if count_source_raw_sessions(root) and location.active_index_path.parent == root:
+    if pre_ownership_raw_count and location.active_index_path.parent == root:
         from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
         from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 
@@ -1379,23 +1417,32 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     try:
         assert_owns_archive_location(owned, location)
         require_rebuild_schema_currency(root)
-        if initial_provenance_error is None:
-            consumed_evidence = _validate_rebuild_provenance_receipt(
-                root,
-                request.schema_inference_receipt_path,
-                inventory_token=cast(
-                    dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})
-                ),
-            )
+        raw_count = count_source_raw_sessions(root)
+        if initial_provenance_error is not None:
+            # A resumable request that failed admission must retire its
+            # transaction before any empty-source shortcut can turn the same
+            # invalid operation into a successful receipt.
+            with RebuildLease(root):
+                assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
+                _mark_rebuild_transaction_stale_after_provenance_failure(
+                    root, request.operation_id, initial_provenance_error
+                )
+            raise initial_provenance_error
+        if raw_count == 0:
+            if request.operation_id is not None:
+                with RebuildLease(root):
+                    assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
+                    _retire_empty_source_resume_transaction(root, request.operation_id)
+            return _empty_source_receipt(root, consumed_evidence)
+        consumed_evidence = _validate_rebuild_provenance_receipt(
+            root,
+            request.schema_inference_receipt_path,
+            inventory_token=cast(dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})),
+        )
         # The lease is itself lifecycle state guarded by the provenance gate.
         # Revalidate again under the lease immediately before the owned body
         # can create or mutate a candidate/transaction.
         with RebuildLease(root):
-            if initial_provenance_error is not None:
-                _mark_rebuild_transaction_stale_after_provenance_failure(
-                    root, request.operation_id, initial_provenance_error
-                )
-                raise initial_provenance_error
             try:
                 consumed_evidence = _validate_rebuild_provenance_receipt(
                     root,
@@ -1408,7 +1455,11 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 _mark_rebuild_transaction_stale_after_provenance_failure(root, request.operation_id, exc)
                 raise
             return await _rebuild_index_from_source_owned(
-                request, root=root, owned=owned, consumed_evidence=consumed_evidence
+                request,
+                root=root,
+                owned=owned,
+                consumed_evidence=consumed_evidence,
+                raw_count=raw_count,
             )
     finally:
         owned.release()
@@ -1420,6 +1471,7 @@ async def _rebuild_index_from_source_owned(
     root: Path,
     owned: OwnedArchiveLocation,
     consumed_evidence: dict[str, object],
+    raw_count: int,
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
@@ -1452,22 +1504,8 @@ async def _rebuild_index_from_source_owned(
     # to preserve the body's indentation and make the outer ownership boundary
     # explicit at the public entry point.
     with contextlib.nullcontext():
-        raw_count = count_source_raw_sessions(root)
         if raw_count == 0:
-            return RebuildIndexReceipt(
-                archive_root=str(root),
-                raw_session_count=0,
-                selected_raw_count=0,
-                skipped_by_blob_limit_count=0,
-                status="empty-source",
-                materialized=False,
-                materialization={},
-                generation={},
-                readiness={},
-                replay={},
-                operation=_operation_evidence(root, generation=None, transaction=None, recovery_state="empty-source"),
-                consumed_evidence=consumed_evidence,
-            )
+            return _empty_source_receipt(root, consumed_evidence)
         resumable_full_source = not request.raw_ids and not request.only_missing and request.max_blob_mb is None
         transaction = None
         transaction_created_here = False
@@ -1569,7 +1607,9 @@ async def _rebuild_index_from_source_owned(
                 )
         else:
             selection_started_at = time.perf_counter()
-            raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
+            raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(
+                request, raw_count=raw_count
+            )
             selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
             validate_frozen_source_authority(
