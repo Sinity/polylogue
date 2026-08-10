@@ -9,6 +9,7 @@ from .routes import (
     production_entrypoint,
     route_accepts_helper,
     route_with_nested,
+    route_with_signature_helper,
     shadowed_route,
 )
 
@@ -27,6 +28,10 @@ def test_nested_route() -> None:
 
 def test_argument_route() -> None:
     assert route_accepts_helper(dead_helper) == "live"
+
+
+def test_signature_route() -> None:
+    assert route_with_signature_helper() == "live"
 
 
 def test_shadowed_route() -> None:

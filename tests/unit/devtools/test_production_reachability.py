@@ -76,6 +76,22 @@ def test_passed_callable_argument_does_not_create_a_test_edge() -> None:
     assert [violation.code for violation in report.violations] == ["required_symbol_unreachable"]
 
 
+def test_signature_calls_do_not_create_a_production_edge() -> None:
+    report = check_production_seam(
+        ProductionSeamSpec(
+            test_path="fixture_test.py",
+            test_function="test_signature_route",
+            production_entrypoint="routes.route_with_signature_helper",
+            tested_symbols=("routes.route_with_signature_helper",),
+            required_symbols=("routes.dead_helper",),
+            production_namespace="routes",
+        ),
+        source_root=_FIXTURE_ROOT,
+    )
+
+    assert [violation.code for violation in report.violations] == ["required_symbol_unreachable"]
+
+
 def test_shadowed_import_is_not_resolved_as_a_production_edge() -> None:
     report = check_production_seam(
         ProductionSeamSpec(

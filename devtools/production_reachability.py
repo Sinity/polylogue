@@ -286,11 +286,18 @@ class _CallScanner(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if node is self.root:
-            self.generic_visit(node)
+            # A function's decorators, annotations, defaults, and type
+            # parameters execute in the defining scope, not when the
+            # function body runs.  The reachability contract describes the
+            # production route executed by the callable, so scan only its
+            # statements.  Nested callable bodies are intentionally skipped.
+            for statement in node.body:
+                self.visit(statement)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         if node is self.root:
-            self.generic_visit(node)
+            for statement in node.body:
+                self.visit(statement)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         return

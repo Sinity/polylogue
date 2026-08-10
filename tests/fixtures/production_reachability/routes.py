@@ -26,6 +26,10 @@ def route_accepts_helper(helper: object) -> str:
     return live_helper()
 
 
+def route_with_signature_helper(default: object = dead_helper()) -> str:
+    return live_helper()
+
+
 def shadowed_route() -> str:
     def live_helper() -> str:
         return "shadowed"
