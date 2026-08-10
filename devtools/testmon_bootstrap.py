@@ -328,6 +328,24 @@ def _publish_staged_bootstrap_files(*, staging_dir: Path, files: list[tuple[Path
         shutil.rmtree(backup_dir, ignore_errors=True)
 
 
+def _copy_runtime_identity_inputs(*, source_root: Path, destination_root: Path) -> None:
+    """Mirror the inputs used to validate a staged testmon receipt."""
+    for relative_path in (
+        "uv.lock",
+        "pyproject.toml",
+        "pytest.ini",
+        "tox.ini",
+        "setup.cfg",
+        "tests/conftest.py",
+    ):
+        source = source_root / relative_path
+        if not source.is_file():
+            continue
+        destination = destination_root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
 def bootstrap_testmon_seed_files(
     decision: BootstrapDecision,
     *,
@@ -445,6 +463,7 @@ def bootstrap_testmon_seed_files(
                 return False
             validation_receipt["checkout_root"] = str(validation_root.resolve())
             validation_receipt["artifact_dir"] = f".cache/verify/runs/{refreshed.run_id}"
+            _copy_runtime_identity_inputs(source_root=destination_root, destination_root=validation_root)
             _atomic_write_json(
                 validation_root / ".cache" / "verify" / "runs" / refreshed.run_id / "run.json",
                 validation_receipt,

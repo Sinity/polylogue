@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools import testmon_bootstrap, verify
+from devtools import testmon_bootstrap, testmon_state, verify
 from devtools.testmon_state import file_fingerprint, inspect_testmon_database
 
 
@@ -21,6 +21,7 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
+    (source / "pyproject.toml").write_text('[project]\nname = "polylogue"\n', encoding="utf-8")
     (source / "test_sample.py").write_text(
         "def test_passed():\n    assert 1 == 1\n\ndef test_failed():\n    assert 1 == 2\n",
         encoding="utf-8",
@@ -40,8 +41,11 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(
     assert run.returncode != 0
     expected = ("test_sample.py::test_passed", "test_sample.py::test_failed")
     assert inspect_testmon_database(data, expected).usable_for_selection
+    runtime_identity = testmon_state.testmon_runtime_identity(source)
+    assert runtime_identity is not None
+    dependency_environment, pytest_harness = runtime_identity
     attempt = {
-        "protocol_version": 4,
+        "protocol_version": verify.TESTMON_SEED_PROTOCOL_VERSION,
         "status": "reusable",
         "identity": {
             "git_head": "head",
@@ -49,6 +53,8 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(
             "python": sys.version,
             "skip_slow": False,
             "lab": False,
+            "dependency_environment": dependency_environment,
+            "pytest_harness": pytest_harness,
         },
         "selection": {"selected_count": 2, "selected_nodeids_omitted": 0},
         "expected_nodeids": list(expected),

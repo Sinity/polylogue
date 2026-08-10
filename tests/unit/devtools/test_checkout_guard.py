@@ -17,6 +17,7 @@ import pytest
 
 import devtools.click_dispatch as click_dispatch
 import devtools.run_tests as run_tests
+import devtools.testmon_state as testmon_state
 import devtools.verify as verify
 import polylogue
 from devtools.checkout_guard import (
@@ -186,8 +187,20 @@ def _write_in_progress_seed_attempt(root: Path, *, status: str = "running", **ov
     }
     if status == "reusable":
         nodeid = "tests/test.py::test_one"
+        runtime_identity = testmon_state.testmon_runtime_identity(root)
+        assert runtime_identity is not None
+        dependency_environment, pytest_harness = runtime_identity
         payload.update(
             {
+                "identity": {
+                    "git_head": "head",
+                    "worktree_fingerprint": "fingerprint",
+                    "python": "3.14",
+                    "skip_slow": True,
+                    "lab": False,
+                    "dependency_environment": dependency_environment,
+                    "pytest_harness": pytest_harness,
+                },
                 "expected_nodeids": [nodeid],
                 "expected_count": 1,
                 "expected_digest": hashlib.sha256(nodeid.encode()).hexdigest(),
