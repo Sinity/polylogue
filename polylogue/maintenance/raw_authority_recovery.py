@@ -647,7 +647,7 @@ class RawAuthorityRecoveryPlan:
             source_snapshot=str(payload["source_snapshot"]),
             active_generation=cast(dict[str, object], payload["active_generation"]),
             before_counts=_int_mapping(payload["before_counts"], field="before_counts"),
-            ledger_digest=cast(str | None, ledger_digest),
+            ledger_digest=ledger_digest,
             candidate_keys=candidates,
             post_target_proof=cast(dict[str, dict[str, object]] | None, post_target_proof),
             protected_digest=str(payload["protected_digest"]),
