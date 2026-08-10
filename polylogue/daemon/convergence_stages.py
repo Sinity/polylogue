@@ -923,12 +923,17 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
             FROM raw_sessions AS r
             {materialized_join}
             WHERE (r.source_path = ? OR r.source_path LIKE ?)
-              AND r.parsed_at_ms IS NULL
+              AND COALESCE(r.validation_status, '') != 'failed'
               AND (
-                r.parse_error IS NULL
-                OR r.parse_error = 'OperationalError: database is locked'
-                OR r.parse_error LIKE 'decode:%No such file or directory:%'
-                OR r.parse_error LIKE 'membership_replay_conflict:%'
+                (
+                  r.parsed_at_ms IS NULL
+                  AND (
+                    r.parse_error IS NULL
+                    OR r.parse_error = 'OperationalError: database is locked'
+                    OR r.parse_error LIKE 'decode:%No such file or directory:%'
+                    OR r.parse_error LIKE 'membership_replay_conflict:%'
+                  )
+                )
                 OR EXISTS (
                     SELECT 1
                     FROM raw_artifacts AS failure_evidence

@@ -299,6 +299,47 @@ def test_raw_parse_recovery_stage_drains_typed_cas_frontier_failure(
     assert _sessions_for_raw(tmp_path, raw_id) == [("conv-stuck", raw_id)]
 
 
+def test_raw_parse_recovery_skips_validation_failed_cas_frontier_failure(tmp_path: Path) -> None:
+    """A failed validation cannot keep CAS recovery debt pending forever."""
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "validation-failed-cas-frontier.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CHATGPT,
+            error=RawCASFrontierError("frontier changed after validation failed"),
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET validation_status = 'failed' WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+
+    assert make_raw_parse_recovery_stage(tmp_path / "index.db").check(path) is False
+
+
+def test_raw_parse_recovery_drains_previously_parsed_cas_frontier_failure(tmp_path: Path) -> None:
+    """CAS authority replays an unmaterialized raw even when parsing had completed."""
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "previously-parsed-cas-frontier.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.mark_raw_parse_succeeded(raw_id, provider=Provider.CHATGPT)
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CHATGPT,
+            error=RawCASFrontierError("frontier changed after parsing completed"),
+        )
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+
+    assert stage.check(path) is True
+    assert stage.execute(path) is True
+    assert stage.check(path) is False
+    assert _sessions_for_raw(tmp_path, raw_id) == [("conv-stuck", raw_id)]
+
+
 def test_raw_parse_recovery_source_open_failure_is_failed_and_retryable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
