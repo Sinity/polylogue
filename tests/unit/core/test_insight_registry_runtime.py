@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -140,10 +141,10 @@ def test_fetch_insights_sync_uses_registry_dispatch() -> None:
     insight_type = get_insight_type("archive_coverage")
 
     class _Operations:
-        def list_archive_coverage_insights(self, query: object) -> str:
-            return f"sync:{query.origin}"
+        async def list_archive_coverage_insights(self, query: object) -> list[str]:
+            return [f"sync:{query.origin}"]
 
-    with patch("polylogue.api.sync.bridge.run_coroutine_sync", side_effect=lambda value: [value]):
+    with patch("polylogue.core.async_bridge.run_coroutine_sync", side_effect=asyncio.run):
         assert fetch_insights(insight_type, _Operations(), origin="claude-code") == ["sync:claude-code-session"]
 
 

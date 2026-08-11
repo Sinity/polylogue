@@ -212,6 +212,7 @@ def test_progress_plugin_records_collection_duration_and_summary(
     assert summary["deselected_count"] == 1
     assert [report["nodeid"] for report in summary["slowest_reports"]] == ["test_slow", "test_fast"]
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
-    assert events[0]["event"] == "collection_started"
-    assert events[1]["event"] == "collection_finished"
-    assert events[1]["duration_s"] == 2.5
+    assert events[0]["event"] == "session_started"
+    assert events[1]["event"] == "collection_started"
+    assert events[2]["event"] == "collection_finished"
+    assert events[2]["duration_s"] == 2.5
