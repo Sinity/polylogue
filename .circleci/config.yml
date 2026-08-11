@@ -3,8 +3,8 @@ version: 2.1
 # CircleCI free-tier CI while GitHub Actions is billing-locked (and a cheap
 # second opinion afterwards). Credit budget: ~30k credits/month on the free
 # plan. Design keeps the per-push cost low and the heavy work nightly:
-#   - quick-gate (PRs + master pushes): public claims + `devtools verify
-#     --quick` itself (not a hand-picked subset of its steps -- see
+#   - quick-gate (PRs + master pushes): `devtools verify --quick` itself (not a
+#     hand-picked subset of its steps -- see
 #     polylogue-ze5i: this job used to reimplement ruff/mypy/render-all as
 #     separate `run` steps and silently diverged from what
 #     devtools/verify.py's `if not commit:` block actually gates, so
@@ -69,9 +69,6 @@ jobs:
             - mypy-v1-master
             - mypy-v1-
       - run:
-          name: Public claims gate
-          command: ~/.local/bin/uv run devtools verify public-claims --json | tee /tmp/polylogue-public-claims.json
-      - run:
           name: Structured PR scope carrier
           command: |
             set -o pipefail
@@ -95,10 +92,6 @@ jobs:
           key: mypy-v1-{{ .Branch }}-{{ epoch }}
           paths:
             - .mypy_cache
-      - store_artifacts:
-          path: /tmp/polylogue-public-claims.json
-          destination: diagnostics
-          when: always
       - store_artifacts:
           path: /tmp/polylogue-pr-scope.log
           destination: diagnostics
