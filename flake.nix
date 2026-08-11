@@ -234,6 +234,46 @@
       # checks off from the moment nixpkgs' own internal `callPackage`
       # invokes it, keeping sibling dependency resolution self-consistent.
       freeThreadedNoCheckOverlay = _final: prev: {
+        # python-discovery 1.4.2 fails two stale assertions under Python
+        # 3.14t (test_predicate_with_fallback_specs,
+        # test_satisfies_path_not_abs_basename_match). The `.pkgs`
+        # replacement below cannot reach it: nixpkgs' own
+        # pyproject-version-patch-hook builds its helper env
+        # (tomlkit -> poetry-core -> checkInputs virtualenv ->
+        # python-discovery) inside the interpreter's INTERNAL package-set
+        # fixpoint, which ignores both the replaced `.pkgs` attr and
+        # `.override { packageOverrides }` (see the long comment above).
+        # `pythonPackagesExtensions` is the one mechanism nixpkgs applies
+        # inside every such fixpoint. Scoped to free-threaded interpreters
+        # (executable "python3.14t" -- there is no isFreeThreading passthru
+        # attr) so the standard 3.12/3.14 sets keep their cache hits.
+        # recheck: drop when nixpkgs bumps python-discovery past 1.4.2.
+        pythonPackagesExtensions = (prev.pythonPackagesExtensions or [ ]) ++ [
+          (
+            _pyFinal: pyPrev:
+            prev.lib.optionalAttrs (prev.lib.hasSuffix "t" (pyPrev.python.executable or "")) {
+              python-discovery = pyPrev.python-discovery.overrideAttrs (_old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              # Next link in the same chain: virtualenv's own test suite
+              # fails interpreter discovery under 3.14t once it builds at
+              # all (RuntimeError: failed to find interpreter for Builtin
+              # discover). Same stale-upstream class, same treatment.
+              virtualenv = pyPrev.virtualenv.overrideAttrs (_old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              # And its consumer: poetry-core's masonry wheel-tag tests
+              # assert ABI tags that do not exist under the free-threaded
+              # interpreter (test_tag/test_wheel_c_extension: assert None).
+              poetry-core = pyPrev.poetry-core.overrideAttrs (_old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+            }
+          )
+        ];
         python314FreeThreading = prev.python314FreeThreading // {
           pkgs = prev.python314FreeThreading.pkgs.overrideScope (
             pyFinal: pySuper: {
