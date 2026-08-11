@@ -215,7 +215,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace bead-batch-show` | Batch-show beads: id, status, prio, title, desc head, deps, notes tail. |
 | `devtools workspace bead-cluster` | Footprint/overlap/contention clustering of ready Beads (execution frontier). |
 | `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
-| `devtools workspace beads-state-report` | Self-contained HTML state-of-the-backlog report over the whole bead population. |
 | `devtools workspace binary-artifact-reclassify-apply` | Persist raw_artifacts classification for binary-shaped raw rows. |
 | `devtools workspace binary-artifact-sweep` | Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc). |
 | `devtools workspace chatgpt-lifecycle-anchor-audit` | Census the current quarantined ChatGPT corpus for lifecycle-anchor conflicts. |
