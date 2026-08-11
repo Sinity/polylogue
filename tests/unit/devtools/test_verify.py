@@ -1660,6 +1660,12 @@ def test_production_pytest_commands_reserve_every_xdist_spelling(worker_args: li
     assert verify._pytest_command_concurrency(command) == expected
 
 
+def test_pytest_auto_workers_reserve_environment_override() -> None:
+    command = run_tests.build_pytest_cmd(["tests/unit/devtools", "-n", "auto"])
+
+    assert verify._pytest_command_concurrency(command, env={"PYTEST_XDIST_AUTO_NUM_WORKERS": "32"}) == 32
+
+
 def test_adaptive_pytest_policy_reduces_workers_under_pressure() -> None:
     policy = adaptive_pytest_runtime_policy(
         available_kb=16 * 1024 * 1024,
@@ -1800,6 +1806,23 @@ def test_managed_policy_uses_scratch_when_tmpfs_is_unavailable(monkeypatch: pyte
 
     assert policy is not None
     assert policy.tmpfs_budget_mb == 0
+    assert policy.basetemp_label == "scratch"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
+
+
+def test_declared_basetemp_demand_above_tmpfs_cap_uses_scratch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+
+    env, policy = apply_managed_pytest_runtime_policy(
+        {"POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB": "4096"},
+        worker_count=4,
+    )
+
+    assert policy is not None
+    assert policy.tmpfs_budget_mb == 2048
+    assert policy.basetemp_required_mb == 4096
     assert policy.basetemp_label == "scratch"
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)

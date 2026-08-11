@@ -733,10 +733,11 @@ def apply_managed_pytest_runtime_policy(
         if policy.tmpfs_predicted_mb is not None:
             normalized.setdefault(PYTEST_BASETEMP_REQUIRED_MB_ENV, str(policy.tmpfs_predicted_mb))
         effective_tmpfs_budget_kb = pytest_tmpfs_budget_kb(normalized)
+        required_basetemp_kb = pytest_basetemp_required_kb(normalized)
         if (
-            policy.tmpfs_predicted_mb is not None
+            required_basetemp_kb is not None
             and effective_tmpfs_budget_kb is not None
-            and effective_tmpfs_budget_kb < policy.tmpfs_predicted_mb * 1024
+            and effective_tmpfs_budget_kb < required_basetemp_kb
         ):
             normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
     selected_root, selected_label = resolve_pytest_basetemp_root(normalized)

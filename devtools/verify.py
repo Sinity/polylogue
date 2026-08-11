@@ -1481,12 +1481,14 @@ def _run(
     pytest_tmpfs = False
     pytest_tmpfs_budget_mb: float | None = None
     runtime_policy = None
+    pytest_concurrency: int | None = None
     basetemp_cleanup: Path | None = None
     if is_pytest:
         try:
+            pytest_concurrency = _pytest_command_concurrency(cmd, env=env)
             env, runtime_policy = apply_managed_pytest_runtime_policy(
                 env,
-                worker_count=_pytest_command_concurrency(cmd),
+                worker_count=pytest_concurrency,
             )
         except PytestResourceError as exc:
             elapsed = time.monotonic() - t0
@@ -1721,7 +1723,7 @@ def _run(
             last_resource_sample=last_resource_row,
             tmpfs_budget_mb=pytest_tmpfs_budget_mb,
             basetemp_cleanup=basetemp_cleanup,
-            concurrency=_pytest_command_concurrency(cmd),
+            concurrency=pytest_concurrency or _pytest_command_concurrency(cmd, env=env),
         )
         metadata["workload_receipt"] = workload_receipt
         if artifacts is not None:
@@ -2134,7 +2136,7 @@ def _pytest_command_worker_request(cmd: Sequence[str]) -> str | None:
     return request
 
 
-def _pytest_command_concurrency(cmd: Sequence[str]) -> int:
+def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | None = None) -> int:
     """Return a fail-closed reservation for the final pytest command.
 
     ``-n auto`` can launch one worker per logical CPU.  Reserve that maximum
@@ -2144,6 +2146,15 @@ def _pytest_command_concurrency(cmd: Sequence[str]) -> int:
     request = _pytest_command_worker_request(cmd)
     if request is None:
         return 1
+    if request == "auto":
+        auto_workers = (env if env is not None else os.environ).get("PYTEST_XDIST_AUTO_NUM_WORKERS", "").strip()
+        if auto_workers:
+            try:
+                configured = int(auto_workers)
+            except ValueError:
+                configured = 0
+            if configured > 0:
+                return configured
     try:
         return max(1, int(request))
     except ValueError:
