@@ -925,9 +925,12 @@ def test_origin_contract(fixture: OriginFixture) -> None:
         assert len(active_leaves) == 1, (
             f"[{fixture.label}] expected exactly 1 active-leaf message, got {len(active_leaves)}"
         )
-        assert session.active_leaf_message_provider_id == active_leaves[0].provider_message_id, (
-            f"[{fixture.label}] active_leaf_message_provider_id does not match the is_active_leaf message"
-        )
+        if active_leaves[0].provider_message_id:
+            assert session.active_leaf_message_provider_id == active_leaves[0].provider_message_id, (
+                f"[{fixture.label}] active_leaf_message_provider_id does not match the is_active_leaf message"
+            )
+        else:
+            assert session.active_leaf_message_provider_id is None
 
     # --- 9. Optional title assertion -----------------------------------
     if fixture.expected_title is not _NA:

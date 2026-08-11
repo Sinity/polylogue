@@ -16,6 +16,7 @@ KERNEL_ROOT_FILES = frozenset(
         "types.py",
         "protocols.py",
         "config.py",
+        "daemon_client.py",
         "logging.py",
         "services.py",
         "assets.py",

@@ -231,6 +231,7 @@ def test_raw_materialization_ready_agrees_with_archived_devloop_classification()
         payload = {
             "available": True,
             "raw_authority_frontier": {"lifecycle_status": "completed"},
+            "raw_authority_parser_census": {"available": True},
             **totals,
         }
         product_ready = raw_materialization_ready(payload)

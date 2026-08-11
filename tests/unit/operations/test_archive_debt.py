@@ -94,35 +94,23 @@ def test_archive_debt_reports_convergence_failures(tmp_path: Path) -> None:
     ops_db = tmp_path / "ops.db"
     conn = sqlite3.connect(ops_db)
     try:
-        conn.execute(
-            """
-            CREATE TABLE convergence_debt (
-                debt_id INTEGER PRIMARY KEY,
-                stage TEXT NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                attempts INTEGER NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 0,
-                updated_at_ms INTEGER NOT NULL,
-                last_error TEXT,
-                next_retry_at TEXT
-            )
-            """
-        )
+        initialize_archive_tier(conn, ArchiveTier.OPS)
         conn.execute(
             """
             INSERT INTO convergence_debt (
-                stage, target_type, target_id, status, attempts, priority, updated_at_ms, last_error, next_retry_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                debt_id, stage, target_type, target_id, status, attempts, priority,
+                created_at_ms, updated_at_ms, last_error, next_retry_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                "debt-fts-sess-1",
                 "fts",
                 "session",
                 "sess-1",
                 "failed",
                 2,
                 10,
+                int(datetime(2026, 6, 19, tzinfo=UTC).timestamp() * 1000),
                 int(datetime(2026, 6, 19, tzinfo=UTC).timestamp() * 1000),
                 "boom",
                 None,
@@ -131,16 +119,19 @@ def test_archive_debt_reports_convergence_failures(tmp_path: Path) -> None:
         conn.execute(
             """
             INSERT INTO convergence_debt (
-                stage, target_type, target_id, status, attempts, priority, updated_at_ms, last_error, next_retry_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                debt_id, stage, target_type, target_id, status, attempts, priority,
+                created_at_ms, updated_at_ms, last_error, next_retry_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                "debt-convergence-sess-2",
                 "convergence",
                 "session",
                 "sess-2",
                 "failed",
                 1,
                 5,
+                int(datetime(2026, 6, 19, tzinfo=UTC).timestamp() * 1000) - 1,
                 int(datetime(2026, 6, 19, tzinfo=UTC).timestamp() * 1000) - 1,
                 "generic failure",
                 None,

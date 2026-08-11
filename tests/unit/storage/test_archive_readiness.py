@@ -1172,6 +1172,7 @@ def test_raw_materialization_ready_rejects_failed_debt_classifier() -> None:
     clean = {
         "available": True,
         "raw_authority_frontier": {"lifecycle_status": "completed"},
+        "raw_authority_parser_census": {"available": True},
         "critical": 0,
         "warning": 0,
         "actionable": 0,
