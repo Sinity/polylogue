@@ -682,7 +682,7 @@ def adaptive_pytest_runtime_policy(
     if worker_count is not None:
         if worker_count < 0:
             raise PytestResourceError(f"invalid pytest worker count {worker_count}")
-        reserved_workers = max(1, worker_count)
+        reserved_workers = worker_count
     else:
         reserved_workers = _default_pytest_workers(
             available_kb=available_kb,
@@ -733,6 +733,10 @@ def apply_managed_pytest_runtime_policy(
         if policy.tmpfs_predicted_mb is not None:
             normalized.setdefault(PYTEST_BASETEMP_REQUIRED_MB_ENV, str(policy.tmpfs_predicted_mb))
         effective_tmpfs_budget_kb = pytest_tmpfs_budget_kb(normalized)
+        policy_tmpfs_budget_kb = policy.tmpfs_budget_mb * 1024
+        if effective_tmpfs_budget_kb is not None and effective_tmpfs_budget_kb > policy_tmpfs_budget_kb:
+            normalized[PYTEST_TMPFS_MAX_MB_ENV] = str(policy.tmpfs_budget_mb)
+            effective_tmpfs_budget_kb = pytest_tmpfs_budget_kb(normalized)
         required_basetemp_kb = pytest_basetemp_required_kb(normalized)
         if (
             required_basetemp_kb is not None

@@ -102,6 +102,11 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
     if config.option.basetemp is None:
+        if "POLYLOGUE_VERIFY_RUN_ID" not in os.environ and "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in os.environ:
+            # Bare pytest has no devtools supervisor to enforce a tmpfs cap.
+            # Keep its basetemp on scratch; managed devtools runs carry the
+            # verify-run id and may opt into bounded tmpfs safely.
+            os.environ["POLYLOGUE_PYTEST_TMPFS"] = "0"
         checkout = hashlib.sha1(str(config.rootpath).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
         os.environ["POLYLOGUE_PYTEST_CHECKOUT"] = checkout
         run_id = os.environ.get("POLYLOGUE_PYTEST_RUN_ID")

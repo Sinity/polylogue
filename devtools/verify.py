@@ -1723,7 +1723,10 @@ def _run(
             last_resource_sample=last_resource_row,
             tmpfs_budget_mb=pytest_tmpfs_budget_mb,
             basetemp_cleanup=basetemp_cleanup,
-            concurrency=pytest_concurrency or _pytest_command_concurrency(cmd, env=env),
+            concurrency=max(
+                1,
+                pytest_concurrency if pytest_concurrency is not None else _pytest_command_concurrency(cmd, env=env),
+            ),
         )
         metadata["workload_receipt"] = workload_receipt
         if artifacts is not None:
@@ -2145,7 +2148,7 @@ def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | 
     """
     request = _pytest_command_worker_request(cmd)
     if request is None:
-        return 1
+        return 0
     if request == "auto":
         auto_workers = (env if env is not None else os.environ).get("PYTEST_XDIST_AUTO_NUM_WORKERS", "").strip()
         if auto_workers:
@@ -2156,7 +2159,7 @@ def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | 
             if configured > 0:
                 return configured
     try:
-        return max(1, int(request))
+        return max(0, int(request))
     except ValueError:
         return max(1, os.cpu_count() or 1)
 

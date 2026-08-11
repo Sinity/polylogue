@@ -1626,6 +1626,18 @@ def test_adaptive_pytest_policy_preserves_controller_memory_at_one_worker() -> N
         )
 
 
+def test_adaptive_pytest_policy_does_not_charge_a_serial_run_for_an_xdist_worker() -> None:
+    policy = adaptive_pytest_runtime_policy(
+        available_kb=2500 * 1024,
+        memory_full_avg10=0.0,
+        cpu_count=24,
+        shm_free_kb=16 * 1024 * 1024,
+        worker_count=0,
+    )
+
+    assert policy.workers == 0
+
+
 def test_adaptive_pytest_policy_treats_full_run_basetemp_as_aggregate_demand() -> None:
     predictions = {
         adaptive_pytest_runtime_policy(
@@ -1645,6 +1657,7 @@ def test_adaptive_pytest_policy_treats_full_run_basetemp_as_aggregate_demand() -
     ("worker_args", "expected"),
     [
         (["-n", "4"], 4),
+        (["-n", "0"], 0),
         (["-n4"], 4),
         (["-n=4"], 4),
         (["--numprocesses", "8"], 8),
@@ -1783,6 +1796,24 @@ def test_inherited_512_mib_tmpfs_cap_reroutes_measured_demand_to_scratch(
     assert policy.tmpfs_predicted_mb == 1522
     assert policy.basetemp_label == "scratch"
     assert env["POLYLOGUE_PYTEST_TMPFS_MAX_MB"] == "512"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
+
+
+def test_inherited_tmpfs_cap_is_clamped_to_the_measured_host_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=6400)
+
+    env, policy = apply_managed_pytest_runtime_policy(
+        {"POLYLOGUE_PYTEST_TMPFS_MAX_MB": "2048"},
+        worker_count=4,
+    )
+
+    assert policy is not None
+    assert policy.tmpfs_budget_mb == 1338
+    assert env["POLYLOGUE_PYTEST_TMPFS_MAX_MB"] == "1338"
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
 

@@ -166,6 +166,31 @@ def test_pytest_configure_reports_low_space_as_usage_error(
         conftest.pytest_configure(cast("pytest.Config", config))
 
 
+def test_bare_pytest_configure_defaults_to_scratch_without_a_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _shm, scratch = _make_real_candidates(monkeypatch, tmp_path)
+    for name in (
+        "POLYLOGUE_VERIFY_RUN_ID",
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT",
+        "POLYLOGUE_PYTEST_TMPFS",
+        "POLYLOGUE_PYTEST_RUN_ID",
+        "POLYLOGUE_PYTEST_CHECKOUT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    config = SimpleNamespace(
+        option=SimpleNamespace(basetemp=None),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    conftest.pytest_configure(cast("pytest.Config", config))
+
+    assert Path(str(config.option.basetemp)).parent == scratch
+    assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
+
+
 def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
     tmp_path: Path,
 ) -> None:
