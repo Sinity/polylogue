@@ -1033,7 +1033,7 @@ class TestArchiveStatusSurfaces:
 
     def test_raw_artifacts_failed_when_missing(self) -> None:
         """raw_artifacts shows ready=False when missing_raw_session_count > 0."""
-        counts: dict[str, int] = {
+        counts: dict[str, object] = {
             "session_count": 1,
             "raw_link_count": 1,
             "missing_raw_session_count": 1,

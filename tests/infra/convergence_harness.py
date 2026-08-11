@@ -284,8 +284,8 @@ def ingest_convergence_pathology(
                     raw_blob_publisher.receipt_id(raw_blob_hash),
                     bytes.fromhex(raw_blob_hash),
                 )
-                for attachment_receipt, attachment_hash in attachment_receipts:
-                    consume_blob_publication_receipt(source_conn, attachment_receipt, attachment_hash)
+                for attachment_receipt, attachment_hash_bytes in attachment_receipts:
+                    consume_blob_publication_receipt(source_conn, attachment_receipt, attachment_hash_bytes)
         if raw_blob_size != len(payload):
             raise AssertionError(f"published raw payload size drifted for {source_path}")
         payload_model = SessionWritePayload(
