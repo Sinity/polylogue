@@ -273,7 +273,9 @@ def test_merge_refuses_when_pr_not_open(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert exit_code == 1
 
 
-def test_merge_refuses_when_pr_scope_carrier_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_merge_refuses_when_pr_scope_carrier_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
     pr_view["body"] = "## Summary\n\nNo carrier."
@@ -292,6 +294,9 @@ def test_merge_refuses_when_pr_scope_carrier_is_missing(monkeypatch: pytest.Monk
 
     assert exit_code == 2
     assert merge_boundary._read_ledger()["merges"] == []
+    stderr = capsys.readouterr().err
+    assert "invalid structured pr-scope carrier" in stderr
+    assert "no fresh merge-gate receipt" not in stderr
 
 
 def test_merge_refuses_when_late_unacked_review_comment_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
