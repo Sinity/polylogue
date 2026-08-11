@@ -729,8 +729,8 @@ def _archive_embedding_status_payload(
     if index_db is None:
         return None
     recipe = EmbeddingRecipe.current(
-        model=str(cfg.embedding_model),
-        dimensions=int(cfg.embedding_dimension),
+        model=str(getattr(cfg, "embedding_model", "")),
+        dimensions=_payload_int(getattr(cfg, "embedding_dimension", 0)),
     )
     root = configured_root if configured_root is not None else db_path.parent
     conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0)
