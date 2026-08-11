@@ -588,6 +588,26 @@ def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
     return normalized
 
 
+def force_managed_pytest_scratch(env: Mapping[str, str]) -> dict[str, str]:
+    """Route an unsupervised nested pytest away from tmpfs.
+
+    Preserve a genuine disk-backed operator root. An inherited root beneath
+    ``/dev/shm`` is not a safe override for a subprocess whose parent does not
+    sample or terminate it at the managed tmpfs cap.
+    """
+    normalized = normalize_pytest_basetemp_env(env)
+    configured_root = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+    if configured_root is not None:
+        try:
+            Path(configured_root).resolve().relative_to(PYTEST_TMPFS_ROOT.resolve())
+        except ValueError:
+            pass
+        else:
+            normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
+    normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
+    return normalized
+
+
 def _pytest_process_memory_reserve_kb(workers: int) -> int:
     """Keep the measured controller floor while scaling worker processes."""
     return PYTEST_PROCESS_MEMORY_FIXED_KB + workers * PYTEST_PROCESS_MEMORY_PER_WORKER_KB

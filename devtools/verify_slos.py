@@ -23,7 +23,7 @@ from pathlib import Path
 
 from devtools import repo_root as _get_root
 from devtools.benchmark_results import parse_pytest_benchmark_stats
-from devtools.verify_runs import apply_managed_pytest_runtime_policy, git_head
+from devtools.verify_runs import apply_managed_pytest_runtime_policy, force_managed_pytest_scratch, git_head
 from polylogue.scenarios.workload import (
     BudgetMeasure,
     BudgetSemantics,
@@ -128,7 +128,7 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
         ]
 
         env, _policy = apply_managed_pytest_runtime_policy(
-            os.environ,
+            force_managed_pytest_scratch(os.environ),
             worker_count=0,
             full_suite=False,
         )

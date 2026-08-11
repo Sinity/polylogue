@@ -77,7 +77,6 @@ from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
-    PYTEST_TMPFS_ROOT,
     PytestResourceError,
     PytestStepArtifacts,
     ResourceSampler,
@@ -88,6 +87,7 @@ from devtools.verify_runs import (
     cleanup_managed_pytest_basetemp,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
+    force_managed_pytest_scratch,
     latest_event_from_paths,
     merge_worker_events,
     normalize_pytest_basetemp_env,
@@ -1515,15 +1515,7 @@ def _run(
                 # nobody samples or terminates it at the tmpfs cap. Preserve a
                 # custom disk root, but replace inherited /dev/shm placement
                 # with the managed scratch candidate before admission.
-                configured_root = env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
-                if configured_root is not None:
-                    try:
-                        Path(configured_root).resolve().relative_to(PYTEST_TMPFS_ROOT.resolve())
-                    except ValueError:
-                        pass
-                    else:
-                        env.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
-                env["POLYLOGUE_PYTEST_TMPFS"] = "0"
+                env = force_managed_pytest_scratch(env)
             if is_pytest:
                 pytest_concurrency = _pytest_command_concurrency(cmd, env=env)
             env, runtime_policy = apply_managed_pytest_runtime_policy(

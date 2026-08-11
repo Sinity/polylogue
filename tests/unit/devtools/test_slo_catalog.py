@@ -38,7 +38,7 @@ BENCH_FIXTURE_DIR = REPO_ROOT / "tests" / "data" / "pytest-benchmark"
 REQUIRED_SURFACES = ("query", "reader", "facets", "context", "cost")
 
 
-def test_benchmark_runner_preserves_managed_pytest_environment(
+def test_benchmark_runner_routes_inherited_tmpfs_root_to_managed_scratch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     inherited_env = {
@@ -46,6 +46,7 @@ def test_benchmark_runner_preserves_managed_pytest_environment(
         "POLYLOGUE_PYTEST_RUN_ID": "verify-run-123",
         "POLYLOGUE_PYTEST_TMPFS": "1",
         "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/dev/shm/inherited-benchmark",
     }
     monkeypatch.setattr(os, "environ", inherited_env)
     captured: dict[str, object] = {}
@@ -67,10 +68,15 @@ def test_benchmark_runner_preserves_managed_pytest_environment(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert verify_slos._run_benchmarks({"tests/benchmarks/test_reader_api.py::test_bench_reader_status"}) == {}
-    assert captured["policy_env"] == inherited_env
+    assert captured["policy_env"] == {
+        "POLYLOGUE_VERIFY_RUN_ID": "verify-run-123",
+        "POLYLOGUE_PYTEST_RUN_ID": "verify-run-123",
+        "POLYLOGUE_PYTEST_TMPFS": "0",
+        "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+    }
     assert captured["worker_count"] == 0
     assert captured["full_suite"] is False
-    assert captured["env"] == inherited_env
+    assert captured["env"] == captured["policy_env"]
 
 
 def test_catalog_exists_and_covers_required_surfaces() -> None:
