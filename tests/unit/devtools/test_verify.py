@@ -1779,6 +1779,7 @@ def test_managed_pytest_policy_bounds_explicit_tmpfs_root(monkeypatch: pytest.Mo
         full_suite=False,
     )
 
+    assert policy is not None
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == "/dev/shm/polylogue-explicit"
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
     assert pytest_tmpfs_budget_kb(env) == policy.tmpfs_budget_mb * 1024
