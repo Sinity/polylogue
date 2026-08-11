@@ -656,26 +656,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace merge-conductor",
-        "workspace",
-        "Mechanical-conflict triage for the PR merge train (dry-run by default).",
-        "devtools.merge_conductor",
-        use_when=(
-            "Before or during a merge train, classify each roster PR's conflicting/modified files "
-            "into AUTO-RESOLVABLE mechanical classes (.beads/issues.jsonl take-master, regenerable "
-            "surfaces) vs ESCALATE classes (schema migrations, hooks config, anything else) and "
-            "detect cross-PR contention (two PRs claiming the same migration slot or generated-"
-            "surface family). Implements the mechanical slice of the polylogue-ei94 merge-conductor "
-            "design. --execute only touches AUTO-RESOLVABLE PRs, in a scratch worktree, and aborts "
-            "back to ESCALATE on any deviation; escalate-class PRs are never touched under --execute."
-        ),
-        examples=(
-            "devtools workspace merge-conductor --pr 3301 --pr 3302",
-            "devtools workspace merge-conductor --pr 3301 --json",
-            "devtools workspace merge-conductor --pr 3301 --execute",
-        ),
-    ),
-    CommandSpec(
         "workspace bead-reimport-guard",
         "workspace",
         "Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization.",
