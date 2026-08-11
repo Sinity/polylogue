@@ -153,6 +153,22 @@ def test_v2_self_contained_scope_needs_no_invented_bead(
     assert _check(rendered, beads_path, tmp_path, capsys, head_sha="b" * 40).startswith("0\npr-scope OK")
 
 
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_render_rejects_non_integer_carrier_versions(
+    version: object, beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scope_input = tmp_path / "scope.json"
+    payload = _v2_input()
+    payload["version"] = version
+    scope_input.write_text(json.dumps(payload))
+
+    assert (
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        == 2
+    )
+    assert "input version must be 1 or 2" in capsys.readouterr().err
+
+
 def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -237,37 +253,13 @@ def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
     assert "legacy v1 carrier cannot omit Bead mutations" in capsys.readouterr().out
 
 
-def test_v2_self_contained_scope_can_declare_a_real_bead_mutation(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_v2_self_contained_scope_rejects_a_real_bead_mutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     repository = tmp_path / "repository"
     beads_path = repository / ".beads" / "issues.jsonl"
     beads_path.parent.mkdir(parents=True)
     beads_path.write_text(json.dumps(_record(ASSIGNED)) + "\n")
-    subprocess.run(["git", "init", "-q", str(repository)], check=True)
-    subprocess.run(["git", "-C", str(repository), "add", ".beads/issues.jsonl"], check=True)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository),
-            "-c",
-            "user.name=Polylogue test",
-            "-c",
-            "user.email=polylogue-test@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "core.hooksPath=",
-            "commit",
-            "-qm",
-            "base Bead state",
-        ],
-        check=True,
-    )
-    base_sha = subprocess.run(
-        ["git", "-C", str(repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-    ).stdout.strip()
     beads_path.write_text(json.dumps(_record(ASSIGNED, title="changed by a self-contained PR")) + "\n")
     scope_input = repository / "scope.json"
     scope_input.write_text(
@@ -275,41 +267,32 @@ def test_v2_self_contained_scope_can_declare_a_real_bead_mutation(
             {"scope_kind": "self_contained", "assigned_beads": [], "mutated_beads": [ASSIGNED], "dispositions": []}
         )
     )
-    monkeypatch.chdir(repository)
-
-    assert (
-        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
-        == 0
-    )
-    body_path = repository / "body.md"
-    body_path.write_text(capsys.readouterr().out)
-
     assert (
         pr_scope.main(
             [
-                "check",
-                "--body-file",
-                str(body_path),
+                "render",
+                "--input",
+                str(scope_input),
                 "--head-sha",
                 HEAD_SHA,
-                "--base-sha",
-                base_sha,
                 "--beads-path",
                 str(beads_path),
             ]
         )
-        == 0
+        == 2
     )
-    assert capsys.readouterr().out.startswith("pr-scope OK")
+    assert "self_contained scope cannot declare or mutate Beads" in capsys.readouterr().err
 
 
-def test_v2_deleted_mutated_bead_stays_in_the_mutation_scope(
+def test_v2_deleted_mutated_bead_stays_in_bead_scope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     repository = tmp_path / "repository"
     beads_path = repository / ".beads" / "issues.jsonl"
     beads_path.parent.mkdir(parents=True)
-    beads_path.write_text(json.dumps(_record(ASSIGNED)) + "\n")
+    beads_path.write_text(
+        "\n".join(json.dumps(record) for record in [_record(ASSIGNED), _record(OTHER_ASSIGNED)]) + "\n"
+    )
     subprocess.run(["git", "init", "-q", str(repository)], check=True)
     subprocess.run(["git", "-C", str(repository), "add", ".beads/issues.jsonl"], check=True)
     subprocess.run(
@@ -334,13 +317,11 @@ def test_v2_deleted_mutated_bead_stays_in_the_mutation_scope(
     base_sha = subprocess.run(
         ["git", "-C", str(repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
-    beads_path.write_text("")
+    beads_path.write_text(json.dumps(_record(ASSIGNED)) + "\n")
     scope_input = repository / "scope.json"
-    scope_input.write_text(
-        json.dumps(
-            {"scope_kind": "self_contained", "assigned_beads": [], "mutated_beads": [ASSIGNED], "dispositions": []}
-        )
-    )
+    payload = _v2_input()
+    payload["mutated_beads"] = [OTHER_ASSIGNED]
+    scope_input.write_text(json.dumps(payload))
     monkeypatch.chdir(repository)
 
     assert (
@@ -460,6 +441,7 @@ def test_sync_reports_a_head_bound_attestation_without_rewriting_the_body(
     monkeypatch.setattr(pr_scope, "resolve_repository", lambda _repo: "Sinity/polylogue")
     monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: HEAD_SHA)
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
+    monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: True)
 
     assert pr_scope.main(["sync", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)]) == 0
     attestation = json.loads(capsys.readouterr().out)
@@ -470,6 +452,27 @@ def test_sync_reports_a_head_bound_attestation_without_rewriting_the_body(
         pr_scope.load_bead_records(beads_path), [ASSIGNED], carrier_version=2
     )
     assert attestation["attestation_digest"]
+
+
+def test_sync_refuses_uncommitted_bead_contents(
+    monkeypatch: pytest.MonkeyPatch, beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scope_input = tmp_path / "scope.json"
+    scope_input.write_text(json.dumps(_v2_input()))
+    assert (
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        == 0
+    )
+    metadata = pr_scope.PullRequestMetadata(
+        body=capsys.readouterr().out, head_sha=HEAD_SHA, base_sha="b" * 40, is_draft=False
+    )
+    monkeypatch.setattr(pr_scope, "fetch_pr_metadata", lambda *_args, **_kwargs: metadata)
+    monkeypatch.setattr(pr_scope, "resolve_repository", lambda _repo: "Sinity/polylogue")
+    monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: HEAD_SHA)
+    monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: False)
+
+    assert pr_scope.main(["sync", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)]) == 2
+    assert "Beads snapshot does not match the committed PR head" in capsys.readouterr().err
 
 
 def test_pr_check_uses_public_github_rest_without_cli_auth(
@@ -929,6 +932,49 @@ def test_check_accepts_linked_residual_successor(
     result = _check(_body(_input("partial", [OPEN_SUCCESSOR]), beads_path), beads_path, tmp_path, capsys)
 
     assert result.startswith("0\n")
+
+
+def test_check_uses_prospective_merge_state_for_residual_successor(
+    monkeypatch: pytest.MonkeyPatch, beads_path: Path
+) -> None:
+    head_records = [_record(ASSIGNED), _record(OPEN_SUCCESSOR)]
+    head_records[1]["dependencies"] = [
+        {"issue_id": OPEN_SUCCESSOR, "depends_on_id": ASSIGNED, "type": "discovered-from"}
+    ]
+    beads_path.write_text("\n".join(json.dumps(record) for record in head_records) + "\n")
+    carrier = pr_scope.build_carrier(
+        {
+            "scope_kind": "bead",
+            "assigned_beads": [ASSIGNED],
+            "mutated_beads": [],
+            "dispositions": [
+                {
+                    "bead_id": ASSIGNED,
+                    "disposition": "partial",
+                    "evidence": [{"kind": "test", "ref": "prospective successor regression"}],
+                    "successors": [OPEN_SUCCESSOR],
+                }
+            ],
+        },
+        head_sha=HEAD_SHA,
+        beads_path=beads_path,
+    )
+    target_records = {record["id"]: record for record in head_records}
+    target_records[OPEN_SUCCESSOR] = _record(OPEN_SUCCESSOR, "closed")
+    target_records[OPEN_SUCCESSOR]["dependencies"] = head_records[1]["dependencies"]
+    monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
+    monkeypatch.setattr(pr_scope, "_bead_records_at", lambda _revision: target_records)
+
+    verdict = pr_scope.validate_carrier(
+        carrier,
+        head_sha=HEAD_SHA,
+        is_draft=False,
+        beads_path=beads_path,
+        base_sha="b" * 40,
+    )
+
+    assert not verdict.ok
+    assert any(f"successor {OPEN_SUCCESSOR} is closed" in reason for reason in verdict.reasons)
 
 
 def test_check_rejects_stale_canonical_beads_digest(

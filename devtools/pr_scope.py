@@ -181,7 +181,8 @@ def extract_carrier(body: str) -> tuple[dict[str, Any] | None, list[str]]:
         return None, [f"structured pr-scope carrier is not valid JSON: {exc.msg}"]
     if not isinstance(carrier, dict):
         return None, ["structured pr-scope carrier must be a JSON object"]
-    if carrier.get("version") != int(marker.group("version")):
+    carrier_version = carrier.get("version")
+    if type(carrier_version) is not int or carrier_version != int(marker.group("version")):
         return None, ["structured pr-scope carrier version does not match its comment marker"]
     return carrier, []
 
@@ -360,7 +361,7 @@ def validate_carrier(
 ) -> ScopeVerdict:
     reasons: list[str] = []
     version = carrier.get("version")
-    if version not in {_V1, _VERSION}:
+    if type(version) is not int or version not in {_V1, _VERSION}:
         return ScopeVerdict(ok=False, reasons=[f"carrier version must be {_V1} or {_VERSION}"])
     is_v1 = version == _V1
     _validate_keys(
@@ -384,8 +385,10 @@ def validate_carrier(
         mutated_ids = _bead_ids(carrier.get("mutated_beads"), label="mutated_beads", allow_empty=True, reasons=reasons)
         if scope_kind == ScopeKind.BEAD.value and not assigned_ids:
             reasons.append("bead scope requires at least one assigned Bead")
-        if scope_kind == ScopeKind.SELF_CONTAINED.value and (assigned_ids or carrier.get("dispositions") != []):
-            reasons.append("self_contained scope cannot declare assigned Beads or dispositions")
+        if scope_kind == ScopeKind.SELF_CONTAINED.value and (
+            assigned_ids or mutated_ids or carrier.get("dispositions") != []
+        ):
+            reasons.append("self_contained scope cannot declare or mutate Beads")
     if is_draft:
         reasons.append("PR is draft; publish a non-draft PR before validation")
 
@@ -414,6 +417,7 @@ def validate_carrier(
         reasons.append(f"cannot resolve declared Bead records: {exc}")
     if is_v1 and expected_beads_digest is not None and carrier.get("beads_digest") != expected_beads_digest:
         reasons.append("carrier beads_digest is stale for the canonical assigned Bead records")
+    actual_mutations: list[str] = []
     if base_sha is not None:
         try:
             actual_mutations = changed_bead_ids(base_sha=base_sha, beads_path=beads_path)
@@ -425,7 +429,33 @@ def validate_carrier(
             elif not is_v1 and actual_mutations != sorted(mutated_ids):
                 reasons.append("mutated_beads does not match the complete Bead mutation set")
 
-    _validate_dispositions(carrier.get("dispositions"), assigned_ids=assigned_ids, records=records, reasons=reasons)
+    disposition_records = records
+    dispositions = carrier.get("dispositions")
+    disposition_entries = dispositions if isinstance(dispositions, list) else []
+    successor_ids = {
+        successor
+        for entry in disposition_entries
+        if isinstance(entry, dict)
+        for successor in entry.get("successors", [])
+        if isinstance(entry.get("successors"), list) and isinstance(successor, str)
+    }
+    if base_sha is not None and successor_ids:
+        try:
+            disposition_records = _bead_records_at(base_sha)
+            for bead_id in actual_mutations:
+                if bead_id in records:
+                    disposition_records[bead_id] = records[bead_id]
+                else:
+                    disposition_records.pop(bead_id, None)
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            reasons.append(f"cannot resolve prospective Bead state: {exc}")
+
+    _validate_dispositions(
+        dispositions,
+        assigned_ids=assigned_ids,
+        records=disposition_records,
+        reasons=reasons,
+    )
     return ScopeVerdict(
         ok=not reasons,
         reasons=reasons,
@@ -458,7 +488,7 @@ def render_carrier(carrier: dict[str, Any]) -> str:
 def build_carrier(input_payload: dict[str, Any], *, head_sha: str, beads_path: Path = _BEADS_PATH) -> dict[str, Any]:
     carrier = dict(input_payload)
     version = carrier.get("version", _VERSION if "scope_kind" in carrier else _V1)
-    if version not in {_V1, _VERSION}:
+    if type(version) is not int or version not in {_V1, _VERSION}:
         raise ValueError(f"input version must be {_V1} or {_VERSION}")
     carrier["version"] = version
     carrier.pop("scope_digest", None)
@@ -497,6 +527,25 @@ def attestation_payload(scope: ScopeVerdict, *, head_sha: str, base_sha: str | N
 def _git_head_sha() -> str:
     result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
     return result.stdout.strip()
+
+
+def _beads_snapshot_matches_head(beads_path: Path) -> bool:
+    """Return whether ``beads_path`` is exactly the blob committed at HEAD."""
+    root_result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
+    if root_result.returncode != 0:
+        return False
+    root = Path(root_result.stdout.strip()).resolve()
+    try:
+        relative = beads_path.resolve().relative_to(root)
+    except ValueError:
+        return False
+    blob = subprocess.run(["git", "show", f"HEAD:{relative.as_posix()}"], capture_output=True, check=False)
+    if blob.returncode != 0:
+        return False
+    try:
+        return beads_path.read_bytes() == blob.stdout
+    except OSError:
+        return False
 
 
 def _repository_from_remote(remote: str) -> str | None:
@@ -874,6 +923,8 @@ def main(argv: list[str] | None = None) -> int:
             metadata = fetch_pr_metadata(args.pr, repository=repository)
             if _git_head_sha() != metadata.head_sha:
                 raise ValueError("current checkout HEAD does not match the fetched PR head")
+            if not _beads_snapshot_matches_head(args.beads_path):
+                raise ValueError("Beads snapshot does not match the committed PR head")
             verdict = validate_pr_body(
                 metadata.body,
                 head_sha=metadata.head_sha,
