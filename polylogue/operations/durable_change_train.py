@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainExecution,
@@ -704,7 +705,8 @@ def _audit_file_identity(path: Path) -> tuple[int, int]:
 
 def _audit_live_metadata(audit_path: Path) -> tuple[int, int, tuple[str, ...]]:
     """Read the durable markers that remain valid after an in-place migration."""
-    with closing(sqlite3.connect(f"file:{audit_path}?mode=ro", uri=True)) as connection:
+    uri = f"{audit_path.resolve(strict=False).as_uri()}?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
         application_id = int(connection.execute("PRAGMA application_id").fetchone()[0] or 0)
         quick_check = tuple(str(row[0]) for row in connection.execute("PRAGMA quick_check"))
@@ -801,7 +803,6 @@ def _audit_restore_records(archive_root: Path) -> list[tuple[Path, dict[str, obj
                 metadata = os.fstat(fd)
                 if (
                     not stat.S_ISREG(metadata.st_mode)
-                    or metadata.st_nlink != 1
                     or metadata.st_uid != os.geteuid()
                     or stat.S_IMODE(metadata.st_mode) & 0o022
                 ):
@@ -1114,7 +1115,7 @@ def adopt_missing_audit_tier(
                 "stopped_daemon_evidence_ref": stopped_evidence,
                 "single_writer_evidence_ref": "proof:archive-ownership-lock",
                 "audit_schema_inventory_sha256": _audit_schema_inventory_sha256(),
-                "audit_user_version": 1,
+                "audit_user_version": ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT],
                 "audit_application_id": application_id,
                 "audit_image_sha256": hashlib.sha256(initialized_image).hexdigest(),
                 "audit_image_size": len(initialized_image),
@@ -1233,6 +1234,33 @@ def restore_adopted_audit_tier(
         backup_manifest, archive_root=archive_root
     )
     artifact_sha256, artifact_size, artifact_version = _audit_restore_artifact_binding(verification_receipt)
+    expected_application_id = adoption.get("audit_application_id")
+    expected_initial_version = adoption.get("audit_user_version")
+    if not isinstance(expected_application_id, int) or not isinstance(expected_initial_version, int):
+        raise MigrationError("audit adoption receipt lacks its durable SQLite markers")
+    backup_version, backup_application_id, backup_quick_check = _audit_live_metadata(manifest_path.parent / "audit.db")
+    if (
+        backup_version != artifact_version
+        or backup_version < expected_initial_version
+        or backup_application_id != expected_application_id
+        or backup_quick_check != ("ok",)
+    ):
+        raise MigrationError("adopted-audit restore artifact does not belong to this audit adoption")
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    verification_receipt_sha256 = hashlib.sha256(verification_receipt.read_bytes()).hexdigest()
+
+    def revalidate_exact_backup() -> None:
+        current_manifest, current_receipt = validate_full_evidence_backup_for_adopted_audit_restore(
+            backup_manifest, archive_root=archive_root
+        )
+        if (
+            current_manifest.resolve() != manifest_path.resolve()
+            or current_receipt.resolve() != verification_receipt.resolve()
+            or hashlib.sha256(current_manifest.read_bytes()).hexdigest() != manifest_sha256
+            or hashlib.sha256(current_receipt.read_bytes()).hexdigest() != verification_receipt_sha256
+        ):
+            raise MigrationError("adopted-audit restore backup changed during the operation")
+
     previous_continuity_sha256 = continuity.get("continuity_sha256")
     if not isinstance(previous_continuity_sha256, str):
         raise MigrationError("adopted-audit restore continuity lacks its checksum")
@@ -1278,8 +1306,8 @@ def restore_adopted_audit_tier(
         "previous_continuity_sha256": previous_continuity_sha256,
         "receipt_sha256": adoption["receipt_sha256"],
         "source_user_authority_digest": adoption["source_user_authority_digest"],
-        "backup_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-        "backup_verification_receipt_sha256": hashlib.sha256(verification_receipt.read_bytes()).hexdigest(),
+        "backup_manifest_sha256": manifest_sha256,
+        "backup_verification_receipt_sha256": verification_receipt_sha256,
         "audit_artifact_sha256": artifact_sha256,
         "audit_artifact_size": artifact_size,
         "audit_artifact_user_version": artifact_version,
@@ -1318,7 +1346,7 @@ def restore_adopted_audit_tier(
             )
         if stopped_daemon_check() != stopped_evidence:
             raise MigrationError("daemon stopped proof changed during adopted-audit restore")
-        validate_full_evidence_backup_for_adopted_audit_restore(backup_manifest, archive_root=archive_root)
+        revalidate_exact_backup()
         if _audit_adoption_authority_digest(archive_root) != adoption.get("source_user_authority_digest"):
             raise MigrationError("source/user authority changed during adopted-audit restore")
         if not published:
@@ -1326,12 +1354,12 @@ def restore_adopted_audit_tier(
             os.fsync(directory_fd)
             published = True
         identity = _audit_file_identity(path)
-        version, _application_id, quick_check = _audit_live_metadata(path)
-        if version != artifact_version or quick_check != ("ok",):
+        version, application_id, quick_check = _audit_live_metadata(path)
+        if version != artifact_version or application_id != expected_application_id or quick_check != ("ok",):
             raise MigrationError("adopted-audit restore published artifact is not the verified SQLite image")
         if stopped_daemon_check() != stopped_evidence:
             raise MigrationError("daemon stopped proof changed after adopted-audit restore publication")
-        validate_full_evidence_backup_for_adopted_audit_restore(backup_manifest, archive_root=archive_root)
+        revalidate_exact_backup()
         committed_path = prepared_path.with_name(prepared_path.name.replace(".prepared.json", ".committed.json"))
         prepared_restore_sha256 = prepared.get("restore_sha256")
         if not isinstance(prepared_restore_sha256, str):

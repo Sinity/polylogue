@@ -3563,7 +3563,8 @@ def test_migrate_tier_cli_adoption_fails_closed_during_publication(
             # This is a *valid* v1 audit database with a different image, not
             # merely malformed bytes.  Startup must reject the durable receipt
             # after the atomic no-replace link detects the foreign target.
-            with sqlite3.connect(root / str(destination)) as foreign:
+            target_root = Path(os.readlink(f"/proc/self/fd/{dst_dir_fd}"))
+            with sqlite3.connect(target_root / Path(destination).name) as foreign:
                 initialize_archive_tier(foreign, ArchiveTier.AUDIT)
                 foreign.execute("PRAGMA application_id = 41")
                 foreign.commit()

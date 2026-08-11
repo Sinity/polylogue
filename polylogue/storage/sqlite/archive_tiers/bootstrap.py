@@ -399,9 +399,6 @@ def initialize_active_archive_root(root: Path) -> None:
                 and not has_bootstrap_marker
                 and not has_pending_bootstrap
             )
-        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
-            assert_owned_root()
-            reconcile_durable_change_trains_on_startup(root)
         if (
             durable_tier_exists
             and not recovering_fresh_durable_bootstrap
@@ -411,6 +408,9 @@ def initialize_active_archive_root(root: Path) -> None:
                 "established archive is missing audit.db; use maintenance migrate-tier audit "
                 "--adopt-established-audit with a verified full_evidence backup"
             )
+        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
+            assert_owned_root()
+            reconcile_durable_change_trains_on_startup(root)
         for spec in ARCHIVE_TIER_SPECS.values():
             assert_owned_root()
             initialize_archive_database(root / spec.filename, spec.tier)

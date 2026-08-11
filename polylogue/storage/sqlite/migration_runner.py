@@ -884,6 +884,11 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
     if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
         raise MigrationError("audit adoption requires a successful backup verification receipt")
     archive_root = archive_root.resolve()
+    try:
+        if backup_root.samefile(archive_root):
+            raise MigrationError("audit adoption backup root aliases the live archive root")
+    except OSError as exc:
+        raise MigrationError("cannot compare audit adoption backup root with the live archive") from exc
     for authority_tier in ("source", "user"):
         try:
             verify_verification_receipt(
@@ -915,6 +920,8 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
         live_path = archive_root / f"{tier}.db"
         artifact = artifacts[tier]
         artifact_path = backup_root / f"{tier}.db"
+        if not live_path.is_file():
+            raise MigrationError(f"audit adoption live tier is missing: {live_path}")
         try:
             if artifact_path.samefile(live_path):
                 raise MigrationError(f"audit adoption backup tier artifact aliases the live tier: {tier}.db")
@@ -925,8 +932,6 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
             raise MigrationError(f"audit adoption backup lacks a live source fingerprint for {tier}.db")
         if Path(str(fingerprint.get("path") or "")).resolve(strict=False) != live_path.resolve(strict=False):
             raise MigrationError(f"audit adoption backup belongs to a different archive tier: {tier}.db")
-        if not live_path.is_file():
-            raise MigrationError(f"audit adoption live tier is missing: {live_path}")
         wal_path = live_path.with_name(f"{live_path.name}-wal")
         if wal_path.exists() and wal_path.stat().st_size:
             raise MigrationError(f"audit adoption backup has live WAL divergence for {tier}.db")
@@ -975,6 +980,11 @@ def validate_full_evidence_backup_for_adopted_audit_restore(path: Path, *, archi
     if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
         raise MigrationError("adopted-audit restore requires a successful backup verification receipt")
     archive_root = archive_root.resolve()
+    try:
+        if backup_root.samefile(archive_root):
+            raise MigrationError("adopted-audit restore backup root aliases the live archive root")
+    except OSError as exc:
+        raise MigrationError("cannot compare adopted-audit restore backup root with the live archive") from exc
     for authority_tier in ("source", "user", "audit"):
         try:
             verify_verification_receipt(
@@ -995,8 +1005,19 @@ def validate_full_evidence_backup_for_adopted_audit_restore(path: Path, *, archi
     _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
     if receipt.get("artifact_inventory") != artifact_inventory:
         raise MigrationError("adopted-audit restore receipt does not match the closed artifact inventory")
-    for tier in sorted(included_tiers - {"audit"}):
+    for tier in sorted(included_tiers):
         live_path = archive_root / f"{tier}.db"
+        artifact_path = backup_root / f"{tier}.db"
+        if live_path.is_file():
+            try:
+                if artifact_path.samefile(live_path):
+                    raise MigrationError(f"adopted-audit restore backup tier artifact aliases the live tier: {tier}.db")
+            except OSError as exc:
+                raise MigrationError(
+                    f"cannot compare adopted-audit restore backup tier with live tier: {tier}.db"
+                ) from exc
+        if tier not in {"source", "user"}:
+            continue
         fingerprint = artifacts[tier].get("source_fingerprint")
         if not isinstance(fingerprint, dict):
             raise MigrationError(f"adopted-audit restore backup lacks a live source fingerprint for {tier}.db")
