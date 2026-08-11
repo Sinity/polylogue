@@ -191,6 +191,29 @@ def test_bare_pytest_configure_defaults_to_scratch_without_a_supervisor(
     assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
 
 
+def test_bare_pytest_ignores_leaked_cloud_basetemp_on_workstation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _shm, scratch = _make_real_candidates(monkeypatch, tmp_path)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(verify_runs._CLOUD_PYTEST_BASETEMP_ROOT))
+    monkeypatch.delenv("POLYLOGUE_VERIFY_RUN_ID", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_TMPFS", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_RUN_ID", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_CHECKOUT", raising=False)
+    config = SimpleNamespace(
+        option=SimpleNamespace(basetemp=None),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    conftest.pytest_configure(cast("pytest.Config", config))
+
+    assert Path(str(config.option.basetemp)).parent == scratch
+    assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in os.environ
+    assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
+
+
 def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
     tmp_path: Path,
 ) -> None:

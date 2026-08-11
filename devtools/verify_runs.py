@@ -51,6 +51,7 @@ PYTEST_MEMORY_ENVELOPE_TMPFS_KB = 1_472_636
 PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES = 6_278_623_232
 PYTEST_BASETEMP_PEAK_KB = 1_522 * 1024
 PYTEST_PROCESS_MEMORY_PER_WORKER_KB = 768 * 1024
+PYTEST_FOCUSED_CONTROLLER_MEMORY_KB = 256 * 1024
 PYTEST_PROCESS_MEMORY_FIXED_KB = max(
     0,
     PYTEST_MEMORY_ENVELOPE_PSS_KB - PYTEST_MEMORY_ENVELOPE_WORKERS * PYTEST_PROCESS_MEMORY_PER_WORKER_KB,
@@ -600,7 +601,13 @@ def _pytest_cgroup_overhead_reserve_kb(workers: int) -> int:
     ) // PYTEST_MEMORY_ENVELOPE_WORKERS
 
 
-def _pytest_non_tmpfs_memory_reserve_kb(workers: int) -> int:
+def _pytest_non_tmpfs_memory_reserve_kb(workers: int, *, full_suite: bool = True) -> int:
+    if not full_suite:
+        focused_process_kb = PYTEST_FOCUSED_CONTROLLER_MEMORY_KB + workers * PYTEST_PROCESS_MEMORY_PER_WORKER_KB
+        focused_cgroup_overhead_kb = (
+            PYTEST_CGROUP_OVERHEAD_FLOOR_KB * max(1, workers) + PYTEST_MEMORY_ENVELOPE_WORKERS - 1
+        ) // PYTEST_MEMORY_ENVELOPE_WORKERS
+        return focused_process_kb + focused_cgroup_overhead_kb + PYTEST_HOST_RESERVE_KB
     return (
         _pytest_process_memory_reserve_kb(workers)
         + _pytest_cgroup_overhead_reserve_kb(workers)
@@ -646,6 +653,7 @@ def adaptive_pytest_runtime_policy(
     cpu_count: int | None = None,
     shm_free_kb: int | None = None,
     worker_count: int | None = None,
+    full_suite: bool = True,
 ) -> PytestRuntimePolicy:
     """Size tmpfs and xdist from one measured resource envelope.
 
@@ -695,8 +703,8 @@ def adaptive_pytest_runtime_policy(
             memory_full_avg10=memory_full_avg10,
         )
 
-    fixed_reserve_kb = _pytest_non_tmpfs_memory_reserve_kb(reserved_workers)
-    tmpfs_predicted_kb = PYTEST_BASETEMP_PEAK_KB
+    fixed_reserve_kb = _pytest_non_tmpfs_memory_reserve_kb(reserved_workers, full_suite=full_suite)
+    tmpfs_predicted_kb = PYTEST_BASETEMP_PEAK_KB if full_suite else None
     tmpfs_floor_kb = MIN_PYTEST_TMPFS_BUDGET_KB if shm_free_kb >= MIN_PYTEST_TMPFS_BUDGET_KB else 0
     if fixed_reserve_kb + tmpfs_floor_kb > available_kb:
         raise PytestResourceError(
@@ -714,7 +722,7 @@ def adaptive_pytest_runtime_policy(
         tmpfs_budget_mb=tmpfs_budget_mb,
         workers=reserved_workers,
         memory_full_avg10=memory_full_avg10,
-        tmpfs_predicted_mb=(tmpfs_predicted_kb + 1023) // 1024,
+        tmpfs_predicted_mb=(tmpfs_predicted_kb + 1023) // 1024 if tmpfs_predicted_kb is not None else None,
     )
 
 
@@ -736,12 +744,13 @@ def apply_managed_pytest_runtime_policy(
     policy = adaptive_pytest_runtime_policy(
         worker_count=worker_count,
         shm_free_kb=None if manages_tmpfs else 0,
+        full_suite=full_suite,
     )
+    if full_suite and policy.tmpfs_predicted_mb is not None:
+        normalized.setdefault(PYTEST_BASETEMP_REQUIRED_MB_ENV, str(policy.tmpfs_predicted_mb))
     if manages_tmpfs:
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "1"
         normalized.setdefault(PYTEST_TMPFS_MAX_MB_ENV, str(policy.tmpfs_budget_mb))
-        if full_suite and policy.tmpfs_predicted_mb is not None:
-            normalized.setdefault(PYTEST_BASETEMP_REQUIRED_MB_ENV, str(policy.tmpfs_predicted_mb))
         effective_tmpfs_budget_kb = pytest_tmpfs_budget_kb(normalized)
         policy_tmpfs_budget_kb = policy.tmpfs_budget_mb * 1024
         if effective_tmpfs_budget_kb is not None and effective_tmpfs_budget_kb > policy_tmpfs_budget_kb:

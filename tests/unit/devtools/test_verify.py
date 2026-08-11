@@ -1638,6 +1638,30 @@ def test_adaptive_pytest_policy_does_not_charge_a_serial_run_for_an_xdist_worker
     assert policy.workers == 0
 
 
+def test_focused_serial_policy_does_not_inherit_full_suite_memory_residuals() -> None:
+    policy = adaptive_pytest_runtime_policy(
+        available_kb=1500 * 1024,
+        memory_full_avg10=0.0,
+        cpu_count=24,
+        shm_free_kb=0,
+        worker_count=0,
+        full_suite=False,
+    )
+
+    assert policy.workers == 0
+    assert policy.tmpfs_predicted_mb is None
+
+    with pytest.raises(PytestResourceError, match="cannot reserve measured pytest cgroup memory"):
+        adaptive_pytest_runtime_policy(
+            available_kb=1500 * 1024,
+            memory_full_avg10=0.0,
+            cpu_count=24,
+            shm_free_kb=0,
+            worker_count=0,
+            full_suite=True,
+        )
+
+
 def test_adaptive_pytest_policy_treats_full_run_basetemp_as_aggregate_demand() -> None:
     predictions = {
         adaptive_pytest_runtime_policy(
@@ -1726,6 +1750,22 @@ def test_managed_pytest_policy_preserves_explicit_custom_root_and_memory_admissi
     assert policy is not None
     assert policy.workers == 4
     assert policy.basetemp_label == "configured"
+
+
+def test_full_suite_explicit_root_requires_measured_basetemp_space(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 8 * 1024 * 1024})
+    monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
+    monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
+    monkeypatch.setattr(verify_runs, "_fs_usage", lambda _path: {"used_kb": 0, "free_kb": 1200 * 1024})
+
+    with pytest.raises(PytestResourceError, match="no pytest basetemp location has enough free space"):
+        apply_managed_pytest_runtime_policy(
+            {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)},
+            worker_count=4,
+            full_suite=True,
+        )
 
 
 def test_managed_pytest_policy_rejects_explicit_root_when_workers_exceed_memory(

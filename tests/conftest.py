@@ -35,7 +35,7 @@ from devtools.checkout_guard import (
     assert_polylogue_matches_checkout,
     resolved_polylogue_path,
 )
-from devtools.verify_runs import PytestResourceError, resolve_pytest_basetemp_root
+from devtools.verify_runs import PytestResourceError, normalize_pytest_basetemp_env, resolve_pytest_basetemp_root
 
 # Resolve (but don't yet raise on) the polylogue-vs-checkout mismatch check
 # before the first `from polylogue...` import below: a shared/editable venv's
@@ -102,10 +102,15 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
     if config.option.basetemp is None:
-        if "POLYLOGUE_VERIFY_RUN_ID" not in os.environ and "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in os.environ:
+        normalized_basetemp_env = normalize_pytest_basetemp_env(os.environ)
+        if (
+            "POLYLOGUE_VERIFY_RUN_ID" not in os.environ
+            and "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in normalized_basetemp_env
+        ):
             # Bare pytest has no devtools supervisor to enforce a tmpfs cap.
             # Keep its basetemp on scratch; managed devtools runs carry the
             # verify-run id and may opt into bounded tmpfs safely.
+            os.environ.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
             os.environ["POLYLOGUE_PYTEST_TMPFS"] = "0"
         checkout = hashlib.sha1(str(config.rootpath).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
         os.environ["POLYLOGUE_PYTEST_CHECKOUT"] = checkout
