@@ -439,13 +439,13 @@ def _receipt_is_fresh_for_scope(
     if receipt.get("exit_code") != 0:
         return False
     verification_scope = receipt.get("verification_scope")
-    valid_scopes = {scope.value for scope in merge_gate.VerificationScope}
+    valid_scopes = {scope.value for scope in VerificationScope}
     if verification_scope not in valid_scopes:
         return False
     release_allowed = receipt.get("release_baseline_allowed")
     if not isinstance(release_allowed, bool):
         return False
-    if verification_scope == merge_gate.VerificationScope.RELEASE_BASELINE.value and not release_allowed:
+    if verification_scope == VerificationScope.RELEASE_BASELINE.value and not release_allowed:
         return False
     age_s = time.time() - float(receipt.get("recorded_at", 0))
     return bool(age_s <= max_age_s)
