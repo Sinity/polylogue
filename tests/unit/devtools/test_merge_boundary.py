@@ -254,6 +254,41 @@ def test_merge_refuses_when_the_target_base_changes_after_validation(
     assert "base, or state changed" in capsys.readouterr().err
 
 
+def test_merge_refuses_when_the_scope_body_changes_after_validation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    initial = _base_pr_view()
+    changed = dict(initial, body="## Summary\n\nCarrier removed after validation.")
+    views = iter([initial, changed])
+    monkeypatch.setattr(merge_boundary, "_gh_json", lambda _args: next(views))
+    merge_calls: list[list[str]] = []
+    base_run = _fake_run(initial)
+
+    def run(cmd: list[str], **kwargs: Any) -> MagicMock:
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            merge_calls.append(cmd)
+        return base_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=False,
+            verify_command="devtools verify --all",
+        )
+        == 1
+    )
+    assert not merge_calls
+    assert "structured scope changed" in capsys.readouterr().err
+
+
 def test_merge_refuses_when_pr_not_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view(state="MERGED")

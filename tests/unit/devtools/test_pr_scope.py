@@ -799,6 +799,35 @@ def test_ci_check_refuses_draft_before_fetching_base(
     fetch_base.assert_not_called()
 
 
+def test_ci_check_refuses_uncommitted_bead_contents_before_fetching_base(
+    monkeypatch: pytest.MonkeyPatch,
+    beads_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    metadata = pr_scope.PullRequestMetadata(
+        body=_body(_input(), beads_path),
+        head_sha=HEAD_SHA,
+        base_sha="b" * 40,
+        is_draft=False,
+    )
+    fetch_base = MagicMock()
+    monkeypatch.setattr(pr_scope, "fetch_base_validator_source", fetch_base)
+    monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: False)
+
+    assert (
+        pr_scope.check_ci_metadata(
+            metadata,
+            repository="Sinity/polylogue",
+            beads_path=beads_path,
+            checkout_head_sha=HEAD_SHA,
+            expected_head_sha=HEAD_SHA,
+        )
+        == 2
+    )
+    assert "Beads snapshot does not match the committed PR head" in capsys.readouterr().err
+    fetch_base.assert_not_called()
+
+
 def test_ci_accepts_authoritative_dependabot_dependency_only_pr(
     monkeypatch: pytest.MonkeyPatch,
     beads_path: Path,
@@ -815,6 +844,7 @@ def test_ci_accepts_authoritative_dependabot_dependency_only_pr(
     )
     fetch_base = MagicMock()
     monkeypatch.setattr(pr_scope, "fetch_base_validator_source", fetch_base)
+    monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: True)
 
     assert (
         pr_scope.check_ci_metadata(
@@ -868,6 +898,7 @@ def test_ci_rejects_spoofed_or_extra_file_automated_scope(
     fetch_base.return_value = b"not a validator"
     monkeypatch.setattr(pr_scope, "fetch_base_validator_source", fetch_base)
     monkeypatch.setattr(pr_scope, "_run_validator_source", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: True)
 
     assert (
         pr_scope.check_ci_metadata(
@@ -896,6 +927,7 @@ def test_ci_check_executes_base_revision_validator(
     current_validator = MagicMock(return_value=pr_scope.ScopeVerdict(ok=True))
     monkeypatch.setattr(pr_scope, "fetch_base_validator_source", lambda **_kwargs: base_source)
     monkeypatch.setattr(pr_scope, "validate_pr_body", current_validator)
+    monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: True)
 
     exit_code = pr_scope.check_ci_metadata(
         metadata,
@@ -921,6 +953,7 @@ def test_ci_check_bootstraps_once_when_base_has_no_validator(
     )
     monkeypatch.setattr(pr_scope, "fetch_base_validator_source", lambda **_kwargs: None)
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
+    monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: True)
 
     assert (
         pr_scope.check_ci_metadata(

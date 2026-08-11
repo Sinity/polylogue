@@ -650,7 +650,9 @@ def cmd_merge(
         return 0
 
     try:
-        final_info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,baseRefOid,state"])
+        final_info = _gh_json(
+            ["pr", "view", str(pr), "--json", "headRefOid,baseRefOid,state,body,isDraft,author,files"]
+        )
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
         print(f"REFUSING to merge PR #{pr}: final authority check failed: {exc}", file=sys.stderr)
         return 1
@@ -663,6 +665,16 @@ def cmd_merge(
             f"REFUSING to merge PR #{pr}: head, base, or state changed after merge-gate validation",
             file=sys.stderr,
         )
+        return 1
+    final_scope = merge_gate._scope_verdict(pr, final_info, head_sha=head_sha)
+    initial_attestation = pr_scope.attestation_payload(
+        scope, head_sha=head_sha, base_sha=merge_gate._base_sha(info)
+    ).get("attestation_digest")
+    final_attestation = pr_scope.attestation_payload(
+        final_scope, head_sha=head_sha, base_sha=merge_gate._base_sha(final_info)
+    ).get("attestation_digest")
+    if not final_scope.ok or final_attestation != initial_attestation:
+        print(f"REFUSING to merge PR #{pr}: structured scope changed after merge-gate validation", file=sys.stderr)
         return 1
 
     try:

@@ -854,6 +854,12 @@ def check_ci_metadata(
     if metadata.is_draft:
         print("REFUSING CI pr-scope check: PR is draft; publish it before validation", file=sys.stderr)
         return 2
+    if not _beads_snapshot_matches_head(beads_path):
+        print(
+            "REFUSING CI pr-scope check: Beads snapshot does not match the committed PR head",
+            file=sys.stderr,
+        )
+        return 2
 
     if _automated_dependency_scope_allowed(metadata):
         print(
