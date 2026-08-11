@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from devtools import repo_root as _get_root
-from devtools.mutation_catalog import build_mutation_entries
+from devtools.mutation_scenario_catalog import MUTATION_CAMPAIGNS
 
 ROOT = _get_root()
 DEFAULT_FRESHNESS_DAYS = 60
@@ -165,7 +165,7 @@ def _orphan_artifact_names(repo_root: Path, registered: Iterable[str]) -> list[s
 
 def catalog_entries() -> list[str]:
     """Project executable campaigns, without a second declarative registry."""
-    return [entry.name for entry in build_mutation_entries()]
+    return sorted(MUTATION_CAMPAIGNS)
 
 
 def main(argv: list[str] | None = None) -> int:

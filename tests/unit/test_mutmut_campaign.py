@@ -4,14 +4,8 @@ import json
 from pathlib import Path
 
 from devtools.mutmut_campaign import (
-    CAMPAIGNS,
-    CampaignResult,
     copy_workspace,
-    format_index,
-    format_markdown,
     git_status_summary,
-    latest_results_by_campaign,
-    load_results,
     patch_mutmut_section,
     summarize_mutmut_results,
 )
@@ -85,50 +79,6 @@ def test_summarize_mutmut_results_filters_by_prefix_and_groups_statuses(tmp_path
     assert not not_checked_keys
 
 
-def test_campaign_registry_has_selection_tests_for_each_scope() -> None:
-    for campaign in CAMPAIGNS.values():
-        assert campaign.paths_to_mutate
-        assert campaign.tests
-
-
-def test_format_markdown_records_dirty_worktree_status() -> None:
-    result = CampaignResult(
-        campaign="json",
-        description="JSON serialization and parser laws",
-        commit="deadbeef",
-        worktree_dirty=True,
-        status_summary=[" M tests/unit/core/test_json.py", "?? .local/mutation-campaigns/foo.json"],
-        created_at="2026-03-11T00:00:00+00:00",
-        workspace="/tmp/example/repo",
-        command=["mutmut", "run"],
-        paths_to_mutate=["polylogue/core/json.py"],
-        tests=["tests/unit/core/test_json.py"],
-        counts={"killed": 1, "survived": 2, "timeout": 0, "not_checked": 0, "suspicious": 0, "skipped": 0},
-        dominant_survivors=[("dumps", 2)],
-        dominant_timeouts=[],
-        dominant_not_checked=[],
-        survivor_keys=["polylogue.core.json.x_dumps__mutmut_1"],
-        timeout_keys=[],
-        not_checked_keys=[],
-        runtime_seconds=1.5,
-        exit_code=0,
-        notes=[],
-        origin="authored.mutation-campaign",
-        path_targets=["json-law-loop"],
-        artifact_targets=["raw_payload", "validation_state"],
-        operation_targets=["plan-validation-backlog"],
-        tags=["mutation", "json"],
-    )
-
-    rendered = format_markdown(result)
-    assert "- Worktree dirty: `yes`" in rendered
-    assert "## Source Worktree Status" in rendered
-    assert "` M tests/unit/core/test_json.py`" in rendered
-    assert "## Scenario Metadata" in rendered
-    assert "- Origin: `authored.mutation-campaign`" in rendered
-    assert "- Path targets: `json-law-loop`" in rendered
-
-
 def test_git_status_summary_ignores_campaign_artifacts(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -149,70 +99,6 @@ def test_git_status_summary_ignores_campaign_artifacts(tmp_path: Path) -> None:
     summary = git_status_summary(repo)
     assert " M tracked.txt" in summary
     assert all(".local/mutation-campaigns/" not in line for line in summary)
-
-
-def test_load_results_and_index_use_latest_campaign_entry(tmp_path: Path) -> None:
-    campaign_dir = tmp_path / ".local" / "mutation-campaigns"
-    campaign_dir.mkdir(parents=True)
-    old = {
-        "campaign": "json",
-        "description": "JSON",
-        "commit": "aaaaaaaaaaaa",
-        "created_at": "2026-03-11T00:00:00+00:00",
-        "workspace": "/tmp/old",
-        "command": ["mutmut", "run"],
-        "paths_to_mutate": ["polylogue/core/json.py"],
-        "tests": ["tests/unit/core/test_json.py"],
-        "counts": {"killed": 11, "survived": 15, "timeout": 0, "not_checked": 0, "suspicious": 0, "skipped": 0},
-        "dominant_survivors": [["dumps", 14]],
-        "dominant_timeouts": [],
-        "dominant_not_checked": [],
-        "runtime_seconds": 7.0,
-        "exit_code": 0,
-        "notes": [],
-        "origin": "authored.mutation-campaign",
-        "path_targets": ["json-law-loop"],
-        "artifact_targets": ["raw_payload", "validation_state"],
-        "operation_targets": ["plan-validation-backlog"],
-        "tags": ["mutation", "json"],
-    }
-    new = {
-        **old,
-        "commit": "bbbbbbbbbbbb",
-        "created_at": "2026-03-11T01:00:00+00:00",
-        "counts": {"killed": 24, "survived": 2, "timeout": 0, "not_checked": 0, "suspicious": 0, "skipped": 0},
-        "worktree_dirty": True,
-        "status_summary": [" M tests/unit/core/test_json.py"],
-        "survivor_keys": ["polylogue.core.json.xǁdumps__mutmut_1"],
-        "timeout_keys": [],
-        "not_checked_keys": [],
-    }
-    other = {
-        **old,
-        "campaign": "filters",
-        "description": "Filters",
-        "commit": "cccccccccccc",
-        "created_at": "2026-03-11T02:00:00+00:00",
-        "counts": {"killed": 486, "survived": 11, "timeout": 100, "not_checked": 0, "suspicious": 0, "skipped": 0},
-    }
-    (campaign_dir / "2026-03-11-json-old.json").write_text(json.dumps(old))
-    (campaign_dir / "2026-03-11-json-new.json").write_text(json.dumps(new))
-    (campaign_dir / "2026-03-11-filters.json").write_text(json.dumps(other))
-
-    results = load_results(campaign_dir)
-    latest = latest_results_by_campaign(results)
-
-    assert [result.campaign for result in latest] == ["filters", "json"]
-    json_result = next(result for result in latest if result.campaign == "json")
-    assert json_result.commit == "bbbbbbbbbbbb"
-    assert json_result.origin == "authored.mutation-campaign"
-    assert json_result.path_targets == ["json-law-loop"]
-    assert json_result.artifact_targets == ["raw_payload", "validation_state"]
-    assert json_result.operation_targets == ["plan-validation-backlog"]
-    assert json_result.tags == ["mutation", "json"]
-    rendered = format_index(results)
-    assert "`json` | `2026-03-11T01:00:00+00:00` | `bbbbbbbbbbbb` | 24 | 2 | 0 | 0 | yes | 7.00s |" in rendered
-    assert "`filters` | `2026-03-11T02:00:00+00:00` | `cccccccccccc` | 486 | 11 | 100 | 0 | no | 7.00s |" in rendered
 
 
 def test_copy_workspace_preserves_symlinked_files(tmp_path: Path) -> None:

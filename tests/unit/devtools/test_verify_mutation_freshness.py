@@ -37,16 +37,15 @@ def _write_artifact(
 def _use_catalog(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
     monkeypatch.setattr(
         verify_mutation_freshness,
-        "build_mutation_entries",
-        lambda: tuple(SimpleNamespace(name=name) for name in names),
+        "MUTATION_CAMPAIGNS",
+        {name: SimpleNamespace(name=name) for name in names},
     )
 
 
-def test_default_artifact_paths_uses_timestamped_layout() -> None:
+def test_default_artifact_path_uses_timestamped_layout() -> None:
     when = datetime(2026, 5, 19, 12, 34, 56, tzinfo=UTC)
-    json_path, md_path = mutmut_campaign.default_artifact_paths("filters", when)
+    json_path = mutmut_campaign.default_artifact_path("filters", when)
     assert json_path.as_posix() == ".local/mutation-campaigns/filters/20260519T123456Z.json"
-    assert md_path.as_posix() == ".local/mutation-campaigns/filters/20260519T123456Z.md"
 
 
 @pytest.mark.parametrize(

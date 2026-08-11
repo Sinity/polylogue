@@ -428,15 +428,13 @@ checks HTTP/DOM/API contracts rather than screenshots.
 ```bash
 devtools bench mutation list
 devtools bench mutation run <campaign>
-devtools bench mutation index
 ```
 
 Policy:
 
 - keep the committed mutmut configuration broad; narrow work happens through
   focused campaigns
-- write local artifacts under `.local/mutation-campaigns/`
-- rebuild the mutation index after a campaign run
+- write per-run JSON artifacts under `.local/mutation-campaigns/`
 
 ## Protected Files
 
