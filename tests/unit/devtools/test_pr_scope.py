@@ -201,7 +201,7 @@ def test_base_revision_fetch_has_a_finite_timeout(monkeypatch: pytest.MonkeyPatc
         calls.append((command, kwargs))
         return responses.pop(0)
 
-    monkeypatch.setattr(pr_scope.subprocess, "run", _run)
+    monkeypatch.setattr(subprocess, "run", _run)
 
     pr_scope._ensure_local_commit("a" * 40)
 
