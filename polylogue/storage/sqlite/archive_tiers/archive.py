@@ -1867,7 +1867,16 @@ class ArchiveStore:
     ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
-        self.index_db_path = self._frozen_index_path or archive_root / "index.db"
+        if self._frozen_index_path is not None:
+            self.index_db_path = self._frozen_index_path
+        else:
+            # The configured root owns the durable tiers, while an active
+            # generation can keep index.db elsewhere. A writable open must
+            # follow the same pointer as readiness and live ingest instead of
+            # silently mutating a stale conventional root/index.db shadow.
+            from polylogue.storage.archive_identity import resolve_active_index_path
+
+            self.index_db_path = resolve_active_index_path(archive_root)
         self.embeddings_db_path = archive_root / "embeddings.db"
         self.user_db_path = archive_root / "user.db"
         self.ops_db_path = archive_root / "ops.db"

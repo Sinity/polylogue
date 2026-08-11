@@ -20,6 +20,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -144,6 +145,7 @@ from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
 )
+from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     hermes_profile_raw_id,
@@ -1877,6 +1879,7 @@ class LiveBatchProcessor:
                 continue
             captured_file_observations[path] = _file_observation(stat)
             origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
+            path_artifact = classify_artifact_path(path, provider=fallback_provider)
             if heartbeat is not None:
                 heartbeat(
                     "full_file_scan",
@@ -1994,6 +1997,18 @@ class LiveBatchProcessor:
                 # the bytes as a generic session artifact.
                 self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
                 continue
+            elif (
+                origin_artifact_rule is None
+                and path.suffix.lower() != ".jsonl"
+                and path_artifact is not None
+                and not path_artifact.parse_as_session
+                and not has_decoded_session_evidence(path, provider=fallback_provider)
+            ):
+                # Keep path-only metadata out of the generic JSON fallback,
+                # but let real decoded session evidence outrank a stale or
+                # overbroad filename rule just as offline source parsing does.
+                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                continue
             elif origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
                 provider = fallback_provider
                 source_name = provider.value
@@ -2037,7 +2052,7 @@ class LiveBatchProcessor:
             elif path.suffix.lower() == ".jsonl":
                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
                 source_name = provider.value
-                if not parse_as_session and provider is not Provider.UNKNOWN:
+                if not parse_as_session:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:

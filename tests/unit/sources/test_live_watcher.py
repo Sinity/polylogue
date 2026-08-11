@@ -357,6 +357,7 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
     projection = reconcile._projection_for(tmp_path)
     sample = projection.cursor_ahead_samples[0]
     shadow_before = shadow_index.read_bytes()
+    active_before = active_index.read_bytes()
     with scoped_cursor_authority_authorization(
         source_path_digest=cursor_authority_path_digest(source_path),
         cursor_byte_offset=sample.cursor_byte_offset,
@@ -368,6 +369,7 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
 
     assert metrics.full_file_count == 1
     assert shadow_index.read_bytes() == shadow_before
+    assert active_index.read_bytes() != active_before
     watcher.stop()
 
 
@@ -2176,6 +2178,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
         }
         assert summary.call_count == 1
         assert summary.journal_result_count == 1
+        assert processor.require_cursor_authority() is None
     finally:
         await archive.close()
 
@@ -2294,6 +2297,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
         await processor.ingest_files([source_path], emit_event=False)
         replayed = _atof_event_uuids_by_session(workspace_env["archive_root"])
         assert replayed == event_uuids_by_session
+        assert processor.require_cursor_authority() is None
     finally:
         await archive.close()
 
@@ -2433,6 +2437,7 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
         second = await processor.ingest_files([source_path], emit_event=False)
         assert second.succeeded_file_count == 1, "ambiguous membership debt is not retried as a file failure (#3282)"
         assert second.failed_file_count == 0
+        assert processor.require_cursor_authority() is None
 
         record = cursor.get_record(source_path)
         assert record is not None
