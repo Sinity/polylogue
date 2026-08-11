@@ -36,7 +36,6 @@ def isolated_task_history_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         ("render cli-reference", "render"),
         ("lab smoke", "lab"),
         ("bench mutation", "campaign"),
-        ("bench campaign", "campaign"),
         ("bench synthetic", "campaign"),
         ("status", "query"),
         ("workspace tasks", "query"),

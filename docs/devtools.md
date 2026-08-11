@@ -101,8 +101,6 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`.
 - `devtools bench mutation`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
   Common forms: `devtools bench mutation list`, `devtools bench mutation run filters`.
-- `devtools bench campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
-  Common forms: `devtools bench campaign list`, `devtools bench campaign run search-filters`, `devtools bench campaign compare baseline.json candidate.json`.
 
 ### Core
 
@@ -194,13 +192,12 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools bench campaign` | Run or compare benchmark campaigns. |
 | `devtools bench coordination-latency` | Measure compact coordination status p50/p95 with raw stage samples. |
 | `devtools bench help-latency` | Check `--help` wall-clock latency against the interactive-tier cold-CLI budget (polylogue-20d.2). |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
-| `devtools bench mutation` | Run focused mutation campaigns and maintain their local index. |
+| `devtools bench mutation` | Run focused mutation campaigns with isolated execution and JSON artifacts. |
 | `devtools bench nightly-compare` | Compare nightly pytest-benchmark output with the committed baseline. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 | `devtools bench synthetic` | Run synthetic benchmark campaigns over generated archives. |

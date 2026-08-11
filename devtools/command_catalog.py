@@ -1866,23 +1866,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "bench mutation",
         "benchmarking",
-        "Run focused mutation campaigns and maintain their local index.",
+        "Run focused mutation campaigns with isolated execution and JSON artifacts.",
         "devtools.mutmut_campaign",
         use_when="Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.",
         examples=("devtools bench mutation list", "devtools bench mutation run filters"),
-        featured=True,
-    ),
-    CommandSpec(
-        "bench campaign",
-        "benchmarking",
-        "Run or compare benchmark campaigns.",
-        "devtools.benchmark_campaign",
-        use_when="Record durable benchmark artifacts or compare a candidate run against a baseline artifact.",
-        examples=(
-            "devtools bench campaign list",
-            "devtools bench campaign run search-filters",
-            "devtools bench campaign compare baseline.json candidate.json",
-        ),
         featured=True,
     ),
     CommandSpec(

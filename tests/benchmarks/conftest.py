@@ -6,9 +6,8 @@ matching the real archive's distribution rather than hand-rolled word pools.
 Generated DBs are cached in a temp directory per session to avoid
 regeneration overhead dominating benchmark measurements.
 
-Usage:
-    devtools bench campaign list
-    devtools bench campaign run search-filters
+Run these benchmarks directly with pytest. The nightly workflow collects the
+raw pytest-benchmark JSON and compares it with the committed baseline.
 """
 
 from __future__ import annotations

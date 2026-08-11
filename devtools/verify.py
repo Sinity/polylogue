@@ -2158,8 +2158,7 @@ def build_verify_steps(
         # Scale-tier policy (issue #1183): default verify includes
         # ``scale_small`` but excludes ``scale_medium`` / ``scale_large``.
         # ``--lab`` lets the medium tier in; the large tier is reserved
-        # for nightly CI and explicit ``devtools bench campaign``
-        # invocations.
+        # for nightly CI's direct pytest-benchmark execution.
         scale_marker_expr = "not scale_large" if lab else "not scale_medium and not scale_large"
         pytest_cmd = [
             sys.executable,
