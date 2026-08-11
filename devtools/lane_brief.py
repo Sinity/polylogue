@@ -95,10 +95,12 @@ _VERIFICATION_TIER = (
 )
 
 _PR_SCOPE_CARRIER = (
-    "Before opening a non-draft PR, render the structured carrier from assigned Bead IDs, "
+    "Before opening a non-draft PR, render stable v2 intent from assigned and mutated Bead IDs, "
     "whole-Bead dispositions, typed evidence refs, and open successors for residual work: "
     "`devtools workspace pr-scope render --input .agent/pr-scope.json`. Embed the rendered comment "
     "in the PR body and validate the published PR with `devtools workspace pr-scope check --pr <N>`. "
+    "Use `devtools workspace pr-scope sync --pr <N>` to inspect the current head-bound attestation without "
+    "rewriting the body after each commit. "
     "Do not infer acceptance from Bead prose or invent missing Bead IDs."
 )
 

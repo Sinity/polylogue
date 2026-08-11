@@ -117,7 +117,9 @@ Before publishing the PR as non-draft, render the versioned embedded carrier
 with `devtools workspace pr-scope render --input <scope.json>`, put that exact
 comment beside the human matrix, and validate the published PR with
 `devtools workspace pr-scope check --pr <N>`. Never infer a disposition from
-Bead acceptance prose or invent a successor ID.
+Bead acceptance prose or invent a successor ID. The v2 body is stable intent;
+use `devtools workspace pr-scope sync --pr <N>` to inspect the current
+head-bound attestation rather than rewriting the body after every commit.
 
 Reference any bead with neutral wording only (`Ref polylogue-xxxx` /
 `Ref #N`). **Never use GitHub resolver keywords** (closes/fixes/resolves)

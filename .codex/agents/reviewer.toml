@@ -29,7 +29,7 @@ consider the change safe to merge. Do not edit the branch.
 
 For every non-draft PR, inspect the human per-Bead disposition matrix and run
 `devtools workspace pr-scope check --pr <N>`. Reject a missing carrier, a
-carrier not bound to the current head, stale Bead records, a partial outcome
+missing current head-bound attestation, stale Bead records, a partial outcome
 without an open named successor, or evidence that does not support the stated
 whole-Bead disposition. Do not treat Bead acceptance prose as machine input.
 """
