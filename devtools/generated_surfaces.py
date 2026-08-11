@@ -14,6 +14,7 @@ from devtools import (
     render_openapi,
     render_pages,
     render_query_discovery,
+    render_visual_tapes,
     render_webui_client,
     render_webui_design_system,
 )
@@ -202,6 +203,14 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/surfaces/payloads.py",
             "pyproject.toml",
         ),
+    ),
+    GeneratedSurface(
+        name="visual-tapes",
+        label="Visual evidence tapes",
+        description="Render (or verify) the committed VHS tape files for the default visual evidence specs.",
+        command=control_plane_argv("render visual-tapes"),
+        main=render_visual_tapes.generated_surface_main,
+        inputs=("devtools/visual_vhs.py", "devtools/render_visual_tapes.py"),
     ),
 )
 
