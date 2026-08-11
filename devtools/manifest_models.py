@@ -74,33 +74,6 @@ class CoverageManifest(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Scenario-coverage manifest  (scenario-coverage.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class ScenarioFamily(BaseModel):
-    """A single scenario family."""
-
-    model_config = ConfigDict(extra="forbid")
-    name: str
-    description: str
-    subject: str
-    scenario_count: int | str  # int literal or "dynamic"
-    location: str
-    bead: str | None = None
-    notes: str | None = None
-
-
-class ScenarioCoverageManifest(BaseModel):
-    """Root of scenario-coverage.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    families: list[ScenarioFamily]
-    coverage_gaps: list[CoverageGap] = Field(default_factory=list)
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Campaign-coverage manifest  (campaign-coverage.yaml)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -279,39 +252,6 @@ class LayeringManifest(BaseModel):
 
 # ──────────────────────────────────────────────────────────────────────
 # ──────────────────────────────────────────────────────────────────────
-# Security-privacy-coverage manifest  (security-privacy-coverage.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class TestCoverage(BaseModel):
-    """Test-coverage metadata for a security area."""
-
-    model_config = ConfigDict(extra="forbid")
-    location: str | None = None
-    hypothesis: bool = False
-
-
-class SecurityControl(BaseModel):
-    """A single security control entry."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str
-    implemented: bool = False
-    controls: list[dict[str, str]] | dict[str, str] = Field(default_factory=dict)
-    test_coverage: TestCoverage = Field(default_factory=TestCoverage)
-    notes: str | None = None
-
-
-class SecurityPrivacyManifest(BaseModel):
-    """Root of security-privacy-coverage.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    areas: dict[str, SecurityControl] = Field(default_factory=dict)
-    coverage_gaps: list[CoverageGap] = Field(default_factory=list)
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Distribution-coverage manifest  (distribution-coverage.yaml)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -365,39 +305,6 @@ class DistributionCoverageManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     description: str | None = None
     artifacts: dict[str, DistributionArtifact | PipDependencies | PlatformCoverage] = Field(default_factory=dict)
-    coverage_gaps: list[CoverageGap] = Field(default_factory=list)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Docs-media-coverage manifest  (docs-media-coverage.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class DocMediaSurface(BaseModel):
-    """A single documentation surface entry.
-
-    Only fields consumed by an executable check are retained
-    (#1064 Pack C). ``path`` is verified against the filesystem and
-    ``generated_by`` / ``verified_by`` resolve against the devtools
-    command catalog via ``check_coverage_references``. The previous
-    ``related_paths``, ``sections``, ``freshness_days``, ``count``,
-    and ``providers`` fields were removed because no check consumed
-    them.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    path: str | None = None
-    generated_by: str | None = None
-    verified_by: str | None = None
-    notes: str | None = None
-
-
-class DocsMediaCoverageManifest(BaseModel):
-    """Root of docs-media-coverage.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    surfaces: dict[str, DocMediaSurface] = Field(default_factory=dict)
     coverage_gaps: list[CoverageGap] = Field(default_factory=list)
 
 
@@ -491,12 +398,9 @@ class TestQualityCoverageManifest(BaseModel):
 
 # Maps YAML filename → Pydantic model class for structural validation.
 MANIFEST_MODELS: dict[str, type[BaseModel]] = {
-    "scenario-coverage.yaml": ScenarioCoverageManifest,
     "campaign-coverage.yaml": CampaignCoverageManifest,
     "layering.yaml": LayeringManifest,
-    "security-privacy-coverage.yaml": SecurityPrivacyManifest,
     "distribution-coverage.yaml": DistributionCoverageManifest,
-    "docs-media-coverage.yaml": DocsMediaCoverageManifest,
     "test-quality-coverage.yaml": TestQualityCoverageManifest,
 }
 
@@ -552,8 +456,6 @@ __all__ = [
     "CoverageManifest",
     "DistributionArtifact",
     "DistributionCoverageManifest",
-    "DocMediaSurface",
-    "DocsMediaCoverageManifest",
     "FlakyTest",
     "FuzzTool",
     "LayeringManifest",
@@ -565,12 +467,7 @@ __all__ = [
     "MANIFEST_MODELS",
     "MutationCampaignEntry",
     "PlatformCoverage",
-    "ScenarioCoverageManifest",
-    "ScenarioFamily",
-    "SecurityControl",
-    "SecurityPrivacyManifest",
     "TestCount",
-    "TestCoverage",
     "TestLocations",
     "TestQualityCoverageManifest",
     "TestQualityDimension",

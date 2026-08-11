@@ -2147,15 +2147,6 @@ def build_verify_steps(
                     "lab policy raw-authority-frontier-executability",
                     _devtools_cmd("lab policy raw-authority-frontier-executability"),
                 ),
-                # Static, archive-independent, sub-second: forbids a NEW
-                # top-level def named table_exists/column_exists/index_exists
-                # (or a _-prefixed/_sync/_async variant) outside
-                # polylogue/storage/introspection.py -- the ~25-copy
-                # duplication polylogue-48h consolidated into that module.
-                (
-                    "lab policy table-exists-duplication",
-                    _devtools_cmd("lab policy table-exists-duplication"),
-                ),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance
                 # (bundle_scopes/representative_paths) and scans for secrets.

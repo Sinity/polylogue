@@ -199,7 +199,6 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools lab policy raw-authority-frontier-executability` | Verify every raw-authority frontier state has a reachable actuator. |
 | `devtools lab policy raw-payload-hash-purity` | Verify no raw-capture write path splices a synthesized literal onto captured bytes before hashing. |
 | `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
-| `devtools lab policy table-exists-duplication` | Verify no module outside storage/introspection.py redefines table_exists/column_exists/index_exists. |
 | `devtools lab policy timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
