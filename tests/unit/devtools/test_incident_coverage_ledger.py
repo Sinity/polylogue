@@ -12,6 +12,7 @@ from devtools.incident_coverage_ledger import (
     CAMPAIGN_GRAPH_PATH,
     LEDGER_PATH,
     IncidentCoverageLedgerError,
+    _validate_graph_provenance,
     load_beads_jsonl,
     load_campaign_graph,
     load_ledger,
@@ -53,6 +54,19 @@ def test_real_campaign_graph_resolves_the_current_forcing_set() -> None:
     assert result.ledger_row_count == 99
     assert LEDGER_PATH.is_file()
     assert CAMPAIGN_GRAPH_PATH.is_file()
+
+
+def test_campaign_graph_snapshot_digest_survives_missing_feature_commit(tmp_path: Path) -> None:
+    graph = _graph()
+    graph.pop("source_commit", None)
+    graph["source_snapshot_sha256"] = "not-the-current-export"
+    beads_path = tmp_path / "issues.jsonl"
+    beads_path.write_bytes((Path.cwd() / ".beads" / "issues.jsonl").read_bytes())
+
+    with pytest.raises(IncidentCoverageLedgerError) as error:
+        _validate_graph_provenance(graph, beads_path=beads_path)
+
+    assert error.value.diagnostic["error"] == "graph_source_snapshot_mismatch"
 
 
 def test_deleting_a_ledger_row_emits_machine_readable_missing_id() -> None:

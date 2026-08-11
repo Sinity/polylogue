@@ -120,6 +120,10 @@ def pytest_sessionstart(session: Any) -> None:
     _SLOWEST_REPORTS.clear()
     _COLLECTION_STARTED_AT = None
     _COLLECTION_DURATION_S = None
+    # The worker environment is assigned after process exec, so it is not
+    # reliably visible through /proc/<pid>/environ.  Emit the identity from
+    # inside the worker for the supervisor's process-state sampler.
+    _write_event({"event": "session_started"})
 
 
 @pytest.hookimpl
