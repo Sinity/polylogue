@@ -690,6 +690,37 @@ def _audit_file_identity(path: Path) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
+def _audit_live_metadata(audit_path: Path) -> tuple[int, int, tuple[str, ...]]:
+    """Read the durable markers that remain valid after an in-place migration."""
+    with closing(sqlite3.connect(f"file:{audit_path}?mode=ro", uri=True)) as connection:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
+        application_id = int(connection.execute("PRAGMA application_id").fetchone()[0] or 0)
+        quick_check = tuple(str(row[0]) for row in connection.execute("PRAGMA quick_check"))
+    return version, application_id, quick_check
+
+
+def _validate_initial_audit_image(
+    audit_path: Path,
+    *,
+    expected_image_sha256: str,
+    expected_image_size: int,
+    expected_application_id: int,
+    expected_initial_version: int,
+) -> tuple[int, int]:
+    """Authenticate the receipt-bound initial image before binding its identity."""
+    file_identity = _audit_file_identity(audit_path)
+    try:
+        audit_image = audit_path.read_bytes()
+    except OSError as exc:
+        raise MigrationError(f"cannot read adopted audit tier: {audit_path}") from exc
+    if len(audit_image) != expected_image_size or hashlib.sha256(audit_image).hexdigest() != expected_image_sha256:
+        raise MigrationError("audit adoption receipt does not match the published canonical audit image")
+    version, application_id, quick_check = _audit_live_metadata(audit_path)
+    if version != expected_initial_version or application_id != expected_application_id or quick_check != ("ok",):
+        raise MigrationError("audit adoption receipt does not match the published canonical audit image")
+    return file_identity
+
+
 def _load_audit_adoption_continuity(archive_root: Path) -> dict[str, object] | None:
     """Load the immutable audit-file identity record, if publication reached it."""
     continuity_path = _audit_adoption_continuity_path(archive_root)
@@ -740,10 +771,13 @@ def _write_audit_adoption_continuity(
     archive_root: Path,
     *,
     receipt_payload: dict[str, object],
+    expected_initial_file_identity: tuple[int, int],
 ) -> None:
     """Publish the post-link audit identity that later detects stale replacement."""
     audit_path = archive_root / "audit.db"
     device, inode = _audit_file_identity(audit_path)
+    if (device, inode) != expected_initial_file_identity:
+        raise MigrationError("audit tier changed before recording adoption continuity")
     continuity_path = _audit_adoption_continuity_path(archive_root)
     payload: dict[str, object] = {
         "format": _AUDIT_ADOPTION_CONTINUITY_FORMAT,
@@ -764,11 +798,22 @@ def _write_audit_adoption_continuity(
         raise MigrationError("audit tier changed while recording adoption continuity")
 
 
-def _validate_audit_adoption_continuity(archive_root: Path, *, receipt_payload: dict[str, object]) -> None:
+def _validate_audit_adoption_continuity(
+    archive_root: Path,
+    *,
+    receipt_payload: dict[str, object],
+    expected_initial_file_identity: tuple[int, int] | None,
+) -> None:
     """Require the published audit path to retain its adopted live identity."""
     continuity = _load_audit_adoption_continuity(archive_root)
     if continuity is None:
-        _write_audit_adoption_continuity(archive_root, receipt_payload=receipt_payload)
+        if expected_initial_file_identity is None:
+            raise MigrationError("audit adoption continuity is missing without an authenticated initial image")
+        _write_audit_adoption_continuity(
+            archive_root,
+            receipt_payload=receipt_payload,
+            expected_initial_file_identity=expected_initial_file_identity,
+        )
         continuity = _load_audit_adoption_continuity(archive_root)
     assert continuity is not None
     expected = (continuity.get("audit_device"), continuity.get("audit_inode"))
@@ -839,8 +884,13 @@ def recover_pending_audit_adoption(archive_root: Path) -> bool:
     """Publish a receipt-backed missing audit file before startup classification."""
     archive_root = archive_root.resolve()
     receipt = _load_audit_adoption_receipt(archive_root)
-    if receipt is None or (archive_root / "audit.db").is_file():
+    audit_path = archive_root / "audit.db"
+    if receipt is None or audit_path.is_file():
         return False
+    if _load_audit_adoption_continuity(archive_root) is not None:
+        raise MigrationError(
+            "adopted audit tier is missing after continuity was recorded; restore audit.db from backup"
+        )
     receipt_path, payload = receipt
     _recover_pending_audit_adoption(archive_root, receipt_path, payload)
     return True
@@ -858,23 +908,32 @@ def validate_audit_adoption_receipt(archive_root: Path, *, require_initial_image
     if not isinstance(expected_initial_version, int):
         raise MigrationError("audit adoption receipt lacks its initial audit schema version")
     audit_path = archive_root / "audit.db"
+    continuity = _load_audit_adoption_continuity(archive_root)
     if not audit_path.is_file():
+        if continuity is not None:
+            raise MigrationError(
+                "adopted audit tier is missing after continuity was recorded; restore audit.db from backup"
+            )
         _recover_pending_audit_adoption(archive_root, receipt_path, payload)
         require_initial_image = True
-    if require_initial_image:
-        try:
-            audit_image = audit_path.read_bytes()
-        except OSError as exc:
-            raise MigrationError(f"cannot read adopted audit tier: {audit_path}") from exc
-        if len(audit_image) != expected_image_size or hashlib.sha256(audit_image).hexdigest() != expected_image_sha256:
-            raise MigrationError("audit adoption receipt does not match the published canonical audit image")
-    with closing(sqlite3.connect(f"file:{audit_path}?mode=ro", uri=True)) as connection:
-        version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
-        application_id = int(connection.execute("PRAGMA application_id").fetchone()[0] or 0)
-        quick_check = tuple(str(row[0]) for row in connection.execute("PRAGMA quick_check"))
-    if version < expected_initial_version or application_id != expected_application_id or quick_check != ("ok",):
-        raise MigrationError("audit adoption receipt does not match the live audit tier")
-    _validate_audit_adoption_continuity(archive_root, receipt_payload=payload)
+    initial_file_identity: tuple[int, int] | None = None
+    if continuity is None or require_initial_image:
+        initial_file_identity = _validate_initial_audit_image(
+            audit_path,
+            expected_image_sha256=expected_image_sha256,
+            expected_image_size=expected_image_size,
+            expected_application_id=expected_application_id,
+            expected_initial_version=expected_initial_version,
+        )
+    else:
+        version, application_id, quick_check = _audit_live_metadata(audit_path)
+        if version < expected_initial_version or application_id != expected_application_id or quick_check != ("ok",):
+            raise MigrationError("audit adoption receipt does not match the live audit tier")
+    _validate_audit_adoption_continuity(
+        archive_root,
+        receipt_payload=payload,
+        expected_initial_file_identity=initial_file_identity,
+    )
     return receipt_path
 
 

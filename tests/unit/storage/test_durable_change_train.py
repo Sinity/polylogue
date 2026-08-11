@@ -1940,6 +1940,107 @@ def test_audit_adoption_receipt_recovers_interrupted_publication_during_bootstra
     assert reconcile_durable_change_train_startup(archive_root) == ()
 
 
+def test_audit_adoption_bootstrap_rejects_stale_replacement_before_recording_continuity(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Startup does not bless a replaced audit image in the post-link crash window."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    real_link = os.link
+
+    def interrupt_continuity_link(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if Path(destination).name == "audit-continuity.json":
+            raise OSError("simulated crash after audit link")
+        real_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    with monkeypatch.context() as interrupted_publication:
+        interrupted_publication.setattr("polylogue.operations.durable_change_train.os.link", interrupt_continuity_link)
+        with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-continuity-crash") as owner:
+            with pytest.raises(MigrationError, match="cannot publish immutable audit adoption receipt"):
+                adopt_missing_audit_tier(
+                    audit_path,
+                    backup_manifest=Path(backup.output_path) / "manifest.json",
+                    directory_fd=owner.directory_fd,
+                    stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+                )
+
+    stale_clone = archive_root / "stale-audit.db"
+    with sqlite3.connect(audit_path) as connection:
+        connection.execute(
+            "INSERT INTO archive_authority (archive_instance_id, created_at_ms, authority_format) VALUES (?, ?, ?)",
+            ("audit-before-stale-clone", 1, 1),
+        )
+        connection.commit()
+    shutil.copy2(audit_path, stale_clone)
+    with sqlite3.connect(audit_path) as connection:
+        connection.execute(
+            "INSERT INTO archive_authority (archive_instance_id, created_at_ms, authority_format) VALUES (?, ?, ?)",
+            ("audit-after-stale-clone", 2, 1),
+        )
+        connection.commit()
+    os.replace(stale_clone, audit_path)
+    stale_image = audit_path.read_bytes()
+
+    with pytest.raises(MigrationError, match="published canonical audit image"):
+        initialize_active_archive_root(archive_root)
+
+    assert audit_path.read_bytes() == stale_image
+    assert not (marker_root / "audit-continuity.json").exists()
+
+
+def test_audit_adoption_recovery_preserves_missing_tier_after_continuity(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Recovery requires restore, without recreating audit.db after completed adoption."""
+    from polylogue.operations.durable_change_train import recover_pending_audit_adoption
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-missing-after-continuity") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    audit_path.unlink()
+    before = {path.relative_to(archive_root): path.read_bytes() for path in archive_root.rglob("*") if path.is_file()}
+
+    with pytest.raises(MigrationError, match="missing after continuity"):
+        recover_pending_audit_adoption(archive_root)
+
+    after = {path.relative_to(archive_root): path.read_bytes() for path in archive_root.rglob("*") if path.is_file()}
+    assert after == before
+    assert not audit_path.exists()
+
+
 def test_audit_adoption_receipt_is_excluded_from_pre_marker_train_state(workspace_env: dict[str, Path]) -> None:
     """The adoption receipt does not prevent legacy current-schema bootstrap adoption."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
