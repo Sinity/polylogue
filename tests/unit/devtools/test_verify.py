@@ -508,6 +508,7 @@ def test_marker_filters_keep_testmon_selection_forced() -> None:
     label, command = steps[-1]
     assert label == "pytest testmon"
     marker_expr = _pytest_marker_expr(command)
+    assert "not benchmark" in marker_expr
     assert "not scale_medium" in marker_expr
     assert "not scale_large" in marker_expr
     assert "--testmon-forceselect" in command
@@ -522,6 +523,7 @@ def test_skip_slow_composes_with_forced_testmon_selection() -> None:
     # ``scale_medium``/``scale_large``; ``--skip-slow`` composes with that
     # filter via ``and`` rather than replacing it.
     marker_expr = _pytest_marker_expr(command)
+    assert "not benchmark" in marker_expr
     assert "not slow" in marker_expr
     assert "not scale_medium" in marker_expr
     assert "not scale_large" in marker_expr
@@ -535,6 +537,7 @@ def test_default_verify_excludes_medium_and_large_scale_markers() -> None:
     label, command = steps[-1]
     assert label == "pytest testmon"
     marker_expr = _pytest_marker_expr(command)
+    assert "not benchmark" in marker_expr
     assert "not scale_medium" in marker_expr
     assert "not scale_large" in marker_expr
     # ``scale_small`` is *not* excluded — it runs in the default gate.
@@ -548,6 +551,7 @@ def test_lab_verify_includes_medium_scale_marker() -> None:
     pytest_step = next((label, command) for label, command in steps if label.startswith("pytest"))
     label, command = pytest_step
     marker_expr = _pytest_marker_expr(command)
+    assert "not benchmark" in marker_expr
     assert "not scale_large" in marker_expr
     assert "not scale_medium" not in marker_expr
     assert "scale_small" not in marker_expr

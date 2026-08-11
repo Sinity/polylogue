@@ -1985,7 +1985,14 @@ def build_verify_steps(
             "-p",
             "devtools.pytest_progress_plugin",
         ]
-        base_marker = f"not slow and {scale_marker_expr}" if skip_slow else scale_marker_expr
+        # Benchmark cases are an explicit campaign surface, not part of the
+        # correctness/testmon seed.  Keeping them out here is important: a
+        # benchmark marker is not necessarily paired with ``slow`` or a scale
+        # marker, and a serial shard would otherwise spend minutes executing a
+        # performance probe before it can checkpoint any correctness nodes.
+        base_marker = f"not benchmark and {scale_marker_expr}"
+        if skip_slow:
+            base_marker = f"not slow and {base_marker}"
         if seed_testmon:
             # Collection produces the exact corpus contract before any testmon
             # write. Shards below are generated from this ledger and run one
