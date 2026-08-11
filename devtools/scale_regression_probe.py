@@ -30,7 +30,7 @@ from polylogue.storage import repair as repair_mod
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session import rebuild as rebuild_mod
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
@@ -67,10 +67,7 @@ def _session_id(native_id: str, origin: str = Origin.CODEX_SESSION.value) -> str
 
 
 def _init_archive(root: Path) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
-    initialize_archive_database(root / "user.db", ArchiveTier.USER)
+    initialize_active_archive_root(root)
 
 
 def _parsed_session(native_id: str, *, title: str, messages: int = 1) -> ParsedSession:

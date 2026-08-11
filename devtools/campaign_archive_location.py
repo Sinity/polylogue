@@ -66,6 +66,10 @@ class CampaignArchiveLocation:
         before any SQLite tier file is opened when ``archive_dir`` is already
         owned by another live campaign/maintenance process.
         """
+        # A campaign owns a fresh output directory.  Establish that directory
+        # before resolving its descriptor, then retain the normal ownership
+        # proof before a caller can open any SQLite tier.
+        archive_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         location = ArchiveLocation.resolve(archive_dir)
         owned = OwnedArchiveLocation.acquire(location, owner_id=owner_id)
         return cls(owned=owned)

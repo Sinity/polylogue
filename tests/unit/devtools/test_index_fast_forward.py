@@ -18,20 +18,18 @@ from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _archive(tmp_path: Path, *, extra_native_ids: tuple[str, ...] = ()) -> Path:
     root = tmp_path / "archive"
-    root.mkdir()
-    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS):
-        initialize_archive_database(root / f"{tier.value}.db", tier)
+    initialize_active_archive_root(root)
     storage = tmp_path / "storage"
     active_root = storage / ".index-generations" / "v36"
     active_root.mkdir(parents=True)
     active = active_root / "index.db"
-    initialize_archive_database(active, ArchiveTier.INDEX)
+    (root / "index.db").replace(active)
     (storage / "index.db").symlink_to(active)
     (root / "index.db").symlink_to(storage / "index.db")
 
