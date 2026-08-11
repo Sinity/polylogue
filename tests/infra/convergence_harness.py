@@ -44,7 +44,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
@@ -229,24 +229,68 @@ def ingest_convergence_pathology(
     session_ids: list[str] = []
     for index in selected:
         session = _parsed_session(pathology.sessions[index], corpus_index=index)
+        content_hash = str(session_content_hash(session))
         payload = _raw_payload(session)
         source_path = root / "sources" / f"{index:03d}-{session.provider_session_id}.json"
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_bytes(payload)
-        with sqlite3.connect(root / "source.db") as source_conn:
-            raw_id = write_source_raw_session(
-                source_conn,
-                origin="codex-session",
-                capture_mode=Provider.CODEX,
-                source_path=str(source_path),
-                source_index=-1 if append_only else index,
-                payload=payload,
-                acquired_at_ms=_acquired_at_ms(index),
-                native_id=session.provider_session_id,
+        raw_blob_publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+        raw_blob_hash, raw_blob_size = raw_blob_publisher.write_from_bytes(payload)
+        preacquired_attachments: list[ParsedAttachment] = []
+        attachment_blob_refs: list[ArchiveSourceBlobRef] = []
+        attachment_receipts: list[tuple[str, bytes]] = []
+        for attachment in session.attachments:
+            if attachment.inline_bytes is None:
+                preacquired_attachments.append(attachment)
+                continue
+            attachment_hash, attachment_size = raw_blob_publisher.write_from_bytes(attachment.inline_bytes)
+            attachment_receipt = raw_blob_publisher.receipt_id(attachment_hash)
+            preacquired_attachments.append(
+                attachment.model_copy(
+                    update={"inline_bytes": None, "precomputed_blob": (attachment_hash, attachment_size)}
+                )
             )
+            attachment_blob_refs.append(
+                ArchiveSourceBlobRef(
+                    blob_hash=bytes.fromhex(attachment_hash),
+                    ref_type="attachment",
+                    source_path=str(source_path),
+                    size_bytes=attachment_size,
+                    acquired_at_ms=_acquired_at_ms(index),
+                    publication_receipt_id=attachment_receipt,
+                )
+            )
+            if attachment_receipt is not None:
+                attachment_receipts.append((attachment_receipt, bytes.fromhex(attachment_hash)))
+        session = session.model_copy(update={"attachments": preacquired_attachments})
+        raw_blob_publisher.flush()
+        with sqlite3.connect(root / "source.db") as source_conn:
+            with source_conn:
+                raw_id = write_source_raw_session(
+                    source_conn,
+                    origin="codex-session",
+                    capture_mode=Provider.CODEX,
+                    source_path=str(source_path),
+                    source_index=-1 if append_only else index,
+                    payload=payload,
+                    acquired_at_ms=_acquired_at_ms(index),
+                    native_id=session.provider_session_id,
+                    blob_publication_receipt_id=raw_blob_publisher.receipt_id(raw_blob_hash),
+                    additional_blob_refs=tuple(attachment_blob_refs),
+                    manage_transaction=False,
+                )
+                consume_blob_publication_receipt(
+                    source_conn,
+                    raw_blob_publisher.receipt_id(raw_blob_hash),
+                    bytes.fromhex(raw_blob_hash),
+                )
+                for attachment_receipt, attachment_hash in attachment_receipts:
+                    consume_blob_publication_receipt(source_conn, attachment_receipt, attachment_hash)
+        if raw_blob_size != len(payload):
+            raise AssertionError(f"published raw payload size drifted for {source_path}")
         payload_model = SessionWritePayload(
             session_id=str(make_session_id(session.source_name, session.provider_session_id)),
-            content_hash=str(session_content_hash(session)),
+            content_hash=content_hash,
             parsed_session=session,
             message_count=len(session.messages),
             attachment_count=len(session.attachments),

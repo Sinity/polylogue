@@ -126,6 +126,8 @@ def _clean_attributed_path(path: str) -> str | None:
             return None
         return candidate
     expanded = _lexical_expanduser(candidate)
+    if _is_ignored_absolute_path(PurePosixPath(expanded)):
+        return None
     repo_root = _repo_root_from_path(expanded)
     if repo_root is not None:
         try:
@@ -137,8 +139,6 @@ def _clean_attributed_path(path: str) -> str | None:
         return expanded
 
     pure_path = PurePosixPath(expanded)
-    if _is_ignored_absolute_path(pure_path):
-        return None
 
     parts = [part for part in pure_path.parts if part != "/"]
     if len(parts) < 2:

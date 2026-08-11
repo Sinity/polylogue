@@ -19,7 +19,8 @@ import pytest
 from devtools.archive_space_report import build_space_report
 from polylogue.cli.commands.maintenance._backup_plan import _backup_plan_payload
 from polylogue.storage.blob_gc import run_blob_gc
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.benchmarks.helpers import BenchmarkFixture
 
 
@@ -33,20 +34,7 @@ def _seed_archive_tiers(root: Path) -> None:
 
 
 def _seed_gc_db(path: Path) -> None:
-    with sqlite3.connect(path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions(raw_id TEXT PRIMARY KEY, blob_hash BLOB);
-            CREATE TABLE blob_refs(blob_hash BLOB PRIMARY KEY);
-            CREATE TABLE gc_generations(
-                generation_id TEXT PRIMARY KEY,
-                started_at_ms INTEGER NOT NULL,
-                completed_at_ms INTEGER,
-                reclaimed_count INTEGER NOT NULL DEFAULT 0,
-                reclaimed_bytes INTEGER NOT NULL DEFAULT 0
-            );
-            """
-        )
+    initialize_archive_database(path, ArchiveTier.SOURCE)
 
 
 def _seed_sharded_blobs(blob_root: Path, count: int) -> None:
@@ -107,7 +95,7 @@ def test_bench_blob_gc_dry_run_candidate_scan(
 ) -> None:
     """Scan sharded blob candidates through GC dry-run without deleting files."""
     monkeypatch.chdir(tmp_path)
-    archive_db = tmp_path / "index.db"
+    archive_db = tmp_path / "source.db"
     blob_root = tmp_path / "blob"
     blob_count = 256
     _seed_gc_db(archive_db)
