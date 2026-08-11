@@ -488,16 +488,19 @@ def _check_source_index_coverage_at_index_path(
     """Every logical source's head is indexed OR carries a typed refusal.
 
     Universe (polylogue-r4jiu, invariant I1): ``raw_sessions`` logical heads --
-    the latest revision per ``(origin, COALESCE(native_id, source_path))`` --
+    the latest revision per
+    ``(origin, COALESCE(logical_source_key, native_id, source_path))`` --
     which is a ground-truth table every acquired raw lands in, not a ledger a
     downstream reconciliation stage can silently omit rows from. A logical
     head counts as covered when *any* raw in its revision group is
     materialized into ``index.db``. An uncovered head must be typed as one
     of: ``parse_error`` (raw_sessions.parse_error set), ``non_session`` /
     ``census_failed`` (raw_membership_census recorded a terminal non-complete
-    verdict), or ``quarantined`` (raw_sessions.revision_authority --
-    reconciliation hasn't granted it authority to write yet, WARN-level
-    evidence, not blocking). An uncovered head matching none of those is an
+    verdict), a content-bound byte-supersession receipt whose named twin is
+    present in the candidate index, or ``quarantined``
+    (raw_sessions.revision_authority -- reconciliation hasn't granted it
+    authority to write yet, WARN-level evidence, not blocking). An uncovered
+    head matching none of those is an
     *untyped* gap -- a materialization failure no other subsystem has
     explained -- and is the only ERROR-gating condition here besides orphans
     (index sessions whose raw_id doesn't exist in source.db at all).
@@ -522,6 +525,26 @@ def _check_source_index_coverage_at_index_path(
             census_expr = (
                 "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
             )
+            has_supersession_receipts = table_exists(conn, "raw_byte_duplicate_supersession_receipts")
+            valid_supersession_expr = (
+                """
+                EXISTS(
+                    SELECT 1
+                    FROM raw_byte_duplicate_supersession_receipts receipt
+                    JOIN raw_sessions twin ON twin.raw_id = receipt.duplicate_of_raw_id
+                    JOIN idx_tier.sessions twin_session
+                      ON twin_session.raw_id = twin.raw_id
+                     AND twin_session.session_id = receipt.duplicate_of_session_id
+                    WHERE receipt.raw_id = r.raw_id
+                      AND receipt.blob_hash = r.blob_hash
+                      AND receipt.blob_size = r.blob_size
+                      AND twin.blob_hash = r.blob_hash
+                      AND twin.blob_size = r.blob_size
+                )
+                """
+                if has_supersession_receipts
+                else "0"
+            )
 
             # A read-only connection (``query_only=ON``, connection-wide, not
             # per-attached-db) cannot ``CREATE TEMP VIEW`` -- the temp schema
@@ -534,11 +557,17 @@ def _check_source_index_coverage_at_index_path(
                         r.blob_hash,
                         r.parse_error,
                         r.revision_authority,
+                        r.logical_source_key,
                         {census_expr} AS census_status,
+                        {valid_supersession_expr} AS valid_supersession,
                         MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
-                            OVER (PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)) AS any_indexed,
+                            OVER (
+                                PARTITION BY r.origin,
+                                             COALESCE(r.logical_source_key, r.native_id, r.source_path)
+                            ) AS any_indexed,
                         ROW_NUMBER() OVER (
-                            PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)
+                            PARTITION BY r.origin,
+                                         COALESCE(r.logical_source_key, r.native_id, r.source_path)
                             ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
                         ) AS rn
                     FROM raw_sessions r
@@ -547,11 +576,13 @@ def _check_source_index_coverage_at_index_path(
             untyped_predicate = """
                 rn = 1 AND any_indexed = 0 AND parse_error IS NULL
                   AND COALESCE(census_status, '') NOT IN ('non_session', 'failed')
+                  AND valid_supersession = 0
                   AND revision_authority != 'quarantined'
             """
             quarantined_predicate = """
                 rn = 1 AND any_indexed = 0 AND parse_error IS NULL
                   AND COALESCE(census_status, '') NOT IN ('non_session', 'failed')
+                  AND valid_supersession = 0
                   AND revision_authority = 'quarantined'
             """
 
@@ -567,12 +598,13 @@ def _check_source_index_coverage_at_index_path(
                   SUM(CASE WHEN any_indexed = 0 AND parse_error IS NULL
                             AND COALESCE(census_status, '') != 'non_session'
                             AND census_status = 'failed' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN any_indexed = 0 AND valid_supersession = 1 THEN 1 ELSE 0 END),
                   SUM(CASE WHEN {quarantined_predicate.replace("rn = 1 AND ", "")} THEN 1 ELSE 0 END),
                   SUM(CASE WHEN {untyped_predicate.replace("rn = 1 AND ", "")} THEN 1 ELSE 0 END)
                 FROM heads WHERE rn = 1
                 """
             ).fetchone()
-            parse_error_n, non_session_n, census_failed_n, quarantined_n, untyped_n = (
+            parse_error_n, non_session_n, census_failed_n, superseded_n, quarantined_n, untyped_n = (
                 int(value or 0) for value in counts
             )
 
@@ -609,6 +641,7 @@ def _check_source_index_coverage_at_index_path(
                     {heads_cte}
                     SELECT SUM(CASE WHEN {quarantined_predicate.replace("rn = 1 AND ", "")}
                                        OR {untyped_predicate.replace("rn = 1 AND ", "")}
+                                       OR valid_supersession = 1
                                   THEN (
                                     EXISTS(
                                         SELECT 1 FROM raw_sessions dup
@@ -645,7 +678,7 @@ def _check_source_index_coverage_at_index_path(
     finally:
         conn.close()
 
-    unindexed_head_count = parse_error_n + non_session_n + census_failed_n + quarantined_n + untyped_n
+    unindexed_head_count = parse_error_n + non_session_n + census_failed_n + superseded_n + quarantined_n + untyped_n
     blocking = untyped_n > 0 or int(orphan_count or 0) > 0
     warning = quarantined_n > 0
 
@@ -667,6 +700,8 @@ def _check_source_index_coverage_at_index_path(
         parts.append(f"parse_error={parse_error_n:,}")
     if non_session_n or census_failed_n:
         parts.append(f"declared-non-session={non_session_n + census_failed_n:,}")
+    if superseded_n:
+        parts.append(f"superseded-byte-duplicate={superseded_n:,}")
     if byte_dup_of_indexed_n:
         parts.append(
             f"byte-dup-of-indexed={byte_dup_of_indexed_n:,} (novel={novel_unindexed_n:,} of {unindexed_head_count:,})"
@@ -692,6 +727,7 @@ def _check_source_index_coverage_at_index_path(
             "parse_error_count": parse_error_n,
             "non_session_count": non_session_n,
             "census_failed_count": census_failed_n,
+            "superseded_byte_duplicate_count": superseded_n,
             "quarantined_count": quarantined_n,
             "quarantined_sample": quarantined_sample,
             "byte_dup_of_indexed_count": byte_dup_of_indexed_n,
@@ -1220,7 +1256,11 @@ def _check_raw_failure_lifecycle(archive_root: Path, sample_limit: int) -> Archi
             evidence=evidence,
         )
     known = snapshot.deferred + snapshot.terminal
-    status = OutcomeStatus.WARNING if known else OutcomeStatus.OK
+    # Terminal evidence is the completed state this invariant requires. Keep
+    # it visible in counts/evidence, but do not emit a warning that strict
+    # candidate acceptance interprets as a permanent veto. Deferred failures
+    # remain warning-level because their source disposition is still open.
+    status = OutcomeStatus.WARNING if snapshot.deferred else OutcomeStatus.OK
     summary = (
         f"{known:,} raw failure(s) classified ({snapshot.deferred:,} deferred, {snapshot.terminal:,} terminal)"
         if known
@@ -2360,11 +2400,16 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
             SELECT
                 r.raw_id,
                 r.parse_error,
+                r.logical_source_key,
                 {census_expr} AS census_status,
                 MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
-                    OVER (PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)) AS any_indexed,
+                    OVER (
+                        PARTITION BY r.origin,
+                                     COALESCE(r.logical_source_key, r.native_id, r.source_path)
+                    ) AS any_indexed,
                 ROW_NUMBER() OVER (
-                    PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)
+                    PARTITION BY r.origin,
+                                 COALESCE(r.logical_source_key, r.native_id, r.source_path)
                     ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
                 ) AS rn
             FROM raw_sessions r

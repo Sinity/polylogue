@@ -232,6 +232,50 @@ def test_parser_receipt_fails_when_observed_identity_differs_from_binding(tmp_pa
     assert parser_census_logical_keys(receipt[1]) == ("codex-session:parser-observed-id",)
 
 
+def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path: Path) -> None:
+    """A typed terminal failure is a settled non-session source disposition."""
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"not valid codex jsonl",
+            source_path="terminal-corrupt.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path="terminal-corrupt.jsonl",
+            source_index=0,
+            acquired_at_ms=1,
+            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CODEX,
+            error=ValueError("terminal corrupt input"),
+            preserve_existing_failure_evidence=True,
+        )
+        with archive._ensure_source_conn():
+            archive_revision_governance.record_current_parser_source_census(
+                archive._ensure_source_conn(),
+                raw_id,
+            )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        status, keys = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+    assert status == "complete"
+    assert parser_census_logical_keys(keys) == ()
+
+    from polylogue.sources.revision_backfill import require_current_parser_source_census
+
+    assert require_current_parser_source_census(tmp_path)[raw_id] == ()
+
+
 def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path) -> None:
     """A parser-derived membership receipt cannot retain its provisional raw key."""
     initialize_active_archive_root(tmp_path)

@@ -1879,6 +1879,11 @@ def record_current_parser_source_census(
         membership_logical_keys=membership_keys,
     )
     typed_non_session = bool(raw[2])
+    if typed_non_session:
+        # Terminal parser evidence and other typed non-session artifacts have
+        # an authoritative empty identity set. Requiring a session logical key
+        # here makes those durable dispositions impossible to freeze.
+        durable_keys = ()
     observed_keys = (
         tuple(
             sorted(

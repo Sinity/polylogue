@@ -113,6 +113,57 @@ def test_daemon_client_probes_the_production_uds_server(monkeypatch: pytest.Monk
         thread.join(timeout=2)
 
 
+def test_daemon_client_can_probe_matching_writer_through_degraded_health(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Maintenance discovers the writer without weakening query readiness."""
+    from http import HTTPStatus
+
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
+
+    def degraded_health(self: DaemonAPIHandler) -> None:
+        self._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {
+                "archive_root": "/realm/archive",
+                "index_schema_version": 24,
+                "daemon_version": "0.1.0",
+                "raw_failure_lifecycle_state": "degraded",
+            },
+        )
+
+    monkeypatch.setattr(DaemonAPIHandler, "_handle_health", degraded_health)
+    socket_path = Path("/realm/tmp") / f"polylogue-uds-degraded-{getpid()}.sock"
+    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = DaemonClient(socket_path)
+        assert (
+            client.probe(
+                archive_root="/realm/archive",
+                index_schema_version=24,
+                daemon_version="0.1.0",
+            )
+            is None
+        )
+        assert (
+            client.probe(
+                archive_root="/realm/archive",
+                index_schema_version=24,
+                daemon_version="0.1.0",
+                accept_degraded=True,
+            )
+            is not None
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_daemon_client_preserves_typed_4xx_detail_from_the_production_uds_server() -> None:
     """Maintenance clients can surface a daemon validation reason, not only a transport failure."""
     from http import HTTPStatus

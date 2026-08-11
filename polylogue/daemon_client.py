@@ -47,6 +47,7 @@ class DaemonClient:
         body: dict[str, object] | None = None,
         *,
         raise_for_status: bool = False,
+        accepted_statuses: frozenset[int] = frozenset({200}),
     ) -> dict[str, Any] | None:
         if not self.socket_path.exists():
             return None
@@ -61,7 +62,7 @@ class DaemonClient:
             response = connection.getresponse()
             payload = json.loads(response.read().decode())
             self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
-            if response.status != 200:
+            if response.status not in accepted_statuses:
                 if raise_for_status:
                     envelope = payload if isinstance(payload, dict) else {}
                     code = envelope.get("error")
@@ -81,8 +82,26 @@ class DaemonClient:
     def cli_query(self, params: dict[str, object]) -> dict[str, Any] | None:
         return self.request_json("POST", "/api/cli/query", {"params": params})
 
-    def probe(self, *, archive_root: str, index_schema_version: int, daemon_version: str) -> dict[str, Any] | None:
-        health = self.request_json("GET", "/api/health")
+    def probe(
+        self,
+        *,
+        archive_root: str,
+        index_schema_version: int,
+        daemon_version: str,
+        accept_degraded: bool = False,
+    ) -> dict[str, Any] | None:
+        """Return identity only for the daemon serving the requested archive.
+
+        Maintenance callers may accept the health endpoint's 503 envelope in
+        order to reach the daemon-owned repair route.  This does not authorize
+        the repair: the write endpoint still runs its typed preflight.  Query
+        callers retain the strict 200-only default.
+        """
+        health = (
+            self.request_json("GET", "/api/health", accepted_statuses=frozenset({200, 503}))
+            if accept_degraded
+            else self.request_json("GET", "/api/health")
+        )
         if health is None:
             return None
         if health.get("archive_root") != archive_root:

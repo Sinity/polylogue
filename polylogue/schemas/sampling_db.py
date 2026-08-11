@@ -260,7 +260,7 @@ def _iter_schema_units_from_db(
 
     ``logical_heads_only`` (default ``False``, opt-in): restrict the sampled
     rows to one per logical source -- the latest revision per
-    ``(origin, COALESCE(native_id, source_path))``, the same grouping the
+    ``(origin, COALESCE(logical_source_key, native_id, source_path))``, the same grouping the
     archive-verification I1 coverage check uses for its universe. Schema
     inference's ordinary use (discovering every shape a provider's wire
     format can take) wants every revision, since an older revision can carry
@@ -296,7 +296,7 @@ def _iter_schema_units_from_db(
                     source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
                     validation_status,
                     ROW_NUMBER() OVER (
-                        PARTITION BY origin, COALESCE(native_id, source_path)
+                        PARTITION BY origin, COALESCE(logical_source_key, native_id, source_path)
                         ORDER BY acquired_at_ms DESC, raw_id DESC
                     ) AS rn
                 FROM raw_sessions

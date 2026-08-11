@@ -240,7 +240,7 @@ class TestLogicalHeadsOnly:
 
     polylogue-t0m73 phase 1: an opt-in flag restricting the sampling query
     to one row per logical source (latest revision per
-    ``(origin, COALESCE(native_id, source_path))``) for value-distribution
+    ``(origin, COALESCE(logical_source_key, native_id, source_path))``) for value-distribution
     callers, who would otherwise have a re-acquired session contribute its
     field values once per revision. Default is unchanged (every revision
     sampled) for schema-shape discovery, which wants every revision since

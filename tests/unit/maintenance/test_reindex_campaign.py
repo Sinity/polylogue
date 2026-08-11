@@ -13,6 +13,8 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +30,8 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.raw_byte_duplicate_supersession import plan_byte_duplicate_supersession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+from polylogue.version import POLYLOGUE_VERSION
 from tests.infra.convergence_harness import (
     debt_ledger_row,
     make_messages_fts_stale,
@@ -130,7 +134,10 @@ def test_reindex_campaign_manifest_has_positive_denominators(tmp_path: Path) -> 
     assert dict(corpus.manifest.fixture_dimensions)["revision_count"] == 804
 
 
-def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_duplicate(tmp_path: Path) -> None:
+@pytest.mark.uses_real_clock("the real UDS daemon readiness probe has a bounded monotonic deadline")
+def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Full replay and the canary use inactive generations and never promote.
 
     Mutations killed by this test include promoting a no-promote candidate,
@@ -141,11 +148,21 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
 
     corpus = build_reindex_campaign_corpus(tmp_path / "campaign")
     root = corpus.root
+    schema_inference_receipt = write_valid_rebuild_receipt(
+        root,
+        tmp_path / "schema-inference-gate-receipt.json",
+    )
     with patch(
         "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
         SyntheticAntigravityLanguageServerClient,
     ):
-        baseline = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+        baseline = rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                promote=True,
+                schema_inference_receipt_path=schema_inference_receipt,
+            )
+        )
     assert baseline.status == "replayed"
     active_before = _digest(root / "index.db")
 
@@ -153,7 +170,13 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
         "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
         SyntheticAntigravityLanguageServerClient,
     ):
-        receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=False))
+        receipt = rebuild_index_from_source_sync(
+            RebuildIndexRequest(
+                archive_root=root,
+                promote=False,
+                schema_inference_receipt_path=schema_inference_receipt,
+            )
+        )
     assert receipt.status == "replayed"
     assert receipt.generation["state"] == "inactive"
     assert receipt.generation["index_path"] != str((root / "index.db").resolve())
@@ -189,17 +212,62 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
         {candidate.raw_id for candidate in duplicate_plan.duplicates} & set(corpus.manifest.parser_failure_raw_ids)
     )
 
-    with patch(
-        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
-        SyntheticAntigravityLanguageServerClient,
-    ):
-        receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
-        canary = run_reindex_canary(
-            root,
-            schema_inference_receipt_path=receipt_path,
-            sessions_per_origin=100,
-            no_promote=True,
-        )
+    # Canary construction is daemon-writer-only. Start the production UDS
+    # server and its standalone write coordinator against this exact archive;
+    # patching the client or rebuild function would miss the ownership route
+    # this campaign is supposed to prove.
+    runtime_dir = Path(tempfile.mkdtemp(prefix="plg-campaign-uds-"))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+
+    daemon_config = load_polylogue_config()
+    auth_token = resolve_api_auth_token(
+        daemon_config.api_auth_token,
+        allow_no_auth=daemon_config.api_allow_no_auth,
+        token_path=root / "api-auth-token",
+    )
+    socket_path = daemon_socket_path(root, runtime_dir=str(runtime_dir))
+    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler, auth_token=auth_token)
+    server_thread = threading.Thread(target=server.serve_forever, name="reindex-campaign-uds", daemon=True)
+    server_thread.start()
+    try:
+        client = DaemonClient(socket_path, timeout_s=1.0, auth_token=auth_token)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if (
+                client.probe(
+                    archive_root=str(root.resolve()),
+                    index_schema_version=INDEX_SCHEMA_VERSION,
+                    daemon_version=POLYLOGUE_VERSION,
+                    accept_degraded=True,
+                )
+                is not None
+            ):
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("campaign daemon UDS server did not become ready")
+
+        with patch(
+            "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+            SyntheticAntigravityLanguageServerClient,
+        ):
+            canary = run_reindex_canary(
+                root,
+                schema_inference_receipt_path=schema_inference_receipt,
+                sessions_per_origin=100,
+                no_promote=True,
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
+        shutil.rmtree(runtime_dir, ignore_errors=True)
     assert canary.comparison.unexpected_count > 0
     assert set(canary.comparison.counts_by_table) == {"raw_revision_applications", "raw_revision_heads"}
     canary_generation = canary.rebuild_receipt["generation"]

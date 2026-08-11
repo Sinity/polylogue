@@ -952,11 +952,15 @@ def require_current_parser_source_census(
 
     invalid_durable_bindings: set[str] = set()
     durable_logical_keys: dict[str, tuple[str, ...]] = {}
-    for raw_id, (typed_key, revision_kind, membership_keys, _typed_non_session) in durable_bindings.items():
-        durable_keys = durable_authority_logical_keys(
-            raw_logical_key=typed_key,
-            revision_kind=revision_kind,
-            membership_logical_keys=membership_keys,
+    for raw_id, (typed_key, revision_kind, membership_keys, typed_non_session) in durable_bindings.items():
+        durable_keys = (
+            ()
+            if typed_non_session
+            else durable_authority_logical_keys(
+                raw_logical_key=typed_key,
+                revision_kind=revision_kind,
+                membership_logical_keys=membership_keys,
+            )
         )
         if durable_keys is None:
             invalid_durable_bindings.add(raw_id)
@@ -1090,6 +1094,10 @@ def require_current_parser_source_census(
                     LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
                     WHERE r.revision_authority = 'quarantined'
                       {authority_where}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM raw_artifacts AS a
+                          WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0
+                      )
                       AND (
                           c.raw_id IS NULL OR c.status NOT IN ('complete', 'non_session')
                           OR (
@@ -2054,7 +2062,94 @@ def _parse_retained_raws(
                 sessions, _rep_size, _rep_kind = outcome
                 _provider, _blob_hash, _source_path, kind, size, _native_id = descriptors[raw_id]
                 results[raw_id] = (sessions, size, kind)
+    _enrich_retained_parse_results(archive, descriptors=descriptors, results=results)
     return results
+
+
+def _enrich_retained_parse_results(
+    archive: ArchiveStore,
+    *,
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception],
+) -> None:
+    """Apply replay-safe provider assembly to decoded retained raws.
+
+    Initial file ingest routes every parsed session through the provider
+    assembly layer before hashing and writing it. Raw replay historically
+    skipped that layer, so even deterministic fallbacks (for example Codex's
+    first-human-message title) changed the session hash and made byte-proven
+    source cohorts permanently non-adoptable.
+
+    Replay may consume only frozen source evidence. It therefore uses the
+    earliest persisted ``history_sidecars`` snapshot for an acquisition path,
+    plus durable Codex title hook events, and otherwise supplies an explicit
+    empty sidecar set. It never rediscovers mutable files beside the original
+    source path. Providers whose enrichment was never captured remain
+    conservatively unenriched and will still fail an exact hash comparison
+    rather than being reconstructed from ambient filesystem state.
+    """
+    # Unit-level parser/dedupe probes deliberately pass tiny protocol fakes;
+    # enrichment is an ArchiveStore production concern and is covered through
+    # real source-tier replay fixtures below. Do not turn those pure decode
+    # probes into accidental SQLite integration tests.
+    if not isinstance(archive, ArchiveStore):
+        return
+    from polylogue.sources.assembly_codex import read_codex_thread_title_hook_events
+
+    source_conn = archive._ensure_source_conn()
+    codex_hook_titles = read_codex_thread_title_hook_events(source_conn)
+    sidecars_by_path: dict[tuple[Origin, str], object] = {}
+    for raw_id, outcome in tuple(results.items()):
+        if isinstance(outcome, Exception):
+            continue
+        provider, _blob_hash, source_path, _descriptor_kind, _size, _native_id = descriptors[raw_id]
+        sessions, payload_bytes, kind = outcome
+        results[raw_id] = (
+            _replay_safe_enrich_sessions(
+                source_conn,
+                provider=provider,
+                source_path=source_path,
+                sessions=sessions,
+                sidecars_by_path=sidecars_by_path,
+                codex_hook_titles=codex_hook_titles,
+            ),
+            payload_bytes,
+            kind,
+        )
+
+
+def _replay_safe_enrich_sessions(
+    source_conn: sqlite3.Connection,
+    *,
+    provider: Provider,
+    source_path: str,
+    sessions: list[ParsedSession],
+    sidecars_by_path: dict[tuple[Origin, str], object],
+    codex_hook_titles: dict[str, str],
+) -> list[ParsedSession]:
+    """Enrich one retained parse from frozen source-tier sidecars only."""
+    from polylogue.sources.assembly import SidecarData, get_assembly_spec
+    from polylogue.storage.sqlite.archive_tiers.source_write import read_earliest_history_sidecar_for_path
+
+    spec = get_assembly_spec(provider)
+    if spec is None:
+        return sessions
+    origin = origin_from_provider(provider)
+    sidecar_key = (origin, source_path)
+    cached = sidecars_by_path.get(sidecar_key)
+    if cached is None:
+        persisted = read_earliest_history_sidecar_for_path(
+            source_conn,
+            origin=origin,
+            source_path=source_path,
+        )
+        sidecar_data = cast("SidecarData", dict(persisted.payload) if persisted is not None else {})
+        if provider is Provider.CODEX and codex_hook_titles:
+            sidecar_data = cast("SidecarData", {**sidecar_data, "hook_event_titles": codex_hook_titles})
+        sidecars_by_path[sidecar_key] = sidecar_data
+    else:
+        sidecar_data = cast("SidecarData", cached)
+    return [spec.enrich_session(session, sidecar_data) for session in sessions]
 
 
 def _parse_unique_retained_raws_via_threads(
@@ -2441,14 +2536,16 @@ class _ReplaySpillPrefetcher:
         # NOTE: ``with sqlite3.connect(...)`` would only manage a
         # transaction, not the connection lifetime -- close explicitly.
         source_conn = sqlite3.connect(f"file:{self._source_db_path}?mode=ro", uri=True, timeout=30.0)
+        spill_conn: sqlite3.Connection | None = None
         try:
             plan, descriptors = self._build_plan(source_conn, keys, extra_members)
-        finally:
-            source_conn.close()
-        if not plan:
-            return
-        spill_conn = sqlite3.connect(self._spill.path, timeout=30.0)
-        try:
+            if not plan:
+                return
+            from polylogue.sources.assembly_codex import read_codex_thread_title_hook_events
+
+            codex_hook_titles = read_codex_thread_title_hook_events(source_conn)
+            sidecars_by_path: dict[tuple[Origin, str], object] = {}
+            spill_conn = sqlite3.connect(self._spill.path, timeout=30.0)
             spill_conn.execute("PRAGMA busy_timeout = 30000")
             for seq, raw_id in plan:
                 if self._wait_for_budget(generation, seq) is False:
@@ -2460,7 +2557,14 @@ class _ReplaySpillPrefetcher:
                         continue
                 if raw_id in self._spill._decoded or raw_id in self._spill._whales:
                     continue
-                decoded = self._decode(spill_conn, raw_id, descriptors)
+                decoded = self._decode(
+                    spill_conn,
+                    source_conn,
+                    raw_id,
+                    descriptors,
+                    sidecars_by_path=sidecars_by_path,
+                    codex_hook_titles=codex_hook_titles,
+                )
                 if decoded is None:
                     continue
                 sessions, payload_bytes, from_reparse = decoded
@@ -2475,7 +2579,9 @@ class _ReplaySpillPrefetcher:
                     self._buffer[raw_id] = (sessions, payload_bytes, tree_bytes, from_reparse, seq)
                     self._buffered_tree_bytes += tree_bytes
         finally:
-            spill_conn.close()
+            if spill_conn is not None:
+                spill_conn.close()
+            source_conn.close()
 
     def _wait_for_budget(self, generation: int, seq: int) -> bool:
         """Block until buffer headroom exists; False means phase over."""
@@ -2565,8 +2671,12 @@ class _ReplaySpillPrefetcher:
     def _decode(
         self,
         spill_conn: sqlite3.Connection,
+        source_conn: sqlite3.Connection,
         raw_id: str,
         descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+        *,
+        sidecars_by_path: dict[tuple[Origin, str], object],
+        codex_hook_titles: dict[str, str],
     ) -> tuple[list[ParsedSession], int, bool] | None:
         started = time.perf_counter()
         rows = spill_conn.execute(
@@ -2600,6 +2710,14 @@ class _ReplaySpillPrefetcher:
             # Do not buffer failures: the writer's inline decode raises the
             # identical error at the identical point in the identical order.
             return None
+        sessions_or_none = _replay_safe_enrich_sessions(
+            source_conn,
+            provider=provider,
+            source_path=source_path,
+            sessions=sessions_or_none,
+            sidecars_by_path=sidecars_by_path,
+            codex_hook_titles=codex_hook_titles,
+        )
         self.reparse_hits += 1
         self.decode_seconds += time.perf_counter() - started
         return sessions_or_none, payload_bytes, True
@@ -2718,6 +2836,8 @@ class _ParsedSessionSpill:
         #: engaged). ``for_raw`` consults it AFTER the free RAM tiers and
         #: BEFORE the sqlite/reparse fallbacks it exists to hide.
         self._prefetcher: _ReplaySpillPrefetcher | None = None
+        self._replay_sidecars_by_path: dict[tuple[Origin, str], object] = {}
+        self._codex_hook_titles: dict[str, str] | None = None
 
     def attach_prefetcher(self, prefetcher: _ReplaySpillPrefetcher) -> None:
         self._prefetcher = prefetcher
@@ -2845,6 +2965,19 @@ class _ParsedSessionSpill:
         if rows:
             return [pickle.loads(bytes(row[0])) for row in rows], int(rows[0][1])
         sessions, payload_bytes, _kind = _parse_retained_raw(archive, raw_id)
+        if self._codex_hook_titles is None:
+            from polylogue.sources.assembly_codex import read_codex_thread_title_hook_events
+
+            self._codex_hook_titles = read_codex_thread_title_hook_events(archive._ensure_source_conn())
+        provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+        sessions = _replay_safe_enrich_sessions(
+            archive._ensure_source_conn(),
+            provider=provider,
+            source_path=source_path,
+            sessions=sessions,
+            sidecars_by_path=self._replay_sidecars_by_path,
+            codex_hook_titles=self._codex_hook_titles,
+        )
         self.add(raw_id, sessions, payload_bytes=payload_bytes)
         return sessions, payload_bytes
 
