@@ -343,6 +343,8 @@ def test_check_rejects_command_text_without_typed_scope_or_permission(
         ("pr_scope_digest", "changed-body-digest", "pr_scope_digest"),
         ("pr_scope_beads_digest", "stale", "pr_scope_beads_digest"),
         ("pr_scope_assigned_beads", ["polylogue-other"], "pr_scope_assigned_beads"),
+        ("pr_scope_mutated_beads", ["polylogue-unlisted"], "pr_scope_mutated_beads"),
+        ("pr_scope_attestation_digest", "stale-attestation", "pr_scope_attestation_digest"),
     ],
 )
 def test_check_blocks_when_receipt_scope_components_are_mutated(

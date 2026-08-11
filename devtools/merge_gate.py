@@ -278,11 +278,12 @@ def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.
         info.get("body") or "",
         head_sha=head_sha,
         is_draft=bool(info.get("isDraft")),
+        base_sha=info.get("baseRefOid") if isinstance(info.get("baseRefOid"), str) else None,
     )
 
 
 def cmd_record(pr: int, command: str) -> int:
-    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft,author,files"])
+    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,baseRefOid,body,isDraft,author,files"])
     head_sha = info["headRefOid"]
 
     local_head = _git_head_sha()
@@ -328,6 +329,12 @@ def cmd_record(pr: int, command: str) -> int:
         "pr_scope_digest": scope.scope_digest,
         "pr_scope_beads_digest": scope.beads_digest,
         "pr_scope_assigned_beads": scope.assigned_beads,
+        "pr_scope_mutated_beads": scope.mutated_beads,
+        "pr_scope_attestation_digest": pr_scope.attestation_payload(
+            scope,
+            head_sha=head_sha,
+            base_sha=info.get("baseRefOid") if isinstance(info.get("baseRefOid"), str) else None,
+        )["attestation_digest"],
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
@@ -459,7 +466,7 @@ def cmd_check(
                 "view",
                 str(pr),
                 "--json",
-                "headRefOid,mergeStateStatus,state,commits,body,isDraft,author,files",
+                "headRefOid,baseRefOid,mergeStateStatus,state,commits,body,isDraft,author,files",
             ]
         )
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
@@ -528,6 +535,21 @@ def cmd_check(
                 verdict.ok = False
                 verdict.reasons.append(
                     "receipt pr_scope_assigned_beads does not match the current carrier -- re-record"
+                )
+            if receipt.get("pr_scope_mutated_beads") != scope.mutated_beads:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "receipt pr_scope_mutated_beads does not match the complete current Bead mutation scope -- re-record"
+                )
+            expected_attestation_digest = pr_scope.attestation_payload(
+                scope,
+                head_sha=head_sha,
+                base_sha=info.get("baseRefOid") if isinstance(info.get("baseRefOid"), str) else None,
+            )["attestation_digest"]
+            if receipt.get("pr_scope_attestation_digest") != expected_attestation_digest:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "receipt pr_scope_attestation_digest does not match the current head-bound scope attestation -- re-record"
                 )
             age_s = time.time() - receipt.get("recorded_at", 0)
             if age_s > max_age_s:

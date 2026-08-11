@@ -302,7 +302,7 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh merge-gate receipt. |
 | `devtools workspace merge-conductor` | Mechanical-conflict triage for the PR merge train (dry-run by default). |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local-verification receipt + no late review comments. |
-| `devtools workspace pr-scope` | Render and validate the versioned PR Bead-scope carrier. |
+| `devtools workspace pr-scope` | Render stable PR scope intent and inspect its mutable merge attestation. |
 | `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |
 | `devtools workspace raw-authority-artifact-census` | Census quarantined raws into five authority buckets; apply pages raw_artifacts upserts and records durable receipts. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |

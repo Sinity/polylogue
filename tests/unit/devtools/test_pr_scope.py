@@ -51,6 +51,22 @@ def _input(disposition: str = "satisfied", successors: list[str] | None = None) 
     }
 
 
+def _v2_input() -> dict[str, object]:
+    return {
+        "scope_kind": "bead",
+        "assigned_beads": [ASSIGNED],
+        "mutated_beads": [],
+        "dispositions": [
+            {
+                "bead_id": ASSIGNED,
+                "disposition": "satisfied",
+                "evidence": [{"kind": "test", "ref": "tests/unit/devtools/test_pr_scope.py"}],
+                "successors": [],
+            }
+        ],
+    }
+
+
 def _body(input_payload: dict[str, object], beads_path: Path, *, head_sha: str = HEAD_SHA) -> str:
     carrier = dict(input_payload)
     carrier["version"] = 1
@@ -101,6 +117,125 @@ def test_rendered_carrier_passes_the_production_check_command(
     rendered = capsys.readouterr().out
 
     assert _check(rendered, beads_path, tmp_path, capsys).startswith("0\npr-scope OK")
+
+
+def test_v2_rendered_carrier_stays_valid_when_the_head_changes(
+    beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scope_input = tmp_path / "scope.json"
+    scope_input.write_text(json.dumps(_v2_input()))
+
+    assert (
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        == 0
+    )
+    rendered = capsys.readouterr().out
+
+    assert "head_sha" not in rendered
+    assert "beads_digest" not in rendered
+    assert _check(rendered, beads_path, tmp_path, capsys, head_sha="b" * 40).startswith("0\npr-scope OK")
+
+
+def test_v2_self_contained_scope_needs_no_invented_bead(
+    beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scope_input = tmp_path / "scope.json"
+    scope_input.write_text(
+        json.dumps({"scope_kind": "self_contained", "assigned_beads": [], "mutated_beads": [], "dispositions": []})
+    )
+
+    assert (
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        == 0
+    )
+    rendered = capsys.readouterr().out
+
+    assert _check(rendered, beads_path, tmp_path, capsys, head_sha="b" * 40).startswith("0\npr-scope OK")
+
+
+def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = tmp_path / "repository"
+    beads_path = repository / ".beads" / "issues.jsonl"
+    beads_path.parent.mkdir(parents=True)
+    beads_path.write_text(json.dumps(_record(ASSIGNED)) + "\n")
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(["git", "-C", str(repository), "add", ".beads/issues.jsonl"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Polylogue test",
+            "-c",
+            "user.email=polylogue-test@example.invalid",
+            "commit",
+            "-qm",
+            "base Bead state",
+        ],
+        check=True,
+    )
+    base_sha = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    changed = _record(ASSIGNED, title="changed tracker record")
+    beads_path.write_text(json.dumps(changed) + "\n")
+    scope_input = repository / "scope.json"
+    scope_input.write_text(json.dumps(_v2_input()))
+    monkeypatch.chdir(repository)
+
+    assert (
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        == 0
+    )
+    rendered = capsys.readouterr().out
+    body_path = repository / "body.md"
+    body_path.write_text(rendered)
+
+    assert (
+        pr_scope.main(
+            [
+                "check",
+                "--body-file",
+                str(body_path),
+                "--head-sha",
+                HEAD_SHA,
+                "--base-sha",
+                base_sha,
+                "--beads-path",
+                str(beads_path),
+            ]
+        )
+        == 1
+    )
+    assert "mutated_beads does not match the complete Bead mutation set" in capsys.readouterr().out
+
+
+def test_sync_reports_a_head_bound_attestation_without_rewriting_the_body(
+    monkeypatch: pytest.MonkeyPatch, beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scope_input = tmp_path / "scope.json"
+    scope_input.write_text(json.dumps(_v2_input()))
+    assert (
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        == 0
+    )
+    body = capsys.readouterr().out
+    metadata = pr_scope.PullRequestMetadata(body=body, head_sha=HEAD_SHA, base_sha="b" * 40, is_draft=False)
+    monkeypatch.setattr(pr_scope, "fetch_pr_metadata", lambda *_args, **_kwargs: metadata)
+    monkeypatch.setattr(pr_scope, "resolve_repository", lambda _repo: "Sinity/polylogue")
+    monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
+
+    assert pr_scope.main(["sync", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)]) == 0
+    attestation = json.loads(capsys.readouterr().out)
+
+    assert attestation["head_sha"] == HEAD_SHA
+    assert attestation["beads_digest"] == pr_scope.canonical_beads_digest(
+        pr_scope.load_bead_records(beads_path), [ASSIGNED], carrier_version=2
+    )
+    assert attestation["attestation_digest"]
 
 
 def test_pr_check_uses_public_github_rest_without_cli_auth(

@@ -1,10 +1,10 @@
 """Structured PR scope carrier used by CI and the merge boundary.
 
-The carrier is an embedded JSON comment, not a convention inferred from PR
-prose. It binds the declared Bead scope to a PR head, a canonical digest of the
-assigned Bead records, whole-Bead dispositions, and concrete evidence refs.
-Bead acceptance text is deliberately opaque here: it is hashed as part of the
-record snapshot, never interpreted by this module.
+The embedded v2 JSON comment is stable intent, not a mutable commit receipt.
+The merge boundary binds that intent to the current PR head and canonical Bead
+snapshot in its exact-head attestation. Bead acceptance text remains opaque:
+the checker consumes typed identifiers, dispositions, evidence refs, and graph
+links without interpreting prose.
 """
 
 from __future__ import annotations
@@ -23,14 +23,18 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-_CARRIER_PREFIX = "polylogue-pr-scope:v1"
-_CARRIER_START = f"<!-- {_CARRIER_PREFIX}"
+_CARRIER_PREFIX = "polylogue-pr-scope"
+_CARRIER_START_PATTERN = re.compile(r"<!--\s+polylogue-pr-scope:v(?P<version>[1-9][0-9]*)\b")
 _CARRIER_END = "-->"
-_VERSION = 1
+_V1 = 1
+_VERSION = 2
 _BEADS_PATH = Path(".beads/issues.jsonl")
 _GITHUB_API_URL = "https://api.github.com"
 _REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
-_CARRIER_KEYS = frozenset({"version", "head_sha", "assigned_beads", "beads_digest", "dispositions", "scope_digest"})
+_V1_CARRIER_KEYS = frozenset({"version", "head_sha", "assigned_beads", "beads_digest", "dispositions", "scope_digest"})
+_V2_CARRIER_KEYS = frozenset(
+    {"version", "scope_kind", "assigned_beads", "mutated_beads", "dispositions", "scope_digest"}
+)
 _DISPOSITION_KEYS = frozenset({"bead_id", "disposition", "evidence", "successors"})
 _EVIDENCE_KEYS = frozenset({"kind", "ref"})
 
@@ -51,11 +55,17 @@ class EvidenceKind(StrEnum):
     TEST = "test"
 
 
+class ScopeKind(StrEnum):
+    BEAD = "bead"
+    SELF_CONTAINED = "self_contained"
+
+
 _DISPOSITIONS = frozenset(item.value for item in ScopeDisposition)
 _RESIDUAL_DISPOSITIONS = frozenset(
     {ScopeDisposition.PARTIAL.value, ScopeDisposition.DEFERRED.value, ScopeDisposition.SUPERSEDED.value}
 )
 _EVIDENCE_KINDS = frozenset(item.value for item in EvidenceKind)
+_SCOPE_KINDS = frozenset(item.value for item in ScopeKind)
 _SUCCESSOR_LINK_TYPES = frozenset({"blocks", "discovered-from", "relates-to", "supersedes"})
 
 
@@ -66,6 +76,7 @@ class ScopeVerdict:
     scope_digest: str | None = None
     beads_digest: str | None = None
     assigned_beads: list[str] = field(default_factory=list)
+    mutated_beads: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,12 +123,14 @@ def load_bead_records(path: Path = _BEADS_PATH) -> dict[str, dict[str, Any]]:
     return records
 
 
-def canonical_beads_digest(records: dict[str, dict[str, Any]], bead_ids: list[str]) -> str:
+def canonical_beads_digest(
+    records: dict[str, dict[str, Any]], bead_ids: list[str], *, carrier_version: int = _V1
+) -> str:
     """Digest whole canonical records for the declared IDs, sorted by Bead ID."""
     missing = [bead_id for bead_id in bead_ids if bead_id not in records]
     if missing:
         raise ValueError(f"assigned Bead record(s) missing: {', '.join(missing)}")
-    return _digest({"version": _VERSION, "records": [records[bead_id] for bead_id in sorted(bead_ids)]})
+    return _digest({"version": carrier_version, "records": [records[bead_id] for bead_id in sorted(bead_ids)]})
 
 
 def _successor_is_linked(source_id: str, successor_id: str, records: dict[str, dict[str, Any]]) -> bool:
@@ -143,12 +156,13 @@ def carrier_digest(carrier: dict[str, Any]) -> str:
 
 
 def extract_carrier(body: str) -> tuple[dict[str, Any] | None, list[str]]:
-    starts = [index for index in range(len(body)) if body.startswith(_CARRIER_START, index)]
+    starts = list(_CARRIER_START_PATTERN.finditer(body))
     if not starts:
         return None, ["PR body is missing the structured pr-scope carrier"]
     if len(starts) != 1:
         return None, ["PR body contains more than one structured pr-scope carrier"]
-    start = starts[0] + len(_CARRIER_START)
+    marker = starts[0]
+    start = marker.end()
     end = body.find(_CARRIER_END, start)
     if end < 0:
         return None, ["structured pr-scope carrier is missing its closing comment"]
@@ -159,6 +173,8 @@ def extract_carrier(body: str) -> tuple[dict[str, Any] | None, list[str]]:
         return None, [f"structured pr-scope carrier is not valid JSON: {exc.msg}"]
     if not isinstance(carrier, dict):
         return None, ["structured pr-scope carrier must be a JSON object"]
+    if carrier.get("version") != int(marker.group("version")):
+        return None, ["structured pr-scope carrier version does not match its comment marker"]
     return carrier, []
 
 
@@ -178,34 +194,159 @@ def _validate_keys(
         reasons.append(f"{label} is missing required field(s): {', '.join(missing)}")
 
 
+def _bead_ids(value: object, *, label: str, allow_empty: bool, reasons: list[str]) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        reasons.append(f"{label} must be a list of Bead IDs")
+        return []
+    if not value and not allow_empty:
+        reasons.append(f"{label} must be a non-empty list of Bead IDs")
+    if len(set(value)) != len(value):
+        reasons.append(f"{label} contains duplicate Bead IDs")
+    return value
+
+
+def _bead_records_at(base_sha: str) -> dict[str, dict[str, Any]]:
+    result = subprocess.run(
+        ["git", "show", f"{base_sha}:.beads/issues.jsonl"], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        raise ValueError(f"cannot read .beads/issues.jsonl at base revision {base_sha[:8]}")
+    records: dict[str, dict[str, Any]] = {}
+    for line_no, line in enumerate(result.stdout.splitlines(), start=1):
+        if not line.strip():
+            continue
+        raw = json.loads(line)
+        if isinstance(raw, dict) and raw.get("_type") == "issue" and isinstance(raw.get("id"), str):
+            if raw["id"] in records:
+                raise ValueError(f"duplicate Bead id {raw['id']!r} on base line {line_no}")
+            records[raw["id"]] = raw
+    return records
+
+
+def changed_bead_ids(*, base_sha: str, beads_path: Path = _BEADS_PATH) -> list[str]:
+    """Return the complete Bead-record mutation set between base and checkout."""
+    before = _bead_records_at(base_sha)
+    after = load_bead_records(beads_path)
+    return sorted(bead_id for bead_id in set(before) | set(after) if before.get(bead_id) != after.get(bead_id))
+
+
+def _validate_dispositions(
+    dispositions: object,
+    *,
+    assigned_ids: list[str],
+    records: dict[str, dict[str, Any]],
+    reasons: list[str],
+) -> None:
+    by_bead: dict[str, dict[str, Any]] = {}
+    if not isinstance(dispositions, list):
+        reasons.append("dispositions must be a list with one entry per assigned Bead")
+        return
+    for entry in dispositions:
+        if not isinstance(entry, dict) or not isinstance(entry.get("bead_id"), str):
+            reasons.append("each disposition must be an object with a bead_id")
+            continue
+        _validate_keys(
+            entry,
+            label=f"disposition for {entry['bead_id']}",
+            allowed=_DISPOSITION_KEYS,
+            required=_DISPOSITION_KEYS,
+            reasons=reasons,
+        )
+        bead_id = entry["bead_id"]
+        if bead_id in by_bead:
+            reasons.append(f"duplicate disposition for assigned Bead {bead_id}")
+        by_bead[bead_id] = entry
+    missing = sorted(set(assigned_ids) - set(by_bead))
+    extra = sorted(set(by_bead) - set(assigned_ids))
+    if missing:
+        reasons.append(f"missing whole-Bead disposition(s): {', '.join(missing)}")
+    if extra:
+        reasons.append(f"disposition(s) reference unassigned Bead(s): {', '.join(extra)}")
+    for bead_id, entry in by_bead.items():
+        disposition = entry.get("disposition")
+        if disposition not in _DISPOSITIONS:
+            reasons.append(f"{bead_id}: unknown whole-Bead disposition {disposition!r}")
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            reasons.append(f"{bead_id}: disposition needs at least one typed evidence reference")
+        else:
+            for ref in evidence:
+                if isinstance(ref, dict):
+                    _validate_keys(
+                        ref,
+                        label=f"evidence for {bead_id}",
+                        allowed=_EVIDENCE_KEYS,
+                        required=_EVIDENCE_KEYS,
+                        reasons=reasons,
+                    )
+                if (
+                    not isinstance(ref, dict)
+                    or ref.get("kind") not in _EVIDENCE_KINDS
+                    or not isinstance(ref.get("ref"), str)
+                    or not ref["ref"].strip()
+                ):
+                    reasons.append(f"{bead_id}: evidence references need a known kind and non-empty ref")
+                    break
+        successors = entry.get("successors", [])
+        if not isinstance(successors, list) or not all(isinstance(item, str) and item for item in successors):
+            reasons.append(f"{bead_id}: successors must be a list of Bead IDs")
+            continue
+        if len(set(successors)) != len(successors):
+            reasons.append(f"{bead_id}: successors contains duplicate Bead IDs")
+        if disposition in _RESIDUAL_DISPOSITIONS and not successors:
+            reasons.append(f"{bead_id}: {disposition} disposition requires a named successor Bead")
+        if disposition == "satisfied" and successors:
+            reasons.append(f"{bead_id}: satisfied disposition cannot carry residual successors")
+        for successor in successors:
+            record = records.get(successor)
+            if record is None:
+                reasons.append(f"{bead_id}: successor {successor} is unknown")
+            elif record.get("status") == "closed":
+                reasons.append(f"{bead_id}: successor {successor} is closed")
+            elif not _successor_is_linked(bead_id, successor, records):
+                reasons.append(f"{bead_id}: successor {successor} has no durable Beads relationship")
+            if successor == bead_id:
+                reasons.append(f"{bead_id}: cannot name itself as a successor")
+
+
 def validate_carrier(
     carrier: dict[str, Any],
     *,
     head_sha: str,
     is_draft: bool,
     beads_path: Path = _BEADS_PATH,
+    base_sha: str | None = None,
 ) -> ScopeVerdict:
     reasons: list[str] = []
+    version = carrier.get("version")
+    if version not in {_V1, _VERSION}:
+        return ScopeVerdict(ok=False, reasons=[f"carrier version must be {_V1} or {_VERSION}"])
+    is_v1 = version == _V1
     _validate_keys(
         carrier,
         label="carrier",
-        allowed=_CARRIER_KEYS,
-        required=_CARRIER_KEYS,
+        allowed=_V1_CARRIER_KEYS if is_v1 else _V2_CARRIER_KEYS,
+        required=_V1_CARRIER_KEYS if is_v1 else _V2_CARRIER_KEYS,
         reasons=reasons,
     )
-    assigned = carrier.get("assigned_beads")
-    if not isinstance(assigned, list) or not assigned or not all(isinstance(item, str) and item for item in assigned):
-        reasons.append("assigned_beads must be a non-empty list of Bead IDs")
-        assigned_ids: list[str] = []
+    assigned_ids = _bead_ids(
+        carrier.get("assigned_beads"), label="assigned_beads", allow_empty=not is_v1, reasons=reasons
+    )
+    mutated_ids: list[str] = []
+    if is_v1:
+        if carrier.get("head_sha") != head_sha:
+            reasons.append("carrier head_sha does not match the PR head SHA")
     else:
-        assigned_ids = assigned
-        if len(set(assigned_ids)) != len(assigned_ids):
-            reasons.append("assigned_beads contains duplicate Bead IDs")
-
-    if carrier.get("version") != _VERSION:
-        reasons.append(f"carrier version must be {_VERSION}")
-    if carrier.get("head_sha") != head_sha:
-        reasons.append("carrier head_sha does not match the PR head SHA")
+        scope_kind = carrier.get("scope_kind")
+        if scope_kind not in _SCOPE_KINDS:
+            reasons.append(f"scope_kind must be one of: {', '.join(sorted(_SCOPE_KINDS))}")
+        mutated_ids = _bead_ids(carrier.get("mutated_beads"), label="mutated_beads", allow_empty=True, reasons=reasons)
+        if scope_kind == ScopeKind.BEAD.value and not assigned_ids:
+            reasons.append("bead scope requires at least one assigned Bead")
+        if scope_kind == ScopeKind.SELF_CONTAINED.value and (
+            assigned_ids or mutated_ids or carrier.get("dispositions") != []
+        ):
+            reasons.append("self_contained scope cannot declare Beads, dispositions, or Bead mutations")
     if is_draft:
         reasons.append("PR is draft; publish a non-draft PR before validation")
 
@@ -215,97 +356,38 @@ def validate_carrier(
         reasons.append("carrier scope_digest does not match its canonical content")
 
     records: dict[str, dict[str, Any]] = {}
-    if assigned_ids:
-        try:
-            records = load_bead_records(beads_path)
-            expected_beads_digest = canonical_beads_digest(records, assigned_ids)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            expected_beads_digest = None
-            reasons.append(f"cannot resolve assigned Bead records: {exc}")
-        if expected_beads_digest is not None and carrier.get("beads_digest") != expected_beads_digest:
-            reasons.append("carrier beads_digest is stale for the canonical assigned Bead records")
-    else:
+    try:
+        records = load_bead_records(beads_path)
+        bound_ids = list(assigned_ids)
+        if not is_v1:
+            bound_ids.extend(mutated_ids)
+            for entry in carrier.get("dispositions", []):
+                if isinstance(entry, dict) and isinstance(entry.get("successors"), list):
+                    bound_ids.extend(item for item in entry["successors"] if isinstance(item, str))
+        bound_ids = sorted(set(bound_ids))
+        expected_beads_digest = canonical_beads_digest(records, bound_ids, carrier_version=int(version))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         expected_beads_digest = None
+        reasons.append(f"cannot resolve declared Bead records: {exc}")
+    if is_v1 and expected_beads_digest is not None and carrier.get("beads_digest") != expected_beads_digest:
+        reasons.append("carrier beads_digest is stale for the canonical assigned Bead records")
+    if not is_v1 and base_sha is not None:
+        try:
+            actual_mutations = changed_bead_ids(base_sha=base_sha, beads_path=beads_path)
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            reasons.append(f"cannot resolve Bead mutation scope: {exc}")
+        else:
+            if actual_mutations != sorted(mutated_ids):
+                reasons.append("mutated_beads does not match the complete Bead mutation set")
 
-    dispositions = carrier.get("dispositions")
-    by_bead: dict[str, dict[str, Any]] = {}
-    if not isinstance(dispositions, list):
-        reasons.append("dispositions must be a list with one entry per assigned Bead")
-    else:
-        for entry in dispositions:
-            if not isinstance(entry, dict) or not isinstance(entry.get("bead_id"), str):
-                reasons.append("each disposition must be an object with a bead_id")
-                continue
-            _validate_keys(
-                entry,
-                label=f"disposition for {entry['bead_id']}",
-                allowed=_DISPOSITION_KEYS,
-                required=_DISPOSITION_KEYS,
-                reasons=reasons,
-            )
-            bead_id = entry["bead_id"]
-            if bead_id in by_bead:
-                reasons.append(f"duplicate disposition for assigned Bead {bead_id}")
-            by_bead[bead_id] = entry
-        missing = sorted(set(assigned_ids) - set(by_bead))
-        extra = sorted(set(by_bead) - set(assigned_ids))
-        if missing:
-            reasons.append(f"missing whole-Bead disposition(s): {', '.join(missing)}")
-        if extra:
-            reasons.append(f"disposition(s) reference unassigned Bead(s): {', '.join(extra)}")
-
-        for bead_id, entry in by_bead.items():
-            disposition = entry.get("disposition")
-            if disposition not in _DISPOSITIONS:
-                reasons.append(f"{bead_id}: unknown whole-Bead disposition {disposition!r}")
-            evidence = entry.get("evidence")
-            if not isinstance(evidence, list) or not evidence:
-                reasons.append(f"{bead_id}: disposition needs at least one typed evidence reference")
-            else:
-                for ref in evidence:
-                    if isinstance(ref, dict):
-                        _validate_keys(
-                            ref,
-                            label=f"evidence for {bead_id}",
-                            allowed=_EVIDENCE_KEYS,
-                            required=_EVIDENCE_KEYS,
-                            reasons=reasons,
-                        )
-                    if (
-                        not isinstance(ref, dict)
-                        or ref.get("kind") not in _EVIDENCE_KINDS
-                        or not isinstance(ref.get("ref"), str)
-                        or not ref["ref"].strip()
-                    ):
-                        reasons.append(f"{bead_id}: evidence references need a known kind and non-empty ref")
-                        break
-            successors = entry.get("successors", [])
-            if not isinstance(successors, list) or not all(isinstance(item, str) and item for item in successors):
-                reasons.append(f"{bead_id}: successors must be a list of Bead IDs")
-                continue
-            if len(set(successors)) != len(successors):
-                reasons.append(f"{bead_id}: successors contains duplicate Bead IDs")
-            if disposition in _RESIDUAL_DISPOSITIONS and not successors:
-                reasons.append(f"{bead_id}: {disposition} disposition requires a named successor Bead")
-            if disposition == "satisfied" and successors:
-                reasons.append(f"{bead_id}: satisfied disposition cannot carry residual successors")
-            for successor in successors:
-                record = records.get(successor)
-                if record is None:
-                    reasons.append(f"{bead_id}: successor {successor} is unknown")
-                elif record.get("status") == "closed":
-                    reasons.append(f"{bead_id}: successor {successor} is closed")
-                elif not _successor_is_linked(bead_id, successor, records):
-                    reasons.append(f"{bead_id}: successor {successor} has no durable Beads relationship")
-                if successor == bead_id:
-                    reasons.append(f"{bead_id}: cannot name itself as a successor")
-
+    _validate_dispositions(carrier.get("dispositions"), assigned_ids=assigned_ids, records=records, reasons=reasons)
     return ScopeVerdict(
         ok=not reasons,
         reasons=reasons,
         scope_digest=scope_digest if isinstance(scope_digest, str) else None,
-        beads_digest=carrier.get("beads_digest") if isinstance(carrier.get("beads_digest"), str) else None,
+        beads_digest=expected_beads_digest,
         assigned_beads=assigned_ids,
+        mutated_beads=mutated_ids,
     )
 
 
@@ -315,32 +397,56 @@ def validate_pr_body(
     head_sha: str,
     is_draft: bool,
     beads_path: Path = _BEADS_PATH,
+    base_sha: str | None = None,
 ) -> ScopeVerdict:
     carrier, reasons = extract_carrier(body)
     if carrier is None:
         return ScopeVerdict(ok=False, reasons=reasons)
-    return validate_carrier(carrier, head_sha=head_sha, is_draft=is_draft, beads_path=beads_path)
+    return validate_carrier(carrier, head_sha=head_sha, is_draft=is_draft, beads_path=beads_path, base_sha=base_sha)
 
 
 def render_carrier(carrier: dict[str, Any]) -> str:
-    return f"{_CARRIER_START}\n{json.dumps(carrier, indent=2, ensure_ascii=False, sort_keys=True)}\n{_CARRIER_END}"
+    version = carrier.get("version")
+    return f"<!-- {_CARRIER_PREFIX}:v{version}\n{json.dumps(carrier, indent=2, ensure_ascii=False, sort_keys=True)}\n{_CARRIER_END}"
 
 
 def build_carrier(input_payload: dict[str, Any], *, head_sha: str, beads_path: Path = _BEADS_PATH) -> dict[str, Any]:
     carrier = dict(input_payload)
-    carrier["version"] = _VERSION
-    carrier["head_sha"] = head_sha
-    carrier.pop("beads_digest", None)
+    version = carrier.get("version", _VERSION if "scope_kind" in carrier else _V1)
+    if version not in {_V1, _VERSION}:
+        raise ValueError(f"input version must be {_V1} or {_VERSION}")
+    carrier["version"] = version
     carrier.pop("scope_digest", None)
-    assigned = carrier.get("assigned_beads")
-    if not isinstance(assigned, list) or not all(isinstance(item, str) for item in assigned):
-        raise ValueError("input assigned_beads must be a list of Bead IDs")
-    carrier["beads_digest"] = canonical_beads_digest(load_bead_records(beads_path), assigned)
+    if version == _V1:
+        carrier["head_sha"] = head_sha
+        carrier.pop("beads_digest", None)
+        assigned = carrier.get("assigned_beads")
+        if not isinstance(assigned, list) or not all(isinstance(item, str) for item in assigned):
+            raise ValueError("input assigned_beads must be a list of Bead IDs")
+        carrier["beads_digest"] = canonical_beads_digest(load_bead_records(beads_path), assigned, carrier_version=_V1)
+    else:
+        carrier.pop("head_sha", None)
+        carrier.pop("beads_digest", None)
     carrier["scope_digest"] = carrier_digest(carrier)
     verdict = validate_carrier(carrier, head_sha=head_sha, is_draft=False, beads_path=beads_path)
     if not verdict.ok:
         raise ValueError("invalid scope input: " + "; ".join(verdict.reasons))
     return carrier
+
+
+def attestation_payload(scope: ScopeVerdict, *, head_sha: str, base_sha: str | None) -> dict[str, object]:
+    """Bind stable body intent to the mutable state observed at a merge boundary."""
+    payload: dict[str, object] = {
+        "version": _VERSION,
+        "head_sha": head_sha,
+        "base_sha": base_sha,
+        "scope_digest": scope.scope_digest,
+        "beads_digest": scope.beads_digest,
+        "assigned_beads": scope.assigned_beads,
+        "mutated_beads": scope.mutated_beads,
+    }
+    payload["attestation_digest"] = _digest(payload)
+    return payload
 
 
 def _git_head_sha() -> str:
@@ -566,18 +672,21 @@ def _run_validator_source(
         body_path = root / "pr-body.md"
         validator_path.write_bytes(source)
         body_path.write_text(metadata.body, encoding="utf-8")
+        argv = [
+            sys.executable,
+            str(validator_path),
+            "check",
+            "--body-file",
+            str(body_path),
+            "--head-sha",
+            metadata.head_sha,
+            "--beads-path",
+            str(beads_path.resolve()),
+        ]
+        if b'add_argument("--base-sha"' in source:
+            argv.extend(["--base-sha", metadata.base_sha])
         result = subprocess.run(
-            [
-                sys.executable,
-                str(validator_path),
-                "check",
-                "--body-file",
-                str(body_path),
-                "--head-sha",
-                metadata.head_sha,
-                "--beads-path",
-                str(beads_path.resolve()),
-            ],
+            argv,
             capture_output=True,
             text=True,
             check=False,
@@ -635,6 +744,7 @@ def check_ci_metadata(
         head_sha=metadata.head_sha,
         is_draft=metadata.is_draft,
         beads_path=beads_path,
+        base_sha=metadata.base_sha,
     )
     return _emit_verdict(verdict, head_sha=metadata.head_sha, as_json=False)
 
@@ -645,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
 
     render = sub.add_parser("render", help="render a carrier from a JSON scope input")
     render.add_argument("--input", required=True, type=Path, help="JSON with assigned_beads and dispositions")
-    render.add_argument("--head-sha", default=None, help="PR head SHA (default: current git HEAD)")
+    render.add_argument("--head-sha", default=None, help="v1 transition head SHA (default: current git HEAD)")
     render.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
 
     check = sub.add_parser("check", help="validate a PR's embedded carrier")
@@ -654,6 +764,7 @@ def main(argv: list[str] | None = None) -> int:
     check_source.add_argument("--body-file", type=Path, help="PR body file for local validation")
     check.add_argument("--repo", help="GitHub OWNER/REPO (default: CI metadata or origin remote)")
     check.add_argument("--head-sha", help="required with --body-file")
+    check.add_argument("--base-sha", help="base SHA used to validate the complete Bead mutation scope")
     check.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
     check.add_argument("--json", action="store_true", dest="as_json")
 
@@ -662,6 +773,11 @@ def main(argv: list[str] | None = None) -> int:
     check_ci.add_argument("--repo", required=True, help="GitHub OWNER/REPO from CI metadata")
     check_ci.add_argument("--expected-head-sha", default=os.environ.get("CIRCLE_SHA1"))
     check_ci.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
+
+    sync = sub.add_parser("sync", help="report the current mutable attestation for a stable PR carrier")
+    sync.add_argument("--pr", type=int, required=True, help="GitHub PR number to inspect")
+    sync.add_argument("--repo", help="GitHub OWNER/REPO (default: CI metadata or origin remote)")
+    sync.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
 
     args = parser.parse_args(argv)
     if args.action == "render":
@@ -702,6 +818,29 @@ def main(argv: list[str] | None = None) -> int:
             print(f"REFUSING CI pr-scope check: {exc}", file=sys.stderr)
             return 2
 
+    if args.action == "sync":
+        try:
+            repository = resolve_repository(args.repo)
+            metadata = fetch_pr_metadata(args.pr, repository=repository)
+            verdict = validate_pr_body(
+                metadata.body,
+                head_sha=metadata.head_sha,
+                is_draft=metadata.is_draft,
+                beads_path=args.beads_path,
+                base_sha=metadata.base_sha,
+            )
+            if not verdict.ok:
+                return _emit_verdict(verdict, head_sha=metadata.head_sha, as_json=False)
+            print(
+                json.dumps(
+                    attestation_payload(verdict, head_sha=metadata.head_sha, base_sha=metadata.base_sha), indent=2
+                )
+            )
+            return 0
+        except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
+            print(f"REFUSING to sync pr-scope attestation: {exc}", file=sys.stderr)
+            return 2
+
     try:
         if args.pr is not None:
             repository = resolve_repository(args.repo)
@@ -709,13 +848,21 @@ def main(argv: list[str] | None = None) -> int:
             body = metadata.body
             head_sha = metadata.head_sha
             is_draft = metadata.is_draft
+            base_sha = metadata.base_sha
         else:
             if not args.head_sha:
                 raise ValueError("--head-sha is required with --body-file")
             body = args.body_file.read_text(encoding="utf-8")
             head_sha = args.head_sha
             is_draft = False
-        verdict = validate_pr_body(body, head_sha=head_sha, is_draft=is_draft, beads_path=args.beads_path)
+            base_sha = args.base_sha
+        verdict = validate_pr_body(
+            body,
+            head_sha=head_sha,
+            is_draft=is_draft,
+            beads_path=args.beads_path,
+            base_sha=base_sha,
+        )
     except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
         print(f"REFUSING to check pr-scope carrier: {exc}", file=sys.stderr)
         return 2
