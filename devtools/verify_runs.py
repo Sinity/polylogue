@@ -875,6 +875,29 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
     return None
 
 
+def _pytest_event_worker_ids(events_dir: Path | None) -> dict[int, str]:
+    """Recover xdist worker identities emitted after process exec.
+
+    ``PYTEST_XDIST_WORKER`` is not guaranteed to appear in ``/proc``'s
+    exec-time environment.  The progress plugin emits a session-start event
+    from inside each worker, which is the authoritative identity for the
+    supervisor sampler.
+    """
+    if events_dir is None or not events_dir.is_dir():
+        return {}
+    identities: dict[int, str] = {}
+    for path in events_dir.glob("*.jsonl"):
+        with contextlib.suppress(OSError, UnicodeDecodeError):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                with contextlib.suppress(json.JSONDecodeError):
+                    payload = json.loads(line)
+                    pid = payload.get("pid")
+                    worker_id = payload.get("worker_id")
+                    if isinstance(pid, int) and isinstance(worker_id, str) and worker_id != "controller":
+                        identities[pid] = worker_id
+    return identities
+
+
 class ResourceSampler:
     """Samples host and process-tree resources for one subprocess tree."""
 
@@ -884,6 +907,7 @@ class ResourceSampler:
         self.root = root
         self.env = env
         self.output_path = output_path
+        self.events_dir = Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"]) if env.get("POLYLOGUE_PYTEST_EVENTS_DIR") else None
         self.sample_count = 0
         self.peak_rss_kb = 0
         self.peak_pss_kb: int | None = None
@@ -930,6 +954,7 @@ class ResourceSampler:
         total_cpu = 0.0
         xdist_worker_count = 0
         xdist_uninterruptible_count = 0
+        event_worker_ids = _pytest_event_worker_ids(self.events_dir)
         for pid in pids:
             status = _status_values(pid)
             rss = int(status.get("rss_kb") or 0)
@@ -940,7 +965,7 @@ class ResourceSampler:
             swap_pss = smaps.get("SwapPss")
             cpu = _cpu_seconds(pid)
             process_identity = _process_identity(pid)
-            worker_id = _process_environ_value(pid, "PYTEST_XDIST_WORKER")
+            worker_id = _process_environ_value(pid, "PYTEST_XDIST_WORKER") or event_worker_ids.get(pid)
             if worker_id is not None:
                 xdist_worker_count += 1
                 if str(status.get("state") or "").startswith("D"):

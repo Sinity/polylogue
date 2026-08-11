@@ -1384,6 +1384,41 @@ def test_xdist_uninterruptible_stall_ignores_partial_or_moving_workers() -> None
     )
 
 
+def test_resource_sampler_resolves_worker_identity_from_in_process_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = tmp_path / "events"
+    events.mkdir()
+    (events / "worker.jsonl").write_text(
+        json.dumps({"event": "session_started", "pid": 101, "worker_id": "gw0"}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("devtools.verify_runs.process_tree", lambda _root_pid: [101])
+    monkeypatch.setattr("devtools.verify_runs._status_values", lambda _pid: {"state": "D", "rss_kb": 30})
+    monkeypatch.setattr("devtools.verify_runs._smaps_rollup_kb", lambda _pid: {})
+    monkeypatch.setattr("devtools.verify_runs._process_io_bytes", lambda _pid: {})
+    monkeypatch.setattr("devtools.verify_runs._process_identity", lambda _pid: "101:1")
+    monkeypatch.setattr("devtools.verify_runs._cpu_seconds", lambda _pid: 1.0)
+    monkeypatch.setattr("devtools.verify_runs._process_environ_value", lambda _pid, _key: None)
+
+    sampler = ResourceSampler(
+        root_pid=101,
+        run_id="worker-events",
+        root=tmp_path,
+        env={
+            "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path),
+            "POLYLOGUE_PYTEST_EVENTS_DIR": str(events),
+        },
+        output_path=tmp_path / "resources.jsonl",
+    )
+
+    sample = sampler.sample(event="sample")
+
+    assert sample["xdist_worker_count"] == 1
+    assert sample["xdist_uninterruptible_count"] == 1
+
+
 def test_resource_sampler_accounts_memory_swap_and_io_deltas(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1599,6 +1634,26 @@ def test_resolve_basetemp_falls_back_to_nvme_scratch_when_tmpfs_is_low(
     monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
 
     root, label = resolve_pytest_basetemp_root({})
+
+    assert root == scratch
+    assert label == "scratch"
+
+
+def test_resolve_basetemp_reroutes_known_demand_before_tmpfs_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+
+    def fake_fs_usage(path: Path) -> dict[str, int] | None:
+        if path == shm:
+            return {"used_kb": 0, "free_kb": 2500 * 1024}
+        if path == scratch.parent:
+            return {"used_kb": 0, "free_kb": 4096 * 1024}
+        return None
+
+    monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
+
+    root, label = resolve_pytest_basetemp_root({"POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB": "2048"})
 
     assert root == scratch
     assert label == "scratch"

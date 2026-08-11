@@ -398,10 +398,22 @@ def _committed_paths() -> set[str]:
 
 
 def _validate_graph_provenance(graph: JsonObject, *, beads_path: Path) -> None:
-    source_commit = _string(graph.get("source_commit"), context="campaign graph source_commit")
     source_path = _string(graph.get("source_path"), context="campaign graph source_path")
     if source_path != ".beads/issues.jsonl":
         _fail("graph_source_path_invalid", f"campaign graph source path must be .beads/issues.jsonl, got {source_path}")
+    snapshot_digest = graph.get("source_snapshot_sha256")
+    if isinstance(snapshot_digest, str) and snapshot_digest:
+        actual_digest = hashlib.sha256(beads_path.read_bytes()).hexdigest()
+        if actual_digest != snapshot_digest:
+            _fail(
+                "graph_source_snapshot_mismatch",
+                "campaign graph source snapshot digest does not match current Beads export",
+                source_path=source_path,
+                expected_digest=snapshot_digest,
+                actual_digest=actual_digest,
+            )
+        return
+    source_commit = _string(graph.get("source_commit"), context="campaign graph source_commit")
     try:
         subprocess.run(
             ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],

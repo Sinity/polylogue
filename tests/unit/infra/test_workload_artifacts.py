@@ -120,6 +120,25 @@ def test_seeded_archive_failure_never_publishes_partial_staging(
     assert not list((cache_root / ".staging").iterdir())
 
 
+def test_seeded_archive_recovers_crash_left_staging_before_rebuild(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    cache_root.joinpath("artifacts").mkdir(parents=True)
+    cache_root.joinpath(".locks").mkdir()
+    staging_root = cache_root / ".staging"
+    staging_root.mkdir()
+    stale = staging_root / "dead-build.123"
+    stale.mkdir()
+    stale.joinpath("index.db").write_bytes(b"partial sqlite")
+    stale.joinpath(".build.done").write_text("written before the crash", encoding="utf-8")
+
+    removed = artifacts._recover_stale_staging(staging_root=staging_root, artifact_name="dead-build")
+
+    assert removed == ("dead-build.123",)
+    assert not stale.exists()
+
+
 class _FlakyLockConnection:
     """Fakes ``PRAGMA journal_mode=DELETE`` raising a transient same-process lock.
 

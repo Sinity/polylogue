@@ -1493,7 +1493,19 @@ def _run(
         except PytestResourceError as exc:
             elapsed = time.monotonic() - t0
             sys.stderr.write(f"FAILED ({elapsed:.1f}s)\nverify: {exc}\n")
-            return 125, elapsed, {"diagnosis": "pytest_resource_preflight_failed", "error": str(exc)}
+            refusal_metadata: dict[str, Any] = {
+                "diagnosis": "pytest_resource_preflight_failed",
+                "error": str(exc),
+                "termination_reason": "pytest resource preflight refused basetemp admission",
+                "verification_scope": "narrow-terminal",
+                "release_baseline_allowed": False,
+            }
+            if run is not None and artifacts is not None:
+                run.finish_step(
+                    step_id=artifacts.step_id,
+                    result={"duration_s": round(elapsed, 2), "exit": 125, **refusal_metadata},
+                )
+            return 125, elapsed, refusal_metadata
         pytest_tmpfs = env.get("POLYLOGUE_PYTEST_TMPFS") == "1"
         budget_kb = pytest_tmpfs_budget_kb(env)
         pytest_tmpfs_budget_mb = budget_kb / 1024 if budget_kb is not None else None

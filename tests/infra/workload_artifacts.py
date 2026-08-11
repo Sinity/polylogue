@@ -345,6 +345,26 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(path)
 
 
+def _recover_stale_staging(*, staging_root: Path, artifact_name: str) -> tuple[str, ...]:
+    """Remove only crash-left staging trees for the currently owned build.
+
+    The per-key flock is held by the caller, so no live builder for this
+    artifact can be using these paths while this sweep runs.  A completed
+    artifact is published by ``os.replace``; anything left under the matching
+    staging prefix is therefore an incomplete build from a process that died
+    before publication.  Keeping those trees made a SIGKILL leak large SQLite
+    databases indefinitely and allowed a later cache inspection to mistake a
+    partial build for reusable state.
+    """
+    removed: list[str] = []
+    for candidate in sorted(staging_root.glob(f"{artifact_name}.*")):
+        if not candidate.is_dir():
+            continue
+        _remove_tree(candidate)
+        removed.append(candidate.name)
+    return tuple(removed)
+
+
 def _validate_facts(root: Path, facts: tuple[SyntheticArtifactFacts, ...]) -> None:
     with contextlib.closing(sqlite3.connect(root / "index.db")) as conn:
         session_ids = {str(row[0]) for row in conn.execute("SELECT session_id FROM sessions")}
@@ -423,6 +443,7 @@ def build_seeded_archive(
 
     with lock_path.open("a+") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _recover_stale_staging(staging_root=staging_root, artifact_name=final_root.name)
         cached = _validate_artifact(final_root, key)
         if cached is not None:
             return cached
