@@ -255,6 +255,32 @@ def _terminal_authorization(stdout: str) -> str | None:
     return value if value in {authorization.value for authorization in TerminalAuthorization} else None
 
 
+def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.ScopeVerdict:
+    """Use the same carrier or typed bot exception for record and check."""
+    author = info.get("author")
+    files = info.get("files")
+    author_login = author.get("login") if isinstance(author, dict) else None
+    author_type = author.get("type") if isinstance(author, dict) else None
+    author_is_bot = author.get("is_bot") if isinstance(author, dict) else None
+    changed_files: tuple[str, ...] = ()
+    if isinstance(files, list):
+        changed_files = tuple(
+            path for item in files if isinstance(item, dict) and isinstance((path := item.get("path")), str)
+        )
+    if not bool(info.get("isDraft")) and pr_scope.automated_dependency_scope_allowed(
+        author_login=author_login if isinstance(author_login, str) else None,
+        author_type=author_type if isinstance(author_type, str) else None,
+        author_is_bot=author_is_bot if isinstance(author_is_bot, bool) else None,
+        changed_files=changed_files,
+    ):
+        return pr_scope.ScopeVerdict(ok=True)
+    return pr_scope.validate_pr_body(
+        info.get("body") or "",
+        head_sha=head_sha,
+        is_draft=bool(info.get("isDraft")),
+    )
+
+
 def cmd_record(pr: int, command: str) -> int:
     info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft,author,files"])
     head_sha = info["headRefOid"]
@@ -277,29 +303,7 @@ def cmd_record(pr: int, command: str) -> int:
         )
         return 2
 
-    author = info.get("author")
-    files = info.get("files")
-    author_login = author.get("login") if isinstance(author, dict) else None
-    author_type = author.get("type") if isinstance(author, dict) else None
-    changed_files: tuple[str, ...] = ()
-    if isinstance(files, list):
-        changed_files = tuple(
-            path for item in files if isinstance(item, dict) and isinstance((path := item.get("path")), str)
-        )
-    automated_scope = pr_scope.automated_dependency_scope_allowed(
-        author_login=author_login if isinstance(author_login, str) else None,
-        author_type=author_type if isinstance(author_type, str) else None,
-        changed_files=changed_files,
-    )
-    scope = (
-        pr_scope.ScopeVerdict(ok=True)
-        if automated_scope
-        else pr_scope.validate_pr_body(
-            info.get("body") or "",
-            head_sha=head_sha,
-            is_draft=bool(info.get("isDraft")),
-        )
-    )
+    scope = _scope_verdict(pr, info, head_sha=head_sha)
     if not scope.ok:
         print(f"REFUSING to record: PR #{pr} has an invalid structured pr-scope carrier:", file=sys.stderr)
         for reason in scope.reasons:
@@ -455,7 +459,7 @@ def cmd_check(
                 "view",
                 str(pr),
                 "--json",
-                "headRefOid,mergeStateStatus,state,commits,body,isDraft",
+                "headRefOid,mergeStateStatus,state,commits,body,isDraft,author,files",
             ]
         )
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
@@ -468,11 +472,7 @@ def cmd_check(
     head_sha = info["headRefOid"]
     verdict.head_sha = head_sha
 
-    scope = pr_scope.validate_pr_body(
-        info.get("body") or "",
-        head_sha=head_sha,
-        is_draft=bool(info.get("isDraft")),
-    )
+    scope = _scope_verdict(pr, info, head_sha=head_sha)
     verdict.pr_scope = asdict(scope)
     if not scope.ok:
         verdict.ok = False

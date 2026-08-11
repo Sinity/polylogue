@@ -483,17 +483,23 @@ def _automated_dependency_scope_allowed(metadata: PullRequestMetadata) -> bool:
 
 
 def automated_dependency_scope_allowed(
-    *, author_login: str | None, author_type: str | None, changed_files: tuple[str, ...]
+    *,
+    author_login: str | None,
+    author_type: str | None,
+    author_is_bot: bool | None = None,
+    changed_files: tuple[str, ...],
 ) -> bool:
-    """Recognize the same typed dependency-only scope at local merge time."""
+    """Recognize the typed dependency-only scope across REST and gh schemas."""
     allowed = {
         ".github/workflows/codeql.yml",
         "pyproject.toml",
         "uv.lock",
     }
     return (
-        author_login == "dependabot[bot]"
-        and author_type == "Bot"
+        (
+            (author_login == "dependabot[bot]" and author_type == "Bot")
+            or (author_login == "app/dependabot" and author_is_bot is True)
+        )
         and bool(changed_files)
         and set(changed_files).issubset(allowed)
     )

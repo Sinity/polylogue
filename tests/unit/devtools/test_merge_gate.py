@@ -174,7 +174,7 @@ def test_record_accepts_authoritative_dependabot_dependency_only_pr_without_carr
         "headRefName": "dependabot/uv/hypothesis",
         "body": "",
         "isDraft": False,
-        "author": {"login": "dependabot[bot]", "type": "Bot"},
+        "author": {"login": "app/dependabot", "is_bot": True},
         "files": [{"path": "pyproject.toml"}, {"path": "uv.lock"}],
     }
     base = cast(Callable[..., MagicMock], _fake_run(pr_view, [], local_head_sha="abc123"))
@@ -192,6 +192,38 @@ def test_record_accepts_authoritative_dependabot_dependency_only_pr_without_carr
 
     monkeypatch.setattr(subprocess, "run", _run)
     assert merge_gate.cmd_record(42, "devtools verify") == 0
+
+
+def test_check_accepts_authoritative_dependabot_dependency_only_pr_without_carrier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    pr_view.update(
+        {
+            "body": "",
+            "author": {"login": "app/dependabot", "is_bot": True},
+            "files": [{"path": "pyproject.toml"}, {"path": "uv.lock"}],
+        }
+    )
+    _record(monkeypatch, pr_view)
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 0
+
+
+def test_record_rejects_draft_dependabot_dependency_only_pr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = {
+        "headRefOid": "abc123",
+        "headRefName": "dependabot/uv/hypothesis",
+        "body": "",
+        "isDraft": True,
+        "author": {"login": "app/dependabot", "is_bot": True},
+        "files": [{"path": "pyproject.toml"}, {"path": "uv.lock"}],
+    }
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, [], local_head_sha="abc123"))
+    assert merge_gate.cmd_record(42, "devtools verify") == 2
+    assert not merge_gate._receipt_path(42).exists()
 
 
 def test_record_captures_nonzero_local_command_exit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
