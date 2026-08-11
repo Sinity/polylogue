@@ -245,6 +245,7 @@ def _ensure_local_commit(revision: str) -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=120,
     )
     if fetched.returncode != 0:
         detail = fetched.stderr.strip()
@@ -961,6 +962,9 @@ def main(argv: list[str] | None = None) -> int:
             head_sha = args.head_sha
             is_draft = False
             base_sha = args.base_sha
+            extracted_carrier, _carrier_reasons = extract_carrier(body)
+            if extracted_carrier is not None and extracted_carrier.get("version") == _VERSION and base_sha is None:
+                raise ValueError("--base-sha is required with --body-file for a v2 carrier")
         verdict = validate_pr_body(
             body,
             head_sha=head_sha,

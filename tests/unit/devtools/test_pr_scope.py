@@ -90,6 +90,13 @@ def _check(
     return f"{exit_code}\n{output}"
 
 
+def _validate_rendered_without_mutation_scope(body: str, beads_path: Path, *, head_sha: str) -> pr_scope.ScopeVerdict:
+    carrier, reasons = pr_scope.extract_carrier(body)
+    assert not reasons
+    assert carrier is not None
+    return pr_scope.validate_carrier(carrier, head_sha=head_sha, is_draft=False, beads_path=beads_path)
+
+
 class _FakeHttpResponse:
     def __init__(self, payload: bytes) -> None:
         self.payload = payload
@@ -133,7 +140,7 @@ def test_v2_rendered_carrier_stays_valid_when_the_head_changes(
 
     assert "head_sha" not in rendered
     assert "beads_digest" not in rendered
-    assert _check(rendered, beads_path, tmp_path, capsys, head_sha="b" * 40).startswith("0\npr-scope OK")
+    assert _validate_rendered_without_mutation_scope(rendered, beads_path, head_sha="b" * 40).ok
 
 
 def test_v2_self_contained_scope_needs_no_invented_bead(
@@ -150,7 +157,56 @@ def test_v2_self_contained_scope_needs_no_invented_bead(
     )
     rendered = capsys.readouterr().out
 
-    assert _check(rendered, beads_path, tmp_path, capsys, head_sha="b" * 40).startswith("0\npr-scope OK")
+    assert _validate_rendered_without_mutation_scope(rendered, beads_path, head_sha="b" * 40).ok
+
+
+def test_v2_body_file_check_requires_base_revision(
+    beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scope_input = tmp_path / "scope.json"
+    scope_input.write_text(json.dumps(_v2_input()))
+    assert (
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        == 0
+    )
+    body_path = tmp_path / "body.md"
+    body_path.write_text(capsys.readouterr().out)
+
+    assert (
+        pr_scope.main(
+            [
+                "check",
+                "--body-file",
+                str(body_path),
+                "--head-sha",
+                HEAD_SHA,
+                "--beads-path",
+                str(beads_path),
+            ]
+        )
+        == 2
+    )
+    assert "--base-sha is required" in capsys.readouterr().err
+
+
+def test_base_revision_fetch_has_a_finite_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    responses = [
+        MagicMock(returncode=1, stdout=b"", stderr=b""),
+        MagicMock(returncode=0, stdout="", stderr=""),
+        MagicMock(returncode=0, stdout=b"", stderr=b""),
+    ]
+
+    def _run(command: list[str], **kwargs: object) -> MagicMock:
+        calls.append((command, kwargs))
+        return responses.pop(0)
+
+    monkeypatch.setattr(pr_scope.subprocess, "run", _run)
+
+    pr_scope._ensure_local_commit("a" * 40)
+
+    assert calls[1][0][:2] == ["git", "fetch"]
+    assert calls[1][1]["timeout"] == 120
 
 
 @pytest.mark.parametrize("version", [True, 1.0])
