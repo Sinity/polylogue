@@ -468,7 +468,7 @@ async def import_annotation_batch(
         abstained_count=abstained_count,
         created_at_ms=created_at_ms,
     )
-    executor = OperationExecutor()
+    executor = OperationExecutor.for_archive_root(user_db_path.parent)
     actuator = AnnotationBatchImportActuator()
     plan = executor.prepare(actuator, args)
     authorization = executor.authorize(

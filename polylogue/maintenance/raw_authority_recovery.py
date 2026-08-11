@@ -1522,7 +1522,7 @@ def apply_raw_authority_recovery(
         if operation is RecoveryOperation.RESET_CENSUS
         else PruneOrphanedIndexRevisionSeedsActuator()
     )
-    executor = OperationExecutor()
+    executor = OperationExecutor.for_archive_root(root)
     try:
         location = ArchiveLocation.resolve(root)
         # A final receipt may be missing after a process crash or I/O failure.

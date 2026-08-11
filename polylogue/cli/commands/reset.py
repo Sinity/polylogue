@@ -216,7 +216,7 @@ def _apply_identity_reset(session_ids: list[str], *, reason: str) -> tuple[int, 
     if not session_ids:
         return 0, 0
     actuator = IdentityResetActuator()
-    executor = OperationExecutor()
+    executor = OperationExecutor.for_archive_root(_archive_root())
     args = IdentityResetArgs(archive_root=_archive_root(), session_ids=tuple(session_ids), reason=reason)
     plan = executor.prepare(actuator, args)
     authorization = executor.authorize(

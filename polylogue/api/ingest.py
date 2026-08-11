@@ -67,7 +67,7 @@ class PolylogueIngestMixin:
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
             actuator = IndexRebuildActuator()
             args = IndexRebuildArgs(archive=archive)
-            executor = OperationExecutor()
+            executor = OperationExecutor.for_archive_root(_active_archive_root(self.config))
             plan = executor.prepare(actuator, args)
             authorization = executor.authorize(
                 actuator,

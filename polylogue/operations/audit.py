@@ -9,8 +9,9 @@ import sqlite3
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 from polylogue.operations.mutation_transaction import (
     MutationAuthorization,
@@ -18,8 +19,9 @@ from polylogue.operations.mutation_transaction import (
     MutationPreview,
     MutationPrincipal,
     MutationReceipt,
+    MutationTarget,
 )
-from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL, AUDIT_SCHEMA_VERSION
+from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 
 AuditTargetState = Literal[
     "pending",
@@ -37,7 +39,149 @@ AuditTargetState = Literal[
 def token_sha256(token: str) -> str:
     """Return the only representation of a bearer token accepted for storage."""
 
+    if token.startswith("sha256:") and len(token) == len("sha256:") + 64:
+        return token.removeprefix("sha256:")
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _continuity_mutation(kind: str):
+    """Route one audit repository state transition through the source WAL."""
+
+    def decorate(method):
+        @wraps(method)
+        def wrapped(self: AuditRepository, *args: object, **kwargs: object) -> object:
+            mutation = AuditMutation(
+                kind=kind,
+                mutation_id=f"audit-mutation:{secrets.token_urlsafe(18)}",
+                created_at_ms=int(time.time() * 1000),
+                payload=self._continuity_payload(kind, args, kwargs),
+            )
+
+            def apply(conn: sqlite3.Connection, _mutation: AuditMutation) -> object:
+                self._coordinated_connection = conn
+                self._coordinated_mutation = _mutation
+                try:
+                    return method(self, *args, **kwargs)
+                finally:
+                    self._coordinated_mutation = None
+                    self._coordinated_connection = None
+
+            return self._continuity.execute(mutation, apply)
+
+        return wrapped
+
+    return decorate
+
+
+def _target_from_payload(raw: object) -> MutationTarget:
+    value = cast(dict[str, object], raw)
+    return MutationTarget(
+        kind=cast(str, value["kind"]),
+        ref=cast(str, value["ref"]),
+        policy_key=cast(str, value["policy_key"]),
+        identity_digest=cast(str, value["identity_digest"]),
+        effect_identity=cast(str, value["effect_identity"]),
+        durability=cast(Any, value["durability"]),
+        recovery=cast(Any, value["recovery"]),
+    )
+
+
+def _plan_from_payload(raw: object) -> MutationPlan:
+    value = cast(dict[str, object], raw)
+    return MutationPlan(
+        operation=cast(str, value["operation"]),
+        destructive_class=cast(Any, value["destructive_class"]),
+        target_refs=tuple(cast(list[str], value["target_refs"])),
+        affected_tiers=tuple(cast(list[str], value["affected_tiers"])),
+        reversible=cast(bool, value["reversible"]),
+        prepared_at=cast(str, value["prepared_at"]),
+        plan_hash=cast(str, value["plan_hash"]),
+        context=cast(dict[str, object], value["context"]),
+        operation_version=cast(int, value["operation_version"]),
+        archive_instance_id=cast(str, value["archive_instance_id"]),
+        archive_identity_digest=cast(str, value["archive_identity_digest"]),
+        required_capabilities=tuple(cast(list[str], value["required_capabilities"])),
+        required_confirmation=cast(Any, value["required_confirmation"]),
+        targets=tuple(_target_from_payload(item) for item in cast(list[object], value["targets"])),
+        parameter_digest=cast(str, value["parameter_digest"]),
+        target_digest=cast(str, value["target_digest"]),
+        prepared_at_ms=cast(int, value["prepared_at_ms"]),
+        expires_at_ms=cast(int, value["expires_at_ms"]),
+    )
+
+
+def _principal_payload(principal: MutationPrincipal) -> dict[str, object]:
+    return {
+        "actor_ref": principal.actor_ref,
+        "capabilities": sorted(principal.capabilities),
+        "surface": principal.surface,
+        "role_label": principal.role_label,
+    }
+
+
+def _principal_from_payload(raw: object) -> MutationPrincipal:
+    value = cast(dict[str, object], raw)
+    return MutationPrincipal(
+        cast(str, value["actor_ref"]),
+        frozenset(cast(list[str], value["capabilities"])),
+        cast(Any, value["surface"]),
+        cast(str | None, value.get("role_label")),
+    )
+
+
+def _preview_payload(preview: MutationPreview) -> dict[str, object]:
+    return {"preview_ref": preview.preview_ref, "plan": preview.plan.to_dict()}
+
+
+def _preview_from_payload(raw: object) -> MutationPreview:
+    value = cast(dict[str, object], raw)
+    return MutationPreview(preview_ref=cast(str, value["preview_ref"]), plan=_plan_from_payload(value["plan"]))
+
+
+def _authorization_payload(authorization: MutationAuthorization) -> dict[str, object]:
+    return {
+        **authorization.to_dict(),
+        "token_sha256": None if authorization.token is None else token_sha256(authorization.token),
+    }
+
+
+def _authorization_from_payload(raw: object) -> MutationAuthorization:
+    value = cast(dict[str, object], raw)
+    token_digest = cast(str | None, value.get("token_sha256"))
+    return MutationAuthorization(
+        plan_hash=cast(str, value["plan_hash"]),
+        actor=cast(str, value["actor"]),
+        role=cast(str, value["role"]),
+        capability=cast(str, value["capability"]),
+        confirmation_strength=cast(Any, value["confirmation_strength"]),
+        authorized_at=cast(str, value["authorized_at"]),
+        preview_ref=cast(str | None, value.get("preview_ref")),
+        authorization_id=cast(str | None, value.get("authorization_id")),
+        token=None if token_digest is None else f"sha256:{token_digest}",
+        expires_at_ms=cast(int | None, value.get("expires_at_ms")),
+        capabilities=tuple(cast(list[str], value["capabilities"])),
+        surface=cast(Any, value.get("surface")),
+    )
+
+
+def _receipt_payload(receipt: MutationReceipt) -> dict[str, object]:
+    return receipt.to_dict()
+
+
+def _receipt_from_payload(raw: object) -> MutationReceipt:
+    value = cast(dict[str, object], raw)
+    return MutationReceipt(
+        operation=cast(str, value["operation"]),
+        plan_hash=cast(str, value["plan_hash"]),
+        status=cast(Any, value["status"]),
+        target_refs=tuple(cast(list[str], value["target_refs"])),
+        affected_count=cast(int, value["affected_count"]),
+        detail=cast(str | None, value.get("detail")),
+        receipt_ref=cast(str | None, value.get("receipt_ref")),
+        applied_at=cast(str, value["applied_at"]),
+        domain_receipt=cast(dict[str, object], value["domain_receipt"]),
+        operation_id=cast(str | None, value.get("operation_id")),
+    )
 
 
 class AuditRepository:
@@ -45,21 +189,163 @@ class AuditRepository:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._continuity = AuditContinuityCoordinator(path.parent)
+        self._coordinated_connection: sqlite3.Connection | None = None
+        self._coordinated_mutation: AuditMutation | None = None
+
+    @classmethod
+    def for_archive_root(cls, archive_root: Path) -> AuditRepository:
+        """Build the repository for an already-initialized archive root."""
+
+        return cls(archive_root / "audit.db")
+
+    def reconcile_continuity(self) -> None:
+        """Reject audit bytes that cannot prove the source control head."""
+
+        self._continuity.reconcile(self._replay_pending_mutation)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.path)
+        if self._coordinated_connection is not None:
+            yield self._coordinated_connection
+            return
+        if not self.path.is_file():
+            raise RuntimeError(f"audit tier is missing or uninitialized: {self.path}")
+        conn = sqlite3.connect(f"{self.path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.executescript(AUDIT_DDL)
-        conn.execute(f"PRAGMA user_version = {AUDIT_SCHEMA_VERSION}")
-        conn.commit()
         try:
             yield conn
         finally:
             conn.close()
 
+    def _continuity_payload(
+        self, kind: str, args: tuple[object, ...], kwargs: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Encode exact typed replay inputs before source.db prepares a command."""
+
+        values = dict(kwargs)
+        if kind == "ensure_archive_authority":
+            return {
+                "now_ms": cast(int, values["now_ms"]),
+                "archive_instance_id": values.get("archive_instance_id") or f"archive:{secrets.token_hex(16)}",
+            }
+        if kind == "create_preview":
+            plan, principal = cast(MutationPlan, args[0]), cast(MutationPrincipal, args[1])
+            return {
+                "preview_id": f"preview:{secrets.token_urlsafe(18)}",
+                "plan": plan.to_dict(),
+                "principal": _principal_payload(principal),
+            }
+        if kind == "issue_authorization":
+            preview, principal, authorization = (
+                cast(MutationPreview, args[0]),
+                cast(MutationPrincipal, args[1]),
+                cast(MutationAuthorization, args[2]),
+            )
+            return {
+                "authorization_id": f"authorization:{secrets.token_urlsafe(18)}",
+                "issued_at_ms": int(time.time() * 1000),
+                "preview": _preview_payload(preview),
+                "principal": _principal_payload(principal),
+                "authorization": _authorization_payload(authorization),
+            }
+        if kind == "consume_authorization_and_start":
+            preview, authorization = cast(MutationPreview, args[0]), cast(MutationAuthorization, args[1])
+            return {
+                "operation_id": f"operation:{secrets.token_urlsafe(18)}",
+                "attempt_id": f"attempt:{secrets.token_urlsafe(18)}",
+                "now_ms": int(time.time() * 1000),
+                "preview": _preview_payload(preview),
+                "authorization": _authorization_payload(authorization),
+            }
+        if kind == "finalize_attempt":
+            operation_id = cast(str, args[0])
+            return {
+                "operation_id": operation_id,
+                "status": cast(str, values["status"]),
+                "receipt": None
+                if values.get("receipt") is None
+                else _receipt_payload(cast(MutationReceipt, values["receipt"])),
+                "error_summary": values.get("error_summary"),
+                "unknown_reason": values.get("unknown_reason"),
+                "now_ms": int(time.time() * 1000),
+            }
+        if kind == "reconcile_attempt":
+            operation_id = cast(str, args[0])
+            return {
+                "operation_id": operation_id,
+                "outcome": cast(str, values["outcome"]),
+                "domain_receipt_ref": values.get("domain_receipt_ref"),
+                "reason": values.get("reason"),
+                "now_ms": int(time.time() * 1000),
+            }
+        raise RuntimeError(f"unregistered audit continuity mutation {kind!r}")
+
+    def _replay_pending_mutation(self, conn: sqlite3.Connection, mutation: AuditMutation) -> object:
+        """Replay the stored typed command without allocating fresh ids or clocks."""
+
+        payload = mutation.payload
+        self._coordinated_connection = conn
+        self._coordinated_mutation = mutation
+        try:
+            if mutation.kind == "ensure_archive_authority":
+                return self.ensure_archive_authority.__wrapped__(
+                    self,
+                    now_ms=cast(int, payload["now_ms"]),
+                    archive_instance_id=cast(str, payload["archive_instance_id"]),
+                )
+            if mutation.kind == "create_preview":
+                return self.create_preview.__wrapped__(
+                    self, _plan_from_payload(payload["plan"]), _principal_from_payload(payload["principal"])
+                )
+            if mutation.kind == "issue_authorization":
+                return self.issue_authorization.__wrapped__(
+                    self,
+                    _preview_from_payload(payload["preview"]),
+                    _principal_from_payload(payload["principal"]),
+                    _authorization_from_payload(payload["authorization"]),
+                )
+            if mutation.kind == "consume_authorization_and_start":
+                return self.consume_authorization_and_start.__wrapped__(
+                    self,
+                    _preview_from_payload(payload["preview"]),
+                    _authorization_from_payload(payload["authorization"]),
+                )
+            if mutation.kind == "finalize_attempt":
+                return self.finalize_attempt.__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    status=cast(str, payload["status"]),
+                    receipt=None if payload["receipt"] is None else _receipt_from_payload(payload["receipt"]),
+                    error_summary=cast(str | None, payload.get("error_summary")),
+                    unknown_reason=cast(str | None, payload.get("unknown_reason")),
+                )
+            if mutation.kind == "reconcile_attempt":
+                return self.reconcile_attempt.__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    outcome=cast(Literal["applied", "absent", "unknown"], payload["outcome"]),
+                    domain_receipt_ref=cast(str | None, payload.get("domain_receipt_ref")),
+                    reason=cast(str | None, payload.get("reason")),
+                )
+            raise RuntimeError(f"unregistered audit continuity mutation {mutation.kind!r}")
+        finally:
+            self._coordinated_mutation = None
+            self._coordinated_connection = None
+
+    def _command_value(self, key: str, fallback: object) -> object:
+        if self._coordinated_mutation is None:
+            return fallback
+        return self._coordinated_mutation.payload.get(key, fallback)
+
+    def _begin(self, conn: sqlite3.Connection) -> None:
+        """Start a standalone audit transaction, or reuse the coordinator's one."""
+
+        if self._coordinated_connection is None:
+            conn.execute("BEGIN IMMEDIATE")
+
+    @_continuity_mutation("ensure_archive_authority")
     def ensure_archive_authority(self, *, now_ms: int, archive_instance_id: str | None = None) -> str:
         """Create or return the immutable archive lineage id."""
 
@@ -70,20 +356,20 @@ class AuditRepository:
                 if archive_instance_id is not None and archive_instance_id != existing:
                     raise ValueError("audit archive instance identity changed")
                 return existing
-            instance_id = archive_instance_id or f"archive:{secrets.token_hex(16)}"
+            instance_id = cast(str, archive_instance_id or self._command_value("archive_instance_id", ""))
             conn.execute(
                 "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES (?, ?, 1)",
                 (instance_id, now_ms),
             )
-            conn.commit()
             return instance_id
 
+    @_continuity_mutation("create_preview")
     def create_preview(self, plan: MutationPlan, principal: MutationPrincipal) -> str:
         """Persist a bounded preview and its normalized target/capability rows."""
 
-        preview_id = f"preview:{secrets.token_urlsafe(18)}"
+        preview_id = cast(str, self._command_value("preview_id", f"preview:{secrets.token_urlsafe(18)}"))
         with self._connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin(conn)
             conn.execute(
                 """
                 INSERT INTO operation_previews (
@@ -153,9 +439,9 @@ class AuditRepository:
                     "INSERT INTO operation_preview_capabilities(preview_id, capability) VALUES (?, ?)",
                     (preview_id, capability),
                 )
-            conn.commit()
         return preview_id
 
+    @_continuity_mutation("issue_authorization")
     def issue_authorization(
         self,
         preview: MutationPreview,
@@ -166,10 +452,12 @@ class AuditRepository:
 
         if authorization.token is None:
             raise ValueError("bound authorization requires a token")
-        authorization_id = f"authorization:{secrets.token_urlsafe(18)}"
-        issued_at_ms = int(time.time() * 1000)
+        authorization_id = cast(
+            str, self._command_value("authorization_id", f"authorization:{secrets.token_urlsafe(18)}")
+        )
+        issued_at_ms = cast(int, self._command_value("issued_at_ms", int(time.time() * 1000)))
         with self._connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin(conn)
             preview_row = conn.execute(
                 "SELECT plan_hash, expires_at_ms, state, principal_actor_ref FROM operation_previews WHERE preview_id = ?",
                 (preview.preview_ref,),
@@ -207,19 +495,19 @@ class AuditRepository:
                     "INSERT INTO operation_authorization_capabilities(authorization_id, capability) VALUES (?, ?)",
                     (authorization_id, capability),
                 )
-            conn.commit()
         return authorization_id
 
+    @_continuity_mutation("consume_authorization_and_start")
     def consume_authorization_and_start(self, preview: MutationPreview, authorization: MutationAuthorization) -> str:
         """Consume a token and create run, targets, and initial attempt atomically."""
 
         if authorization.token is None:
             raise ValueError("authorization token is missing")
-        operation_id = f"operation:{secrets.token_urlsafe(18)}"
-        attempt_id = f"attempt:{secrets.token_urlsafe(18)}"
-        now_ms = int(time.time() * 1000)
+        operation_id = cast(str, self._command_value("operation_id", f"operation:{secrets.token_urlsafe(18)}"))
+        attempt_id = cast(str, self._command_value("attempt_id", f"attempt:{secrets.token_urlsafe(18)}"))
+        now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
         with self._connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin(conn)
             row = conn.execute(
                 """
                 SELECT a.authorization_id, a.preview_id, a.actor_ref, a.surface,
@@ -239,7 +527,6 @@ class AuditRepository:
                     "UPDATE operation_authorizations SET state = 'expired' WHERE authorization_id = ?",
                     (str(row[0]),),
                 )
-                conn.commit()
                 raise RuntimeError("authorization token is expired")
             if str(row[2]) != authorization.actor or str(row[3]) != (authorization.surface or ""):
                 raise ValueError("authorization principal mismatch")
@@ -324,9 +611,9 @@ class AuditRepository:
                 occurred_at_ms=now_ms,
                 detail={"target_count": preview.plan.target_count},
             )
-            conn.commit()
         return operation_id
 
+    @_continuity_mutation("finalize_attempt")
     def finalize_attempt(
         self,
         operation_id: str,
@@ -338,13 +625,13 @@ class AuditRepository:
     ) -> None:
         """Finalize one running attempt and parent run in one audit transaction."""
 
-        now_ms = int(time.time() * 1000)
+        now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
         target_state: AuditTargetState = (
             "unknown" if status == "unknown" else "failed" if status == "failed" else "applied"
         )
         attempt_state = "unknown" if target_state == "unknown" else target_state
         with self._connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin(conn)
             run = conn.execute(
                 "SELECT actor_ref FROM operation_runs WHERE operation_id = ?", (operation_id,)
             ).fetchone()
@@ -430,8 +717,8 @@ class AuditRepository:
                 occurred_at_ms=now_ms,
                 detail={"status": status, "reason": (unknown_reason or error_summary or "")[:512]},
             )
-            conn.commit()
 
+    @_continuity_mutation("reconcile_attempt")
     def reconcile_attempt(
         self,
         operation_id: str,
@@ -442,9 +729,9 @@ class AuditRepository:
     ) -> None:
         """Persist an explicit applied/absent/unknown reconciliation decision."""
 
-        now_ms = int(time.time() * 1000)
+        now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
         with self._connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin(conn)
             target = conn.execute(
                 "SELECT ordinal FROM operation_targets WHERE operation_id = ? AND state = 'unknown' ORDER BY ordinal LIMIT 1",
                 (operation_id,),
@@ -492,7 +779,6 @@ class AuditRepository:
                 occurred_at_ms=now_ms,
                 detail={"reason": (reason or "")[:512]},
             )
-            conn.commit()
 
     def get_operation(self, operation_id: str) -> dict[str, object] | None:
         with self._connection() as conn:

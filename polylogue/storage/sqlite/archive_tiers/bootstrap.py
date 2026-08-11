@@ -414,6 +414,11 @@ def initialize_active_archive_root(root: Path) -> None:
         for spec in ARCHIVE_TIER_SPECS.values():
             assert_owned_root()
             initialize_archive_database(root / spec.filename, spec.tier)
+        # Runtime mutation composition must observe a reconciled source/audit
+        # head before it can open any tier for writes.
+        from polylogue.operations.audit import AuditRepository
+
+        AuditRepository.for_archive_root(root).reconcile_continuity()
         if recovering_fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap(root)

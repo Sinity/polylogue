@@ -22,6 +22,8 @@ from polylogue.operations.mutation_transaction import (
     build_plan,
 )
 from polylogue.operations.specs import OperationKind, OperationSpec
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 
 
 @dataclass
@@ -90,8 +92,13 @@ def _principal() -> MutationPrincipal:
     return MutationPrincipal("actor:test", frozenset({"archive.fixture.write"}), "internal", "system")
 
 
+def _audit(tmp_path: Path) -> AuditRepository:
+    initialize_active_archive_root(tmp_path)
+    return AuditRepository.for_archive_root(tmp_path)
+
+
 def test_token_is_digest_only_and_consumption_run_attempt_are_atomic(tmp_path: Path) -> None:
-    audit = AuditRepository(tmp_path / "audit.db")
+    audit = _audit(tmp_path)
     audit.ensure_archive_authority(now_ms=1)
     actuator = _Actuator()
     executor = OperationExecutor(audit=audit, token_factory=lambda: "raw-secret-token")
@@ -134,8 +141,63 @@ def test_prepare_bound_uses_the_declared_durable_target_for_legacy_actuators() -
     assert preview.plan.targets[0].recovery == "none"
 
 
+def test_production_executor_factory_persists_audit_preview(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor.for_archive_root(tmp_path, token_factory=lambda: "factory-token")
+
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:test",
+        archive_identity_digest="identity:test",
+        parameter_digest="params:test",
+    )
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT preview_id FROM operation_previews").fetchone()[0] == preview.preview_ref
+
+
+def test_audit_repository_cannot_bypass_the_continuity_coordinator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = _audit(tmp_path)
+
+    def reject_bypass(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("coordinator required")
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "execute", reject_bypass)
+    with pytest.raises(RuntimeError, match="coordinator required"):
+        audit.ensure_archive_authority(now_ms=1)
+
+
+def test_audit_repository_replays_a_prepared_mutation_with_its_original_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = _audit(tmp_path)
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_after_prepare(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if phase == "after_source_prepare":
+            raise RuntimeError("crash after prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_after_prepare)
+    with pytest.raises(RuntimeError, match="crash after prepare"):
+        audit.ensure_archive_authority(now_ms=123, archive_instance_id="archive:replayed")
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+
+    AuditRepository.for_archive_root(tmp_path).reconcile_continuity()
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT archive_instance_id, created_at_ms FROM archive_authority").fetchone() == (
+            "archive:replayed",
+            123,
+        )
+
+
 def test_invalid_capability_and_stale_preview_refuse_before_apply(tmp_path: Path) -> None:
-    audit = AuditRepository(tmp_path / "audit.db")
+    audit = _audit(tmp_path)
     actuator = _Actuator()
     executor = OperationExecutor(audit=audit, token_factory=lambda: "token")
     preview = executor.prepare_bound(
@@ -160,7 +222,7 @@ def test_invalid_capability_and_stale_preview_refuse_before_apply(tmp_path: Path
 
 
 def test_crash_after_intent_is_queryable_unknown_and_never_completed(tmp_path: Path) -> None:
-    audit = AuditRepository(tmp_path / "audit.db")
+    audit = _audit(tmp_path)
     actuator = _Actuator(crash=True)
     executor = OperationExecutor(audit=audit, token_factory=lambda: "crash-token")
     preview = executor.prepare_bound(
@@ -193,7 +255,7 @@ def test_crash_after_intent_is_queryable_unknown_and_never_completed(tmp_path: P
 def test_token_consumption_and_initial_attempt_roll_back_together(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    audit = AuditRepository(tmp_path / "audit.db")
+    audit = _audit(tmp_path)
     actuator = _Actuator()
     executor = OperationExecutor(audit=audit, token_factory=lambda: "rollback-token")
     preview = executor.prepare_bound(

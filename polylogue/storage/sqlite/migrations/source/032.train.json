@@ -1,0 +1,57 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:source:v32",
+  "tier": "source",
+  "current_version": 31,
+  "target_version": 32,
+  "slot": 32,
+  "owner_ref": "feature/fix/audit-continuity",
+  "migration": {
+    "tier": "source",
+    "target_version": 32,
+    "slot": 32,
+    "path": "032_audit_continuity_control.sql",
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/032_audit_continuity_control.sql",
+    "sql_sha256": "75e18a3c6fd3b40779643b75ec29f9a428a40463f0378937dc10fe32a14b6d0f",
+    "requires_backup": true
+  },
+  "riders": [
+    {
+      "rider_id": "rider:source-audit-continuity-control",
+      "owner_ref": "feature/fix/audit-continuity",
+      "schema_objects": ["table:audit_continuity_control"],
+      "runtime_consumers": [
+        {
+          "consumer_id": "audit-continuity-coordinator",
+          "production_ref": "polylogue.storage.sqlite.audit_continuity:AuditContinuityCoordinator",
+          "behavior_proof_ref": "proof:source-v32:cross-tier-continuity",
+          "roles": ["read", "write"]
+        }
+      ],
+      "behavior_proof_refs": ["proof:source-v32:cross-tier-continuity"],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "ordering_constraints": [],
+  "drop_constraints": [],
+  "row_change_allowances": [],
+  "backup_plan_ref": "backup-profile:source-tier",
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 0,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "source_continuity_evidence": null,
+  "manifest_sha256": "de9cc4d91587fcee4d75d781d8458a1ced6199cac027d0b87966eea757a547fb"
+}

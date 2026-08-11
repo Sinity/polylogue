@@ -219,7 +219,7 @@ def raw_authority_blocker_resolve_command(
     )
 
     actuator = BlockerResolveActuator()
-    executor = OperationExecutor()
+    executor = OperationExecutor.for_archive_root(env.config.archive_root)
     args = BlockerResolveArgs(
         archive_root=env.config.archive_root,
         blocker_id=blocker_id,

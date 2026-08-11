@@ -2692,7 +2692,7 @@ class PolylogueArchiveMixin:
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
             args = build_args(archive)
-            executor = OperationExecutor()
+            executor = OperationExecutor.for_archive_root(_active_archive_root(self.config))
             plan = executor.prepare(actuator, args)
             authorization = executor.authorize(
                 actuator,
@@ -6589,7 +6589,7 @@ class PolylogueArchiveMixin:
                     detail="session_not_found",
                 )
             actuator = SessionDeleteActuator()
-            executor = OperationExecutor()
+            executor = OperationExecutor.for_archive_root(_active_archive_root(self.config))
             args = SessionDeleteArgs(archive=archive, session_ids=(resolved,))
             plan = executor.prepare(actuator, args)
             authorization = executor.authorize(

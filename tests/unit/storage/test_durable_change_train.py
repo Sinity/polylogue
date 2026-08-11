@@ -1811,6 +1811,16 @@ def test_adopted_audit_restore_rebinds_continuity_from_verified_backup(workspace
     assert (audit_path.stat().st_dev, audit_path.stat().st_ino) != old_identity
     assert receipt.name.endswith(".committed.json")
     assert receipt.with_name(receipt.name.replace(".committed.json", ".prepared.json")).is_file()
+    with (
+        closing(sqlite3.connect(archive_root / "source.db")) as source,
+        closing(sqlite3.connect(archive_root / "audit.db")) as audit,
+    ):
+        assert (
+            source.execute(
+                "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control"
+            ).fetchone()
+            == audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
+        )
     assert reconcile_durable_change_train_startup(archive_root) == ()
 
 

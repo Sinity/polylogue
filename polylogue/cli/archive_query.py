@@ -2149,7 +2149,7 @@ def _emit_delete(
     count = len(session_ids)
 
     actuator = SessionDeleteActuator()
-    executor = OperationExecutor()
+    executor = OperationExecutor.for_archive_root(archive.archive_root)
     prepare_args = SessionDeleteArgs(archive=archive, session_ids=session_ids)
     plan = executor.prepare(actuator, prepare_args)
 

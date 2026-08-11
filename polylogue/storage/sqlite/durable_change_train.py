@@ -69,6 +69,7 @@ from polylogue.storage.sqlite.migration_runner import (
 DURABLE_MIGRATION_ADOPTION_FLOORS: Final[dict[ArchiveTier, int]] = {
     ArchiveTier.SOURCE: 26,
     ArchiveTier.USER: 10,
+    ArchiveTier.AUDIT: 1,
 }
 _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")

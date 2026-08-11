@@ -44,6 +44,7 @@ import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
@@ -550,6 +551,22 @@ class OperationExecutor:
         self._audit = audit
         self._now_ms = now_ms or (lambda: int(datetime.now(UTC).timestamp() * 1000))
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+
+    @classmethod
+    def for_archive_root(
+        cls,
+        archive_root: Path,
+        *,
+        now_ms: Callable[[], int] | None = None,
+        token_factory: Callable[[], str] | None = None,
+    ) -> OperationExecutor:
+        """Compose production mutation execution with the archive's audit tier."""
+
+        from polylogue.operations.audit import AuditRepository
+
+        audit = AuditRepository.for_archive_root(archive_root)
+        audit.reconcile_continuity()
+        return cls(audit=audit, now_ms=now_ms, token_factory=token_factory)
 
     def prepare(self, actuator: MutationActuator[ArgsT], args: ArgsT) -> MutationPlan:
         """PREPARE: resolve exact targets from live state. Never mutates."""

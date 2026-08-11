@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import stat
 import sys
+import time
 from collections.abc import Callable
 from contextlib import closing, suppress
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from typing import Literal
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainExecution,
 )
@@ -909,6 +911,21 @@ def _write_audit_adoption_continuity(
         archive_root=archive_root,
         checksum_key="continuity_sha256",
     )
+    # The immutable receipt remains operator evidence. The machine authority
+    # is the cross-tier head, seeded with the authenticated initial image so a
+    # byte-for-byte stale copy on the same inode cannot be blessed later.
+    receipt_sha256 = receipt_payload.get("receipt_sha256")
+    if not isinstance(receipt_sha256, str):
+        raise MigrationError("audit adoption receipt lacks its checksum")
+    AuditContinuityCoordinator(archive_root).seed_or_rebind(
+        mutation_id=f"audit-adoption:{receipt_sha256}",
+        now_ms=int(time.time() * 1000),
+        evidence={
+            "kind": "adoption",
+            "receipt_sha256": receipt_sha256,
+            "audit_image_sha256": hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+        },
+    )
     if _audit_file_identity(audit_path) != (device, inode):
         raise MigrationError("audit tier changed while recording adoption continuity")
 
@@ -1377,6 +1394,15 @@ def restore_adopted_audit_tier(
             archive_root=archive_root,
             archive_directory_fd=directory_fd,
             checksum_key="continuity_sha256",
+        )
+        AuditContinuityCoordinator(archive_root).seed_or_rebind(
+            mutation_id=f"audit-restore:{operation_id}",
+            now_ms=int(time.time() * 1000),
+            evidence={
+                "kind": "verified_restore",
+                "restore_continuity_sha256": committed["continuity_sha256"],
+                "audit_artifact_sha256": artifact_sha256,
+            },
         )
         return committed_path
     finally:

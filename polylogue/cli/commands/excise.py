@@ -200,7 +200,7 @@ def excise_command(
     from polylogue.security.excision import plan_session_excision
 
     actuator = SessionExcisionActuator()
-    executor = OperationExecutor()
+    executor = OperationExecutor.for_archive_root(root)
     excision_args = SessionExcisionArgs(
         archive_root=root,
         session_id=session_id,
