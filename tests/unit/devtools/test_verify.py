@@ -1419,6 +1419,46 @@ def test_resource_sampler_resolves_worker_identity_from_in_process_events(
     assert sample["xdist_uninterruptible_count"] == 1
 
 
+def test_six_worker_d_state_fixture_produces_typed_stall_diagnosis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = tmp_path / "events"
+    events.mkdir()
+    for index, pid in enumerate(range(201, 207)):
+        (events / f"gw{index}.jsonl").write_text(
+            json.dumps({"event": "session_started", "pid": pid, "worker_id": f"gw{index}"}) + "\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr("devtools.verify_runs.process_tree", lambda _root_pid: list(range(201, 207)))
+    monkeypatch.setattr("devtools.verify_runs._status_values", lambda _pid: {"state": "D", "rss_kb": 30})
+    monkeypatch.setattr("devtools.verify_runs._smaps_rollup_kb", lambda _pid: {})
+    monkeypatch.setattr("devtools.verify_runs._process_io_bytes", lambda _pid: {})
+    monkeypatch.setattr("devtools.verify_runs._process_identity", lambda pid: f"{pid}:1")
+    monkeypatch.setattr("devtools.verify_runs._cpu_seconds", lambda _pid: 1.0)
+    monkeypatch.setattr("devtools.verify_runs._process_environ_value", lambda _pid, _key: None)
+
+    sampler = ResourceSampler(
+        root_pid=201,
+        run_id="six-worker-d-state",
+        root=tmp_path,
+        env={
+            "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path),
+            "POLYLOGUE_PYTEST_EVENTS_DIR": str(events),
+        },
+        output_path=tmp_path / "resources.jsonl",
+    )
+    sample = sampler.sample(event="sample")
+
+    assert sample["xdist_worker_count"] == 6
+    assert sample["xdist_uninterruptible_count"] == 6
+    reason = xdist_uninterruptible_stall_reason(sample, started_at=10.0, now=40.1, timeout_s=30.0)
+    assert (
+        reason
+        == "pytest xdist workers remained in uninterruptible I/O sleep for 30s (6 workers; likely SQLite/filesystem stall)"
+    )
+
+
 def test_resource_sampler_accounts_memory_swap_and_io_deltas(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
