@@ -606,6 +606,7 @@ def _write_pytest_progress(
     artifact_dir: str | None = None,
     resources: Mapping[str, Any] | None = None,
     containment: Mapping[str, Any] | None = None,
+    events_path: Path = PYTEST_EVENTS_PATH,
 ) -> None:
     """Write a live pytest progress artifact for long verify runs."""
     if elapsed_s is None:
@@ -639,7 +640,7 @@ def _write_pytest_progress(
         payload["resources"] = dict(resources)
     if containment is not None:
         payload["containment"] = dict(containment)
-    latest_event = _read_latest_pytest_event()
+    latest_event = _read_latest_pytest_event(events_path)
     if latest_event is not None:
         payload["latest_test_event"] = {
             key: latest_event[key]
@@ -903,6 +904,7 @@ def _run_pytest_with_heartbeat(
     term_grace_s = _pytest_term_grace_s()
     resource_interval_s = _pytest_resource_interval_s()
     tmpfs_budget_kb = pytest_tmpfs_budget_kb(env)
+    events_path = Path(env.get("POLYLOGUE_PYTEST_EVENTS_PATH", str(PYTEST_EVENTS_PATH)))
     runner_subreaper_enabled = enable_child_subreaper()
     preserved_runner_descendants = tuple(descendant_process_identities(os.getpid()))
     receipt_path = (
@@ -1125,6 +1127,7 @@ def _run_pytest_with_heartbeat(
         run_id=run.run_id if run is not None else None,
         artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
         containment=_containment_summary(launch, startup_receipt),
+        events_path=events_path,
     )
     selector = selectors.DefaultSelector()
     selector.register(stdout_pipe, selectors.EVENT_READ, "stdout")
@@ -1151,7 +1154,7 @@ def _run_pytest_with_heartbeat(
     # latest test event's own updated_at timestamp across all workers
     # (devtools/pytest_progress_plugin.py); last_progress_at is the local
     # monotonic time that marker was last seen to change.
-    initial_event = _read_latest_pytest_event()
+    initial_event = _read_latest_pytest_event(events_path)
     last_progress_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
     last_progress_at = last_sample
     seen_any_progress_event = initial_event is not None
@@ -1160,7 +1163,7 @@ def _run_pytest_with_heartbeat(
     def _refresh_progress_marker(at: float, latest: dict[str, Any] | None = None) -> None:
         nonlocal last_progress_marker, last_progress_at, seen_any_progress_event
         if latest is None:
-            latest = _read_latest_pytest_event()
+            latest = _read_latest_pytest_event(events_path)
         if latest is None:
             return
         marker = latest.get("updated_at")
@@ -1304,6 +1307,7 @@ def _run_pytest_with_heartbeat(
                             run_id=run.run_id if run is not None else None,
                             artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
                             containment=_containment_summary(launch, receipt),
+                            events_path=events_path,
                         )
                     else:
                         selector.unregister(selector_key.fileobj)
@@ -1320,7 +1324,7 @@ def _run_pytest_with_heartbeat(
                 rss_text = f", rss={int(rss) // 1024} MiB" if isinstance(rss, int) else ""
                 cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
                 state_text = f", state={status['state']}" if status["state"] is not None else ""
-                latest_event = _read_latest_pytest_event()
+                latest_event = _read_latest_pytest_event(events_path)
                 _refresh_progress_marker(sample_now, latest_event)
                 if latest_event is not None:
                     event = latest_event.get("event")
@@ -1354,6 +1358,7 @@ def _run_pytest_with_heartbeat(
                     run_id=run.run_id if run is not None else None,
                     artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
                     containment=_containment_summary(launch, receipt),
+                    events_path=events_path,
                 )
             sample_now = time.monotonic()
             if (
@@ -1441,6 +1446,7 @@ def _run_pytest_with_heartbeat(
             artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
             resources=resource_summary,
             containment=containment,
+            events_path=events_path,
         )
     else:
         _write_pytest_progress(
@@ -1454,6 +1460,7 @@ def _run_pytest_with_heartbeat(
             artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
             resources=resource_summary,
             containment=containment,
+            events_path=events_path,
         )
     _write_pytest_output(stdout, stderr)
     if artifacts is not None:
@@ -1474,6 +1481,9 @@ def _run(
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
     is_pytest = label.startswith("pytest")
+    # ``bench slo`` starts pytest-benchmark itself, so it needs the same
+    # bounded temp policy and run marker as a direct pytest step.
+    has_managed_pytest_child = label == "bench slo"
     if is_pytest:
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
@@ -1481,11 +1491,12 @@ def _run(
     pytest_tmpfs = False
     pytest_tmpfs_budget_mb: float | None = None
     runtime_policy = None
-    pytest_concurrency: int | None = None
+    pytest_concurrency = 0
     basetemp_cleanup: Path | None = None
-    if is_pytest:
+    if is_pytest or has_managed_pytest_child:
         try:
-            pytest_concurrency = _pytest_command_concurrency(cmd, env=env)
+            if is_pytest:
+                pytest_concurrency = _pytest_command_concurrency(cmd, env=env)
             env, runtime_policy = apply_managed_pytest_runtime_policy(
                 env,
                 worker_count=pytest_concurrency,
@@ -1517,6 +1528,7 @@ def _run(
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+    if is_pytest:
         try:
             result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
         finally:
@@ -1724,10 +1736,7 @@ def _run(
             last_resource_sample=last_resource_row,
             tmpfs_budget_mb=pytest_tmpfs_budget_mb,
             basetemp_cleanup=basetemp_cleanup,
-            concurrency=max(
-                1,
-                pytest_concurrency if pytest_concurrency is not None else _pytest_command_concurrency(cmd, env=env),
-            ),
+            concurrency=max(1, pytest_concurrency),
         )
         metadata["workload_receipt"] = workload_receipt
         if artifacts is not None:
@@ -1784,9 +1793,9 @@ def _subprocess_env() -> dict[str, str]:
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
     env["TESTMON_DATAFILE"] = str(TESTMON_DATA)
-    env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(Path.cwd() / PYTEST_EVENTS_PATH)
-    env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(Path.cwd() / PYTEST_SELECTION_PATH)
-    env["POLYLOGUE_PYTEST_SUMMARY_PATH"] = str(Path.cwd() / PYTEST_SUMMARY_PATH)
+    env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
+    env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(ROOT / PYTEST_SELECTION_PATH)
+    env["POLYLOGUE_PYTEST_SUMMARY_PATH"] = str(ROOT / PYTEST_SUMMARY_PATH)
     return env
 
 

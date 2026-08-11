@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from devtools import run_tests
+from devtools import run_tests, verify
 from devtools.verify_runs import git_head
 
 
@@ -53,6 +53,16 @@ def test_build_pytest_cmd_honors_workers_env(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "8")
     cmd = run_tests.build_pytest_cmd(["tests/unit"])
     assert cmd[-2:] == ["-n", "8"]
+
+
+def test_subprocess_env_anchors_pytest_artifacts_to_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(run_tests.ROOT / "tests")
+
+    env = verify._subprocess_env()
+
+    assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(run_tests.ROOT / verify.PYTEST_EVENTS_PATH)
+    assert env["POLYLOGUE_PYTEST_SELECTION_PATH"] == str(run_tests.ROOT / verify.PYTEST_SELECTION_PATH)
+    assert env["POLYLOGUE_PYTEST_SUMMARY_PATH"] == str(run_tests.ROOT / verify.PYTEST_SUMMARY_PATH)
 
 
 def test_main_requires_a_selection(capsys: pytest.CaptureFixture[str]) -> None:

@@ -1917,6 +1917,7 @@ def test_inherited_tmpfs_cap_is_clamped_to_the_measured_host_budget(
 def test_managed_policy_uses_scratch_when_tmpfs_is_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
     monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 15_190 * 1024})
+    monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
     monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
     monkeypatch.setattr(os, "cpu_count", lambda: 24)
 
@@ -2314,6 +2315,29 @@ def test_run_scopes_measured_full_suite_basetemp_demand(tmp_path: Path, label: s
     assert apply_policy.call_args.kwargs["full_suite"] is full_suite
 
 
+def test_bench_slo_inherits_managed_pytest_environment(tmp_path: Path) -> None:
+    run = VerifyRun(tier="lab", argv=[], git_head=None, root=tmp_path)
+    managed_env = {
+        "POLYLOGUE_PYTEST_TMPFS": "1",
+        "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+    }
+    completed = subprocess.CompletedProcess(args=["devtools", "bench", "slo"], returncode=0, stdout="", stderr="")
+
+    with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=(managed_env, None)) as apply_policy,
+        patch("devtools.verify.subprocess.run", return_value=completed) as subprocess_run,
+    ):
+        rc, _elapsed, _metadata = _run("bench slo", ["devtools", "bench", "slo"], run=run)
+
+    assert rc == 0
+    assert apply_policy.call_args.kwargs == {"worker_count": 0, "full_suite": False}
+    env = subprocess_run.call_args.kwargs["env"]
+    assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
+    assert env["POLYLOGUE_PYTEST_RUN_ID"] == run.run_id
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
+    assert env["POLYLOGUE_PYTEST_TMPFS_MAX_MB"] == "512"
+
+
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_ROOT", "/stale/main")
     monkeypatch.setenv("POLYLOGUE_REPO_ROOT", "/stale/main")
@@ -2330,7 +2354,7 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     assert env["POLYLOGUE_REPO_ROOT"] == str(ROOT)
     assert env["PYTHONPYCACHEPREFIX"] == str(ROOT / ".cache" / "pycache")
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(ROOT)
-    assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(Path.cwd() / PYTEST_EVENTS_PATH)
+    assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(ROOT / PYTEST_EVENTS_PATH)
 
 
 def test_verify_subprocess_env_removes_cloud_basetemp_in_local_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
