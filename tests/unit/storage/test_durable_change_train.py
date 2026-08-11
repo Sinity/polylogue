@@ -1935,7 +1935,9 @@ def test_continuity_migrations_have_a_deployable_cross_tier_compatibility_window
         with sqlite3.connect(archive_root / f"{tier.value}.db") as connection:
             result = migrate_archive_tier(connection, tier, backup_manifest=manifest)
         assert result.applied_versions == (ARCHIVE_VERSION_BY_TIER[tier],)
-        train = durable_migration_sidecar_for_slot(tier, ARCHIVE_VERSION_BY_TIER[tier]).train
+        sidecar = durable_migration_sidecar_for_slot(tier, ARCHIVE_VERSION_BY_TIER[tier])
+        assert sidecar is not None
+        train = sidecar.train
         results = _runtime_consumer_results(train, archive_root)
         assert {result.consumer_id for result in results} == {
             consumer.consumer_id for rider in train.riders for consumer in rider.runtime_consumers
