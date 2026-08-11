@@ -1489,7 +1489,7 @@ def _run(
             env, runtime_policy = apply_managed_pytest_runtime_policy(
                 env,
                 worker_count=pytest_concurrency,
-                full_suite=not label.startswith("pytest focused"),
+                full_suite=_pytest_uses_full_suite_basetemp(label),
             )
         except PytestResourceError as exc:
             elapsed = time.monotonic() - t0
@@ -2163,6 +2163,18 @@ def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | 
         return max(0, int(request))
     except ValueError:
         return max(1, os.cpu_count() or 1)
+
+
+def _pytest_uses_full_suite_basetemp(label: str) -> bool:
+    """Whether this pytest step can materialize the measured full-suite tree."""
+    return label.startswith(
+        (
+            "pytest seed-testmon",
+            "pytest full",
+            "pytest load-sensitive",
+            "pytest testmon (broad)",
+        )
+    )
 
 
 _BROAD_TESTMON_CHANGED_PATHS = {

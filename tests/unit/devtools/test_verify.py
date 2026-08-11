@@ -2239,7 +2239,18 @@ def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
     assert metadata["workload_receipt"]["spec"]["concurrency"] == 4
 
 
-def test_focused_run_does_not_apply_full_suite_basetemp_demand(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("label", "full_suite"),
+    [
+        ("pytest focused", False),
+        ("pytest testmon", False),
+        ("pytest testmon (broad)", True),
+        ("pytest seed-testmon", True),
+        ("pytest full (parallel)", True),
+        ("pytest load-sensitive (isolated)", True),
+    ],
+)
+def test_run_scopes_measured_full_suite_basetemp_demand(tmp_path: Path, label: str, full_suite: bool) -> None:
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
 
     class FocusedPolicy:
@@ -2256,11 +2267,11 @@ def test_focused_run_does_not_apply_full_suite_basetemp_demand(tmp_path: Path) -
         patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=None),
     ):
-        rc, _elapsed, _metadata = _run("pytest focused", ["pytest", "tests/unit/example.py", "-n", "0"], run=run)
+        rc, _elapsed, _metadata = _run(label, ["pytest", "tests/unit/example.py", "-n", "0"], run=run)
 
     assert rc == 0
     assert apply_policy.call_args.kwargs["worker_count"] == 0
-    assert apply_policy.call_args.kwargs["full_suite"] is False
+    assert apply_policy.call_args.kwargs["full_suite"] is full_suite
 
 
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
