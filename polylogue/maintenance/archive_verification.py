@@ -505,6 +505,28 @@ def _valid_byte_duplicate_supersession_expr(conn: sqlite3.Connection, *, raw_ali
     """
 
 
+def _logical_head_cohort_expr(conn: sqlite3.Connection, *, raw_alias: str) -> str:
+    """Return the durable identity used to group raw revisions into one head.
+
+    A full-revision row retired into membership governance intentionally loses
+    its raw-level ``logical_source_key``.  Its single retained membership key
+    remains the authoritative identity, so use it before the legacy
+    native-id/path fallback.  Shared raws can hold several membership keys;
+    they have no one raw-level cohort and must keep that fallback instead of
+    being arbitrarily assigned to one member.
+    """
+    membership_key = "NULL"
+    if table_exists(conn, "raw_session_memberships"):
+        membership_key = f"""
+            (
+                SELECT CASE WHEN COUNT(*) = 1 THEN MIN(m.logical_source_key) END
+                FROM raw_session_memberships AS m
+                WHERE m.raw_id = {raw_alias}.raw_id
+            )
+        """
+    return f"COALESCE({raw_alias}.logical_source_key, {membership_key}, {raw_alias}.native_id, {raw_alias}.source_path)"
+
+
 def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
     return _check_source_index_coverage_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
 
@@ -553,6 +575,7 @@ def _check_source_index_coverage_at_index_path(
                 "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
             )
             valid_supersession_expr = _valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
+            logical_cohort_expr = _logical_head_cohort_expr(conn, raw_alias="r")
 
             # A read-only connection (``query_only=ON``, connection-wide, not
             # per-attached-db) cannot ``CREATE TEMP VIEW`` -- the temp schema
@@ -571,11 +594,11 @@ def _check_source_index_coverage_at_index_path(
                         MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
                             OVER (
                                 PARTITION BY r.origin,
-                                             COALESCE(r.logical_source_key, r.native_id, r.source_path)
+                                             {logical_cohort_expr}
                             ) AS any_indexed,
                         ROW_NUMBER() OVER (
                             PARTITION BY r.origin,
-                                         COALESCE(r.logical_source_key, r.native_id, r.source_path)
+                                         {logical_cohort_expr}
                             ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
                         ) AS rn
                     FROM raw_sessions r
@@ -2403,6 +2426,7 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
     has_census = table_exists(conn, "raw_membership_census")
     census_expr = "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
     valid_supersession_expr = _valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
+    logical_cohort_expr = _logical_head_cohort_expr(conn, raw_alias="r")
     row = conn.execute(
         f"""
         WITH heads AS (
@@ -2415,11 +2439,11 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
                 MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
                     OVER (
                         PARTITION BY r.origin,
-                                     COALESCE(r.logical_source_key, r.native_id, r.source_path)
+                                     {logical_cohort_expr}
                     ) AS any_indexed,
                 ROW_NUMBER() OVER (
                     PARTITION BY r.origin,
-                                 COALESCE(r.logical_source_key, r.native_id, r.source_path)
+                                 {logical_cohort_expr}
                     ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
                 ) AS rn
             FROM raw_sessions r

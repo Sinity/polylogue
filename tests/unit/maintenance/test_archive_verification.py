@@ -568,6 +568,86 @@ def test_source_index_coverage_groups_reacquisitions_by_logical_source_key(tmp_p
     assert check.evidence["unindexed_head_count"] == 0
 
 
+def test_coverage_groups_retired_membership_identity_with_bound_revision(tmp_path: Path) -> None:
+    """A retired raw keeps its sole membership identity after its raw key is nulled."""
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute("UPDATE raw_sessions SET logical_source_key = 'codex:session' WHERE raw_id = 'raw-1'")
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            )
+            SELECT 'raw-retired-membership', origin, 'session', '/retired-membership',
+                   blob_hash, blob_size, 200, 'quarantined'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count
+            ) VALUES ('raw-retired-membership', 'codex:session', 'session', 'retired', ?, 1)
+            """,
+            (b"r" * 32,),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    report = verify_archive(tmp_path, checks=("source-index-coverage", "convergence-freshness"))
+
+    coverage = _check(report, "source-index-coverage")
+    freshness = _check(report, "convergence-freshness")
+    assert coverage.status is OutcomeStatus.OK
+    assert coverage.evidence["logical_head_count"] == 1
+    assert freshness.status is OutcomeStatus.OK
+    assert freshness.evidence["unindexed_backlog_gap"] == 0
+
+
+def test_coverage_does_not_assign_a_shared_raw_to_one_membership_key(tmp_path: Path) -> None:
+    """A raw with several retained identities must not inherit an arbitrary cohort."""
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute("UPDATE raw_sessions SET logical_source_key = 'codex:session' WHERE raw_id = 'raw-1'")
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            )
+            SELECT 'raw-shared-membership', origin, NULL, '/shared-membership',
+                   blob_hash, blob_size, 200, 'quarantined'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        source_conn.executemany(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count
+            ) VALUES ('raw-shared-membership', ?, ?, 'shared', ?, 1)
+            """,
+            [
+                ("codex:session", "session", b"s" * 32),
+                ("codex:other", "other", b"o" * 32),
+            ],
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage")
+
+    assert check.status is OutcomeStatus.WARNING
+    assert check.evidence["logical_head_count"] == 2
+    assert check.evidence["quarantined_count"] == 1
+
+
 def test_quarantined_head_with_no_session_is_warning_not_error(tmp_path: Path) -> None:
     """The polylogue-in24n bug class in reverse: a quarantined raw (the
     default ``revision_authority``) that never materialized is a *typed*
@@ -1503,6 +1583,15 @@ def test_convergence_freshness_excludes_a_receipt_backed_duplicate(tmp_path: Pat
 
     assert check.status is OutcomeStatus.OK
     assert check.evidence["unindexed_backlog_gap"] == 0
+
+    with _connect(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM raw_byte_duplicate_supersession_receipts WHERE raw_id = 'raw-superseded-backlog'")
+        conn.commit()
+
+    check = _check(verify_archive(tmp_path, checks=("convergence-freshness",)), "convergence-freshness")
+
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unindexed_backlog_gap"] == 1
 
 
 def test_convergence_freshness_counts_a_receipt_with_the_wrong_twin_bytes(tmp_path: Path) -> None:

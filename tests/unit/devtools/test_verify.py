@@ -1959,6 +1959,28 @@ def test_inherited_512_mib_tmpfs_cap_reroutes_measured_demand_to_scratch(
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
 
 
+def test_explicit_tmpfs_root_reroutes_to_scratch_when_its_cap_is_too_small(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+    explicit_root = shm / "explicit"
+    explicit_root.mkdir()
+
+    env, policy = apply_managed_pytest_runtime_policy(
+        {
+            "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(explicit_root),
+            "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+        },
+        worker_count=4,
+    )
+
+    assert policy is not None
+    assert policy.basetemp_label == "scratch"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
+
+
 def test_focused_policy_keeps_full_suite_basetemp_demand_out_of_scratch_preflight(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
