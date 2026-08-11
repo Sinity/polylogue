@@ -87,6 +87,18 @@ class _EmbeddingConfig(dict[str, object]):
         self.embedding_max_cost_usd = 0.0
 
 
+@pytest.fixture(autouse=True)
+def _materialization_uses_freshness_baseline_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep initial materialization on the test's explicit voyage-4 baseline.
+
+    Individual tests replace this patch with voyage-5 to prove a recipe change
+    invalidates stale vectors before it can be published as current.
+    """
+    from polylogue.storage.embeddings import materialization
+
+    monkeypatch.setattr(materialization, "load_polylogue_config", lambda: _EmbeddingConfig())
+
+
 def _write_archive_session(root: Path, *, native_id: str, text: str) -> str:
     with ArchiveStore(root) as archive:
         return archive.write_parsed(
@@ -266,6 +278,26 @@ def test_recipe_model_swap_makes_every_materialized_session_stale(tmp_path: Path
         )
 
     assert {item.session_id for item in swapped} == set(session_ids)
+
+
+def test_status_payload_uses_its_resolved_recipe_for_exact_archive_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator status route must not reload a different ambient recipe."""
+    from polylogue import config as config_module
+    from polylogue.storage.embeddings.status_payload import embedding_status_payload
+
+    root = tmp_path / "archive"
+    session_id = _write_archive_session(root, native_id="status-recipe", text=_INITIAL_TEXT)
+    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
+    assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
+
+    monkeypatch.setattr(config_module, "load_polylogue_config", lambda: _EmbeddingConfig(model="voyage-5"))
+    payload = embedding_status_payload(SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db")))
+
+    assert payload["configured_model"] == "voyage-5"
+    assert payload["embedded_sessions"] == 0
+    assert payload["pending_sessions"] == 1
 
 
 def test_config_change_then_old_terminal_error_cannot_clear_new_generation(

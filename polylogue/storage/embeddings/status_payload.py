@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from typing_extensions import TypedDict
 
+from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.embeddings.materialization import (
     archive_embeddable_message_where,
     archive_embeddable_messages_relation,
@@ -475,6 +476,7 @@ def _archive_embedding_session_state_exact_with_timeout(
     *,
     status_table: str,
     timeout_ms: int,
+    recipe: EmbeddingRecipe,
 ) -> tuple[int, int, int] | None:
     """Return exact embedded/pending/blocked counts, or ``None`` when too costly."""
 
@@ -487,7 +489,12 @@ def _archive_embedding_session_state_exact_with_timeout(
 
     conn.set_progress_handler(_interrupt_when_expired, 10_000)
     try:
-        session_state = count_archive_embedding_session_state(conn, status_table=status_table, rebuild=False)
+        session_state = count_archive_embedding_session_state(
+            conn,
+            status_table=status_table,
+            rebuild=False,
+            recipe=recipe,
+        )
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if is_missing_table_error(exc):
@@ -721,6 +728,10 @@ def _archive_embedding_status_payload(
     index_db = _archive_index_path(db_path)
     if index_db is None:
         return None
+    recipe = EmbeddingRecipe.current(
+        model=str(getattr(cfg, "embedding_model", "")),
+        dimensions=_payload_int(getattr(cfg, "embedding_dimension", 0)),
+    )
     root = configured_root if configured_root is not None else db_path.parent
     conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0)
     conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}")
@@ -768,6 +779,7 @@ def _archive_embedding_status_payload(
             conn,
             status_table=status_table,
             timeout_ms=DETAIL_QUERY_TIMEOUT_MS if include_detail else METADATA_SUMMARY_TIMEOUT_MS,
+            recipe=recipe,
         )
         pending_messages_exact = include_detail
         if exact_session_state is None:
