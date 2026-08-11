@@ -34,7 +34,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | Document | Description |
 |----------|-------------|
 | [CLI Reference](cli-reference.md) | Generated command reference from live help output. |
-| [MCP Reference](mcp-reference.md) | Generated MCP tool and contract reference. |
+| [MCP Reference](mcp-reference.md) | MCP tools, capability opt-ins, and client setup. |
 | [Library API](library-api.md) | Async archive API, filters, and query patterns. |
 | [MCP Integration](mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Agent Integration Reference](agent-integration-reference.md) | Generated typed contract, recipes, client delivery, and cutover reconciliation reference. |
@@ -85,7 +85,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Demos and Proofs](demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
 | [Polylogue on Sinex](sinex-interop.md) | Current bridge, target authority split, and rebuild proof. |
 | [Insights Rigor Matrix](insights-rigor-matrix.md) | Evidence strengths and limitations for insight families. |
-| [Query-Action Workflows](product/workflows.md) | Executable product contract for workflows, affordances, completions, and golden paths. |
+| [Query-Action Workflows](product/workflows.md) | Selection rules, common paths, and executable demo-archive evidence. |
 | [Visual Tape Examples](examples/visual-tapes/README.md) | Reader-evidence and visual-tape artifact catalog. |
 | [Reader-Comprehension Test Harness](examples/reader-comprehension-test/README.md) | Single-blind N-arm cold-reader test harness for README/positioning candidates. |
 | [Example and Proof Index](examples/README.md) | Index of recorded proof artifacts and worked examples. |
@@ -100,7 +100,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Hermes Archival Export Contract](design/hermes-archival-export-contract.md) | Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation. |
 | [Browser Capture Redesign](design/browser-capture-redesign/README.md) | Browser-capture redesign rationale and verification artifacts. |
 | [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |
-| [Query-Action Workflows Design](design/query-action-workflows.md) | Historical design pointer for the workflow contract. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
 | [Content, Identity, and Lineage Architecture](plans/content-identity-lineage-design.md) | Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority. |

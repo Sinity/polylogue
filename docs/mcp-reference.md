@@ -21,20 +21,13 @@ explicit config-opt-in capability flags (see Configuration below):
 - `judge` (judge capability) — accept, reject, defer, or supersede assertion candidates.
 - `maintenance` (maintenance capability) — preview, execute, list, and inspect maintenance operations.
 
-The exhaustive, currently-registered tool name set is a test-enforced contract, not hand
-duplicated here: `tests/infra/mcp.py:EXPECTED_TOOL_NAMES`. Adding a tool requires updating
-that set plus its tool contract (see `CLAUDE.md` § MCP gotchas).
+The runtime declaration registry is authoritative. Its tests derive the
+expected tool names from those declarations and exercise registration; this
+page is operator guidance, not a second inventory.
 
-## Resources
-
-- `polylogue://stats` — Archive-wide summary stats.
-- `polylogue://sessions` — Recent session list.
-- `polylogue://session/{conv_id}` — Individual session by ID.
-- `polylogue://tags` — Known tag vocabulary.
-- `polylogue://messages/{conv_id}` — Messages for a session.
-- `polylogue://session-tree/{conv_id}` — Lineage-composed session tree.
-- `polylogue://origin/{name}/recent` — Recent sessions for one origin.
-- `polylogue://readiness` — Daemon/archive readiness snapshot.
+MCP clients discover resources and operation schemas from the running server.
+Use that discovery response when exact current capabilities matter rather than
+copying a static resource list from documentation.
 
 ## Configuration
 

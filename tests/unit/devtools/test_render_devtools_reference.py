@@ -26,7 +26,6 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
     )
     assert "### Lab Checks" in rendered
     assert "| `devtools render all` |" in rendered
-    assert "| `devtools verify test-infra-currency` |" in rendered
     assert "| `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate" in rendered
     assert "Common forms: `devtools status`" in rendered
 

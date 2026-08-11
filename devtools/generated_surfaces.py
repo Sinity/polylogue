@@ -13,9 +13,7 @@ from devtools import (
     render_docs_surface,
     render_openapi,
     render_pages,
-    render_product_workflows,
     render_query_discovery,
-    render_visual_tapes,
     render_webui_client,
     render_webui_design_system,
 )
@@ -154,20 +152,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         ),
     ),
     GeneratedSurface(
-        name="product-workflows",
-        label="Product workflows",
-        description="Render docs/product/workflows.md from query-action workflow registries (#2305).",
-        command=control_plane_argv("render product-workflows"),
-        main=render_product_workflows.main,
-        inputs=(
-            "devtools/render_product_workflows.py",
-            "polylogue/product/workflows.py",
-            "polylogue/operations/action_contracts.py",
-            "polylogue/surfaces/action_affordances.py",
-            "polylogue/archive/viewport/profiles.py",
-        ),
-    ),
-    GeneratedSurface(
         name="query-discovery",
         label="Query discovery",
         description="Render parser-gated query examples and result semantics into docs/search.md.",
@@ -217,17 +201,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/archive/viewport/profiles.py",
             "polylogue/surfaces/payloads.py",
             "pyproject.toml",
-        ),
-    ),
-    GeneratedSurface(
-        name="visual-tapes",
-        label="Visual evidence tapes",
-        description="Render (or verify) the committed VHS tape files for the default visual evidence specs.",
-        command=control_plane_argv("render visual-tapes"),
-        main=render_visual_tapes.generated_surface_main,
-        inputs=(
-            "devtools/visual_vhs.py",
-            "devtools/render_visual_tapes.py",
         ),
     ),
 )

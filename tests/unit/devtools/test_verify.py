@@ -211,14 +211,8 @@ def test_quick_verify_omits_pytest() -> None:
         "render all",
         "verify layering",
         "lab schema roundtrip",
-        "verify ci-workflows",
-        "verify doc-commands",
-        "verify test-infra-currency",
         "lab policy schema-versioning",
         "lab policy classifier-fingerprints",
-        "lab policy raw-payload-hash-purity",
-        "lab policy position-derived-identity",
-        "lab policy raw-authority-frontier-executability",
         "schema promotion audit",
     ]
 

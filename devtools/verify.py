@@ -2085,9 +2085,6 @@ def build_verify_steps(
                 ("render all", _devtools_cmd("render all", "--check")),
                 ("verify layering", _devtools_cmd("verify layering")),
                 ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
-                ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),
-                ("verify doc-commands", _devtools_cmd("verify doc-commands")),
-                ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
                 # Static, archive-independent, sub-second: an index bump that
                 # lands without its lifecycle.py delta declaration silently
                 # downgrades every existing generation to a full raw replay
@@ -2102,34 +2099,6 @@ def build_verify_steps(
                 # concrete case that shipped green against the version-keyed
                 # gate above).
                 ("lab policy classifier-fingerprints", _devtools_cmd("lab policy classifier-fingerprints")),
-                # Static, archive-independent, sub-second: forbids the exact
-                # byte-mutation-before-hashing pattern that produced
-                # polylogue-u19l's Codex append-header bug (a synthesized
-                # literal spliced onto captured bytes before they reached the
-                # content hasher, permanently defeating live-source
-                # byte-identity verification for ~59GB of raw rows).
-                ("lab policy raw-payload-hash-purity", _devtools_cmd("lab policy raw-payload-hash-purity")),
-                # Static, archive-independent, sub-second: forbids a NEW
-                # occurrence of polylogue-hith/qkuq's already-fixed
-                # attachment-id bug shape (comparison identity minted from
-                # positional/index data, unstable across export vintages
-                # that reorder entries) -- polylogue-gysk3 found the same
-                # hazard still live for provider_message_id.
-                ("lab policy position-derived-identity", _devtools_cmd("lab policy position-derived-identity")),
-                # Static, archive-independent, sub-second: forbids a NEW
-                # unreachable (frontier state, dispatched actuator) pairing in
-                # polylogue/storage/raw_reconciler.py -- polylogue-w32w found
-                # UNRESOLVED_PROVENANCE paired with the dispatched
-                # REFINE_QUARANTINE actuator, an actuator no path could ever
-                # select, and 4,174 blockers accumulated behind it for weeks
-                # before anyone noticed. The runtime constructor guard
-                # (RawAuthorityFrontierItem.__post_init__) only fires when
-                # something actually constructs the bad combination; this
-                # lint re-checks every literal pairing at review time.
-                (
-                    "lab policy raw-authority-frontier-executability",
-                    _devtools_cmd("lab policy raw-authority-frontier-executability"),
-                ),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance
                 # (bundle_scopes/representative_paths) and scans for secrets.

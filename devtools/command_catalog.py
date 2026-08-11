@@ -178,20 +178,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools render query-discovery", "devtools render query-discovery --check"),
     ),
     CommandSpec(
-        "render product-workflows",
-        "generated surfaces",
-        "Render docs/product/workflows.md from executable query-action workflow registries.",
-        "devtools.render_product_workflows",
-        use_when=(
-            "Refresh or verify the product query-action workflow contract after changing action contracts, "
-            "read-view surfaces, completion behavior, or workflow golden paths (#2305)."
-        ),
-        examples=(
-            "devtools render product-workflows",
-            "devtools render product-workflows --check",
-        ),
-    ),
-    CommandSpec(
         "render pages",
         "generated surfaces",
         "Build the GitHub Pages documentation site into .cache/site/.",
@@ -208,7 +194,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools render visual-tapes",
             "devtools render visual-tapes --capture",
-            "devtools render visual-tapes --check",
         ),
     ),
     CommandSpec(
@@ -326,22 +311,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "for bounded unrelated-change selection."
         ),
         examples=("devtools lab testmon-proof", "devtools lab testmon-proof --json"),
-    ),
-    CommandSpec(
-        "lab testmon-blind-spots",
-        "verification lab",
-        "Audit coverage-known files that are absent from the testmon fingerprint graph.",
-        "devtools.testmon_blind_spot_audit",
-        use_when=(
-            "Inspect an existing coverage JSON report against an existing pytest-testmon database. "
-            "Declaration-only modules are reported separately from executable validator risk; this command "
-            "does not run pytest or regenerate coverage."
-        ),
-        examples=(
-            "devtools lab testmon-blind-spots",
-            "devtools lab testmon-blind-spots --json",
-            "devtools lab testmon-blind-spots --coverage-json path/to/coverage.json --testmon-db path/to/testmondata",
-        ),
     ),
     CommandSpec(
         "lab pytest-witness-repetitions",
@@ -1330,43 +1299,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify doc-commands",
-        "verification",
-        "Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands.",
-        "devtools.verify_doc_commands",
-        use_when=(
-            "Catch doc drift away from the daemon-first command surface. "
-            "Fails when README.md or any docs/**/*.md references a subcommand "
-            "that is not registered, or a stale invocation like "
-            "'polylogued run --enable-api' / 'polylogue run --source'."
-        ),
-        examples=("devtools verify doc-commands", "devtools verify doc-commands --json"),
-    ),
-    CommandSpec(
-        "verify ci-workflows",
-        "verification",
-        "Verify CI workflow files reference locally-known devtools commands and existing paths.",
-        "devtools.verify_ci_workflows",
-        use_when=(
-            "Catch CI workflow files that reference unregistered devtools commands or "
-            "non-existent paths. Checks only locally verifiable facts — not remote CI state."
-        ),
-        examples=("devtools verify ci-workflows", "devtools verify ci-workflows --json"),
-    ),
-    CommandSpec(
-        "verify test-infra-currency",
-        "verification",
-        "Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION.",
-        "devtools.verify_test_infra_currency",
-        use_when=(
-            "Catch helpers that target renamed or removed tables (#1208). "
-            "When SCHEMA_VERSION bumps, helper SQL drifting away from the live "
-            "schema is invisible to testmon-selected runs until an unrelated change "
-            "invalidates the affected tests."
-        ),
-        examples=("devtools verify test-infra-currency", "devtools verify test-infra-currency --json"),
-    ),
-    CommandSpec(
         "lab policy schema-versioning",
         "verification lab",
         "Verify durable-tier migration and derived-tier rebuild boundaries.",
@@ -1396,66 +1328,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools lab policy classifier-fingerprints --json",
             "devtools lab policy classifier-fingerprints --ack polylogue/sources/parsers/foo.py:looks_like_x "
             "--reason 'only tightens a shape that never validly matched' --ref polylogue-abcd",
-        ),
-    ),
-    CommandSpec(
-        "lab policy raw-payload-hash-purity",
-        "verification lab",
-        "Verify no raw-capture write path splices a synthesized literal onto captured bytes before hashing.",
-        "devtools.verify_raw_payload_hash_purity",
-        use_when=(
-            "Prevent a regression of polylogue-u19l's confirmed bug: sources/live/batch.py used to prepend a "
-            "synthetic session_meta header onto every Codex append capture before hashing/storing it, so the "
-            "stored blob was never a literal byte-slice of the live file, permanently defeating live-source "
-            "byte-identity verification for ~59GB of raw rows. Statically forbids concatenating a synthesized "
-            "literal (bytes/str constant, f-string, json.dumps()/.encode() result) onto captured bytes anywhere "
-            "in the raw-capture write-path modules (WRITE_PATH_MODULES)."
-        ),
-        examples=("devtools lab policy raw-payload-hash-purity", "devtools lab policy raw-payload-hash-purity --json"),
-    ),
-    CommandSpec(
-        "lab policy position-derived-identity",
-        "verification lab",
-        "Verify no parser mints cross-revision comparison identity from positional/index data.",
-        "devtools.verify_position_derived_identity",
-        use_when=(
-            "Prevent a regression of polylogue-hith/qkuq's already-fixed attachment-id bug (a synthetic id "
-            "seeded partly by array index was unstable across export vintages that reorder/insert entries, "
-            "manufacturing false divergence in revision-authority membership comparison) and catch new "
-            "occurrences of the same shape (polylogue-gysk3 found the identical hazard still live for "
-            "provider_message_id, the sole input to message_identity_hash). Statically scans "
-            "polylogue/sources/parsers/ for an identity-bearing field constructed from an f-string/format/"
-            "concatenation referencing a loop index/position variable, either inline or via a local variable."
-        ),
-        examples=(
-            "devtools lab policy position-derived-identity",
-            "devtools lab policy position-derived-identity --json",
-            "devtools lab policy position-derived-identity --ack "
-            "'polylogue/sources/parsers/foo.py:parse:provider_message_id' "
-            "--reason 'tracked in polylogue-xxxx, not fixed inline' --ref polylogue-xxxx",
-        ),
-    ),
-    CommandSpec(
-        "lab policy raw-authority-frontier-executability",
-        "verification lab",
-        "Verify every raw-authority frontier state has a reachable actuator.",
-        "devtools.verify_raw_authority_frontier_executability",
-        use_when=(
-            "polylogue-w32w / polylogue-lb39z (Phase 1, item 4): "
-            "RawAuthorityFrontierItem.__post_init__ raises if a CONSTRUCTED item pairs a "
-            "dispatched actuator (_APPLY_DISPATCHED_ACTUATORS) with a non-executable state "
-            "(_EXECUTABLE_STATES) -- but that only fires when a test or live classification "
-            "actually builds one; a new frontier state or re-paired actuator can ship an "
-            "unexercised branch that stays silent until it accumulates against real archive "
-            "data (the original defect: 4,174 blockers demanding an unreachable actuator, "
-            "undetected for weeks). This lint statically enumerates every literal "
-            "(state, actuator) construction site in polylogue/storage/raw_reconciler.py "
-            "(_item(...) and _StrategyOverride(...) calls) and re-checks the same invariant "
-            "at review time, independent of test coverage."
-        ),
-        examples=(
-            "devtools lab policy raw-authority-frontier-executability",
-            "devtools lab policy raw-authority-frontier-executability --json",
         ),
     ),
     CommandSpec(

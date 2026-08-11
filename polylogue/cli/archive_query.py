@@ -190,12 +190,19 @@ def execute_delete_by_session_ids(
     # concrete index.db (explicit override or resolved active generation).
     archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     params: dict[str, object] = {"force": force, "delete_matched": True, "dry_run": dry_run}
-    with archive_read_context(
-        archive_root,
-        operation="cli.delete.resolve",
-        arguments={"session_ids": session_ids, "dry_run": dry_run},
-        projection="delete-preview",
-    ) as archive:
+    if dry_run:
+        with archive_read_context(
+            archive_root,
+            operation="cli.delete.resolve",
+            arguments={"session_ids": session_ids, "dry_run": True},
+            projection="delete-preview",
+        ) as archive:
+            _emit_delete(env, archive, tuple(session_ids), params=params)
+        return
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         _emit_delete(env, archive, tuple(session_ids), params=params)
 
 

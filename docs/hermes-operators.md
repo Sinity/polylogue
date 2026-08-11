@@ -469,13 +469,11 @@ identity used for the durable-retention guarantee above.
 
 ### MCP (agent-facing)
 
-The current standing MCP surface is a small set of unified verb tools —
-`query`, `read`, `get`, `explain`, `context`, `status` — the live contract
-enforced by `tests/infra/mcp.py:EXPECTED_TOOL_NAMES`
-(see `docs/agent-manual.md` for the generated, currently-accurate reference;
-treat `docs/mcp-reference.md`'s larger per-category tool list as describing
-an earlier surface generation, not this one). The `query` tool's typed
-request accepts an `origin` field
+The read-only MCP surface is the six unified tools `query`, `read`, `get`,
+`explain`, `context`, and `status`; write, judgment, and maintenance tools are
+separate capability opt-ins. Runtime declarations are authoritative and client
+discovery exposes the exact enabled surface. The `query` tool's typed request
+accepts an `origin` field
 (`polylogue/mcp/query_contracts.py:88`) exactly like the CLI's `--origin`
 flag, so `query(origin="hermes-session", ...)` scopes a search or aggregate
 to Hermes sessions the same way.

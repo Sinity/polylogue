@@ -244,11 +244,6 @@ inherent to how testmon (and coverage-context-based selective testing in
 general) works — it is **not** dependency-graph staleness, and running
 `devtools verify --seed-testmon` does not fix it.
 
-Inspect the current graph with `devtools lab testmon-blind-spots`. The command
-compares an existing coverage report with the existing testmon database and
-separates declaration-only imports from executable validator risk. It does not
-run pytest or manufacture a fresh baseline.
-
 **Blast radius:** the default `devtools verify` gate (`--testmon
 --testmon-forceselect`) is the only local pre-merge signal for a change
 scoped to one of these files — `devtools test <file>` forwards a literal
@@ -267,8 +262,7 @@ upstream tool behavior. When changing a file that is purely declarative
 do not trust "0 tests selected" from the default `devtools verify` gate as
 proof of safety; run the file's owning test module directly with `devtools
 test <test-file>`, and rely on `mypy --strict` (already in the default gate)
-to catch structural regressions in `TypedDict`/protocol shapes. See
-`devtools lab testmon-blind-spots` for the machine-readable current census.
+to catch structural regressions in `TypedDict`/protocol shapes.
 
 ## Test Suite Layout
 

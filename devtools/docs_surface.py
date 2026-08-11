@@ -104,7 +104,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry("Codex Provider", "providers/openai-codex.md", "Codex session detection and parser notes.", "guide"),
     # Reference
     _entry("CLI Reference", "cli-reference.md", "Generated command reference from live help output.", "reference"),
-    _entry("MCP Reference", "mcp-reference.md", "Generated MCP tool and contract reference.", "reference"),
+    _entry("MCP Reference", "mcp-reference.md", "MCP tools, capability opt-ins, and client setup.", "reference"),
     _entry("Library API", "library-api.md", "Async archive API, filters, and query patterns.", "reference"),
     _entry("MCP Integration", "mcp-integration.md", "Model Context Protocol server setup and usage.", "reference"),
     _entry(
@@ -243,7 +243,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Query-Action Workflows",
         "product/workflows.md",
-        "Executable product contract for workflows, affordances, completions, and golden paths.",
+        "Selection rules, common paths, and executable demo-archive evidence.",
         "evidence",
     ),
     _entry(
@@ -291,12 +291,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry("Project Memory", "design/project-memory.md", "Long-term memory model and product intent.", "design"),
-    _entry(
-        "Query-Action Workflows Design",
-        "design/query-action-workflows.md",
-        "Historical design pointer for the workflow contract.",
-        "design",
-    ),
     _entry(
         "Query Set Algebra", "design/query-set-algebra.md", "Set-composition semantics over query results.", "design"
     ),

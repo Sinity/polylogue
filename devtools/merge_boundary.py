@@ -898,6 +898,10 @@ def cmd_record_full_verify(
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0].isdigit():
+        raw_argv.insert(0, "merge")
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="action", required=True)
 
@@ -927,7 +931,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     record_p.add_argument("--command", default="devtools verify --all")
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
 
     if args.action == "merge":
         return cmd_merge(

@@ -163,6 +163,19 @@ def test_clean_merge_title_appends_missing_suffix() -> None:
     assert merge_boundary.clean_merge_title("fix: thing", 42) == "fix: thing (#42)"
 
 
+def test_main_accepts_documented_direct_pr_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[int] = []
+
+    def merge(pr: int, **_kwargs: object) -> int:
+        captured.append(pr)
+        return 0
+
+    monkeypatch.setattr(merge_boundary, "cmd_merge", merge)
+
+    assert merge_boundary.main(["3948", "--dry-run"]) == 0
+    assert captured == [3948]
+
+
 # ---------------------------------------------------------------------------
 # cmd_merge
 # ---------------------------------------------------------------------------
