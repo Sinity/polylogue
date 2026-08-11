@@ -60,6 +60,7 @@ def test_subprocess_env_anchors_pytest_artifacts_to_checkout(monkeypatch: pytest
 
     env = verify._subprocess_env()
 
+    assert env["POLYLOGUE_PYTEST_EVENTS_DIR"] == str(run_tests.ROOT / verify.PYTEST_EVENTS_DIR)
     assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(run_tests.ROOT / verify.PYTEST_EVENTS_PATH)
     assert env["POLYLOGUE_PYTEST_SELECTION_PATH"] == str(run_tests.ROOT / verify.PYTEST_SELECTION_PATH)
     assert env["POLYLOGUE_PYTEST_SUMMARY_PATH"] == str(run_tests.ROOT / verify.PYTEST_SUMMARY_PATH)

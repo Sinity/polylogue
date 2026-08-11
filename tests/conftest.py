@@ -191,6 +191,8 @@ def _basetemp_owner_alive(entry: Path) -> bool | None:
 
 def _remove_stale_basetemp(entry: Path) -> None:
     """Remove an already-adjudicated stale tree, including read-only fixtures."""
+    if entry.is_symlink():
+        return
     owner_directory_mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
     owner_file_mode = stat.S_IRUSR | stat.S_IWUSR
     for current_root, directories, files in os.walk(entry):

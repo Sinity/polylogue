@@ -514,7 +514,9 @@ isolated XDG paths + archive root.
   seed-testmon runs default to `/realm/tmp/polylogue-pytest` (NVMe) because
   their aggregate fixture tree can exceed the supervised tmpfs ceiling.
   `POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB` overrides required headroom; an
-  explicit `POLYLOGUE_PYTEST_TMPFS=1` keeps a broad run on bounded tmpfs.
+  explicit `POLYLOGUE_PYTEST_TMPFS=1` requests bounded tmpfs, but the request
+  is honored only when the effective budget satisfies the declared basetemp
+  requirement.
   `/tmp/polylogue-pytest` is used
   only when `/realm/tmp` genuinely isn't mounted (cloud sandbox). If nothing
   clears the headroom requirement the run refuses immediately with every

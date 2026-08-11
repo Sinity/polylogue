@@ -1814,6 +1814,7 @@ def _subprocess_env() -> dict[str, str]:
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
     env["TESTMON_DATAFILE"] = str(TESTMON_DATA)
+    env["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(ROOT / PYTEST_EVENTS_DIR)
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
     env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(ROOT / PYTEST_SELECTION_PATH)
     env["POLYLOGUE_PYTEST_SUMMARY_PATH"] = str(ROOT / PYTEST_SUMMARY_PATH)
