@@ -3436,11 +3436,13 @@ def test_migrate_tier_cli_adoption_fails_closed_during_publication(
     ) -> None:
         if publication_failure == "race":
             assert dst_dir_fd is not None
-            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dst_dir_fd)
-            try:
-                os.write(fd, b"foreign audit target")
-            finally:
-                os.close(fd)
+            # This is a *valid* v1 audit database with a different image, not
+            # merely malformed bytes.  Startup must reject the durable receipt
+            # after the atomic no-replace link detects the foreign target.
+            with sqlite3.connect(root / str(destination)) as foreign:
+                initialize_archive_tier(foreign, ArchiveTier.AUDIT)
+                foreign.execute("PRAGMA application_id = 41")
+                foreign.commit()
             real_link(
                 source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=follow_symlinks
             )
@@ -3467,7 +3469,14 @@ def test_migrate_tier_cli_adoption_fails_closed_during_publication(
 
     assert result.exit_code == 1
     if publication_failure == "race":
-        assert audit.read_bytes() == b"foreign audit target"
+        with sqlite3.connect(audit) as foreign:
+            assert foreign.execute("PRAGMA user_version").fetchone() == (1,)
+            assert foreign.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        from polylogue.operations.durable_change_train import reconcile_durable_change_trains_on_startup
+        from polylogue.storage.sqlite.migration_runner import MigrationError
+
+        with pytest.raises(MigrationError, match="canonical audit image"):
+            reconcile_durable_change_trains_on_startup(root)
     else:
         assert not audit.exists()
     assert (root / ".maintenance-state" / "durable-change-trains" / "audit-adoption.json").is_file()

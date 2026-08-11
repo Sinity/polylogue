@@ -76,7 +76,7 @@ def initialize_missing_durable_tier(
     *,
     directory_fd: int | None = None,
     permit_established_archive: bool = False,
-    pre_publish_check: Callable[[], None] | None = None,
+    pre_publish_check: Callable[[bytes], None] | None = None,
 ) -> int:
     """Initialize one absent durable tier while the caller owns the archive.
 
@@ -355,7 +355,7 @@ def initialize_missing_durable_tier(
         # re-census only evidence whose appearance would otherwise make this
         # empty tier an unsafe adoption.
         if pre_publish_check is not None:
-            pre_publish_check()
+            pre_publish_check(initialized_image)
         else:
             assert_no_adoption_evidence(check_target=False)
         try:
@@ -454,7 +454,7 @@ def _audit_schema_inventory_sha256() -> str:
         return capture_durable_schema_inventory(connection).sha256
 
 
-def _write_immutable_audit_adoption_receipt(path: Path, payload: dict[str, object]) -> None:
+def _write_immutable_audit_adoption_receipt(path: Path, payload: dict[str, object], *, archive_root: Path) -> None:
     """Publish one pre-publication receipt without replacement and fsync it."""
     import json
 
@@ -471,12 +471,30 @@ def _write_immutable_audit_adoption_receipt(path: Path, payload: dict[str, objec
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
             0o600,
         )
-        os.write(descriptor, encoded)
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(descriptor, encoded[offset:])
+            if written <= 0:
+                raise MigrationError("immutable audit adoption receipt write made no progress")
+            offset += written
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = None
-        directory_descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        os.fsync(directory_descriptor)
+        for directory in (path.parent, *path.parent.parents):
+            try:
+                directory_descriptor = os.open(
+                    directory,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                )
+                os.fsync(directory_descriptor)
+            finally:
+                if directory_descriptor is not None:
+                    os.close(directory_descriptor)
+                    directory_descriptor = None
+            if directory == archive_root:
+                break
+        else:
+            raise MigrationError(f"audit adoption receipt escapes archive root: {path}")
     except FileExistsError as exc:
         raise MigrationError(f"audit adoption receipt already exists and is immutable: {path}") from exc
     except OSError as exc:
@@ -516,6 +534,16 @@ def validate_audit_adoption_receipt(archive_root: Path) -> Path | None:
     audit_path = archive_root / "audit.db"
     if not audit_path.is_file():
         raise MigrationError(f"audit adoption receipt has no published audit tier: {audit_path}")
+    expected_image_sha256 = payload.get("audit_image_sha256")
+    expected_image_size = payload.get("audit_image_size")
+    if not isinstance(expected_image_sha256, str) or not isinstance(expected_image_size, int):
+        raise MigrationError("audit adoption receipt lacks a canonical audit image binding")
+    try:
+        audit_image = audit_path.read_bytes()
+    except OSError as exc:
+        raise MigrationError(f"cannot read adopted audit tier: {audit_path}") from exc
+    if len(audit_image) != expected_image_size or hashlib.sha256(audit_image).hexdigest() != expected_image_sha256:
+        raise MigrationError("audit adoption receipt does not match the published canonical audit image")
     from polylogue.storage.sqlite.migration_runner import capture_durable_schema_inventory
 
     with sqlite3.connect(f"file:{audit_path}?mode=ro&immutable=1", uri=True) as connection:
@@ -553,29 +581,36 @@ def adopt_missing_audit_tier(
     )
     from polylogue.storage.archive_identity import ArchiveIdentity
 
+    initial_archive_identity_digest = ArchiveIdentity.resolve(archive_root).authority_identity_digest
     receipt_path = audit_adoption_receipt_path(archive_root)
-    payload = {
-        "format": _AUDIT_ADOPTION_RECEIPT_FORMAT,
-        "archive_identity_digest": ArchiveIdentity.resolve(archive_root).authority_identity_digest,
-        "backup_manifest": str(manifest_path.resolve()),
-        "backup_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-        "backup_verification_receipt": str(verification_receipt.resolve()),
-        "backup_verification_receipt_sha256": hashlib.sha256(verification_receipt.read_bytes()).hexdigest(),
-        "stopped_daemon_evidence_ref": stopped_evidence,
-        "single_writer_evidence_ref": "proof:archive-ownership-lock",
-        "audit_schema_inventory_sha256": _audit_schema_inventory_sha256(),
-        "audit_user_version": 1,
-    }
-    _write_immutable_audit_adoption_receipt(receipt_path, payload)
+    payload: dict[str, object] = {}
 
-    def revalidate_before_publish() -> None:
+    def revalidate_before_publish(initialized_image: bytes) -> None:
         if path.exists() or path.is_symlink():
             raise MigrationError(f"audit tier appeared during established-archive adoption: {path}")
         if stopped_daemon_check() != stopped_evidence:
             raise MigrationError("daemon stopped proof changed during audit adoption")
         validate_full_evidence_backup_for_audit_adoption(backup_manifest, archive_root=archive_root)
-        if ArchiveIdentity.resolve(archive_root).authority_identity_digest != payload["archive_identity_digest"]:
+        archive_identity_digest = ArchiveIdentity.resolve(archive_root).authority_identity_digest
+        if archive_identity_digest != initial_archive_identity_digest:
             raise MigrationError("archive identity changed during audit adoption")
+        payload.update(
+            {
+                "format": _AUDIT_ADOPTION_RECEIPT_FORMAT,
+                "archive_identity_digest": initial_archive_identity_digest,
+                "backup_manifest": str(manifest_path.resolve()),
+                "backup_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                "backup_verification_receipt": str(verification_receipt.resolve()),
+                "backup_verification_receipt_sha256": hashlib.sha256(verification_receipt.read_bytes()).hexdigest(),
+                "stopped_daemon_evidence_ref": stopped_evidence,
+                "single_writer_evidence_ref": "proof:archive-ownership-lock",
+                "audit_schema_inventory_sha256": _audit_schema_inventory_sha256(),
+                "audit_user_version": 1,
+                "audit_image_sha256": hashlib.sha256(initialized_image).hexdigest(),
+                "audit_image_size": len(initialized_image),
+            }
+        )
+        _write_immutable_audit_adoption_receipt(receipt_path, payload, archive_root=archive_root)
 
     version = initialize_missing_durable_tier(
         path,

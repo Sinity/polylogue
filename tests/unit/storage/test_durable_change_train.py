@@ -1688,6 +1688,17 @@ def test_audit_adoption_receipt_survives_startup_preflight(tmp_path: Path, monke
     backup = backup_archive(output_dir=tmp_path / "backup", profile="full_evidence", verify=True)
     assert backup.ok, backup.error
     assert backup.output_path is not None
+    fsynced_paths: set[Path] = set()
+    real_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        try:
+            fsynced_paths.add(Path(os.readlink(f"/proc/self/fd/{descriptor}")))
+        except OSError:
+            pass
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.fsync", record_fsync)
 
     with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-adoption") as owner:
         version, receipt = adopt_missing_audit_tier(
@@ -1699,6 +1710,11 @@ def test_audit_adoption_receipt_survives_startup_preflight(tmp_path: Path, monke
 
     assert version == 1
     assert receipt == audit_adoption_receipt_path(archive_root)
+    assert {
+        archive_root,
+        archive_root / ".maintenance-state",
+        archive_root / ".maintenance-state" / "durable-change-trains",
+    }.issubset(fsynced_paths)
     assert reconcile_durable_change_train_startup(archive_root) == ()
     receipt.write_text("tampered", encoding="utf-8")
     with pytest.raises(MigrationError, match="invalid audit adoption receipt"):
