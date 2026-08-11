@@ -58,7 +58,6 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab graph` | Inspect declared runtime artifacts, operations, paths, and maintenance targets. |
 | `devtools lab testmon-proof` | Validate the affected-test harness itself: a disposable copy of a real Polylogue module and existing route test is seeded, semantically mutated, edge-severed, restored, and checked for bounded unrelated-change selection. |
-| `devtools lab pytest-witness-repetitions` | Establish that the historical periodic optimize, WAL checkpoint, and embedding backlog lifecycle witnesses survive consecutive isolated and xdist runs. Each attempt uses the ordinary managed pytest/supervisor path; failures and timeouts are retained rather than retried. |
 | `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab policy classifier-fingerprints` | Catch the gap `lab policy schema-versioning` cannot see (polylogue-gucv): a parser/classifier under polylogue/sources/ or polylogue/archive/artifact_taxonomy/ (looks_like*/classify_artifact* functions) changes what it accepts for identical input bytes without any INDEX_SCHEMA_VERSION bump at all, so already-indexed rows go silently stale with no signal a reparse was needed (PR #3428 shipped exactly this, green, against the version-keyed gate). |
@@ -141,7 +140,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools lab probe turso` | Probe Turso Database compatibility against Polylogue storage assumptions. |
 | `devtools lab provider completeness` | Report provider/importer package completeness by origin and capture mode. |
-| `devtools lab pytest-witness-repetitions` | Repeat the exact optimize, WAL, and embedding seed-hang witnesses with durable receipts. |
 | `devtools lab run` | Run a named archive verification scenario. |
 | `devtools lab schema audit` | Run committed provider schema package quality checks. |
 | `devtools lab schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
