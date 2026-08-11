@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import shutil
 import sys
+from collections.abc import Awaitable
 from pathlib import Path
+from typing import cast
 
 from devtools import repo_root as _get_root
 from polylogue.scenarios import CorpusSourceKind
@@ -39,7 +42,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output",
         type=Path,
         default=ROOT / ".local" / "benchmark-campaigns",
-        help="Output directory for reports (default: .local/benchmark-campaigns/)",
+        help="Output directory for generated archives (default: .local/benchmark-campaigns/)",
     )
     parser.add_argument(
         "--list",
@@ -63,37 +66,55 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    from devtools.benchmark_campaigns import (
-        SYNTHETIC_CAMPAIGNS,
-        run_full_campaign,
-        run_synthetic_benchmark_campaign,
-    )
     from devtools.campaign_archive_location import CampaignArchiveLocation
-    from devtools.campaign_report import save_campaign_reports
     from devtools.large_archive_generator import (
         ScaleLevel,
         generate_archive,
         get_default_spec,
     )
+    from devtools.synthetic_benchmark_runtime import SYNTHETIC_BENCHMARK_RUNNERS, CampaignResult
+
+    async def run_synthetic_benchmark(name: str, db_path: Path) -> CampaignResult:
+        try:
+            runner = SYNTHETIC_BENCHMARK_RUNNERS[name]
+        except KeyError as exc:
+            raise ValueError(f"Unknown synthetic benchmark runner {name!r}") from exc
+        result = runner(db_path)
+        if inspect.isawaitable(result):
+            return await cast(Awaitable[CampaignResult], result)
+        return result
 
     if args.list_campaigns:
-        print("Available campaigns:")
-        for campaign in SYNTHETIC_CAMPAIGNS.values():
-            print(f"  {campaign.name}: {campaign.description}")
+        print("Available synthetic benchmark runners:")
+        for name in SYNTHETIC_BENCHMARK_RUNNERS:
+            print(f"  {name}")
         print("\nScale levels: small, medium, large, stretch")
         return 0
 
     if args.campaign == "all":
-        results = await run_full_campaign(
-            args.scale,
-            args.output,
-            corpus_source=CorpusSourceKind(args.corpus_source),
-        )
+        level = ScaleLevel(args.scale)
+        spec = get_default_spec(level)
+        archive_dir = args.output / f"archive-{args.scale}"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        with CampaignArchiveLocation.acquire(archive_dir) as location:
+            print(f"Generating {args.scale} archive from {args.corpus_source} corpus source...")
+            await generate_archive(
+                spec,
+                archive_dir,
+                corpus_source=CorpusSourceKind(args.corpus_source),
+                location=location,
+            )
+            results: list[CampaignResult] = []
+            for name in SYNTHETIC_BENCHMARK_RUNNERS:
+                print(f"Running {name}...")
+                result = await run_synthetic_benchmark(name, location.active_index_path)
+                result.scale_level = args.scale
+                results.append(result)
     else:
         # Generate archive first
-        if args.campaign not in SYNTHETIC_CAMPAIGNS:
+        if args.campaign not in SYNTHETIC_BENCHMARK_RUNNERS:
             print(f"Unknown campaign: {args.campaign}")
-            print(f"Available: {', '.join(SYNTHETIC_CAMPAIGNS)}")
+            print(f"Available: {', '.join(SYNTHETIC_BENCHMARK_RUNNERS)}")
             return 1
 
         archive_dir = args.output / f"archive-{args.scale}"
@@ -109,7 +130,7 @@ async def _run(args: argparse.Namespace) -> int:
             archive_dir.mkdir(parents=True, exist_ok=True)
 
             with CampaignArchiveLocation.acquire(archive_dir) as location:
-                result = await run_synthetic_benchmark_campaign(args.campaign, location.active_index_path)
+                result = await run_synthetic_benchmark(args.campaign, location.active_index_path)
         else:
             level = ScaleLevel(args.scale)
             spec = get_default_spec(level)
@@ -122,6 +143,7 @@ async def _run(args: argparse.Namespace) -> int:
 
             print(f"Generating {args.scale} archive from {args.corpus_source} corpus source...")
 
+            archive_dir.mkdir(parents=True, exist_ok=True)
             with CampaignArchiveLocation.acquire(archive_dir) as location:
                 await generate_archive(
                     spec,
@@ -129,16 +151,13 @@ async def _run(args: argparse.Namespace) -> int:
                     corpus_source=CorpusSourceKind(args.corpus_source),
                     location=location,
                 )
-                result = await run_synthetic_benchmark_campaign(args.campaign, location.active_index_path)
+                result = await run_synthetic_benchmark(args.campaign, location.active_index_path)
 
         result.scale_level = args.scale
         results = [result]
 
-    # Save reports
-    saved = save_campaign_reports(results, args.output)
-    print("\nReports saved:")
-    for path in saved:
-        print(f"  {path}")
+    for result in results:
+        print(f"{result.campaign_name}: {result.metrics.get('total_wall_s', 0.0):.4f}s")
 
     return 0
 
