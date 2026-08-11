@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import queue
 import socket
@@ -28,6 +27,7 @@ from polylogue.mcp.call_log import (
     _post_call_log,
     flush_mcp_call_log,
 )
+from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.server import build_server
 from polylogue.mcp.server_support import _set_runtime_services
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -176,21 +176,33 @@ def test_session_tools_and_successor_preamble_are_queryable_by_session(
 ) -> None:
     """Exercise real FastMCP wrappers for session-scoped call-log correlation.
 
-    ``get``/``read`` thread the ref's session id into the call log (#see
-    server_cutover.py); this proves two distinct session-scoped calls are
-    independently queryable by their own session id, not merged into one
-    bucket or dropped.
+    Exercise all session-id shapes that previously had source-AST tests:
+    refs lowered by ``get``/``read``, the explicit ``context`` resume
+    target, and the privileged ``write`` parameter. Persisted rows prove
+    production handler-to-telemetry forwarding rather than a source spelling.
     """
     first_session = "codex-session:missing-correlation-a"
     second_session = "claude-code-session:missing-correlation-b"
+    context_session = "codex-session:missing-context-correlation"
+    write_session = "codex-session:write-correlation"
+    SessionBuilder(workspace_env["archive_root"] / "index.db", "write-correlation").provider("codex-session").save()
     with _running_daemon() as daemon_url:
         monkeypatch.setenv("POLYLOGUE_DAEMON_URL", daemon_url)
         _set_runtime_services(None)
         try:
-            server = cast(MCPServerUnderTest, build_server())
+            server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
             tools = server._tool_manager._tools
             invoke_surface(tools["get"].fn, ref=f"session:{first_session}")
             invoke_surface(tools["read"].fn, ref=f"session:{second_session}")
+            invoke_surface(tools["context"].fn, intent="resume", session_id=context_session)
+            write_payload = json.loads(
+                invoke_surface(tools["write"].fn, operation="add_tag", session_id=write_session, tag="correlated")
+            )
+            # The archive intentionally has no source-tier membership for this
+            # synthetic index-only row, so the mutation fails closed. Telemetry
+            # must still retain the requested session identity on that typed
+            # failure path.
+            assert write_payload.get("error") == "not_found", write_payload
             assert flush_mcp_call_log(timeout=5.0)
         finally:
             _set_runtime_services(None)
@@ -199,6 +211,10 @@ def test_session_tools_and_successor_preamble_are_queryable_by_session(
     assert [entry.tool_name for entry in first_calls] == ["get"]
     second_calls = _read_calls(workspace_env["archive_root"], session_id=second_session)
     assert [entry.tool_name for entry in second_calls] == ["read"]
+    context_calls = _read_calls(workspace_env["archive_root"], session_id=context_session)
+    assert [entry.tool_name for entry in context_calls] == ["context"]
+    write_calls = _read_calls(workspace_env["archive_root"], session_id=write_session)
+    assert [entry.tool_name for entry in write_calls] == ["write"]
 
 
 def test_readiness_surface_exposes_outbox_pressure(
@@ -454,57 +470,3 @@ def test_two_dispatchers_can_quarantine_the_same_conflict(
     assert not failures
     assert not path.exists()
     assert (path.parent.parent / "quarantine" / path.name).is_file()
-
-
-def test_context_preamble_declares_successor_session_correlation() -> None:
-    """``context(intent="resume", session_id=...)`` threads its own session_id
-    into async_safe_call, replacing the retired compose_context_preamble
-    tool's successor_session_id -> session_id forwarding (post-t46.8.3
-    registrar cleanup; the SessionStart-preamble logic itself lives in
-    server_cutover.py's context()/_resume_preamble, not a standalone tool).
-    """
-    path = Path(__file__).parents[3] / "polylogue" / "mcp" / "server_cutover.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    [function] = [node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "context"]
-    assert "session_id" in {argument.arg for argument in (*function.args.args, *function.args.kwonlyargs)}
-    [safe_call] = [
-        call
-        for call in ast.walk(function)
-        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "async_safe_call"
-    ]
-    session_keyword = next(keyword for keyword in safe_call.keywords if keyword.arg == "session_id")
-    assert isinstance(session_keyword.value, ast.Name)
-    assert session_keyword.value.id == "session_id"
-
-
-@pytest.mark.parametrize(
-    ("function_name", "argument_name"),
-    [
-        ("get", "session_id"),
-        ("write", "session_id"),
-    ],
-)
-def test_session_alias_tools_forward_telemetry_identity(
-    function_name: str,
-    argument_name: str,
-) -> None:
-    """Six-tool equivalent of the retired get_session_summary/blackboard_post
-    per-tool session-id forwarding: get() derives session_id from its ref
-    parameter, write() forwards its own session_id parameter -- both thread
-    it into their single async_safe_call for the whole tool (post-t46.8.3
-    registrar cleanup collapsed ~20 per-operation tools, each with its own
-    async_safe_call, into one write() dispatch with one call site).
-    """
-    path = Path(__file__).parents[3] / "polylogue" / "mcp" / "server_cutover.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    [function] = [
-        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == function_name
-    ]
-    [safe_call] = [
-        call
-        for call in ast.walk(function)
-        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "async_safe_call"
-    ]
-    session_keyword = next(keyword for keyword in safe_call.keywords if keyword.arg == "session_id")
-    assert isinstance(session_keyword.value, ast.Name)
-    assert session_keyword.value.id == argument_name

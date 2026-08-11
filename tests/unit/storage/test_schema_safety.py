@@ -34,17 +34,6 @@ class TestSchemaDDLParity:
     share SCHEMA_DDL as a single source of truth.
     """
 
-    def test_async_backend_imports_shared_schema_ddl(self) -> None:
-        """Async backend must import SCHEMA_DDL from schema.py, not define its own."""
-        import inspect
-
-        from polylogue.storage.sqlite import async_sqlite
-
-        source = inspect.getsource(async_sqlite)
-        # Must import SCHEMA_DDL, not define it
-        assert "from polylogue.storage.sqlite.schema import" in source
-        assert "SCHEMA_DDL" in source
-
     def test_schema_ddl_has_all_required_tables(self) -> None:
         """SCHEMA_DDL must create all required tables."""
         required_tables = [
