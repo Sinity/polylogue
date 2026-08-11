@@ -62,6 +62,12 @@ _PARSER_FINGERPRINT = "live-batched-v2"
 # One bounded writer hold per hook-spool drain batch; the drain loops until
 # the backlog is gone, releasing the writer between batches.
 _HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250
+# A hook creates a day-shard directory before atomically publishing its first
+# envelope. An added-directory event can therefore precede the child-file
+# event that a recursive watcher is about to install. Re-drain once after this
+# short publication grace period rather than leaving the envelope to periodic
+# catch-up.
+_HOOK_SPOOL_DIRECTORY_RETRY_DELAY_S = 0.05
 # A catch-up writer owns the only archive writer for the whole chunk.  The
 # former 50-file/64-MiB envelope held it for 14+ minutes on the real archive,
 # starving fresh watcher events.  Keep historical convergence fair by
@@ -358,6 +364,8 @@ class LiveWatcher:
                 observed_path = Path(raw_path)
                 if change is Change.added and observed_path.is_dir():
                     if self._is_hook_spool_path(observed_path):
+                        await self._drain_hook_spool()
+                        await asyncio.sleep(_HOOK_SPOOL_DIRECTORY_RETRY_DELAY_S)
                         await self._drain_hook_spool()
                         continue
                     self._enqueue_added_directory(observed_path)
