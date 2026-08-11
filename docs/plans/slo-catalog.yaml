@@ -107,22 +107,6 @@ surfaces:
     gate: "required"
     tier: "cheap-local"
 
-  daemon_cached_facets:
-    description: "Cached facets/status read from the daemon result-cache memo layer (deferred until 20d.12 lands)"
-    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_facets"
-    p50_ms: 30
-    p95_ms: 100
-    gate: "informational"
-    tier: "cheap-local"
-
-  ingest_to_searchable:
-    description: "JSONL write to find/webui visibility, end to end (deferred until 20d.6/20d.12/20d.13 land)"
-    benchmark_test: "tests/benchmarks/test_daemon_convergence.py::test_convergence_single_file_perf"
-    p50_ms: 5000
-    p95_ms: 10000
-    gate: "informational"
-    tier: "lab"
-
   cli_status_cold:
     description: >-
       polylogue status --format json, cold subprocess, no daemon reachable,
