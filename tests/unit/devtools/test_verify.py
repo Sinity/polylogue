@@ -260,6 +260,7 @@ def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest
     label, command = steps[-1]
     assert label == "pytest seed-testmon collect"
     assert "--collect-only" in command
+    assert command[command.index("--ignore=tests/benchmarks")] == "--ignore=tests/benchmarks"
     assert "--testmon" not in command
     assert "-n" in command
     assert command[command.index("-n") + 1] == "0"

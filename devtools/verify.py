@@ -1977,6 +1977,11 @@ def build_verify_steps(
             "-q",
             "--tb=short",
             "--ignore=tests/integration",
+            # Benchmark files are an explicit campaign surface.  A number of
+            # them are correctness-shaped and lack the benchmark marker, so a
+            # marker expression alone cannot keep performance probes out of
+            # the correctness/testmon corpus.
+            "--ignore=tests/benchmarks",
             "--durations=10",
             f"--junitxml={_report_dir}/verify-latest.xml",
             "--json-report",
